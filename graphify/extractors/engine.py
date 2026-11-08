@@ -194,7 +194,7 @@ def _csharp_type_name_for_id(node, class_name: str) -> str:
     return f"{class_name}`{arity}" if arity else class_name
 
 
-def _csharp_method_signature(node, source: bytes) -> tuple[str, dict]:
+def _csharp_method_signature(node, source: bytes, params=None) -> tuple[str, dict]:
     """A C# method's parameter signature and the argument counts it accepts.
 
     The signature (``"`1:this Foo,ref int,params int[]"``) tells overloads
@@ -205,7 +205,12 @@ def _csharp_method_signature(node, source: bytes) -> tuple[str, dict]:
     parts: list[str] = []
     arity = required = 0
     variadic = extension = False
-    params = node.child_by_field_name("parameters")
+    # A primary constructor's parameter list is an unnamed child of its type
+    # declaration, so the caller hands it over; the type's own type parameters
+    # are not the constructor's.
+    primary = params is not None
+    if params is None:
+        params = node.child_by_field_name("parameters")
     children = params.children if params is not None else []
     for i, c in enumerate(children):
         if c.type == "parameter":
@@ -225,7 +230,7 @@ def _csharp_method_signature(node, source: bytes) -> tuple[str, dict]:
             parts.append("params " + ("".join(_read_text(type_node, source).split()) if type_node is not None else ""))
             arity += 1
             variadic = True
-    type_params = sum(
+    type_params = 0 if primary else sum(
         1 for c in node.children if c.type == "type_parameter_list"
         for _p in c.children if _p.type in ("type_parameter", "identifier")
     )
@@ -247,6 +252,17 @@ def _csharp_argc(call_node) -> int | None:
     if call_node.type != "invocation_expression":
         return None
     args = call_node.child_by_field_name("arguments")
+    return sum(1 for c in args.children if c.type == "argument") if args is not None else 0
+
+
+def _csharp_creation_argc(node) -> int:
+    """Argument count of a C# `new X(...)` / `new X { ... }` / `: base(...)`.
+
+    No argument list (`new X { A = 1 }`) runs the parameterless constructor.
+    """
+    args = node.child_by_field_name("arguments")
+    if args is None:
+        args = next((c for c in node.children if c.type == "argument_list"), None)
     return sum(1 for c in args.children if c.type == "argument") if args is not None else 0
 
 
@@ -275,7 +291,7 @@ def _csharp_pick_overload(overloads: list[dict], argc: int | None) -> dict | Non
 
 def _csharp_pre_scan_name_collisions(
     root_node, source: bytes, stem: str
-) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+) -> tuple[dict[str, set[str]], dict[str, set[str]], set[str]]:
     """Pre-scan a C# file for declared names that collapse to one node id.
 
     C# is case-sensitive and `_Name` is the usual spelling of a private member,
@@ -287,8 +303,11 @@ def _csharp_pre_scan_name_collisions(
     the Python #3302 collision in C#; the outcome is the same rule
     (``_underscore_salted_nid``).
 
-    Returns ``(type_groups, member_groups)``, each ``{plain_nid: {raw names}}``
-    for the ids two or more distinct names would share. Types are keyed the way
+    Returns ``(type_groups, member_groups, member_ids)``: the first two are
+    ``{plain_nid: {raw names}}`` for the ids two or more distinct names would
+    share; ``member_ids`` is every member's plain id, which a constructor's or
+    indexer's id must not take (a C# method may be spelled like its type in
+    another case, and a member may be spelled `This`). Types are keyed the way
     the walk mints them (``_make_id(stem, namespace, name_for_id)``), members
     (methods, properties, enum members) by ``_make_id(type_nid, name)`` where
     ``type_nid`` is the type's FINAL id, already salted when the type itself
@@ -349,7 +368,7 @@ def _csharp_pre_scan_name_collisions(
     for decl, plain, name in type_decls:
         _members(decl, _underscore_salted_nid(plain, name, type_groups))
     member_groups = {nid: names for nid, names in member_names.items() if len(names) >= 2}
-    return type_groups, member_groups
+    return type_groups, member_groups, set(member_names)
 
 
 def _csharp_classify_base(name: str, interface_names: set[str]) -> str:
@@ -6569,10 +6588,15 @@ def _extract_generic(
     csharp_interface_names: set[str] = set()
     csharp_type_groups: dict[str, set[str]] = {}
     csharp_member_groups: dict[str, set[str]] = {}
+    csharp_member_ids: set[str] = set()
+    # plain constructor nid -> {signature: node}, like csharp_overloads.
+    csharp_ctor_overloads: dict[str, dict[str, dict]] = {}
+    # plain indexer nid -> {signature: node}, like csharp_overloads.
+    csharp_indexer_overloads: dict[str, dict[str, dict]] = {}
     if config.ts_module == "tree_sitter_c_sharp":
         csharp_interface_names = _csharp_pre_scan_interfaces(root, source)
-        csharp_type_groups, csharp_member_groups = _csharp_pre_scan_name_collisions(
-            root, source, stem
+        csharp_type_groups, csharp_member_groups, csharp_member_ids = (
+            _csharp_pre_scan_name_collisions(root, source, stem)
         )
 
     swift_protocol_names: set[str] = set()
@@ -6705,6 +6729,65 @@ def _extract_generic(
         if external_owners:
             file_metadata["ruby_external_method_owners"] = external_owners
         file_node["metadata"] = sanitize_metadata(file_metadata)
+
+    # C# `new X(...)` sites and `: base(...)` / `: this(...)` initializers.
+    # They join raw_calls after the call walk, with no `callee`, so every
+    # name-keyed consumer skips them and only the constructor pass reads them.
+    csharp_ctor_records: list[dict] = []
+
+    def csharp_add_constructor(type_nid: str, type_name: str, decl, params,
+                               line: int, static: bool) -> str:
+        """Mint the node for one C# constructor and own it from its type.
+
+        The id is the one a method named after the type would get, so the
+        first declared constructor keeps it and each other signature is salted
+        like a method overload (#4584). A member spelled like the type in
+        another case (`Foo` / `foo()`) already owns that id: the constructor,
+        never the existing member, takes a salted one. A static constructor
+        has no parameters and is never what `new` runs, so it is its own
+        signature.
+        """
+        signature, meta = _csharp_method_signature(decl, source, params)
+        if static:
+            signature, meta = "static", {"arity": 0}
+        ctor_nid = _make_id(type_nid, type_name)
+        if ctor_nid in csharp_member_ids:
+            ctor_nid = _make_id(ctor_nid, hashlib.sha1(
+                b".ctor", usedforsecurity=False).hexdigest()[:6])
+        group = csharp_ctor_overloads.setdefault(ctor_nid, {})
+        if group and signature not in group:
+            ctor_nid = _make_id(ctor_nid, hashlib.sha1(
+                signature.encode("utf-8"), usedforsecurity=False).hexdigest()[:6])
+        add_node(ctor_nid, f".{type_name}()", line,
+                 metadata={**meta, "signature": signature, "kind": "constructor"})
+        if signature not in group and nodes and nodes[-1]["id"] == ctor_nid:
+            group[signature] = nodes[-1]
+        add_edge(type_nid, ctor_nid, "method", line)
+        return ctor_nid
+
+    def csharp_queue_member_bodies(member_nid: str, decl, class_nid: str) -> None:
+        """Walk a C# property's or indexer's accessor bodies as its calls.
+
+        `get { ... }` / `set => ...` and an expression body (`int P => F();`)
+        run code just like a method, so their calls belong to the member. An
+        auto-accessor (`get;`) and an initializer (`= F();`, which runs in the
+        constructor) have no body here. The declaration is the scope, so an
+        indexer's parameters type receivers in every accessor.
+        """
+        bodies = []
+        accessors = decl.child_by_field_name("accessors")
+        if accessors is not None:
+            for accessor in accessors.children:
+                if accessor.type == "accessor_declaration":
+                    body = accessor.child_by_field_name("body")
+                    if body is not None:
+                        bodies.append(body)
+        value = decl.child_by_field_name("value")
+        if value is not None and value.type == "arrow_expression_clause":
+            bodies.append(value)
+        for body in bodies:
+            csharp_method_scopes[id(body)] = (decl, class_nid)
+            function_bodies.append((member_nid, body))
 
     def walk(node, parent_class_nid: str | None = None) -> None:
         nonlocal ruby_singleton_context_depth
@@ -6926,6 +7009,17 @@ def _extract_generic(
                 add_edge(parent_class_nid, class_nid, "contains", line)
             else:
                 add_edge(file_nid, class_nid, "contains", line)
+            if config.ts_module == "tree_sitter_c_sharp" and t != "interface_declaration":
+                # `class Foo(int x)` / `record R(int A)`: the primary
+                # constructor is one of Foo's constructors, so `new Foo(1)`
+                # must weigh it against the explicit ones (it has no body).
+                primary_params = next(
+                    (c for c in node.children if c.type == "parameter_list"), None
+                )
+                if primary_params is not None:
+                    csharp_add_constructor(
+                        class_nid, class_name, node, primary_params, line, False
+                    )
 
             # TS/JS decorators on the class and its members (@Component, @Injectable,
             # @Input, @Inject, @Entity, …). Decorators live only in class subtrees.
@@ -7709,12 +7803,101 @@ def _extract_generic(
         if (config.ts_module == "tree_sitter_c_sharp"
                 and t == "constructor_declaration"
                 and parent_class_nid):
-            # A C# constructor has no node of its own, so its body was never
-            # walked for calls. Attribute them to the declaring type (#4246).
-            ctor_body = node.child_by_field_name("body")
-            if ctor_body is not None:
-                csharp_method_scopes[id(ctor_body)] = (node, parent_class_nid)
-                function_bodies.append((parent_class_nid, ctor_body))
+            # A constructor is a node of its own, like a method, so the calls
+            # in its body and initializer are its calls, not the type's
+            # (#4246 credited them to the type).
+            ctor_name_node = node.child_by_field_name("name")
+            ctor_name = _read_text(ctor_name_node, source) if ctor_name_node is not None else ""
+            if ctor_name:
+                ctor_line = node.start_point[0] + 1
+                ctor_nid = csharp_add_constructor(
+                    parent_class_nid, ctor_name, node, None, ctor_line,
+                    any(c.type == "modifier" and _read_text(c, source) == "static"
+                        for c in node.children),
+                )
+                for part in node.children:
+                    if part.type == "constructor_initializer":
+                        csharp_method_scopes[id(part)] = (node, parent_class_nid)
+                        function_bodies.append((ctor_nid, part))
+                        keyword = next((c.type for c in part.children
+                                        if c.type in ("base", "this")), None)
+                        if keyword is not None:
+                            csharp_ctor_records.append({
+                                "caller_nid": ctor_nid,
+                                "lang": "csharp",
+                                "csharp_ctor_init": keyword,
+                                "arity": _csharp_creation_argc(part),
+                                "source_file": str_path,
+                                "source_location": f"L{part.start_point[0] + 1}",
+                            })
+                ctor_body = node.child_by_field_name("body")
+                if ctor_body is not None:
+                    csharp_method_scopes[id(ctor_body)] = (node, parent_class_nid)
+                    function_bodies.append((ctor_nid, ctor_body))
+
+        if (config.ts_module == "tree_sitter_c_sharp"
+                and t == "indexer_declaration"
+                and parent_class_nid):
+            # `this[int i]` is a property with parameters: a `this[]` node
+            # beside the properties, so its accessors' calls have a caller.
+            # Overloads (`this[int]`, `this[string]`) are salted by signature
+            # like methods (#4584); a member spelled `This` keeps its id.
+            signature, meta = _csharp_method_signature(node, source)
+            explicit = next((c for c in node.children
+                             if c.type == "explicit_interface_specifier"), None)
+            if explicit is not None:
+                # `IList<T>.this[int]` and `IList.this[int]` are two indexers.
+                signature = "".join(_read_text(explicit, source).split()) + signature
+            indexer_line = node.start_point[0] + 1
+            indexer_nid = _make_id(parent_class_nid, "this")
+            if indexer_nid in csharp_member_ids:
+                indexer_nid = _make_id(indexer_nid, hashlib.sha1(
+                    b"this[]", usedforsecurity=False).hexdigest()[:6])
+            group = csharp_indexer_overloads.setdefault(indexer_nid, {})
+            if group and signature not in group:
+                indexer_nid = _make_id(indexer_nid, hashlib.sha1(
+                    signature.encode("utf-8"), usedforsecurity=False).hexdigest()[:6])
+            add_node(indexer_nid, "this[]", indexer_line,
+                     metadata={**meta, "signature": signature, "kind": "indexer"})
+            if signature not in group and nodes and nodes[-1]["id"] == indexer_nid:
+                group[signature] = nodes[-1]
+            add_edge(parent_class_nid, indexer_nid, "defines", indexer_line, context="field")
+            csharp_queue_member_bodies(indexer_nid, node, parent_class_nid)
+            return
+
+        if (config.ts_module == "tree_sitter_c_sharp"
+                and t in ("operator_declaration", "conversion_operator_declaration")
+                and parent_class_nid):
+            # A user-defined operator or conversion is a static method with a
+            # body, so it is a member node and its calls are its own. Its name
+            # is spelled the way C# writes it (`operator +`, `operator int`)
+            # and is never a call name, so the id always carries the
+            # signature: several conversions share one parameter list.
+            if t == "operator_declaration":
+                op = node.child_by_field_name("operator")
+                op_name = "operator " + (_read_text(op, source) if op is not None else "")
+                op_key = op_name
+            else:
+                to_type = node.child_by_field_name("type")
+                op_name = "operator " + (
+                    "".join(_read_text(to_type, source).split()) if to_type is not None else ""
+                )
+                direction = next((c.type for c in node.children
+                                  if c.type in ("implicit", "explicit")), "")
+                op_key = f"{direction} {op_name}"
+            signature, meta = _csharp_method_signature(node, source)
+            signature = f"{op_key}:{signature}"
+            op_line = node.start_point[0] + 1
+            op_nid = _make_id(parent_class_nid, "operator", hashlib.sha1(
+                signature.encode("utf-8"), usedforsecurity=False).hexdigest()[:6])
+            add_node(op_nid, f".{op_name}()", op_line,
+                     metadata={**meta, "signature": signature, "kind": "operator"})
+            add_edge(parent_class_nid, op_nid, "method", op_line)
+            op_body = node.child_by_field_name("body")
+            if op_body is not None:
+                csharp_method_scopes[id(op_body)] = (node, parent_class_nid)
+                function_bodies.append((op_nid, op_body))
+            return
 
         if (config.ts_module == "tree_sitter_c_sharp"
                 and t == "field_declaration"
@@ -7816,6 +7999,11 @@ def _extract_generic(
                         add_node(property_nid, property_name, property_line)
                         add_edge(parent_class_nid, property_nid, "defines",
                                  property_line, context="field")
+                        # Only the declaration that owns the node: an id
+                        # another member already took (a method spelled
+                        # like an explicit `IFoo.Name` property) must not
+                        # be credited with this property's calls.
+                        csharp_queue_member_bodies(property_nid, node, parent_class_nid)
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 # Record the property's declared type for the method-scoped
@@ -9193,6 +9381,12 @@ def _extract_generic(
             continue
         if n["id"] in _case_of_targets:
             continue
+        # A C# constructor shares its type's name; it is reached through `new`
+        # or an initializer, never a bare call, and must not shadow the type.
+        if config.ts_module == "tree_sitter_c_sharp" and (
+            (n.get("metadata") or {}).get("kind") == "constructor"
+        ):
+            continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
         if config.ts_module == "tree_sitter_lua":
@@ -9269,6 +9463,15 @@ def _extract_generic(
     if config.ts_module in _SELF_CALL_LANGUAGES or lexical_calls:
         label_by_nid = {n["id"]: n["label"] for n in nodes}
         for e in edges:
+            if (
+                config.ts_module == "tree_sitter_c_sharp"
+                and e["relation"] == "defines"
+                and e.get("context") == "field"
+            ):
+                # A property/indexer whose accessors make calls: an
+                # unqualified call in them looks in its type first, like a
+                # method's. Owner only: it is never a call target by name.
+                method_owner.setdefault(e["target"], e["source"])
             if e["relation"] == "method":
                 method_owner[e["target"]] = e["source"]
                 name = label_by_nid.get(e["target"], "").strip("()").lstrip(".")
@@ -10404,6 +10607,18 @@ def _extract_generic(
                     peers = csharp_overload_peers[tgt_nid]
                     picked = _csharp_pick_overload(peers, _csharp_argc(node))
                     tgt_nid = (picked or peers[0])["id"]
+                if (config.ts_module == "tree_sitter_c_sharp"
+                        and node.type == "object_creation_expression" and callee_name):
+                    # Which constructor runs is picked corpus-wide once the
+                    # type is bound (_resolve_csharp_constructor_calls).
+                    csharp_ctor_records.append({
+                        "caller_nid": caller_nid,
+                        "lang": "csharp",
+                        "csharp_ctor_site": callee_name,
+                        "arity": _csharp_creation_argc(node),
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                    })
                 external_stub_target = bool(tgt_nid and not nid_to_sf.get(tgt_nid))
                 if tgt_nid and not external_stub_target:
                     pair = (caller_nid, tgt_nid)
@@ -11063,6 +11278,7 @@ def _extract_generic(
         raw_calls.extend(_python_property_reads(
             function_bodies, source, str_path, python_var_types, python_attr_types, method_owner,
         ))
+    raw_calls.extend(csharp_ctor_records)
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
     # Export the per-file field->type tables for the corpus member-call
     # resolvers (#3151): a field declared on a superclass in ANOTHER file can

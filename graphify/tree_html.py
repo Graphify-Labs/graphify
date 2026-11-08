@@ -214,6 +214,16 @@ def build_tree(
         raise ValueError("--max-children must be nonnegative")
     directory_ids: set[int] = set()
     nodes: List[Dict[str, Any]] = list(graph.get("nodes", []))
+    for n in nodes:
+        if not n.get("source_file"):
+            # Same alias order as build._fold_node_aliases (`src` last), so a node
+            # carrying two conflicting aliases resolves to the identical
+            # source_file in the built graph and in this viewer.
+            for alias in ("file", "path", "filepath", "src"):
+                val = n.get(alias)
+                if isinstance(val, str) and val.strip():
+                    n["source_file"] = n.pop(alias).strip()
+                    break
     file_nodes = [n for n in nodes if n.get("source_file")]
     if not file_nodes:
         return {"name": "(empty graph)", "total_count": 0, "children": []}

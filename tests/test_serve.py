@@ -1022,6 +1022,37 @@ def test_pick_seeds_per_term_guarantee_does_not_reintroduce_generic_dupe(monkeyp
     assert len(get_seeds) == 1, f"per-term guarantee reintroduced a GET dupe: {seeds}"
 
 
+def test_pick_seeds_keeps_same_label_node_that_is_only_match_for_a_term():
+    """A node sharing a seeded label must still be seeded when it is the only
+    match for a query term the label doesn't contain: `alpha` matches only
+    `alpha_pre`'s source path, so the seeded `PreToolUse` twin can't cover it (#5027)."""
+    G = nx.Graph()
+    G.add_node("hooks_pre", label="PreToolUse", source_file="plugins/core/lib/core_hooks/handler/pre_tool_use.rb")
+    G.add_node("hooks_run", label=".run", source_file="plugins/core/lib/core_hooks/handler/pre_tool_use.rb")
+    G.add_node("alpha_pre", label="PreToolUse", source_file="plugins/core-alpha/lib/alpha/pre_tool_use.rb")
+    G.add_edge("hooks_pre", "hooks_run")
+    qs = _score_query(G, ["core", "alpha", "PreToolUse", "hook", "handler"], collect_per_term_seeds=True)
+    assert qs.best_seed_by_term["alpha"] == "alpha_pre"
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term, term_order=qs.term_order)
+    assert "alpha_pre" in seeds, f"only match for 'alpha' was dropped by the label cap: {seeds}"
+
+
+def test_pick_seeds_per_term_still_caps_same_label_winner_of_a_label_term():
+    """The #5027 exception is narrow: when the term is part of the shared label,
+    the seeded twin already matches it, so a different same-label winner is still
+    capped. `get2` wins `get` on the degree tie-break while the first loop seeds
+    `get0`, so this reaches the per-term cap (#1766)."""
+    G = nx.DiGraph()
+    for i in range(3):
+        G.add_node(f"get{i}", label="GET", source_file=f"r{i}.py")
+    G.add_node("x", label="x_helper", source_file="x.py")
+    G.add_edge("get2", "x")
+    qs = _score_query(G, ["get"], collect_per_term_seeds=True)
+    assert qs.best_seed_by_term["get"] == "get2"
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    assert seeds == ["get0"], f"per-term guarantee added a second GET: {seeds}"
+
+
 def test_score_nodes_scores_identical_labels_equally():
     """Guard against a per-label multiplicity penalty leaking into _score_nodes
     (shared by shortest_path / explain endpoint resolution): two nodes with the

@@ -1179,10 +1179,16 @@ def _step_body(core: str, marker: str) -> str:
 
 
 def _substituted(body: str, root: Path) -> str:
-    """Apply the substitutions the skill tells the agent to make (INPUT_PATH/SPEC_PATH)."""
+    """Apply the substitution the skill still asks the agent to make (SPEC_PATH),
+    and simulate Step 1 writing the trusted scan root to .graphify_root, which the
+    blocks read for INPUT_PATH since #4762 (callers chdir to ``root`` so the
+    relative ``graphify-out/.graphify_root`` resolves there)."""
     spec = root / "extraction-spec.md"
     spec.write_text("extraction prompt fixture\n", encoding="utf-8")
-    return body.replace("'INPUT_PATH'", repr(str(root))).replace("'SPEC_PATH'", repr(str(spec)))
+    out = root / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / ".graphify_root").write_text(str(root), encoding="utf-8")
+    return body.replace("'SPEC_PATH'", repr(str(spec)))
 
 
 def _write_chunk(out_dir: Path, payload: dict) -> None:
