@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,10 @@ import pytest
 pytest.importorskip("watchdog")
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the pruned watch tree is Linux-only",
+)
 def test_watch_schedules_only_kept_directories(tmp_path, monkeypatch):
     """#5033: ignored directories must not get an inotify watch.
 

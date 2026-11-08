@@ -3608,30 +3608,36 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     root_config_path = watch_root_for_ignore / RC_FILENAME
     override_snapshot: dict[str, str] = activate_language_overrides(watch_root_for_ignore)
     config_changed = False
+    # Only Linux prunes the recursive watch tree. macOS and Windows keep the
+    # recursive schedule, so their handler must not require a `watched` entry.
+    manual = sys.platform.startswith("linux")
 
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending, override_snapshot, config_changed
             nonlocal ignore_patterns, ignored
             if event.is_directory:
-                if not _is_read_only_event(event):
-                    path = Path(os.fsdecode(event.src_path)).resolve()
-                    if path.parent not in watched:
-                        return
-                    if event.event_type == "created":
-                        add_tree(path, emit_existing=True)
-                    elif event.event_type == "deleted":
-                        remove_tree(path)
-                    elif event.event_type == "moved":
-                        remove_tree(path)
-                        dest = Path(os.fsdecode(event.dest_path)).resolve()
-                        if under_root(dest):
-                            add_tree(dest, emit_existing=True)
+                if not manual or _is_read_only_event(event):
+                    return
+                path = Path(os.fsdecode(event.src_path)).resolve()
+                if path.parent not in watched:
+                    return
+                if event.event_type == "created":
+                    add_tree(path, emit_existing=True)
+                elif event.event_type == "deleted":
+                    remove_tree(path)
+                elif event.event_type == "moved":
+                    remove_tree(path)
+                    dest = Path(os.fsdecode(event.dest_path)).resolve()
+                    if under_root(dest):
+                        add_tree(dest, emit_existing=True)
                 return
             if _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
-            if path.parent not in watched or not path.parent.exists():
+            if manual and (
+                path.parent not in watched or not path.parent.exists()
+            ):
                 return
             if path.name in {".graphifyignore", ".gitignore"}:
                 ignore_patterns = _load_graphifyignore(
@@ -3640,8 +3646,9 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 ignored = ignored_predicate(
                     watch_root_for_ignore, gitignore=ignore_gitignore
                 )
-                remove_tree(watch_root_for_ignore)
-                add_tree(watch_root_for_ignore, emit_existing=False)
+                if manual:
+                    remove_tree(watch_root_for_ignore)
+                    add_tree(watch_root_for_ignore, emit_existing=False)
                 return
             # Atomic replacement reports the new root config in dest_path.
             dest_raw = getattr(event, "dest_path", None)
@@ -3675,7 +3682,6 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             changed.add(path)
 
     handler = Handler()
-    manual = sys.platform.startswith("linux")
     observer = (
         Observer()
         if manual
