@@ -2,6 +2,7 @@
 from __future__ import annotations
 import contextlib
 import errno
+import inspect
 import json
 import logging
 import os
@@ -2349,6 +2350,7 @@ def _rebuild_code(
             classify_manifest_deletions,
             classify_manifest_files,
             detect,
+            is_resolution_input,
             load_manifest,
         )
         from graphify.build import build_from_json, _is_ast_tier, _norm_source_file as _nsf
@@ -2429,21 +2431,23 @@ def _rebuild_code(
         # records the ast_hash of every file the last build extracted, so the
         # change set can be read off it instead of re-extracting the whole
         # corpus. `detected` was computed above for the full path anyway, so this
-        # costs one manifest read, not a second scan.
+        # costs one manifest read, not a second scan. A manifest cannot
+        # restore unchanged nodes when the graph it describes is missing.
         #
         # A manifest that is missing, unreadable or empty leaves changed_paths
         # None — the full path. "No rows" means the baseline is unknown, and the
         # only safe reading of unknown is "do the work"; `detect_incremental`
         # makes the same call for `graphify extract` (#1925).
-        if incremental and changed_paths is None and not force:
+        if incremental and changed_paths is None and not force and (out / "graph.json").is_file():
             manifest = load_manifest(str(out / "manifest.json"), root=watch_root)
             if manifest:
+                resolution_inputs = detected.get("resolution_inputs") or []
                 _changed_buckets, _unchanged_buckets = classify_manifest_files(
-                    detected["files"], manifest, kind="ast"
+                    {**detected["files"], "resolution_inputs": resolution_inputs},
+                    manifest,
+                    kind="ast",
                 )
-                derived = [
-                    Path(f) for bucket in _changed_buckets.values() for f in bucket
-                ]
+                modified = [f for bucket in _changed_buckets.values() for f in bucket]
                 # Rows that left the corpus belong in the change set too. A row
                 # whose file is gone from disk must reach the deleted branch
                 # below, or its nodes survive and the shrink guard refuses the
@@ -2451,24 +2455,33 @@ def _rebuild_code(
                 # A row that is still alive but out of scan is an ignore-rule
                 # change, which the corpus sweep handles on positive evidence
                 # alone (#2495), so it stays out of the change set.
-                _deleted_rows, _excluded_rows = classify_manifest_deletions(
+                deleted_rows, excluded_rows = classify_manifest_deletions(
                     manifest,
-                    (f for bucket in detected["files"].values() for f in bucket),
+                    [
+                        *resolution_inputs,
+                        *(f for bucket in detected["files"].values() for f in bucket),
+                    ],
                     root=watch_root,
                 )
-                derived.extend(Path(f) for f in _deleted_rows)
-                changed_paths = derived
-                _scanned = sum(len(v) for v in detected["files"].values())
-                if derived:
+                if any(is_resolution_input(f) for f in (*modified, *deleted_rows, *excluded_rows)):
+                    # An unchanged importer may resolve differently when its
+                    # config or workspace layout changes. Re-resolve the corpus.
                     print(
-                        f"[graphify watch] Incremental: re-extracting {len(derived)} "
-                        f"of {_scanned} scanned files that changed since the last build."
+                        "[graphify watch] JS/TS resolution inputs changed; rebuilding the full code graph."
                     )
                 else:
-                    print(
-                        f"[graphify watch] Incremental: none of the {_scanned} scanned "
-                        "files differ from the last build."
-                    )
+                    changed_paths = [Path(f) for f in (*modified, *deleted_rows)]
+                    scanned = sum(len(v) for v in detected["files"].values())
+                    if changed_paths:
+                        print(
+                            f"[graphify watch] Incremental: re-extracting {len(changed_paths)} "
+                            f"of {scanned} scanned files that changed since the last build."
+                        )
+                    else:
+                        print(
+                            f"[graphify watch] Incremental: none of the {scanned} scanned "
+                            "files differ from the last build."
+                        )
 
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
@@ -3442,6 +3455,42 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     return has_code or has_deletion
 
 
+def _watch_event_filter():
+    """Watchdog events that mean a file actually changed, not just was read.
+
+    Passing this as ``event_filter`` keeps ``IN_OPEN`` and
+    ``IN_CLOSE_NOWRITE`` out of the inotify mask. The recursive watch-setup
+    walk then produces no events of its own, so it cannot overflow the kernel
+    queue and trigger watchdog's rebuild loop (#5033).
+    """
+    from watchdog import events as we
+
+    return [
+        we.FileCreatedEvent,
+        we.FileModifiedEvent,
+        we.FileDeletedEvent,
+        we.FileMovedEvent,
+        we.FileClosedEvent,
+        we.DirCreatedEvent,
+        we.DirDeletedEvent,
+        we.DirMovedEvent,
+    ]
+
+
+def _observer_accepts_event_filter(observer) -> bool:
+    """True when this watchdog's ``schedule()`` declares ``event_filter``.
+
+    ``event_filter`` was added in watchdog 4.0. Graphify does not pin a minimum
+    watchdog version, so detect support instead of raising TypeError on older
+    installs. Introspection failures are treated as unsupported; the caller
+    warns on that path so a future signature change is visible.
+    """
+    try:
+        return "event_filter" in inspect.signature(observer.schedule).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 _READ_ONLY_EVENT_TYPES = frozenset({"opened", "closed_no_write"})
 
 
@@ -3597,7 +3646,23 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     handler = Handler()
     # Use polling observer on macOS — FSEvents can miss rapid saves in some editors
     observer = PollingObserver() if sys.platform == "darwin" else Observer()
-    observer.schedule(handler, str(watch_root_for_ignore), recursive=True)
+    # Ask the kernel only for events the handler treats as changes. Without
+    # this filter the recursive setup walk floods the inotify queue with
+    # IN_OPEN/IN_CLOSE_NOWRITE, overflows it around 4,000 directories, and
+    # watchdog 7 then re-walks the tree forever (#5033).
+    if _observer_accepts_event_filter(observer):
+        observer.schedule(
+            handler,
+            str(watch_root_for_ignore),
+            recursive=True,
+            event_filter=_watch_event_filter(),
+        )
+    else:
+        logger.warning(
+            "watchdog does not declare event_filter; read-only inotify events "
+            "may overflow the queue and lose changes (#5033)"
+        )
+        observer.schedule(handler, str(watch_root_for_ignore), recursive=True)
     observer.start()
 
     print(f"[graphify watch] Watching {watch_path.resolve()} - press Ctrl+C to stop")

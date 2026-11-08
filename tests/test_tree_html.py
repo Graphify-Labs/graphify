@@ -51,6 +51,20 @@ def _write_graph(tmp_path: Path, graph: dict) -> Path:
 # ── build_tree unit tests ─────────────────────────────────────────────────────
 
 
+def test_build_tree_accepts_src_and_file_aliases():
+    """build_tree resolves file paths from aliases like `src` or `file` so graphs
+    without explicit `source_file` do not render an empty tree."""
+    graph = {
+        "nodes": [
+            {"id": "a", "label": "fn_a", "src": "pkg/sub/a.py"},
+            {"id": "b", "label": "fn_b", "file": "pkg/sub/b.py"},
+        ]
+    }
+    tree = build_tree(graph)
+    assert tree["name"] != "(empty graph)"
+    assert tree["total_count"] == 2
+
+
 def test_build_tree_explicit_root_matching_nothing_raises():
     graph = _graph({"pkg/a.py": "func_a", "pkg/sub/b.py": "func_b"})
     with pytest.raises(ValueError, match=r"matched 0 of 2 source files"):

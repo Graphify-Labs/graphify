@@ -7,12 +7,23 @@ import of main to avoid a cli<->__main__ import cycle.
 """
 from __future__ import annotations
 import json
+import math
 import os
 import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+
+def _valid_price(value: float) -> float:
+    """A provider price flag must be a finite, non-negative number. A NaN, inf
+    or negative value parses as a float but flows into cost estimation (price x
+    tokens), producing NaN/inf/negative cost reports (#5031), so reject it the
+    same way a non-numeric value is rejected."""
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("price must be finite and non-negative")
+    return value
 
 
 # Hook reminders arrive inside the agent's tool-result stream, where commands
@@ -1873,9 +1884,35 @@ def dispatch_command(cmd: str) -> None:
                 elif a.startswith("--env-key="):
                     env_key = a.split("=", 1)[1]; i += 1
                 elif a == "--pricing-input" and i + 1 < len(args):
-                    pricing_input = float(args[i + 1]); i += 2
+                    try:
+                        pricing_input = _valid_price(float(args[i + 1]))
+                    except ValueError:
+                        print(f"Error: invalid price for --pricing-input: '{args[i + 1]}' (expected a finite, non-negative number)", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
+                elif a.startswith("--pricing-input="):
+                    val = a.split("=", 1)[1]
+                    try:
+                        pricing_input = _valid_price(float(val))
+                    except ValueError:
+                        print(f"Error: invalid price for --pricing-input: '{val}' (expected a finite, non-negative number)", file=sys.stderr)
+                        sys.exit(1)
+                    i += 1
                 elif a == "--pricing-output" and i + 1 < len(args):
-                    pricing_output = float(args[i + 1]); i += 2
+                    try:
+                        pricing_output = _valid_price(float(args[i + 1]))
+                    except ValueError:
+                        print(f"Error: invalid price for --pricing-output: '{args[i + 1]}' (expected a finite, non-negative number)", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
+                elif a.startswith("--pricing-output="):
+                    val = a.split("=", 1)[1]
+                    try:
+                        pricing_output = _valid_price(float(val))
+                    except ValueError:
+                        print(f"Error: invalid price for --pricing-output: '{val}' (expected a finite, non-negative number)", file=sys.stderr)
+                        sys.exit(1)
+                    i += 1
                 else:
                     i += 1
             if not base_url or not default_model or not env_key:
@@ -2053,7 +2090,10 @@ def dispatch_command(cmd: str) -> None:
             # direction of a link persisted in flipped endpoint order.
             try:
                 from graphify.build import graph_has_legacy_ids as _legacy
-                _legacy_ids = _legacy(_raw.get("nodes", []))
+                from graphify.build import legacy_id_source_prefix as _legacy_prefix
+                _legacy_ids = _legacy(
+                    _raw.get("nodes", []), source_prefix=_legacy_prefix(gp)
+                )
             except Exception:
                 _legacy_ids = False
             _rows = consumed_graph_rows(dict(_raw, links=_raw.get("links", [])))

@@ -152,7 +152,14 @@ def test_read_errors_stay_stale(tmp_path, monkeypatch, failure):
         original_open = builtins.open
 
         def denied_source(file, *args, **kwargs):
-            if Path(file) == f:
+            # The hashing code opens the source through paths.os_long_path,
+            # which on win32 prepends the extended-length \\?\ marker so long
+            # paths survive open(). Comparing that prefixed string straight
+            # against f as plain Path objects never matches on Windows, so
+            # the mock never raised and this branch silently tested the
+            # readable-file case instead. Normalize both sides the same way
+            # the source itself does before comparing.
+            if paths.os_long_path(file) == paths.os_long_path(f):
                 raise PermissionError("unreadable fixture")
             return original_open(file, *args, **kwargs)
 

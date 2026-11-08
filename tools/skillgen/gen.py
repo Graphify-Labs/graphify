@@ -1244,6 +1244,34 @@ def _is_persisted_scan_options_fix_line(line: str) -> bool:
     )
 
 
+def _is_input_path_sidecar_fix_line(line: str) -> bool:
+    """Whether a line is part of the INPUT_PATH scan-path injection fix (#4762).
+
+    The monolith runbooks substituted the agent-supplied scan path straight into
+    Python string literals (``detect(Path('INPUT_PATH'))``, ``generate(..,
+    'INPUT_PATH', ..)``, ``detect_incremental(Path('INPUT_PATH'))``,
+    ``_stamped_manifest_files(.., Path('INPUT_PATH'))``), so a scan root whose
+    NAME carried a quote or ``$()`` broke out of the literal and ran as code.
+    Each code block now reads the resolved root from the trusted
+    ``graphify-out/.graphify_root`` that Step 1 writes through a quoted heredoc,
+    and the prose no longer tells the agent to substitute a path. Both the removed
+    v8 lines and the added trusted-root lines (code and prose) match here. The
+    detect/detect_incremental and manifest lines are covered by their own existing
+    predicates; this adds the read line, the generate calls, and the prose.
+    """
+    stripped = line.strip()
+    return (
+        "INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=" in stripped
+        or "result = detect(Path(INPUT_PATH), extra_excludes=" in stripped
+        or "result = detect_incremental(Path(INPUT_PATH), extra_excludes=" in stripped
+        or ", tokens, INPUT_PATH, suggested_questions=questions)" in stripped
+        or ", tokens, 'INPUT_PATH', suggested_questions=questions)" in stripped
+        or stripped.startswith("Replace INPUT_PATH with the actual path")
+        or stripped.startswith("INPUT_PATH is read from `graphify-out/.graphify_root`")
+        or "there is no path to substitute and a scan root containing quotes" in stripped
+    )
+
+
 def _is_worktree_visibility_note_line(line: str) -> bool:
     """Whether a line is the Step 9 working-tree note (#3941).
 
@@ -1407,6 +1435,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_watch_injection_fix_line,
     _is_graph_diff_direction_fix_line,
     _is_persisted_scan_options_fix_line,
+    _is_input_path_sidecar_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,

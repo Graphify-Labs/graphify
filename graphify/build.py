@@ -683,7 +683,7 @@ def _fold_node_aliases(node: dict) -> None:
     if not node.get("label") and isinstance(node.get("name"), str) and node["name"]:
         node["label"] = node.pop("name")
     if not node.get("source_file"):
-        for alias in ("file", "path", "filepath"):
+        for alias in ("file", "path", "filepath", "src"):
             val = node.get(alias)
             if isinstance(val, str) and val.strip():
                 node["source_file"] = node.pop(alias)
@@ -1434,7 +1434,37 @@ def _has_global_id(node: dict) -> bool:
     return meta.get("mcp_kind") in _MCP_GLOBAL_ID_KINDS
 
 
-def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: int = 300) -> bool:
+def legacy_id_source_prefix(graph_path: str | Path) -> str | None:
+    """The scan-root prefix that a graph's stored ``source_file`` values carry.
+
+    A build scoped to a subfolder from its parent (``graphify update sub``)
+    stores ``source_file`` relative to the build's cwd (``sub/pkg/mod.py``,
+    #2603) while every id is minted relative to the scan root (``pkg_mod``).
+    The relative ``.graphify_root`` marker next to the graph records exactly
+    that offset (``sub``). Returns it in normalized POSIX form, or None when
+    there is no offset: no marker, an absolute marker (the build anchored
+    source_file at the scan root itself), ``.``, or a path leaving the cwd.
+    """
+    try:
+        text = (Path(graph_path).parent / ".graphify_root").read_text(
+            encoding="utf-8-sig"
+        ).strip()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not text:
+        return None
+    text = text.replace("\\", "/")
+    if _is_abs(text):
+        return None
+    import posixpath
+    prefix = posixpath.normpath(text)
+    if prefix in (".", "") or prefix == ".." or prefix.startswith("../"):
+        return None
+    return prefix
+
+
+def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: int = 300,
+                         source_prefix: str | None = None) -> bool:
     """Whether a loaded graph still uses pre-#1504 node IDs (parent-dir / filename
     stem) rather than the full repo-relative path. Read-only consumers (query,
     serve) use this to nudge the user to rebuild, since they don't re-extract.
@@ -1446,9 +1476,16 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
     file-stem form and would otherwise false-positive. Nodes whose ID is global by
     construction (see ``_MCP_GLOBAL_ID_KINDS``) are skipped for the same reason.
     Returns True as soon as one file node's ID matches an OLD stem form but not the
-    canonical full-path form."""
+    canonical full-path form.
+
+    ``source_prefix`` (see :func:`legacy_id_source_prefix`) is the cwd->scan-root
+    offset stored source_file values carry; it is stripped before the stem is
+    derived, since ids never include it. Without it a fresh subfolder build reads
+    as legacy: ``sub/pkg/mod.py`` wants ``sub_pkg_mod``, and the real ``pkg_mod``
+    looks exactly like the old one-parent form."""
     from graphify.extractors.base import _file_stem
     _r = str(root) if root is not None else None
+    _pfx = (source_prefix.replace("\\", "/").rstrip("/") + "/") if source_prefix else None
     checked = 0
     for node in nodes:
         if not isinstance(node, dict):
@@ -1468,9 +1505,11 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
         if not nid or not isinstance(nid, str) or not sf:
             continue
         sf_norm = _norm_source_file(str(sf), _r) or str(sf)
-        rel = Path(sf_norm)
         if _is_abs(sf_norm):
             continue
+        if _pfx and sf_norm.startswith(_pfx):
+            sf_norm = sf_norm[len(_pfx):]
+        rel = Path(sf_norm)
         if not rel.name:
             continue  # source_file == scan root -> Path('.'), no file stem (#1618)
         new_stem = make_id(_file_stem(rel))

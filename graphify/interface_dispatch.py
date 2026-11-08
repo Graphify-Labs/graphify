@@ -126,6 +126,9 @@ def resolve_interface_dispatch(
             mnode = node_by_id.get(method_nid)
             if mnode is None or not declared_in(mnode, suffixes):
                 continue
+            # A constructor shares its type's name but implements nothing.
+            if (mnode.get("metadata") or {}).get("kind") == "constructor":
+                continue
             name = method_label(mnode)
             if name:
                 # A set, so the same method arriving on two `method` edges cannot

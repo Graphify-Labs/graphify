@@ -71,7 +71,8 @@ def _read_graph(graph_path: str) -> nx.Graph:
         data = {**data, "multigraph": True}
     try:
         from graphify.build import graph_has_legacy_ids as _legacy
-        if _legacy(data.get("nodes", [])):
+        from graphify.build import legacy_id_source_prefix as _legacy_prefix
+        if _legacy(data.get("nodes", []), source_prefix=_legacy_prefix(safe)):
             print(
                 "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
                 "rebuild with `graphify extract --force` for path-qualified IDs.",
@@ -863,7 +864,9 @@ def _pick_seeds(
     incidental collision cannot starve out the others. The per-token winners
     in `best_seed_by_term` are precomputed by `_score_query` (during the same
     traversal that produced `scored`) so this function no longer rescores the
-    graph per term — see #1445 and the `_score_query` docstring.
+    graph per term — see #1445 and the `_score_query` docstring. The #1766
+    label cap yields to this guarantee only when the term is absent from the
+    shared label, since a seeded same-label node then can't cover it (#5027).
 
     Coverage scaling in _score_nodes (#1602) now dampens a lone collision's
     exact tier on multi-term queries, which brings label-matching relevant
@@ -913,7 +916,7 @@ def _pick_seeds(
         # traversal, so `_pick_seeds` no longer rescoring the graph per term.
         # The per-label dedup cap also gates these additions, so the guarantee
         # cannot reintroduce a second copy of an already-seeded generic label
-        # (#1766).
+        # (#1766), unless the term is not in that label (#5027, see below).
         # With `term_order` (from `_score_query`), the guaranteed seeds follow the strength of each term's best
         # match, strongest first, so the seeds the renderer prints first are the strongest; without it, the
         # legacy sorted-term order.
@@ -923,8 +926,13 @@ def _pick_seeds(
             best_nid = best_seed_by_term[term]
             # Honor the same per-label cap so the per-term guarantee can't
             # reintroduce a second copy of an already-seeded generic label.
+            # The cap applies only when `term` is in the label: then the
+            # seeded twin matches `term` through that same label. Otherwise
+            # this node won `term` via its path/rationale/attributes, the
+            # twin may not match it at all, and dropping it would leave the
+            # term with no seed (#5027).
             key = _seed_label_key(best_nid)
-            if best_nid not in seeds and key not in seen_labels:
+            if best_nid not in seeds and (key not in seen_labels or term not in key):
                 seen_labels.add(key)
                 seeds.append(best_nid)
     return seeds
