@@ -97,6 +97,9 @@ def test_code_span_mentions_are_classified():
         None, ["App", "Services", "Mailer"])
     assert _code_span_mention("Mailer::send") == (None, ["Mailer", "send"])
     assert _code_span_mention("Mailer::send()") == (None, ["Mailer", "send"])
+    assert _code_span_mention("App\\Services\\DB") == (None, ["App", "Services", "DB"])
+    assert _code_span_mention("App\\API") == (None, ["App", "API"])
+    assert _code_span_mention("Http::GET()") == (None, ["Http", "GET"])
     # `Foo::CONST` and `Foo::class` have no node to land on, and a bare
     # namespace root (`App\`) names no symbol at all.
     for span in ("Foo::CONST", "Foo::class", "App\\", "C:\\Users\\me"):
