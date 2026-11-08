@@ -420,9 +420,10 @@ def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
     # that is only a namespace root (``App\``) is dropped: it names no symbol.
     m = _MD_NS_MENTION_RE.match(text)
     if m:
-        body = text[:-2] if text.endswith("()") else text
+        is_call = text.endswith("()")
+        body = text[:-2] if is_call else text
         parts = re.split(r"::|\\", body)
-        if _MD_NS_NON_SYMBOL_RE.match(parts[-1]):
+        if not is_call and body.endswith("::" + parts[-1]) and _MD_NS_NON_SYMBOL_RE.match(parts[-1]):
             return None
         return None, parts
     return None
