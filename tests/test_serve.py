@@ -2166,3 +2166,87 @@ def test_an_exact_spelling_does_not_break_a_tie_between_two_files():
     nid, err = _resolve_single_node(G, "CheckHealth")
     assert nid is None
     assert err.startswith("Ambiguous:"), err
+
+
+# --- schema/namespace-qualified labels (#5080) ---
+
+def _qualified_graph() -> nx.Graph:
+    """A SQL function behind a schema prefix, plus nodes whose whole label is one query token."""
+    G = nx.Graph()
+    for i in range(4):
+        G.add_node(f"migrations/04{i}_widget_sweep.sql::public.sweep_widget_state()",
+                   label="public.sweep_widget_state()", norm_label="public.sweep_widget_state()",
+                   source_file=f"migrations/04{i}_widget_sweep.sql", community=0)
+    G.add_node("consts_sweep", label="SWEEP", norm_label="sweep", source_file="src/consts.py", community=0)
+    G.add_node("consts_widget", label="WIDGET", norm_label="widget", source_file="src/consts.py", community=0)
+    G.add_node("types_state", label="State", norm_label="state", source_file="src/types.py", community=0)
+    for i in range(6):
+        G.add_node(f"noise_{i}", label=f"unrelated_{i}", source_file=f"src/noise{i}.py", community=1)
+    return G
+
+
+def test_qualified_label_beats_a_whole_label_token_collision():
+    """`query sweep_widget_state` must seed on `public.sweep_widget_state()` (#5080).
+
+    Every one of `SWEEP`, `WIDGET` and `State` exactly equals a query token while
+    the function only prefix/substring-matches them, so without the qualified
+    tier the three collisions take the seed slots and the function never gets
+    traversed — whereas `explain sweep_widget_state` lists it. The user does not
+    type the schema, so the qualifier cannot be part of the match.
+    """
+    G = _qualified_graph()
+    scored = _score_nodes(G, ["sweep_widget_state"])
+    target = "migrations/040_widget_sweep.sql::public.sweep_widget_state()"
+
+    assert scored[0][1] == target
+    # All four migrations define the same function, so they tie; what matters is
+    # that the collisions come after them rather than taking the seed slots.
+    assert all(nid.startswith("migrations/") for _s, nid in scored[:4])
+    assert scored[4][0] < scored[0][0], "the qualified match must strictly outrank the token collisions"
+
+    text = _query_graph_text(G, "sweep_widget_state", token_budget=4000)
+    assert "public.sweep_widget_state()" in text
+
+
+@pytest.mark.parametrize("question", ["public.sweep_widget_state", "public.sweep_widget_state()"])
+def test_typing_the_qualifier_still_works(question):
+    """Pinning the qualifier keeps resolving — and lands on the exact tier, not the qualified one."""
+    G = _qualified_graph()
+    scored = _score_nodes(G, [question])
+    assert scored[0][1].startswith("migrations/040_widget_sweep.sql::public.sweep_widget_state()")
+    assert _find_node(G, question)
+
+
+def test_qualified_tier_stays_below_an_exact_label():
+    """A label equal to the query always wins over a qualified label ending in it."""
+    G = nx.Graph()
+    G.add_node("qualified", label="public.sweep()", norm_label="public.sweep()", source_file="m.sql", community=0)
+    G.add_node("plain", label="sweep", norm_label="sweep", source_file="s.py", community=0)
+    scored = _score_nodes(G, ["sweep"])
+    assert scored[0][1] == "plain"
+
+
+def test_qualified_tier_ignores_a_partial_tail():
+    """Only a tail equal to the whole query counts; a longer tail must not."""
+    G = nx.Graph()
+    G.add_node("long", label="public.sweep_state_machine()", norm_label="public.sweep_state_machine()",
+               source_file="m.sql", community=0)
+    G.add_node("other", label="sweep", norm_label="sweep", source_file="s.py", community=0)
+    by_id = {nid: s for s, nid in _score_nodes(G, ["sweep"])}
+    assert by_id["other"] > 0
+    assert by_id["long"] < by_id["other"]
+
+
+def test_qualified_tail_split():
+    from graphify.serve import _qualified_tail
+
+    assert _qualified_tail("public.sweep_widget_state()") == (1, "sweep widget state")
+    assert _qualified_tail("Index.ClientLive") == (1, "clientlive")
+    assert _qualified_tail("fmt.Println") == (1, "println")
+    assert _qualified_tail("Widget::sweep") == (1, "sweep")
+    # Not names: file extensions, numbers, plain snake_case.
+    assert _qualified_tail("lib/foo/bar.py") == (2, "bar")
+    assert _qualified_tail("3.14") is None
+    assert _qualified_tail("HTTPClient") is None
+    assert _qualified_tail("sweep_widget_state") is None
+    assert _qualified_tail("") is None

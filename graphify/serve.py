@@ -351,6 +351,84 @@ _SOURCE_MATCH_BONUS = 0.5
 _RATIONALE_MATCH_BONUS = 0.75
 _ATTRIBUTE_MATCH_BONUS = 0.75
 
+# A label may carry a leading qualifier that the query never repeats: a SQL
+# function is `public.sweep_widget_state()`, a namespaced symbol is
+# `fmt.Println`. The full-query tier below only fires on equal/prefix, so the
+# qualifier alone defeats it and the per-token tiers take over — where an
+# unrelated node whose *whole* label is one of the query's tokens outranks the
+# intended one (#5080). Keep the bonus below the exact tier (the query is not
+# the label) but well above the per-token exact tier it has to beat, and scale
+# it by how small the qualifier is so `public.f()` (one token) is trusted more
+# than `a.b.c.d.f()`.
+_QUALIFIED_MATCH_BONUS = 500.0
+_QUALIFIED_MAX_TOKENS = 4
+# Separators that start a new segment of a qualified name.
+_QUALIFIER_SEPARATORS = r"\.{1,}|::|/|\\|:|@"
+# `sweep_widget_state()` and `sweep widget state` are the same name; strip these
+# before comparing. `_search_tokens` already drops them from the inside.
+_NAME_EDGES = "()[]{}"
+
+_CAMEL_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+# Only a separator or a lower->upper transition below the first character can
+# leave a qualifier behind; plain `snake_case_name` cannot, so reject it early.
+_QUALIFIER_MAYBE_RE = re.compile(r"[.::/\\:@]|[a-z0-9][A-Z]")
+# File-extension segments (`.py`, `.md`) are not qualifiers: the tail of
+# `lib/foo/bar.py` is `bar`, not `py`. Numbers are not names either (`3.14`).
+_FILE_SUFFIX_RE = re.compile(r"^(?:py|pyi|js|jsx|ts|tsx|mjs|cjs|go|rs|java|kt|kts|c|h|cc|cpp|hpp|cs|rb|php|swift|scala|lua|sh|bash|sql|md|rst|txt|ya?ml|toml|json|ini|cfg|html?|css|scss|vue|svelte|ex|exs|erl|hs|ml|clj|dart|proto|graphql)$")
+
+
+def _is_name_segment(segment: str) -> bool:
+    """True if `segment` names something rather than being an extension or a number."""
+    return bool(segment) and not segment.isdigit() and not _FILE_SUFFIX_RE.match(segment)
+
+
+def _qualified_tail(norm_label: str) -> tuple[int, str] | None:
+    """Split a label into `(qualifier_token_count, tail_key)`, or `None` if unqualified.
+
+    `public.sweep_widget_state()` -> `(1, "sweep widget state")`: the tail is the
+    part a query would actually name. Segments are split on punctuation; a
+    qualifier can also be CamelCase, so `Index.ClientLive` -> `(1, "client live")`.
+    """
+    label = (norm_label or "").strip()
+    # Cheap reject first: without a separator and without an inner capital there
+    # is nothing to split. This is the common case on a whole-graph pass, and it
+    # keeps the regex work off every plain identifier.
+    if not _QUALIFIER_MAYBE_RE.search(label):
+        return None
+    parts = [p for p in re.split(_QUALIFIER_SEPARATORS, label) if p]
+    # Drop trailing non-name segments (`lib/foo/bar.py` -> `lib`, `foo`, `bar`).
+    while parts and not _is_name_segment(parts[-1]):
+        parts.pop()
+    if not parts:
+        return None
+    tail = parts[-1]
+    if len(parts) > 1:
+        head_tokens = len(_search_tokens(" ".join(parts[:-1])))
+        if head_tokens:
+            return head_tokens, _name_key(tail)
+    # No separator: only a CamelCase qualifier can still leave one. Require at
+    # least two words and an inner capital, so all-lower snake_case names are
+    # left alone (they are already matched as one token run).
+    words = _CAMEL_WORD_RE.findall(tail)
+    if len(words) < 2 or not any(w[:1].isupper() for w in words[1:]):
+        return None
+    head_tokens = len(_search_tokens(" ".join(words[:-1])))
+    if not head_tokens:
+        return None
+    return head_tokens, _name_key(words[-1])
+
+
+def _name_key(text: str) -> str:
+    """Token-joined form of an already-normalized name, for comparing two names.
+
+    `norm_label` has been lowercased and had its diacritics stripped already, so
+    splitting on non-alphanumerics is all `_search_tokens` would add here — and
+    skipping the per-call Unicode normalization matters, this runs on the whole
+    graph.
+    """
+    stripped = str(text or "").strip(_NAME_EDGES + " ").lower()
+    return " ".join(re.findall(r"[^\W_]+", stripped))
+
 
 def _flatten_attr_text(val, parts: list[str]) -> None:
     if isinstance(val, dict):
@@ -712,6 +790,17 @@ def _score_query(
                 or label_tokens.startswith(joined)
             ):
                 score += _PREFIX_MATCH_BONUS * 10 * joined_w
+            else:
+                # Qualified name: the label is `<qualifier>.<rest>` (or a
+                # CamelCase variant) and the query names the rest. Ranking
+                # below the exact tier — the label is not what was typed — but
+                # above what the per-token tiers can add up to for a node whose
+                # whole label is one query token (#5080).
+                qualified = _qualified_tail(norm_label)
+                if qualified is not None and qualified[0] <= _QUALIFIED_MAX_TOKENS:
+                    qualifier_tokens, tail_key = qualified
+                    if tail_key and tail_key == joined:
+                        score += _QUALIFIED_MATCH_BONUS * joined_w / qualifier_tokens
         # Term coverage (#1602): scale the per-term exact/prefix tiers by the
         # squared fraction of query terms the node's LABEL matches, so a lone
         # generic word that happens to equal a short label (query term "home"
