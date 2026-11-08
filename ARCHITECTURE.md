@@ -79,6 +79,11 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+Validation reports list/object enum values as schema errors. Graph assembly
+repairs structured `file_type` values to `concept` and structured `confidence`
+values to `INFERRED`, without fabricating a confidence score, so malformed
+semantic fields cannot abort an otherwise usable build.
+
 JS/TS calls through default imports of directly default-exported object literals reuse existing static method nodes.
 Members match the imported module path, exact label and source line. Lexically shadowed receivers, constructor calls,
 spread, computed keys, accessors, duplicate keys and dynamic aliases are not inferred. These files bypass the per-file
