@@ -383,16 +383,19 @@ def to_wiki(
     _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
 
     def _unique_slug(base: str) -> str:
-        # Fold case in the collision check: two labels differing only by case
+        # Use the same Unicode case fold as the orphan sweep below. lower()
+        # keeps Straße/STRASSE distinct but casefold() does not, so allocating
+        # both would let the sweep delete one of this run's current articles.
+        # Two labels differing only by case
         # (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
         # filesystems (macOS/APFS, Windows/NTFS), so they must dedup against each
         # other while still emitting the original-case filename.
         slug = base
         n = 2
-        while slug.lower() in used_slugs:
+        while slug.casefold() in used_slugs:
             slug = f"{base}_{n}"
             n += 1
-        used_slugs.add(slug.lower())
+        used_slugs.add(slug.casefold())
         return slug
 
     # First pass: assign every article its slug before rendering any body, so the

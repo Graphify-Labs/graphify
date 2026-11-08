@@ -151,6 +151,10 @@ See `SECURITY.md` for the full threat model.
 
 ## Testing
 
+Wiki slugs are unique under Unicode case folding, matching the orphan sweep's
+filename comparison. Simultaneous community and hub labels such as `Straße`
+and `STRASSE` receive distinct filenames so cleanup preserves both pages.
+
 `analyze.suggest_questions()` interleaves candidates across question types before
 applying its result limit (seven by default). This keeps ambiguous relationships
 from hiding bridge, inferred-relationship, isolation, and low-cohesion signals.
