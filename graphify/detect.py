@@ -3057,12 +3057,20 @@ def _mtime_may_hide_a_rewrite(current_mtime: float, stored: dict) -> bool:
     if not isinstance(seen, (int, float)):
         return False
     delta = float(seen) - float(current_mtime)
-    if delta < 0:
-        return False  # file is newer than the row; the mtime check already fired
     # Derive granularity from the timestamp: a whole-second mtime means the
     # filesystem cannot separate writes inside that second.
     coarse = float(current_mtime).is_integer()
-    return delta < (_MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S)
+    window = _MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S
+    if delta < 0:
+        # The row was stamped a hair BEFORE the mtime it describes (#5036). That
+        # is not "the file is newer": the caller only gets here when the stored
+        # and current mtime are equal, and ``seen`` comes from time.time() while
+        # mtime comes from the filesystem, so either clock can come out a few
+        # hundred nanoseconds the other way. Same-tick either way, so still
+        # worth the MD5. A row stamped a full window before the mtime is from an
+        # earlier run and stays on the stat-only fastpath.
+        return -delta < window
+    return delta < window
 
 
 def classify_manifest_files(
