@@ -723,6 +723,10 @@ def _fold_confidence(obj: dict) -> None:
       model-drifted string confidences re-warns on every command forever,
       identically to the numeric gap above.
 
+    Structured JSON values (lists/objects) carry no usable confidence. They
+    fall back to ``INFERRED`` without inventing a numeric score, just like
+    an unrecognized nonnumeric string, before validation can hash them.
+
     ``confidence_score`` itself is NOT popped in either case: it is a
     legitimate companion field the edge loop sanitizes and to_json
     round-trips.
@@ -743,6 +747,8 @@ def _fold_confidence(obj: dict) -> None:
                 except ValueError:
                     pass
             obj["confidence"] = "INFERRED"
+    elif isinstance(_conf, (list, dict)):
+        obj["confidence"] = "INFERRED"
     if not obj.get("confidence") and obj.get("confidence_score") is not None:
         obj["confidence"] = "INFERRED"
 
@@ -1622,7 +1628,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if node.get("file_type") in (None, ""):
             node["file_type"] = "concept"
         ft = node.get("file_type", "")
-        if ft and ft not in {"code", "document", "paper", "image", "rationale", "concept"}:
+        if not isinstance(ft, str):
+            node["file_type"] = "concept"
+        elif ft and ft not in {"code", "document", "paper", "image", "rationale", "concept"}:
             node["file_type"] = _FILE_TYPE_SYNONYMS.get(ft, "concept")
 
     # Canonicalize hyperedge member lists (#1561): producers sometimes key the
