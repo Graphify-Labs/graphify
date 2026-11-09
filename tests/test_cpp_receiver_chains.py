@@ -118,7 +118,7 @@ void Run(std::unique_ptr<action>& x) { x->Execute(); }
 def test_explicit_this_chain_and_implicit_field(tmp_path, expression):
     header = HEADER + "\nstruct Holder { app::SmartClient client; void Run(); };"
     _, result = _extract(tmp_path, f"void Holder::Run() {{ {expression}; }}", header)
-    assert _calls(result, "Holder::Run()") == [("app::Smart", ".Execute()", "INFERRED")]
+    assert _calls(result, ".Run()") == [("app::Smart", ".Execute()", "INFERRED")]
 
 
 def test_forward_declaration_is_not_a_competing_definition(tmp_path):
