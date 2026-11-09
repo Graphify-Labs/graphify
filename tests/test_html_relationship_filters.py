@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -68,6 +69,31 @@ def test_edge_tooltip_evidence_cannot_inject_html_or_script(tmp_path):
     # JSON decoding, while the HTML script container must remain escaped.
     assert "<img" in _raw(html, "RAW_EDGES")[0]["title"]
     assert "&lt;img" not in _raw(html, "RAW_EDGES")[0]["title"]
+
+
+@pytest.mark.parametrize("value", [Path("example.cpp"), {"a", "b"}, {1: "one", "two": 2}, object()])
+def test_unsupported_tooltip_metadata_does_not_abort_export(tmp_path, value):
+    graph = nx.Graph()
+    metadata = {"value": value}
+    graph.add_edge("a", "b", relation="calls", confidence="EXTRACTED",
+                   source_file="a.cpp", source_location="L9", metadata=metadata)
+    target = tmp_path / "unsupported.html"
+    assert to_html(graph, {}, str(target), learning_overlay={})
+    title = _raw(target.read_text(encoding="utf-8"), "RAW_EDGES")[0]["title"]
+    assert title == "calls [EXTRACTED]\na.cpp:L9\nMetadata: unavailable"
+    assert graph.edges["a", "b"]["metadata"] is metadata
+    assert metadata["value"] is value
+
+
+def test_circular_tooltip_metadata_does_not_abort_export(tmp_path):
+    metadata = {}
+    metadata["self"] = metadata
+    graph = nx.Graph()
+    graph.add_edge("a", "b", relation="calls", metadata=metadata)
+    target = tmp_path / "circular.html"
+    assert to_html(graph, {}, str(target), learning_overlay={})
+    assert "Metadata: unavailable" in _raw(target.read_text(encoding="utf-8"), "RAW_EDGES")[0]["title"]
+    assert graph.edges["a", "b"]["metadata"]["self"] is metadata
 
 
 def test_filter_logic_handles_composition_empty_results_and_reset(tmp_path):

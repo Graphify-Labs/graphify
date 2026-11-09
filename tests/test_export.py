@@ -1476,7 +1476,7 @@ class MockDataSet {{
 const vis = {{
   DataSet: MockDataSet,
   Network: class {{
-    constructor() {{}}
+    constructor() {{ this.interactionHandler = {{}}; }}
     once() {{}}
     on() {{}}
     getConnectedNodes() {{ return []; }}
@@ -1582,7 +1582,7 @@ const window = { innerWidth: 1280, innerHeight: 800 };
 class MockDataSet { constructor(items) { this.map = new Map(items.map(it => [it.id, it])); }
   get(id) { return this.map.get(id); }
   update(items) { items.forEach(item => this.map.set(item.id, {...this.map.get(item.id), ...item})); } }
-const vis = { DataSet: MockDataSet, Network: class { once() {} on() {} focus() {} selectNodes() {}
+const vis = { DataSet: MockDataSet, Network: class { constructor() { this.interactionHandler = {}; } once() {} on() {} focus() {} selectNodes() {}
   getSelectedNodes() { return []; } unselectAll() {}
   getConnectedEdges(id) { return RAW_EDGES.map((e, i) => e.from === id || e.to === id ? i : -1).filter(i => i >= 0); }
   getConnectedNodes(id) { return RAW_NODES.map(n => n.id).filter(x => x !== id); } } };
@@ -1688,6 +1688,42 @@ console.log(JSON.stringify({unspecified, calls, selected, hover:hoveredNodeId,
 """)
     assert result == {"unspecified": ["a", "b"], "calls": ["b", "c"], "selected": [],
                       "hover": None, "cursor": "default", "empty": []}
+
+
+def test_to_html_filters_dismiss_visible_and_pending_network_tooltips(tmp_path):
+    import networkx as nx
+
+    graph = nx.Graph()
+    graph.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
+    out = tmp_path / "popup.html"
+    to_html(graph, {0: ["a", "b"]}, str(out), learning_overlay={})
+    result = _run_sidebar_harness(out.read_text(encoding="utf-8"), """
+(async () => {
+  const popup = {hidden: false, hide() { this.hidden = true; }};
+  let staleTimerRan = false;
+  Object.assign(network.interactionHandler, {
+    popup, popupObj: {id: 0},
+    popupTimer: setTimeout(() => { staleTimerRan = true; popup.hidden = false; }, 10)
+  });
+  confidenceFilter.value = JSON.stringify('INFERRED');
+  confidenceFilter.listeners.change();
+  const afterFilter = popup.hidden;
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const afterTimer = popup.hidden;
+  confidenceFilter.value = '';
+  confidenceFilter.listeners.change();
+  const restored = !edgesDS.get(0).hidden;
+  // A cleared popup target allows the pinned library to show the same edge again.
+  const canReopen = network.interactionHandler.popupObj === undefined;
+  popup.hidden = false;
+  network.interactionHandler.popupObj = {id: 'a'};
+  toggleAllCommunities(true);
+  console.log(JSON.stringify({afterFilter,afterTimer,staleTimerRan,restored,canReopen,
+    afterCommunity:popup.hidden, clearedTimer:network.interactionHandler.popupTimer === undefined}));
+})();
+""")
+    assert result == {"afterFilter": True, "afterTimer": True, "staleTimerRan": False,
+                      "restored": True, "canReopen": True, "afterCommunity": True, "clearedTimer": True}
 
 
 def test_to_html_legend_label_escaped_once_without_title(tmp_path):

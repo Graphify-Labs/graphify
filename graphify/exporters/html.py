@@ -430,6 +430,12 @@ function updateGraphFilters() {{
   const visible = graphVisibility(RAW_NODES, RAW_EDGES, hiddenCommunities,
     relationFilter.value ? JSON.parse(relationFilter.value) : null,
     confidenceFilter.value ? JSON.parse(confidenceFilter.value) : null);
+  // shortcut: pinned vis-network 9.1.6 has no public popup reset; recheck on upgrade.
+  const interaction = network.interactionHandler;
+  clearTimeout(interaction.popupTimer);
+  interaction.popupTimer = undefined;
+  interaction.popupObj = undefined;
+  if (interaction.popup) interaction.popup.hide();
   nodesDS.update(RAW_NODES.map(n => ({{id: n.id, hidden: !visible.nodes.has(n.id), physics: visible.nodes.has(n.id)}})));
   edgesDS.update(RAW_EDGES.map((e, i) => ({{id: i, hidden: !visible.edges.has(i), physics: visible.edges.has(i)}})));
   if (!visible.nodes.has(hoveredNodeId)) {{
@@ -749,7 +755,11 @@ def to_html(
         if data.get("source_file"):
             evidence.append(f"{data['source_file']}:{data.get('source_location') or '?'}")
         if isinstance(data.get("metadata"), dict) and data["metadata"]:
-            evidence.append("Metadata: " + json.dumps(data["metadata"], sort_keys=True, ensure_ascii=False))
+            try:
+                metadata_text = json.dumps(data["metadata"], sort_keys=True, ensure_ascii=False)
+            except (TypeError, ValueError, RecursionError):
+                metadata_text = "unavailable"
+            evidence.append("Metadata: " + metadata_text)
         vis_edges.append({
             "from": true_src,
             "to": true_tgt,

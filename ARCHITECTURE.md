@@ -86,6 +86,9 @@ clearing them restores isolated nodes too. They change the displayed datasets,
 not the source graph or its parallel relationship records. Edge tooltips retain
 source locations and metadata as text. Conditional metadata describes static
 source evidence, not a selected build configuration or observed execution.
+Unsupported optional metadata is marked unavailable without aborting export or
+altering graph data. Filter changes cancel pending tooltips and dismiss visible
+ones, clearing their hover target so the same item can show a fresh tooltip later.
 
 Validation reports list/object enum values as schema errors. Graph assembly
 repairs structured `file_type` values to `concept` and structured `confidence`
