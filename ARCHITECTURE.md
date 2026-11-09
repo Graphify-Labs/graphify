@@ -150,9 +150,18 @@ recognized structurally; feature expressions are never evaluated. Unrelated
 same-name files, multiple definitions, templates/specializations, nested/local or
 anonymous scopes, and other conditional declarations/includes stay separate.
 A common third file including both declarations
-does not establish equivalence in this pass. Member overload/signature identity
-and non-sibling member declaration/definition folding remain unsupported.
-AST cache schema 44 retires records without class-kind and exact include proofs;
+does not establish equivalence in this pass.
+Non-template members with empty parameter lists also fold a unique declaration/body pair
+under one proven owner when literal return type, return pointer/reference shape,
+cv/ref qualifiers and noexcept spelling match, backed by the same exact include
+proof. The declaration keeps its ID and source site, and the body site remains
+in `definition_file` / `definition_location`; body calls are rewired to that ID.
+Persisted `_cpp_member_records` retain unsupported or multiple syntax records so
+overload families, normalized-name collisions, multiple bodies, conditional
+members, pure/defaulted/deleted methods and uncertain signatures do not fold.
+Parameter-bearing methods, equivalent type aliases/spellings, templates and
+general overload resolution remain outside this repair.
+AST cache schema 47 retires records without class/member facts and exact include proofs;
 rebuild existing graphs with `graphify extract . --code-only --force`.
 
 ## Adding a new language extractor

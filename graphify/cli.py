@@ -4991,6 +4991,7 @@ def dispatch_command(cmd: str) -> None:
                         for _marker in (
                             "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
                             "_cpp_class_kind", "_cpp_fields", "_cpp_reconcile_files",
+                            "_cpp_member_records",
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",

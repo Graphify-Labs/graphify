@@ -3678,6 +3678,37 @@ def _cpp_reconciliation_paths(
                     if (root / sf).is_file()]
 
 
+def _cpp_exact_includes(resolution_nodes: list[dict], edges: list[dict], root: Path) -> dict[str, set[str]]:
+    """Build equivalence evidence only from exact unconditional in-corpus includes."""
+    by_id = {n["id"]: n for n in resolution_nodes}
+    includes: dict[str, set[str]] = {}
+    for edge in edges:
+        if (edge.get("relation") != "imports" or not edge.get("_cpp_include_proof")
+                or (edge.get("metadata") or {}).get("cpp_conditions")):
+            continue
+        source = _cpp_source_key(edge.get("source_file", ""), root)
+        target_file = edge.get("target_file") or by_id.get(edge.get("target"), {}).get("source_file")
+        if source and target_file:
+            target = _cpp_source_key(target_file, root)
+            if target:
+                includes.setdefault(source, set()).add(target)
+
+    return includes
+
+
+def _cpp_include_path(includes: dict[str, set[str]], start: str, target: str) -> list[str]:
+    pending = [(start, [start])]
+    visited = {start}
+    for current, path in pending:
+        if current == target:
+            return path
+        for following in sorted(includes.get(current, ())):
+            if following not in visited:
+                visited.add(following)
+                pending.append((following, [*path, following]))
+    return []
+
+
 def _merge_cpp_forward_classes(
     nodes: list[dict], edges: list[dict], raw_calls: list[dict],
     resolution_nodes: list[dict], context_edges: list[dict], root: Path,
@@ -3688,30 +3719,7 @@ def _merge_cpp_forward_classes(
     Templates, nested/local/anonymous and conditional declarations stay separate;
     guessed include-path fallback is not equivalence evidence.
     """
-    by_id = {n["id"]: n for n in resolution_nodes}
-    includes: dict[str, set[str]] = {}
-    for edge in [*edges, *context_edges]:
-        if (edge.get("relation") != "imports" or not edge.get("_cpp_include_proof")
-                or (edge.get("metadata") or {}).get("cpp_conditions")):
-            continue
-        source = _cpp_source_key(edge.get("source_file", ""), root)
-        target_file = by_id.get(edge.get("target"), {}).get("source_file") or edge.get("target_file")
-        if source and target_file:
-            target = _cpp_source_key(target_file, root)
-            if target:
-                includes.setdefault(source, set()).add(target)
-
-    def proof(start: str, target: str) -> list[str]:
-        pending = [(start, [start])]
-        visited = {start}
-        for current, path in pending:
-            if current == target:
-                return path
-            for following in sorted(includes.get(current, ())):
-                if following not in visited:
-                    visited.add(following)
-                    pending.append((following, [*path, following]))
-        return []
+    includes = _cpp_exact_includes(resolution_nodes, [*edges, *context_edges], root)
 
     groups: dict[str, list[dict]] = {}
     for node in resolution_nodes:
@@ -3738,7 +3746,8 @@ def _merge_cpp_forward_classes(
             if declaration["_cpp_class_kind"] != "forward":
                 continue
             declaration_file = _cpp_source_key(declaration["source_file"], root)
-            path = proof(definition_file, declaration_file) or proof(declaration_file, definition_file)
+            path = (_cpp_include_path(includes, definition_file, declaration_file)
+                    or _cpp_include_path(includes, declaration_file, definition_file))
             if not path:
                 continue
             remap[declaration["id"]] = keeper["id"]
@@ -3757,6 +3766,77 @@ def _merge_cpp_forward_classes(
                 edge[endpoint] = remap.get(edge.get(endpoint), edge.get(endpoint))
         for call in raw_calls:
             call["caller_nid"] = remap.get(call.get("caller_nid"), call.get("caller_nid"))
+
+
+def _merge_cpp_member_declarations(
+    nodes: list[dict], edges: list[dict], raw_calls: list[dict],
+    resolution_nodes: list[dict], context_edges: list[dict], root: Path,
+) -> None:
+    """Unify only unique, exactly matching zero-argument members of one proven owner."""
+    includes = _cpp_exact_includes(resolution_nodes, [*edges, *context_edges], root)
+    owners: dict[str, list[dict]] = {}
+    members: dict[str, list[dict]] = {}
+    for node in resolution_nodes:
+        if node.get("_callable_class") and node.get("_cpp_qualified"):
+            owners.setdefault(node["_cpp_qualified"], []).append(node)
+        for record in node.get("_cpp_member_records", []):
+            members.setdefault(record["qualified"], []).append(node)
+    owned = {(e.get("source"), e.get("target")) for e in [*edges, *context_edges]
+             if e.get("relation") == "method"}
+    fresh_objects = {id(n) for n in nodes}
+    remap = {}
+    merged_owners = {}
+    for qualified, group in members.items():
+        if "::" not in qualified or len(group) != 2:
+            continue
+        scope, name = qualified.rsplit("::", 1)
+        classes = owners.get(scope, [])
+        if len(classes) != 1 or classes[0].get("_cpp_class_kind") != "definition":
+            continue
+        owner = classes[0]
+        if any(len(n["_cpp_member_records"]) != 1
+               or not n["_cpp_member_records"][0].get("signature")
+               or (n.get("metadata") or {}).get("cpp_conditions") for n in group):
+            continue
+        declarations = [n for n in group if n["_cpp_member_records"][0]["kind"] == "declaration"]
+        definitions = [n for n in group if n["_cpp_member_records"][0]["kind"] == "definition"]
+        if len(declarations) != 1 or len(definitions) != 1:
+            continue
+        declaration, definition = declarations[0], definitions[0]
+        if (id(declaration) not in fresh_objects or id(definition) not in fresh_objects
+                or (owner["id"], declaration["id"]) not in owned
+                or declaration["_cpp_member_records"][0]["signature"] != definition["_cpp_member_records"][0]["signature"]):
+            continue
+        declaration_file = _cpp_source_key(declaration["source_file"], root)
+        definition_file = _cpp_source_key(definition["source_file"], root)
+        path = _cpp_include_path(includes, definition_file, declaration_file)
+        if not path:
+            continue
+        remap[definition["id"]] = declaration["id"]
+        merged_owners[declaration["id"]] = owner["id"]
+        declaration["definition_file"] = definition_file
+        declaration["definition_location"] = definition.get("source_location", "")
+        declaration["_cpp_reconcile_files"] = sorted(set(path) | set(owner.get("_cpp_reconcile_files", [])))
+    if remap:
+        by_id = {n["id"]: n for n in resolution_nodes}
+        member_names: dict[str, set[str]] = {}
+        for owner_id, member_id in owned:
+            label = by_id.get(member_id, {}).get("label", "")
+            if label.startswith(".") and label.endswith("()"):
+                member_names.setdefault(owner_id, set()).add(label[1:-2])
+        nodes[:] = [n for n in nodes if n["id"] not in remap]
+        for edge in edges:
+            for endpoint in ("source", "target"):
+                edge[endpoint] = remap.get(edge.get(endpoint), edge.get(endpoint))
+        for call in raw_calls:
+            for key in ("caller_nid", "evidence_owner"):
+                if key in call:
+                    call[key] = remap.get(call[key], call[key])
+            owner_id = merged_owners.get(call.get("caller_nid"))
+            if (owner_id and not call.get("is_member_call")
+                    and call.get("callee") in member_names.get(owner_id, ())):
+                call["is_member_call"] = True
+                call["receiver"] = "this"
 
 
 def _decldef_class_stem(source_file: str) -> tuple[str, str] | None:
@@ -3862,6 +3942,8 @@ def _merge_decl_def_classes(
         if len(group) < 2:
             continue
         if nid in cpp_separate:
+            continue
+        if any(record.get("zero_args") for n in group for record in n.get("_cpp_member_records", [])):
             continue
         # The distinct source files of this collision must form a clean sibling
         # header/impl set with exactly one header. Each file must parse as a

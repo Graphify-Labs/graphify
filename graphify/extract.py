@@ -143,8 +143,11 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _match_tsconfig_alias,
     _merge_decl_def_classes,
     _merge_cpp_forward_classes,
+    _merge_cpp_member_declarations,
     _cpp_reconciliation_paths,
     _cpp_source_key,
+    _cpp_exact_includes,
+    _cpp_include_path,
     _merge_go_package_types,
     _node_disambiguation_source_key,
     _package_entry_candidates,
@@ -11458,11 +11461,24 @@ def extract(
     # exact-identity candidates from the caller's permitted unchanged corpus.
     cpp_names = {n.get("_cpp_qualified") for n in all_nodes
                  if n.get("_cpp_class_kind") in {"forward", "definition"}}
+    member_files: dict[str, set[str]] = {}
+    for node in all_nodes:
+        if node.get("_cpp_member_records"):
+            member_files.setdefault(node.get("_cpp_qualified", ""), set()).add(
+                _cpp_source_key(node.get("source_file", ""), root))
+    includes = _cpp_exact_includes([*all_nodes, *(resolution_context_nodes or [])],
+                                  [*all_edges, *(resolution_context_edges or [])], root) if member_files else {}
     present = {_cpp_source_key(p, root) for p in paths}
     candidates = {_cpp_source_key(n.get("source_file", ""), root)
                   for n in resolution_context_nodes or []
                   if n.get("_cpp_class_kind") in {"forward", "definition"}
                   and n.get("_cpp_qualified") in cpp_names}
+    for node in resolution_context_nodes or []:
+        if node.get("_cpp_member_records"):
+            candidate = _cpp_source_key(node.get("source_file", ""), root)
+            if any(_cpp_include_path(includes, source, candidate) or _cpp_include_path(includes, candidate, source)
+                   for source in member_files.get(node.get("_cpp_qualified", ""), ())):
+                candidates.add(candidate)
     additions = [root / sf for sf in sorted(candidates - present - {""}) if (root / sf).is_file()]
     if additions:
         expanded = _cpp_reconciliation_paths(paths + additions, resolution_context_nodes or [], root)
@@ -12207,6 +12223,13 @@ def extract(
         fresh_ids = {n["id"] for n in all_nodes}
         resolution_nodes = all_nodes + [n for n in resolution_context_nodes
                                         if n.get("id") not in fresh_ids]
+    else:
+        resolution_nodes = all_nodes
+    _merge_cpp_member_declarations(all_nodes, all_edges, all_raw_calls, resolution_nodes,
+                                   resolution_context_edges or [], root)
+    if resolution_context_nodes:
+        fresh_ids = {n["id"] for n in all_nodes}
+        resolution_nodes = all_nodes + [n for n in resolution_context_nodes if n.get("id") not in fresh_ids]
     else:
         resolution_nodes = all_nodes
     for n in resolution_nodes:

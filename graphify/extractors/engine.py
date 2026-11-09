@@ -3227,6 +3227,8 @@ def _get_cpp_func_name(node, source: bytes) -> str | None:
     for child in node.children:
         if child.type == "identifier":
             return _read_text(child, source)
+        if child.type == "function_declarator":
+            return _get_cpp_func_name(child, source)
     return None
 
 def _cpp_declarator_name(node, source: bytes) -> str | None:
@@ -3341,6 +3343,56 @@ def _cpp_qualified_name(node, name: str, source: bytes) -> str:
             parents.append(_read_text(part, source))
         parent = parent.parent
     return "::".join([*reversed(parents), name])
+
+
+def _cpp_member_record(node, declarator, name: str, source: bytes) -> dict:
+    """Literal zero-argument member facts; unsupported syntax stays an ambiguity record."""
+    function = declarator
+    while function is not None and function.type in {"pointer_declarator", "reference_declarator"}:
+        function = function.child_by_field_name("declarator") or next(
+            (n for n in function.named_children if n.type in {
+                "function_declarator", "pointer_declarator", "reference_declarator",
+            }), None)
+    parameters = function.child_by_field_name("parameters") if function is not None else None
+    zero_args = (parameters is not None
+                 and not any(n.type != "comment" for n in parameters.named_children))
+    qualified = _cpp_qualified_name(node, name, source)
+    record: dict = {
+        "qualified": qualified,
+        "kind": "definition" if node.type == "function_definition" else "declaration",
+        "zero_args": zero_args, "signature": None,
+        "source_location": f"L{declarator.start_point[0] + 1}",
+    }
+    type_node = node.child_by_field_name("type")
+    safe = (zero_args and type_node is not None and not node.has_error
+            and name.rsplit("::", 1)[-1].isidentifier()
+            and node.child_by_field_name("default_value") is None
+            and (node.type != "function_definition" or node.child_by_field_name("body") is not None))
+    parent = node.parent
+    while parent is not None:
+        if ((parent.type.startswith("preproc_") and not _cpp_is_header_guard(parent, source))
+                or parent.type in {"template_declaration", "function_definition", "lambda_expression"}):
+            safe = False
+        parent = parent.parent
+    if not safe or function is None or function.type != "function_declarator":
+        return record
+    suffix = [n for n in function.named_children
+              if n.start_byte >= parameters.end_byte and n.type != "comment"]
+    prefix = [n for n in node.named_children if n.end_byte <= declarator.start_byte and n != type_node]
+    if (any(n.type not in {"type_qualifier", "ref_qualifier", "noexcept"} for n in suffix)
+            or any(n.type != "type_qualifier" and not (
+                n.type == "storage_class_specifier"
+                and _read_text(n, source) in {"static", "inline", "constexpr", "consteval"}
+            ) for n in prefix)):
+        return record
+    record["signature"] = {
+        "return_type": _read_text(type_node, source),
+        "return_qualifiers": [_read_text(n, source) for n in prefix if n.type == "type_qualifier"],
+        "return_declarator": source[declarator.start_byte:function.start_byte].decode(
+            "utf-8", errors="replace").strip(),
+        "member_qualifiers": [_read_text(n, source) for n in suffix],
+    }
+    return record
 
 
 def _cpp_declared_receiver_type(node, declarator, source: bytes) -> str:
@@ -8530,6 +8582,10 @@ def _extract_generic(
                     add_node(member_nid, f".{name}()", line)
                     add_edge(parent_class_nid, member_nid, "method", line)
                     callable_def_nids.add(member_nid)
+                    cpp_qualified_names[member_nid] = _cpp_qualified_name(node, name, source)
+                    member_node = next(n for n in nodes if n["id"] == member_nid)
+                    member_node.setdefault("_cpp_member_records", []).append(
+                        _cpp_member_record(node, decl, name, source))
                 else:
                     add_node(member_nid, name, line)
                     add_edge(parent_class_nid, member_nid, "defines", line, context="field")
@@ -8698,11 +8754,14 @@ def _extract_generic(
                                      f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
             callable_def_nids.add(func_nid)  # function / method def is callable
-            if config.ts_module == "tree_sitter_cpp" and "::" in func_name:
+            if config.ts_module == "tree_sitter_cpp" and (parent_class_nid or "::" in func_name):
                 qualified = _cpp_qualified_name(node, func_name, source)
                 cpp_qualified_names[func_nid] = (
                     qualified if cpp_qualified_names.get(func_nid, qualified) == qualified else ""
                 )
+                member_node = next(n for n in nodes if n["id"] == func_nid)
+                member_node.setdefault("_cpp_member_records", []).append(
+                    _cpp_member_record(node, declarator, func_name, source))
             if config.ts_module == "tree_sitter_python":
                 local_bound_names[func_nid] = _python_local_bound_names(node, source)
             elif config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
