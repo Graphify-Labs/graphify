@@ -3242,6 +3242,24 @@ def build_merge(
     if unverified_semantic_shrink:
         G.graph["_unverified_semantic_shrink"] = unverified_semantic_shrink
 
+    # Saved sources whose semantic nodes this run replaced or pruned on purpose,
+    # for to_json's lost-node check: LLM ids are not stable across re-extracts.
+    # A source with an unverified shrink (#3203) stays guarded. Popped by to_json.
+    def _replaced_on_purpose(sf: str) -> bool:
+        norm = _norm_source_file(sf, _replace_root) or sf
+        if norm in unverified_semantic_shrink:
+            return False
+        return sf in new_sem_sources or norm in new_sem_sources or _prune_match(sf)
+
+    _replaced_sources = {
+        n["source_file"] for n in _disk_nodes
+        if isinstance(n, dict) and not _is_ast_tier(n)
+        and isinstance(n.get("source_file"), str) and n["source_file"]
+        and _replaced_on_purpose(n["source_file"])
+    }
+    if _replaced_sources:
+        G.graph["_replaced_sources"] = sorted(_replaced_sources)
+
     return G
 
 
