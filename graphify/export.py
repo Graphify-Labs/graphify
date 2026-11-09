@@ -515,9 +515,9 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     commit = built_at_commit if built_at_commit is not None else _git_head(Path(output_path).resolve().parent)
     if commit:
         data["built_at_commit"] = commit
-    from graphify.paths import write_json_atomic
+    from graphify.paths import write_graph_json_atomic
     # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
-    write_json_atomic(output_path, data, compact=True)
+    write_graph_json_atomic(output_path, data)
     return True
 
 

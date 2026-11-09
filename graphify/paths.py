@@ -254,6 +254,100 @@ def write_json_atomic(
         path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii, separators=separators)
     )
 
+
+_GRAPH_JSON_ARRAY_KEYS = ("nodes", "links", "hyperedges")
+
+
+def graph_json_lines_enabled() -> bool:
+    """Whether graph.json should be written one element per line.
+
+    Off by default: #3413 chose a single compact line so a committed graph does
+    not report tens of thousands of changed lines. Set
+    ``GRAPHIFY_GRAPH_JSON_LINES=1`` (or ``true``/``yes``) to opt into the
+    line-oriented form described in #4942.
+    """
+    return os.environ.get("GRAPHIFY_GRAPH_JSON_LINES", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _graph_json_item(item: object) -> str:
+    return json.dumps(
+        item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _graph_json_lines_text(obj: dict) -> str:
+    keys = [key for key in sorted(obj) if key not in _GRAPH_JSON_ARRAY_KEYS]
+    keys.extend(key for key in _GRAPH_JSON_ARRAY_KEYS if key in obj)
+    lines = ["{"]
+    for index, key in enumerate(keys):
+        separator = "," if index < len(keys) - 1 else ""
+        value = obj[key]
+        if key == "nodes" and isinstance(value, list):
+            value = sorted(
+                value,
+                key=lambda item: (
+                    str(item.get("id", "")),
+                    _graph_json_item(item),
+                ),
+            )
+        elif key == "links" and isinstance(value, list):
+            value = sorted(
+                value,
+                key=lambda item: (
+                    str(item.get("source", "")),
+                    str(item.get("target", "")),
+                    str(item.get("relation", "")),
+                    _graph_json_item(item),
+                ),
+            )
+        elif key == "hyperedges" and isinstance(value, list):
+            value = sorted(value, key=_graph_json_item)
+        if key in _GRAPH_JSON_ARRAY_KEYS and isinstance(value, list):
+            if not value:
+                lines.append(f"{json.dumps(key)}:[]{separator}")
+                continue
+            lines.append(f"{json.dumps(key)}:[")
+            for item_index, item in enumerate(value):
+                lines.append(
+                    _graph_json_item(item)
+                    + ("," if item_index < len(value) - 1 else "")
+                )
+            lines.append(f"]{separator}")
+            continue
+        lines.append(f"{json.dumps(key)}:{_graph_json_item(value)}{separator}")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def graph_json_text(obj: dict) -> str:
+    """Serialize a project graph using the configured layout.
+
+    The default is the compact one-line form from #3413; with
+    ``GRAPHIFY_GRAPH_JSON_LINES`` set it is the line-oriented form from #4942.
+    """
+    if graph_json_lines_enabled():
+        return _graph_json_lines_text(obj)
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def write_graph_json_atomic(path: "str | Path", obj: dict) -> None:
+    """Atomically write a project graph, honoring ``GRAPHIFY_GRAPH_JSON_LINES``.
+
+    The default remains the single compact line from #3413. With the flag set,
+    the file is still valid JSON with the same elements, but top-level keys are
+    sorted, nodes are ordered by ``id``, links by ``(source, target, relation)``
+    and hyperedges by their canonical record, with one element per line and a
+    trailing newline. Nested records stay compact.
+    """
+    if not graph_json_lines_enabled():
+        write_json_atomic(path, obj, compact=True)
+        return
+    _atomic_replace(path, lambda f: f.write(_graph_json_lines_text(obj)))
+
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw
 # substrings) so "src/contest.py" / "latest/x.py" / "src/greatest/x.py" do NOT

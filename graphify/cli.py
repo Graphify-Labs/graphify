@@ -957,8 +957,8 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
         data["hyperedges"] = kept_hyper
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
-    from graphify.paths import write_json_atomic
-    write_json_atomic(graph_path, data, compact=True)
+    from graphify.paths import write_graph_json_atomic
+    write_graph_json_atomic(graph_path, data)
     return n_removed
 
 
@@ -3520,8 +3520,8 @@ def dispatch_command(cmd: str) -> None:
             _ts, _tt = _link.pop("_src", None), _link.pop("_tgt", None)
             if _ts is not None and _tt is not None:
                 _link["source"], _link["target"] = _ts, _tt
-        from graphify.paths import write_json_atomic
-        write_json_atomic(_current_path, out_data, compact=True)
+        from graphify.paths import write_graph_json_atomic
+        write_graph_json_atomic(_current_path, out_data)
         sys.exit(0)
 
     elif cmd == "merge-graphs":
@@ -3711,8 +3711,8 @@ def dispatch_command(cmd: str) -> None:
         # dual-slot shape so every writer agrees.
         out_data["hyperedges"] = merged.graph.get("hyperedges", [])
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        from graphify.paths import write_json_atomic as _wja
-        _wja(out_path, out_data, compact=True)
+        from graphify.paths import write_graph_json_atomic as _wgja
+        _wgja(out_path, out_data)
         print(f"Merged {len(graphs)} graphs -> {merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges")
         print(f"Written to: {out_path}")
 
@@ -5500,14 +5500,13 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
             _backup(graphify_out)
             _invalidate_file_manifest_for_db_graph()
-            from graphify.paths import write_json_atomic as _write_json_atomic
+            from graphify.paths import write_graph_json_atomic as _write_graph_json_atomic
             from graphify.extract import RUN_ONLY_EXTRACTION_KEYS as _RUN_ONLY_KEYS
             # merge_raw_extraction above has consumed them; graph.json must not
             # carry this run's absolute input paths.
-            _write_json_atomic(
+            _write_graph_json_atomic(
                 graph_json_path,
                 {k: v for k, v in merged.items() if k not in _RUN_ONLY_KEYS},
-                compact=True,
             )
             try:
                 # Record the scan root so a later build_merge / update runbook can
