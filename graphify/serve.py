@@ -386,8 +386,11 @@ def _qualified_tail(norm_label: str) -> tuple[int, str] | None:
     """Split a label into `(qualifier_token_count, tail_key)`, or `None` if unqualified.
 
     `public.sweep_widget_state()` -> `(1, "sweep widget state")`: the tail is the
-    part a query would actually name. Segments are split on punctuation; a
-    qualifier can also be CamelCase, so `Index.ClientLive` -> `(1, "client live")`.
+    part a query would actually name. Segments are split on punctuation, so
+    `fmt.Println` -> `(1, "println")` and `App\\Http\\handle` -> `(2, "handle")`.
+    The CamelCase fallback below only fires on a cased label (an inner lower->upper
+    transition); the scorer's callers pass the already-lowercased `norm_label`, so
+    in practice only the separator path runs — the fallback is defensive.
     """
     label = (norm_label or "").strip()
     # Cheap reject first: without a separator and without an inner capital there
