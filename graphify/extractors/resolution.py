@@ -1922,6 +1922,21 @@ def _apply_symbol_resolution_facts(
     # canonicalizes — or drop it when no file node id is available.
     owned = {str(n.get("id")) for n in nodes}
 
+    # Group the nodes `_collision_aware` may pick by the plain id they belong
+    # to, once, in node order: a node under its own id, and an
+    # underscore-collision salted node (`<plain>_<6 hex>`, see below) also under
+    # its plain id. Scanning every node id for each use fact was
+    # O(uses x nodes) and never finished on large repos.
+    _salt_rx = re.compile(r"[0-9a-f]{6}")
+    collision_groups: dict[str, list[tuple[dict, bool]]] = {}
+    for n in nodes:
+        nid = n.get("id")
+        if not isinstance(nid, str):
+            continue
+        collision_groups.setdefault(nid, []).append((n, False))
+        if len(nid) >= 7 and nid[-7] == "_" and _salt_rx.fullmatch(nid[-6:]):
+            collision_groups.setdefault(nid[:-7], []).append((n, True))
+
     def _collision_aware(source_id: str, file_path: Path, line: int) -> str:
         """The declaration node a top-level ``def``'s call actually belongs to.
 
@@ -1936,18 +1951,18 @@ def _apply_symbol_resolution_facts(
         (no candidates, or several) keeps ``source_id`` unchanged, which is what
         this pass did before.
         """
-        if not any(other.startswith(source_id + "_") for other in owned):
+        group = collision_groups.get(source_id, ())
+        # Without a salted sibling every candidate carries ``source_id`` itself,
+        # so the answer is ``source_id`` whatever the line says.
+        if not any(salted for _, salted in group):
             return source_id
-        candidates = [n for n in nodes if n.get("id") == source_id or (
-            isinstance(n.get("id"), str)
-            and n["id"].startswith(source_id + "_")
+        candidates = [n for n, salted in group if not salted or (
             # Only an underscore-collision salt (`_underscore_salted_nid`, a
             # 6-char sha1 hex) is a sibling spelling of the same def. A plain
             # alphanumeric suffix is a child node id (`classid_methodname`), so
             # matching it would wrongly steal a class member's edge (e.g. a
             # type-annotated field's reference) onto a preceding method.
-            and re.fullmatch(r"[0-9a-f]{6}", n["id"][len(source_id) + 1:]) is not None
-            and _js_source_path(str(n.get("source_file") or ""), root) == file_path
+            _js_source_path(str(n.get("source_file") or ""), root) == file_path
         )]
         if len(candidates) < 2:
             return source_id
