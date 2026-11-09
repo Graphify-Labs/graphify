@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import re
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -3445,7 +3446,77 @@ def _cpp_receiver_chain(node, source: bytes) -> list[list[str]]:
     return []
 
 
-def _cpp_class_fields(node, source: bytes) -> dict[str, str]:
+def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, int]]:
+    """Persist lexical type declarations; unsupported aliases still shadow outer names."""
+    bindings, includes = [], {}
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        pending.extend(reversed(node.named_children))
+        if node.type == "preproc_include":
+            includes[str(node.start_point[0] + 1)] = node.start_byte
+        if node.type not in {"alias_declaration", "type_definition", "class_specifier", "struct_specifier",
+                             "using_declaration", "namespace_definition"}:
+            continue
+        scope = _cpp_qualified_name(node, "", source).rstrip(":")
+        parent = node.parent
+        block = None
+        dependent = False
+        while parent is not None:
+            if parent.type == "template_declaration":
+                dependent = True
+            if block is None and parent.type in {
+                "compound_statement", "for_statement", "for_range_loop", "if_statement",
+                "switch_statement", "catch_clause", "lambda_expression",
+            }:
+                block = parent
+            parent = parent.parent
+        alias = node.type in {"alias_declaration", "type_definition"}
+        directive = False
+        names = [(node.child_by_field_name("name"), "")]
+        if node.type == "using_declaration":
+            using = re.fullmatch(r"using\s+(namespace\s+)?((?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*;",
+                                 _read_text(node, source))
+            if using is None:
+                continue
+            directive = bool(using[1])
+            names = [("*" if directive else using[2].rsplit("::", 1)[-1], using[2])]
+            alias = not directive
+        if alias:
+            type_node = node.child_by_field_name("type")
+            target = _read_text(type_node, source) if type_node is not None and not dependent else ""
+            if node.type == "alias_declaration":
+                names = [(node.child_by_field_name("name"), target)]
+            else:
+                names = []
+                for declarator in node.children_by_field_name("declarator"):
+                    current, suffix = declarator, ""
+                    while current is not None and current.type != "type_identifier":
+                        if current.type == "pointer_declarator":
+                            suffix += "*"
+                        elif current.type != "reference_declarator":
+                            current = None
+                            break
+                        current = current.child_by_field_name("declarator")
+                    name = _cpp_declarator_type_name(declarator, source)
+                    if name:
+                        original = type_node.child_by_field_name("name") if type_node is not None else None
+                        if original is not None and _read_text(original, source) == name:
+                            continue
+                        names.append((name, target + suffix if current is not None and target else ""))
+        for name_node, target in names:
+            name = name_node if isinstance(name_node, str) else (
+                _read_text(name_node, source) if name_node is not None else "")
+            if not name or ("::" in name and node.type != "namespace_definition"):
+                continue
+            bindings.append({"name": name, "scope": scope, "target": target, "alias": alias,
+                             "directive": directive, "namespace": node.type == "namespace_definition",
+                             "start": node.start_byte, "end": block.end_byte if block is not None else len(source),
+                             "local": block is not None, "block": block.start_byte if block is not None else 0})
+    return bindings, includes
+
+
+def _cpp_class_fields(node, source: bytes, positions: dict[str, int]) -> dict[str, str]:
     fields: dict[str, str] = {}
     body = node.child_by_field_name("body")
     if body is not None:
@@ -3457,6 +3528,7 @@ def _cpp_class_fields(node, source: bytes) -> dict[str, str]:
                 if name:
                     value = _cpp_declared_receiver_type(field, declarator, source)
                     fields[name] = value if fields.get(name, value) == value else ""
+                    positions[name] = declarator.start_byte
     return fields
 
 
@@ -7198,7 +7270,9 @@ def _extract_generic(
                     "definition" if node.child_by_field_name("body") is not None else "forward"
                 ) if safe else "unsafe"
                 if node.child_by_field_name("body") is not None:
-                    class_node["_cpp_fields"] = _cpp_class_fields(node, source)
+                    class_node = next(n for n in nodes if n["id"] == class_nid)
+                    class_node["_cpp_field_positions"] = {}
+                    class_node["_cpp_fields"] = _cpp_class_fields(node, source, class_node["_cpp_field_positions"])
             # A nested class/object/trait is contained by its ENCLOSING type, not
             # the file (#2040). parent_class_nid is threaded down the walk for
             # every language and is always a real class-like node (never a
@@ -10936,11 +11010,15 @@ def _extract_generic(
                         # suffix sets, so a source_file suffix alone can't separate them.
                         if config.ts_module == "tree_sitter_cpp":
                             rc_entry["lang"] = "cpp"
+                            rc_entry["cpp_call_byte"] = node.start_byte
+                            rc_entry["cpp_call_scope"] = _cpp_qualified_name(node, "", source).rstrip(":")
+                            rc_entry["cpp_scoped_call"] = func_node is not None and func_node.type == "qualified_identifier"
                             if func_node is not None and func_node.type == "field_expression":
                                 rc_entry["cpp_receiver_chain"] = cpp_chain
                                 if cpp_binding is not None:
                                     rc_entry["cpp_receiver_type"] = cpp_binding[2]
                                     rc_entry["cpp_receiver_scope"] = cpp_binding[3]
+                                    rc_entry["cpp_receiver_byte"] = cpp_binding[0]
                         # PHP: separate a scoped class call (`Helper::m()`, source-
                         # qualified) from an instance member call (`$g->m()`), whose
                         # receiver is a variable the resolver must type through the
@@ -11573,6 +11651,9 @@ def _extract_generic(
         _ts_receiver_type_table(root, source, type_table, ts_field_types)
         _ts_mark_public_twins(root, source, result)
         _ts_attach_class_fields(result, ts_field_types, str_path)
+    if config.ts_module == "tree_sitter_cpp":
+        file_node = next(n for n in nodes if n["id"] == file_nid)
+        file_node["_cpp_type_bindings"], file_node["_cpp_include_positions"] = _cpp_resolution_facts(root, source)
     if config.ts_module == "tree_sitter_php":
         _php_receiver_type_table(root, source, type_table)
     if config.ts_module == "tree_sitter_swift":
