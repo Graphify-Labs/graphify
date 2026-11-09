@@ -21,6 +21,7 @@ class CppTypeLookup:
         self.files = {n["id"]: n for n in nodes if "_cpp_type_bindings" in n}
         self.bindings: dict[str, list[tuple[str, dict]]] = {}
         self.types: dict[str, set[str]] = {}
+        self.class_scopes: set[str] = set()
         self.imports: dict[str, list[tuple[str, int]]] = {}
         self.namespaces: set[str] = set()
         self.directives: dict[str, list[tuple[str, dict]]] = {}
@@ -30,6 +31,8 @@ class CppTypeLookup:
             source = node["source_file"]
             for binding in node["_cpp_type_bindings"]:
                 identity = "::".join(filter(None, (binding["scope"], binding["name"])))
+                if binding.get("complete"):
+                    self.class_scopes.add(identity)
                 if binding["namespace"]:
                     self.namespaces.add(identity)
                 if binding["directive"]:
@@ -95,10 +98,11 @@ class CppTypeLookup:
         for enclosing in scopes:
             identity = "::".join(filter(None, (enclosing, name)))
             candidates = [(file, b) for file, b in self.bindings.get(identity, [])
-                          if file in visible and (not b["local"] if file != source else
+                          if not ((absolute or "::" in name) and b.get("implicit_anonymous"))
+                          and file in visible and (not b["local"] if file != source else
                                                   b["start"] <= position < b["end"])]
             if any(file == source and not b["local"] and b["start"] > position
-                   and b["scope"] in self.types for file, b in self.bindings.get(identity, [])):
+                   and b["scope"] in self.class_scopes for file, b in self.bindings.get(identity, [])):
                 return None
             if not candidates and "::" in name:
                 prefix = "::".join(filter(None, (enclosing, name.split("::", 1)[0])))
@@ -194,7 +198,7 @@ class CppTypeLookup:
         while scope:
             if any(file in visible and (not b["local"] if file != source else
                                         b["start"] <= position < b["end"] or
-                                        (not b["local"] and b["scope"] in self.types))
+                                        (not b["local"] and b["scope"] in self.class_scopes))
                    for file, b in self.bindings.get(f"{scope}::{prefix}", [])):
                 return True
             scope = scope.rsplit("::", 1)[0] if "::" in scope else ""
@@ -207,7 +211,7 @@ class CppTypeLookup:
             identity = "::".join(filter(None, (scope, name)))
             if any(b["alias"] and file in visible and (
                 (not b["local"]) if file != source else
-                (b["start"] <= position < b["end"] or (not b["local"] and b["scope"] in self.types))
+                (b["start"] <= position < b["end"] or (not b["local"] and b["scope"] in self.class_scopes))
             ) for file, b in self.bindings.get(identity, [])):
                 return True
             if not scope:

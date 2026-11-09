@@ -3312,6 +3312,20 @@ def _cpp_field_types(root, source: bytes, table: dict[str, str]) -> None:
         stack.extend(n.children)
 
 
+def _cpp_lookup_scope(node, source: bytes) -> str:
+    """Lexical scope keeps unnamed-namespace barriers without naming their types."""
+    parents = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type in {"namespace_definition", "class_specifier", "struct_specifier"}:
+            part = parent.child_by_field_name("name")
+            if part is None and parent.type != "namespace_definition":
+                return ""
+            parents.append(_read_text(part, source) if part is not None else "(anonymous)")
+        parent = parent.parent
+    return "::".join(reversed(parents))
+
+
 def _cpp_qualified_name(node, name: str, source: bytes) -> str:
     """Literal enclosing namespace/type identity; anonymous scopes are unknown."""
     parents = []
@@ -3410,7 +3424,7 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
         if node.type not in {"alias_declaration", "type_definition", "class_specifier", "struct_specifier", "union_specifier",
                              "using_declaration", "namespace_definition", "namespace_alias_definition"}:
             continue
-        scope = _cpp_qualified_name(node, "", source).rstrip(":")
+        scope = _cpp_lookup_scope(node, source)
         parent = node.parent
         block = None
         dependent = False
@@ -3477,6 +3491,12 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
                              "directive": directive, "namespace": node.type == "namespace_definition",
                              "start": node.start_byte, "end": block.end_byte if block is not None else len(source),
                              "local": block is not None, "block": block.start_byte if block is not None else 0})
+            # An unnamed namespace implicitly exposes its declarations in its parent.
+            projected_scope = scope
+            while block is None and not directive and projected_scope.split("::")[-1] == "(anonymous)":
+                projected_scope = projected_scope.rsplit("::", 1)[0] if "::" in projected_scope else ""
+                bindings.append({**bindings[-1], "scope": projected_scope, "target": "", "alias": True,
+                                 "complete": False, "namespace": False, "implicit_anonymous": True})
     return bindings, includes, include_paths
 
 
@@ -3594,7 +3614,7 @@ def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, 
                         ranges.setdefault(name, []).append((
                             declarator.start_byte, scope.end_byte,
                             _cpp_declared_receiver_type(node, declarator, source),
-                            _cpp_qualified_name(node, "", source).rstrip(":"),
+                            _cpp_lookup_scope(node, source),
                         ))
         stack.extend(node.named_children)
     return ranges
@@ -11020,7 +11040,7 @@ def _extract_generic(
                         if config.ts_module == "tree_sitter_cpp":
                             rc_entry["lang"] = "cpp"
                             rc_entry["cpp_call_byte"] = node.start_byte
-                            rc_entry["cpp_call_scope"] = _cpp_qualified_name(node, "", source).rstrip(":")
+                            rc_entry["cpp_call_scope"] = _cpp_lookup_scope(node, source)
                             rc_entry["cpp_scoped_call"] = func_node is not None and func_node.type == "qualified_identifier"
                             if func_node is not None and func_node.type == "field_expression":
                                 rc_entry["cpp_receiver_chain"] = cpp_chain

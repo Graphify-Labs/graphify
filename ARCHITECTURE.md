@@ -143,6 +143,9 @@ explicit includes preceding the receiver declaration. Alias targets resolve in
 their declaring scope; unsupported aliases still hide outer declarations.
 Qualified-name prefixes also block outer lookup. Namespace aliases and later
 class-scoped declarations in complete-class contexts remain unresolved.
+Anonymous namespaces retain their enclosing named lexical scope through an
+internal lookup placeholder. This placeholder never becomes a class identity;
+anonymous-local types and unknown aliases still block outer lookup.
 Direct namespace directives and qualified using declarations participate in this
 lookup. Alias templates, dependent targets, transitive using directives, arbitrary
 template types and cyclic or ambiguous aliases remain unresolved. Alias expansion
@@ -166,7 +169,7 @@ unknown fields, aliases, nested types and enum constants. Multiple inheritance
 resolves only one unambiguous member path; diamonds, unknown/dependent bases,
 virtual-base paths, inherited overload families and walks exceeding 32 classes
 stay unresolved. Calls retain their declared static receiver target, without
-inferring runtime virtual dispatch. AST cache schema 49 retires entries without
+inferring runtime virtual dispatch. AST cache schema 50 retires entries without
 the lexical type and inheritance facts.
 This pass covers explicit receiver calls and field chains; unqualified bare calls
 retain the existing lexical resolver. Smart-pointer recognition requires an
