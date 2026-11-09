@@ -179,7 +179,7 @@ class CppTypeLookup:
 
     def resolve(self, name: str, scope: str, source: str, position: int, operator: str, *,
                 use_source: str | None = None, use_position: int | None = None) -> str | None:
-        completion = None
+        completion = source, position, self.reachable(source, position)
         if use_source is not None and use_position is not None:
             completion = use_source, use_position, self.reachable(use_source, use_position)
         target = self._expand(name, scope, source, position, set(), completion=completion)
