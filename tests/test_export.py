@@ -1671,7 +1671,7 @@ def test_to_html_unspecified_filter_and_hidden_hover_cannot_select_all_or_hidden
     to_html(graph, {0: ["a", "b", "c"]}, str(out))
     result = _run_sidebar_harness(out.read_text(encoding="utf-8"), """
 const visible = () => RAW_NODES.filter(n => !nodesDS.get(n.id).hidden).map(n => n.id).sort();
-relationFilter.value = JSON.stringify('');
+relationFilter.value = relationFilter.children.find(o => o.textContent === '(unspecified)').value;
 relationFilter.listeners.change();
 const unspecified = visible();
 hoveredNodeId = 'a';
@@ -1681,7 +1681,7 @@ relationFilter.value = JSON.stringify('calls');
 relationFilter.listeners.change();
 els.graph.listeners.click();
 const calls = visible();
-confidenceFilter.value = JSON.stringify('');
+confidenceFilter.value = confidenceFilter.children.find(o => o.textContent === '(unspecified)').value;
 confidenceFilter.listeners.change();
 console.log(JSON.stringify({unspecified, calls, selected, hover:hoveredNodeId,
   cursor:els.graph.style.cursor, empty:visible()}));
