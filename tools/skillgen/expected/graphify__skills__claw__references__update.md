@@ -103,7 +103,6 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from pathlib import Path
 from graphify.build import build_merge
-from graphify.detect import save_manifest
 
 # Load new extraction and incremental state
 new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
@@ -154,17 +153,40 @@ merged_out = {
 Path('graphify-out/.graphify_extract.json').write_text(json.dumps(merged_out, ensure_ascii=False), encoding=\"utf-8\")
 print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])} nodes, {len(merged_out[\"edges\"])} edges)')
 
+# Keep this run's own extraction for the manifest stamp that runs after Step 4.
+# .graphify_extract.json now holds the full merged graph; stamping from that would
+# mark a changed doc whose chunk failed as done, losing its content forever (#2015).
+Path('graphify-out/.graphify_update_extract.json').write_text(json.dumps(new_extraction, ensure_ascii=False), encoding=\"utf-8\")
+"
+```
+
+Then run Steps 4–8 on the merged graph as normal.
+
+Run this stamp immediately after Step 4 has written `graph.json`, before Steps 5–8:
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+from graphify.detect import save_manifest
+
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
+# The merge block saved this run's fresh extraction before it overwrote
+# .graphify_extract.json with the full merged graph; stamp from this copy so a
+# changed doc whose chunk failed stays unstamped and is re-queued (#2015).
+new_extraction = json.loads(Path('graphify-out/.graphify_update_extract.json').read_text(encoding=\"utf-8\"))
+incremental = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding=\"utf-8\"))
+
 # Save manifest so next --update diffs against today's state, not the
 # prior run's baseline (prevents ghost-node reports on subsequent updates).
-# root= matches the build_merge call above so the manifest keys stay relative to
-# the scan root — portable across clones/machines, so --update keeps matching
-# cached files instead of missing every one after a move (#1417).
+# root= matches the merge block's build_merge call so the manifest keys stay
+# relative to the scan root — portable across clones/machines, so --update keeps
+# matching cached files instead of missing every one after a move (#1417).
 #
 # Only stamp semantic files (docs/papers/images) that ACTUALLY produced output
-# THIS run (new_extraction is this run's fresh extraction, read above before the
-# merge overwrote the file): a changed doc whose chunk failed must stay unstamped
-# so the next --update re-queues it, otherwise it is marked done and its content
-# is lost forever (#2015). Mirrors the library extract path
+# THIS run: a changed doc whose chunk failed must stay unstamped so the next
+# --update re-queues it, otherwise it is marked done and its content is lost
+# forever (#2015). Mirrors the library extract path
 # (cli._stamped_manifest_files + clear_semantic + scan_corpus).
 from graphify.cli import _stamped_manifest_files
 # A file a subagent only partly read (Step B3.5 lists it) DID produce output, so the
@@ -188,7 +210,11 @@ print('[graphify update] Manifest saved.')
 "
 ```
 
-Then run Steps 4–8 on the merged graph as normal.
+This stamp must stay after Step 4. Step 4 refuses to overwrite a larger graph
+(#479), and a stamp written before it ran would mark the changed files done while
+`graph.json` still held the old content, so the next `--update` would report nothing
+to do (#5097). A refused write leaves them queued, exactly as the library update
+path does (`graphify/watch.py` checks the shrink before it writes the manifest).
 
 After Step 4, show the graph diff:
 
@@ -218,7 +244,7 @@ if old_data:
 ```
 
 Before the merge step, save the old graph: `cp graphify-out/graph.json graphify-out/.graphify_old.json`
-Clean up after: `rm -f graphify-out/.graphify_old.json`
+Clean up after: `rm -f graphify-out/.graphify_old.json graphify-out/.graphify_update_extract.json`
 
 ---
 
