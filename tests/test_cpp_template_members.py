@@ -240,6 +240,83 @@ def test_dependent_receiver_does_not_bind_to_a_global_template_parameter_name(tm
     assert _calls(result, caller) == []
 
 
+@pytest.mark.parametrize("parameters, dependent_type", [
+    ("class A", "typename A::Type"),
+    ("template<class> class A", "typename A<int>::Type"),
+    ("template<class> class A = Default", "typename A<int>::Type"),
+])
+@pytest.mark.parametrize("pointer", [False, True])
+def test_dependent_nested_parameter_never_uses_a_same_named_concrete_type(
+    tmp_path, parameters, dependent_type, pointer,
+):
+    result = _extract(tmp_path, {"use.cpp":
+        "namespace A { struct Type { void Work(); }; }\n"
+        f"template<{parameters}> void Run({dependent_type}{'*' if pointer else '&'} x) "
+        f"{{ x{'->' if pointer else '.'}Work(); }}"})
+    assert _calls(result, "Run()") == []
+    assert not any(n.get("metadata", {}).get("unresolved_calls") for n in result["nodes"])
+
+
+@pytest.mark.parametrize("parameters, dependent_type", [
+    ("class A", "typename A::Type"),
+    ("template<class> class A", "typename A<int>::Type"),
+])
+def test_dependent_nested_field_keeps_its_unknown_type(tmp_path, parameters, dependent_type):
+    result = _extract(tmp_path, {"use.cpp":
+        "namespace A { struct Type { void Work(); }; }\n"
+        f"template<{parameters}> struct Holder {{ {dependent_type} value; "
+        "void Run() { value.Work(); } };"})
+    assert _calls(result, ".Run()") == []
+
+
+def test_template_template_inner_parameter_does_not_shadow_a_corpus_type(tmp_path):
+    result = _extract(tmp_path, {"use.cpp": """
+struct Inner { void Work(); };
+template<template<class Inner> class A> void Run(Inner& x) { x.Work(); }
+"""})
+    assert [n["label"] for n in _calls(result, "Run()")] == [".Work()"]
+
+
+def test_template_template_parameter_stays_a_local_binding(tmp_path):
+    result = _extract(tmp_path, {"use.cpp":
+        "template<template<class> class A> struct Holder { A<int> value; };"})
+    assert not any(n["label"] == "A" for n in result["nodes"])
+
+
+@pytest.mark.parametrize("declaration, expression", [
+    ("typename A<int>::Type x, y;", "x.Work(); y.Work();"),
+    ("t x;", "x.Work();"),
+    ("Container<t> x;", "x.Work();"),
+    ("std::unique_ptr<t> x;", "x->Work();"),
+])
+def test_dependent_local_shapes_never_use_the_in_file_member_fallback(tmp_path, declaration, expression):
+    result = _extract(tmp_path, {"use.cpp":
+        "namespace A { struct Type { void Work(); }; }\n"
+        f"template<template<class> class A, class t> void Run() {{ {declaration} {expression} }}"})
+    assert _calls(result, "Run()") == []
+
+
+def test_dependent_binding_does_not_suppress_another_functions_auto_receiver(tmp_path):
+    result = _extract(tmp_path, {"use.cpp": """
+struct Known { void Paint(); }; Known Make();
+template<class t> void Other(t& x) { x.Paint(); }
+void Run() { auto x = Make(); x.Paint(); }
+"""})
+    assert _calls(result, "Other()") == []
+    assert [n["label"] for n in _calls(result, "Run()")] == [".Paint()"]
+
+
+def test_auto_local_shadows_an_unknown_dependent_field(tmp_path):
+    result = _extract(tmp_path, {"use.cpp": """
+struct Known { void Paint(); }; Known Make();
+template<class t> struct Holder {
+    t value;
+    void Run() { auto value = Make(); value.Paint(); }
+};
+"""})
+    assert [n["label"] for n in _calls(result, ".Run()")] == [".Paint()"]
+
+
 def test_qualified_concrete_template_argument_stays_known_with_a_shadowing_parameter(tmp_path):
     result = _extract(tmp_path, {
         "global.hpp": "struct T { template<class U> void Tick() {} };",
