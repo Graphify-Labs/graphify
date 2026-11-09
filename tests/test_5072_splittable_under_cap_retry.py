@@ -13,17 +13,14 @@ from graphify.file_slice import (
 )
 
 
-@pytest.mark.parametrize("ext", [".yaml", ".yml", ".md", ".txt", ".rst"])
+@pytest.mark.parametrize("ext", [".md", ".txt", ".rst"])
 def test_splittable_document_under_cap_bisects_on_truncation(tmp_path, ext):
     """When a splittable document below _FILE_CHAR_CAP truncates (finish_reason='length'),
     adaptive retry should promote the raw Path unit to a full-range FileSlice and bisect it,
     completing without being marked partial (#5072).
     """
     path = tmp_path / f"dense{ext}"
-    if ext in (".yaml", ".yml"):
-        content = "records:\n" + "".join(f"  item{i}: value{i}\n" for i in range(80))
-    else:
-        content = "# Title\n\n" + "".join(f"Paragraph {i} with some content.\n\n" for i in range(40))
+    content = "# Title\n\n" + "".join(f"Paragraph {i} with some content.\n\n" for i in range(40))
     path.write_text(content, encoding="utf-8")
     text = unit_source_text(path)
     assert len(text) < llm._FILE_CHAR_CAP

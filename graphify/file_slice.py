@@ -32,16 +32,17 @@ from graphify.extractors.base import _read_source_text
 # This set has to keep pace with ``detect.DOC_EXTENSIONS``: anything classified
 # as a document reaches the semantic pass, and anything the pass sees that is
 # NOT listed here is silently cut at ``_FILE_CHAR_CAP`` by ``_read_files``. The
-# two lists drifted as DOC_EXTENSIONS grew — .qmd, .skill, .html, .yaml and .yml
-# were documents that never got sliced, so a 38k-character one reached the model
-# as its first 20k with no warning and no partial marker (#2900).
+# two lists drifted as DOC_EXTENSIONS grew — .qmd, .skill and .html were
+# documents that never got sliced, so a 38k-character one reached the model as
+# its first 20k with no warning and no partial marker (#2900). .yaml/.yml are
+# intentionally NOT here: they are code, not documents (reclassified in #2214),
+# and never reach the semantic pass.
 # ``tests/test_oversized_document_slicing.py`` pins the relationship so a future
 # addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
 _SPLITTABLE_TEXT_SUFFIXES = frozenset({
     ".md", ".mdx", ".markdown", ".txt", ".rst",
     ".qmd", ".skill", ".html",
     ".j2", ".jinja", ".jinja2",
-    ".yaml", ".yml",
 })
 
 # Document types whose BYTES are not what the model is shown. `llm._file_to_text`
