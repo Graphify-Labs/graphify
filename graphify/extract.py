@@ -6270,6 +6270,8 @@ def _resolve_cpp_member_calls(
             scope = owner_node.get("_cpp_qualified", "")
             name = owner_node.get("_cpp_fields", {}).get(root_name, "")
         source = rc.get("source_file", "")
+        use_source = source
+        use_position = rc.get("cpp_call_byte", 0)
         position = rc.get("cpp_receiver_byte", rc.get("cpp_call_byte", 0))
         if root_name != "this" and "cpp_receiver_type" not in rc:
             source = owner_node.get("source_file", source)
@@ -6285,7 +6287,8 @@ def _resolve_cpp_member_calls(
                 scope = owner_node.get("_cpp_qualified", "")
                 source = owner_node.get("source_file", source)
                 position = owner_node.get("_cpp_field_positions", {}).get(member, 0)
-            type_nid = type_lookup.resolve(name, scope, source, position, operator)
+            type_nid = type_lookup.resolve(name, scope, source, position, operator,
+                                          use_source=use_source, use_position=use_position)
             if type_nid is None:
                 return None
         return type_nid

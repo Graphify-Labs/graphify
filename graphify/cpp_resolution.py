@@ -78,8 +78,12 @@ class CppTypeLookup:
         self._reachable_cache[key] = frozenset(visible)
         return self._reachable_cache[key]
 
-    def _binding(self, name: str, scope: str, source: str, position: int):
+    def _binding(self, name: str, scope: str, source: str, position: int,
+                 completion: tuple[str, int, frozenset[str]] | None):
         visible = self.reachable(source, position)
+        contexts = [(source, position, visible)]
+        if completion is not None:
+            contexts.append(completion)
         absolute = name.startswith("::")
         name = name.removeprefix("::")
         scopes = [""] if absolute else []
@@ -126,12 +130,21 @@ class CppTypeLookup:
                 return candidates[0] if len(candidates) == 1 else None
             targets = set().union(*(self.types.get("::".join(filter(None, (b["scope"], b["name"]))), set())
                                     for _, b in candidates))
-            targets = {nid for nid in targets if self.nodes[nid].get("source_file") in visible}
-            return next(iter(targets)) if len(targets) == 1 else None
+            complete_targets = set()
+            for nid in targets:
+                definition = self.nodes[nid]
+                for file, binding in self.bindings.get(definition["_cpp_qualified"], []):
+                    if file != definition.get("source_file") or not binding.get("complete"):
+                        continue
+                    if any(file in reachable and (file != at_source or binding["start"] <= at)
+                           for at_source, at, reachable in contexts):
+                        complete_targets.add(nid)
+                        break
+            return next(iter(complete_targets)) if len(complete_targets) == 1 else None
         return None
 
     def _expand(self, name: str, scope: str, source: str, position: int, seen: set,
-                depth: int = 0) -> tuple[str, str] | None:
+                depth: int = 0, completion: tuple[str, int, frozenset[str]] | None = None) -> tuple[str, str] | None:
         # shortcut: cap static expansion at 32 hops; raise only with a compiler-backed resolver.
         if depth >= 32:
             return None
@@ -142,12 +155,12 @@ class CppTypeLookup:
         if smart:
             if not name.startswith("::") and self.shadowed_prefix("std", scope, source, position):
                 return None
-            pointee = self._expand(smart[1], scope, source, position, seen, depth + 1)
+            pointee = self._expand(smart[1], scope, source, position, seen, depth + 1, completion)
             return (pointee[0], "smart" + reference) if pointee and not pointee[1] else None
         match = re.fullmatch(rf"({_IDENTIFIER})\s*((?:\*\s*)*)", name)
         if not match:
             return None
-        binding = self._binding(match[1], scope, source, position)
+        binding = self._binding(match[1], scope, source, position, completion)
         shape = re.sub(r"\s+", "", match[2])
         if isinstance(binding, str):
             return binding, shape + reference
@@ -157,13 +170,17 @@ class CppTypeLookup:
         key = (file, alias["start"])
         if key in seen or not alias["target"]:
             return None
-        target = self._expand(alias["target"], alias["scope"], file, alias["start"], seen | {key}, depth + 1)
+        target = self._expand(alias["target"], alias["scope"], file, alias["start"], seen | {key}, depth + 1, completion)
         if target is None or (shape and target[1] == "smart"):
             return None
         return target[0], target[1] + shape + reference
 
-    def resolve(self, name: str, scope: str, source: str, position: int, operator: str) -> str | None:
-        target = self._expand(name, scope, source, position, set())
+    def resolve(self, name: str, scope: str, source: str, position: int, operator: str, *,
+                use_source: str | None = None, use_position: int | None = None) -> str | None:
+        completion = None
+        if use_source is not None and use_position is not None:
+            completion = use_source, use_position, self.reachable(use_source, use_position)
+        target = self._expand(name, scope, source, position, set(), completion=completion)
         shape = target[1].rstrip("&") if target else ""
         if target and ((operator == "." and not shape) or
                        (operator == "->" and shape in {"*", "smart"})):

@@ -151,6 +151,11 @@ except inside a whole-file `#ifndef`/`#define` header guard without alternatives
 an `#undef`. File nodes persist
 lexical type/alias facts and include offsets; class nodes persist field declaration
 offsets, so unchanged headers support incremental receiver resolution.
+Field spellings and aliases resolve where declared; an exact forward-declared
+type may then be completed by a unique definition visible at the member call.
+Definition facts preserve same-file declaration order. Missing, unincluded or
+ambiguous definitions remain unresolved, and base types still require completeness
+at their declaring class rather than at a later call.
 
 C++ inherited receiver fields and methods follow literal, explicitly reachable
 base types. A class declaration hides the same name in every base, including
@@ -158,7 +163,7 @@ unknown fields, aliases, nested types and enum constants. Multiple inheritance
 resolves only one unambiguous member path; diamonds, unknown/dependent bases,
 virtual-base paths, inherited overload families and walks exceeding 32 classes
 stay unresolved. Calls retain their declared static receiver target, without
-inferring runtime virtual dispatch. AST cache schema 45 retires entries without
+inferring runtime virtual dispatch. AST cache schema 48 retires entries without
 the lexical type and inheritance facts.
 This pass covers explicit receiver calls and field chains; unqualified bare calls
 retain the existing lexical resolver. Smart-pointer recognition requires an

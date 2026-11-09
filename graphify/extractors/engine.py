@@ -3464,6 +3464,8 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
                 continue
             bindings.append({"name": name, "scope": scope, "target": "" if alias and conditional else target,
                              "alias": alias,
+                             "complete": node.type in {"class_specifier", "struct_specifier", "union_specifier"}
+                             and node.child_by_field_name("body") is not None,
                              "directive": directive, "namespace": node.type == "namespace_definition",
                              "start": node.start_byte, "end": block.end_byte if block is not None else len(source),
                              "local": block is not None, "block": block.start_byte if block is not None else 0})
@@ -3525,8 +3527,8 @@ def _cpp_class_lookup_facts(node, source: bytes) -> dict:
                 if current.type == "function_declarator":
                     function = current
                 inner = current.child_by_field_name("declarator")
-                if inner is None and current.type == "parenthesized_declarator":
-                    inner = next(iter(current.named_children), None)
+                if inner is None and current.type in {"parenthesized_declarator", "reference_declarator"}:
+                    inner = next((child for child in current.named_children if child.type != "type_qualifier"), None)
                 current = inner
             if current is None:
                 continue
