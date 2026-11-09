@@ -6276,6 +6276,11 @@ def _resolve_cpp_member_calls(
         elif "cpp_receiver_type" in rc:
             name = rc["cpp_receiver_type"]
         else:
+            field_owner = type_lookup.member_owner(owner, root_name, "field") if owner else None
+            if not isinstance(field_owner, str):
+                return None
+            owner_node = node_by_id[field_owner]
+            scope = owner_node.get("_cpp_qualified", "")
             name = owner_node.get("_cpp_fields", {}).get(root_name, "")
         source = rc.get("source_file", "")
         position = rc.get("cpp_receiver_byte", rc.get("cpp_call_byte", 0))
@@ -6285,7 +6290,10 @@ def _resolve_cpp_member_calls(
         type_nid = ""
         for index, (member, operator) in enumerate(chain):
             if index:
-                owner_node = node_by_id.get(type_nid, {})
+                field_owner = type_lookup.member_owner(type_nid, member, "field")
+                if not isinstance(field_owner, str):
+                    return None
+                owner_node = node_by_id[field_owner]
                 name = owner_node.get("_cpp_fields", {}).get(member, "")
                 scope = owner_node.get("_cpp_qualified", "")
                 source = owner_node.get("source_file", source)
@@ -6346,16 +6354,32 @@ def _resolve_cpp_member_calls(
                 # below — otherwise a typed local calling into another repo is
                 # silently dropped (#3152 regression from the chain resolver).
                 park_name = chain_park_name(rc)
-                if park_name is not None and not type_def_nids.get(_key(park_name)):
+                owner = node_by_id.get(enclosing_type.get(caller), {})
+                alias = park_name is not None and type_lookup.is_alias(
+                    park_name, owner.get("_cpp_qualified") or rc.get("cpp_receiver_scope", ""),
+                    src_file,
+                    rc.get("cpp_receiver_byte", rc.get("cpp_call_byte", 0)),
+                )
+                if park_name is not None and not alias and not type_def_nids.get(_key(park_name)):
                     _park_unresolved_member_call(
                         node_by_id.get(caller), callee, park_name, "cpp", rc,
                     )
                 continue
             type_qualified = receiver == "this" and len(rc["cpp_receiver_chain"]) == 1
-        elif rc.get("cpp_scoped_call") and (resolved_type := type_lookup.resolve(
-            receiver, rc.get("cpp_call_scope", ""), src_file, rc.get("cpp_call_byte", 0), ".",
-        )):
-            type_nid = resolved_type
+        elif rc.get("cpp_scoped_call"):
+            type_nid = type_lookup.resolve(
+                receiver, rc.get("cpp_call_scope", ""), src_file,
+                rc.get("cpp_call_byte", 0), ".",
+            )
+            if type_nid is None:
+                alias = type_lookup.is_alias(
+                    receiver, rc.get("cpp_call_scope", ""), src_file,
+                    rc.get("cpp_call_byte", 0),
+                )
+                if receiver[:1].isupper() and not alias and not type_def_nids.get(_key(receiver)):
+                    _park_unresolved_member_call(node_by_id.get(caller), callee, receiver, "cpp", rc)
+                continue
+            qualified_fallback_label = f"{receiver}::{callee}()"
             type_qualified = True
         elif receiver == "this":
             # this->bar(): receiver is the caller's own enclosing class.
@@ -6415,6 +6439,11 @@ def _resolve_cpp_member_calls(
             method_nid = next(iter(methods)) if len(methods) == 1 else None
         else:
             method_nid = method_index.get((type_nid, _key(callee)))
+        if method_nid is None:
+            inherited_owner = type_lookup.member_owner(type_nid, callee, "method")
+            if isinstance(inherited_owner, str) and inherited_owner != type_nid:
+                methods = exact_methods.get((inherited_owner, callee), set())
+                method_nid = next(iter(methods)) if len(methods) == 1 else None
         if method_nid is None and qualified_fallback_label is not None:
             candidates = qualified_method_nids.get(qualified_fallback_label, [])
             if len(candidates) == 1:
@@ -6435,6 +6464,8 @@ def _resolve_cpp_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+        if isinstance(rc.get("metadata"), dict):
+            all_edges[-1]["metadata"] = dict(rc["metadata"])
 
 
 # C# predefined/BCL type names that are never declared in the scanned corpus.

@@ -2753,14 +2753,15 @@ def _rebuild_code(
                     for marker in (
                         "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
                         "_cpp_class_kind", "_cpp_fields", "_cpp_reconcile_files",
-                        "_cpp_member_records",
+                        "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
+                        "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                         "_rust_impl_key", "_rust_declaration_count",
                         "_ts_public_twin", "_py_property", "_java_ret",
                         "_ts_fields", "_ts_static_fields",
                         "_py_fixture", "_py_return_type", "_go_fields",
                         "_go_package_path",
                     ):
-                        if node.get(marker):
+                        if node.get(marker) or (marker.startswith("_cpp_") and isinstance(node.get(marker), (dict, list))):
                             ctx_node[marker] = node[marker]
                     metadata = node.get("metadata")
                     if isinstance(metadata, dict):
@@ -2824,6 +2825,8 @@ def _rebuild_code(
                     if (edge.get("_cpp_include_proof")
                             and not (edge.get("metadata") or {}).get("cpp_conditions")):
                         context_edge["_cpp_include_proof"] = True
+                    if edge.get("relation") == "imports" and isinstance(edge.get("source_location"), str):
+                        context_edge["source_location"] = edge["source_location"]
                     if edge.get("context") == "return_type":
                         context_edge["context"] = "return_type"
                     edge_metadata = edge.get("metadata")

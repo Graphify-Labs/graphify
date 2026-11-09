@@ -5018,14 +5018,15 @@ def dispatch_command(cmd: str) -> None:
                         for _marker in (
                             "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
                             "_cpp_class_kind", "_cpp_fields", "_cpp_reconcile_files",
-                            "_cpp_member_records",
+                            "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
+                            "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
                             "_py_fixture", "_py_return_type", "_go_fields",
                             "_go_package_path",
                         ):
-                            if _node.get(_marker):
+                            if _node.get(_marker) or (_marker.startswith("_cpp_") and isinstance(_node.get(_marker), (dict, list))):
                                 _ctx_node[_marker] = _node[_marker]
                         _metadata = _node.get("metadata")
                         if isinstance(_metadata, dict):
@@ -5078,6 +5079,8 @@ def dispatch_command(cmd: str) -> None:
                         if (_edge.get("_cpp_include_proof")
                                 and not (_edge.get("metadata") or {}).get("cpp_conditions")):
                             _ctx_edge["_cpp_include_proof"] = True
+                        if _edge.get("relation") == "imports" and isinstance(_edge.get("source_location"), str):
+                            _ctx_edge["source_location"] = _edge["source_location"]
                         if _edge.get("context") == "return_type":
                             _ctx_edge["context"] = "return_type"
                         _edge_metadata = _edge.get("metadata")

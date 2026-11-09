@@ -3446,16 +3446,38 @@ def _cpp_receiver_chain(node, source: bytes) -> list[list[str]]:
     return []
 
 
-def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, int]]:
+def _cpp_is_header_guard(node, source: bytes) -> bool:
+    """Recognize only a whole-file #ifndef NAME / #define NAME wrapper."""
+    if (node.type != "preproc_ifdef" or node.parent is None
+            or node.parent.type != "translation_unit" or node.children[0].type != "#ifndef"):
+        return False
+    siblings = [n for n in node.parent.named_children if n.type != "comment"]
+    contents = [n for n in node.named_children if n.type != "comment"]
+    if (siblings != [node] or len(contents) < 2 or contents[1].type != "preproc_def"
+            or any(n.type in {"preproc_else", "preproc_elif", "preproc_elifdef"} for n in contents)):
+        return False
+    name = node.child_by_field_name("name")
+    define = contents[1].child_by_field_name("name")
+    if name is None or define is None or _read_text(name, source) != _read_text(define, source):
+        return False
+    return not any(line.replace(" ", "").replace("\t", "").startswith("#undef")
+                   for line in _read_text(node, source).splitlines())
+
+
+def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, int], dict[str, str]]:
     """Persist lexical type declarations; unsupported aliases still shadow outer names."""
-    bindings, includes = [], {}
+    bindings, includes, include_paths = [], {}, {}
     pending = [root]
     while pending:
         node = pending.pop()
         pending.extend(reversed(node.named_children))
         if node.type == "preproc_include":
-            includes[str(node.start_point[0] + 1)] = node.start_byte
-        if node.type not in {"alias_declaration", "type_definition", "class_specifier", "struct_specifier",
+            line = str(node.start_point[0] + 1)
+            includes[line] = node.start_byte
+            path = node.child_by_field_name("path")
+            if path is not None and path.type == "string_literal":
+                include_paths[line] = _read_text(path, source)[1:-1]
+        if node.type not in {"alias_declaration", "type_definition", "class_specifier", "struct_specifier", "union_specifier",
                              "using_declaration", "namespace_definition", "namespace_alias_definition"}:
             continue
         scope = _cpp_qualified_name(node, "", source).rstrip(":")
@@ -3466,11 +3488,10 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
         while parent is not None:
             if parent.type == "template_declaration":
                 dependent = True
+            if parent.type == "namespace_definition" and parent.child_by_field_name("name") is None:
+                dependent = True
             if parent.type in {"preproc_if", "preproc_ifdef", "preproc_else", "preproc_elif"}:
-                guard = (parent.type == "preproc_ifdef" and parent.parent is not None
-                         and parent.parent.type == "translation_unit"
-                         and re.match(r"#\s*ifndef\s+([A-Za-z_]\w*)[^\n]*\n\s*#\s*define\s+\1(?:\s|$)",
-                                      _read_text(parent, source)))
+                guard = _cpp_is_header_guard(parent, source)
                 conditional = conditional or not guard
             if block is None and parent.type in {
                 "compound_statement", "for_statement", "for_range_loop", "if_statement",
@@ -3524,7 +3545,76 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
                              "directive": directive, "namespace": node.type == "namespace_definition",
                              "start": node.start_byte, "end": block.end_byte if block is not None else len(source),
                              "local": block is not None, "block": block.start_byte if block is not None else 0})
-    return bindings, includes
+    return bindings, includes, include_paths
+
+
+def _cpp_class_lookup_facts(node, source: bytes) -> dict:
+    """Literal bases and member-name barriers, without resolving overloads or dispatch."""
+    bases, members, signatures = [], set(), {}
+    clause = next((c for c in node.named_children if c.type == "base_class_clause"), None)
+    if clause is not None:
+        virtual = False
+        for child in clause.children:
+            if child.type == "virtual":
+                virtual = True
+            elif child.type == ",":
+                virtual = False
+            elif child.is_named and child.type != "access_specifier":
+                bases.append({"type": _read_text(child, source), "position": child.start_byte,
+                              "virtual": virtual})
+    body = node.child_by_field_name("body")
+    pending = [(child, False) for child in body.named_children] if body is not None else []
+    while pending:
+        member, unsupported = pending.pop()
+        if member.type.startswith("preproc_") or member.type == "template_declaration":
+            pending.extend((child, True) for child in member.named_children)
+            continue
+        name = member.child_by_field_name("name")
+        if name is not None and member.type in {
+            "alias_declaration", "class_specifier", "struct_specifier", "union_specifier", "enum_specifier",
+        }:
+            members.add(_read_text(name, source))
+        nested_type = member.child_by_field_name("type")
+        if nested_type is not None and nested_type.type in {"class_specifier", "struct_specifier", "union_specifier", "enum_specifier"}:
+            name = nested_type.child_by_field_name("name")
+            if name is not None:
+                members.add(_read_text(name, source))
+        union = member if member.type == "union_specifier" else nested_type
+        if (union is not None and union.type == "union_specifier" and
+                union.child_by_field_name("name") is None):
+            union_body = union.child_by_field_name("body")
+            if union_body is not None:
+                pending.extend((child, True) for child in union_body.named_children)
+        enum = member if member.type == "enum_specifier" else nested_type
+        if (enum is not None and enum.type == "enum_specifier" and
+                not any(c.type in {"class", "struct"} for c in enum.children)):
+            enum_body = enum.child_by_field_name("body")
+            for enumerator in enum_body.named_children if enum_body is not None else []:
+                name = enumerator.child_by_field_name("name")
+                if name is not None:
+                    members.add(_read_text(name, source))
+        if member.type == "using_declaration":
+            match = re.search(r"([A-Za-z_]\w*)\s*;\s*$", _read_text(member, source))
+            if match:
+                members.add(match[1])
+        for declarator in member.children_by_field_name("declarator"):
+            current, function = declarator, None
+            while current is not None and current.type not in {"identifier", "field_identifier", "type_identifier"}:
+                if current.type == "function_declarator":
+                    function = current
+                inner = current.child_by_field_name("declarator")
+                if inner is None and current.type == "parenthesized_declarator":
+                    inner = next(iter(current.named_children), None)
+                current = inner
+            if current is None:
+                continue
+            name = _read_text(current, source)
+            members.add(name)
+            if (function is not None and not unsupported and
+                    function.child_by_field_name("declarator") == current):
+                signatures.setdefault(name, set()).add(_read_text(function, source))
+    return {"bases": bases, "members": sorted(members),
+            "methods": {name: len(values) for name, values in signatures.items()}}
 
 
 def _cpp_class_fields(node, source: bytes, positions: dict[str, int]) -> dict[str, str]:
@@ -7284,6 +7374,7 @@ def _extract_generic(
                     class_node = next(n for n in nodes if n["id"] == class_nid)
                     class_node["_cpp_field_positions"] = {}
                     class_node["_cpp_fields"] = _cpp_class_fields(node, source, class_node["_cpp_field_positions"])
+                    class_node["_cpp_lookup"] = _cpp_class_lookup_facts(node, source)
             # A nested class/object/trait is contained by its ENCLOSING type, not
             # the file (#2040). parent_class_nid is threaded down the walk for
             # every language and is always a real class-like node (never a
@@ -10804,7 +10895,7 @@ def _extract_generic(
                     and is_member_call
                     and not is_scoped_call
                     and func_node is not None and func_node.type == "field_expression"
-                    and (len(cpp_chain) != 1 or member_receiver in type_table
+                    and (len(cpp_chain) != 1 or member_receiver == "this" or member_receiver in type_table
                          or (cpp_binding is not None and bool(cpp_binding[2])))
                 )
                 if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
@@ -11664,7 +11755,8 @@ def _extract_generic(
         _ts_attach_class_fields(result, ts_field_types, str_path)
     if config.ts_module == "tree_sitter_cpp":
         file_node = next(n for n in nodes if n["id"] == file_nid)
-        file_node["_cpp_type_bindings"], file_node["_cpp_include_positions"] = _cpp_resolution_facts(root, source)
+        (file_node["_cpp_type_bindings"], file_node["_cpp_include_positions"],
+         file_node["_cpp_include_paths"]) = _cpp_resolution_facts(root, source)
     if config.ts_module == "tree_sitter_php":
         _php_receiver_type_table(root, source, type_table)
     if config.ts_module == "tree_sitter_swift":
