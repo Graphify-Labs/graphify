@@ -222,3 +222,103 @@ def test_path_call_does_not_bind_to_a_same_named_local_function(tmp_path):
     })
     assert ("src/a.rs:run()", "src/b.rs:helper()") in calls
     assert ("src/a.rs:run()", "src/a.rs:helper()") not in calls
+
+
+def test_self_field_calls_require_unique_local_type_and_method(tmp_path):
+    calls = _scoped_calls(tmp_path, {
+        "src/a.rs": """
+struct Host; struct Other; struct Chain { host: Host, unknown: Missing }
+impl Host { fn authorize(&self) {} }
+impl Other { fn missing(&self) {} }
+impl Chain {
+    fn authorize(&self) {}
+    fn run(&self) { self.host.authorize(); self.authorize(); self.unknown.missing(); }
+}
+""",
+    })
+    assert ("src/a.rs:.run()", "src/a.rs:.authorize()") in calls
+    # Both authorize nodes have the same label: inspect actual target identity below.
+    result = extract([tmp_path / "src/a.rs"], root=tmp_path, cache_root=tmp_path / "other")
+    nodes = {n["id"]: n for n in result["nodes"]}
+    targets = [nodes[e["target"]]["source_location"] for e in result["edges"]
+               if e["relation"] == "calls" and nodes[e["source"]]["label"] == ".run()"]
+    assert sorted(targets) == ["L3", "L6"]
+
+
+def test_self_field_ambiguous_method_does_not_resolve(tmp_path):
+    calls = _scoped_calls(tmp_path, {"src/a.rs": """
+struct Host; struct Chain { host: Host }
+impl Host { fn act(&self) {} }
+impl Host { fn act(&self) {} }
+impl Chain { fn run(&self) { self.host.act(); } }
+"""})
+    assert not any(src.endswith(".run()") for src, _ in calls)
+
+
+def test_associated_type_binding_skips_lhs_preserves_rhs_and_ordinary_output(tmp_path):
+    path = _write(tmp_path / "src/a.rs", """
+struct Output; struct Payload; struct Wrapper<T>(T);
+fn binding(x: impl Future<Output = Wrapper<Payload>>) {}
+fn ordinary(x: Output) {}
+""")
+    result = extract([path], root=tmp_path, cache_root=tmp_path / "cache")
+    nodes = {n["id"]: n["label"] for n in result["nodes"]}
+    refs = {(nodes[e["source"]], nodes[e["target"]]) for e in result["edges"]
+            if e["relation"] == "references"}
+    assert ("binding()", "Output") not in refs
+    assert ("binding()", "Wrapper") in refs
+    assert ("binding()", "Payload") in refs
+    assert ("ordinary()", "Output") in refs
+
+
+def test_generic_field_type_does_not_bind_to_homonymous_struct(tmp_path):
+    calls = _scoped_calls(tmp_path, {"src/a.rs": """
+struct T;
+impl T { fn authorize(&self) {} }
+trait Host { fn authorize(&self); }
+struct Chain<T: Host> { host: T }
+impl<T: Host> Chain<T> { fn invoke(&self) { self.host.authorize(); } }
+struct Concrete { host: T }
+impl Concrete { fn invoke_concrete(&self) { self.host.authorize(); } }
+"""})
+    assert not any(src.endswith(".invoke()") for src, _ in calls)
+    assert ("src/a.rs:.invoke_concrete()", "src/a.rs:.authorize()") in calls
+
+
+def test_tuple_arc_and_lifetime_reference_resolve_local_methods(tmp_path):
+    calls = _scoped_calls(tmp_path, {"src/a.rs": """
+use std::sync::{Arc, Mutex};
+struct State; impl State { fn emit(&self) {} }
+struct Subscriber(Arc<State>);
+impl Subscriber { fn run(&self) { self.0.emit(); } }
+struct Owner; impl Owner { fn lock(&self) {} }
+struct Child<'a> { owner: &'a Owner }
+impl Child<'_> { fn drop(&self) { self.owner.lock(); } }
+"""})
+    assert ("src/a.rs:.run()", "src/a.rs:.emit()") in calls
+    assert ("src/a.rs:.drop()", "src/a.rs:.lock()") in calls
+
+
+def test_tuple_wrapper_and_arc_ambiguity_fail_closed(tmp_path):
+    calls = _scoped_calls(tmp_path, {"src/a.rs": """
+use std::sync::Arc;
+use other::Arc;
+struct State; impl State { fn emit(&self) {} }
+struct Unknown<T>(T);
+struct Subscriber(Arc<State>, Unknown<State>);
+impl Subscriber { fn run(&self) { self.0.emit(); self.1.emit(); } }
+"""})
+    assert not any(src.endswith(".run()") for src, _ in calls)
+
+
+def test_tuple_generic_and_ambiguous_method_fail_closed(tmp_path):
+    calls = _scoped_calls(tmp_path, {"src/a.rs": """
+use std::sync::Arc;
+struct T; impl T { fn act(&self) {} }
+struct Generic<T>(Arc<T>);
+impl<T> Generic<T> { fn generic(&self) { self.0.act(); } }
+struct Host; impl Host { fn work(&self) {} } impl Host { fn work(&self) {} }
+struct Concrete(Arc<Host>);
+impl Concrete { fn ambiguous(&self) { self.0.work(); } }
+"""})
+    assert not any(src.endswith((".generic()", ".ambiguous()")) for src, _ in calls)

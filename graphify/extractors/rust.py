@@ -67,6 +67,9 @@ def _rust_collect_type_refs(
     if node is None:
         return
     t = node.type
+    if t == "type_binding":
+        _rust_collect_type_refs(node.child_by_field_name("type"), source, generic, out, local_types)
+        return
     if t == "primitive_type":
         return
     if t == "type_identifier":
@@ -317,6 +320,22 @@ def extract_rust(path: Path) -> dict:
     _scan_local_types(root)
     local_type_names = frozenset(local_types)
 
+    # Only a unique, top-level std import proves the meaning of bare Arc.
+    arc_bindings: list[tuple[str, bool]] = []
+    scan = [root]
+    while scan:
+        current = scan.pop()
+        if current.type == "use_declaration":
+            arg = current.child_by_field_name("argument")
+            if arg is not None:
+                for binding, _line in _rust_use_bindings(arg, source):
+                    compact = re.sub(r"\s+", "", binding)
+                    if compact.endswith("::*") or compact.split("::")[-1].split("as")[-1] == "Arc":
+                        arc_bindings.append((compact, current.parent == root))
+        scan.extend(current.children)
+    std_arc_imported = arc_bindings == [("std::sync::Arc", True)] and "Arc" not in local_types
+
+
     # Where each imported name comes from: `crate` for this crate's own paths, otherwise
     # the first path segment (`serde_json`, or a workspace crate's name). A sourceless
     # stub under such a name carries it, so the corpus rewire can scope the binding.
@@ -343,6 +362,9 @@ def extract_rust(path: Path) -> dict:
     # (bare impl type, method name) -> the method nodes this file's `impl` blocks
     # define, so an in-file `Type::f()` / `self.f()` binds to a method of that type.
     impl_methods: dict[tuple[str, str], set[str]] = {}
+    impl_method_counts: dict[tuple[str, str], int] = {}
+    field_types: dict[tuple[str, str], list[str | None]] = {}
+    struct_counts: dict[str, int] = {}
 
     # Nodes by id, so a declaration's node is found without scanning every node
     # (once per declaration, that scan was quadratic in the file's size).
@@ -526,6 +548,8 @@ def extract_rust(path: Path) -> dict:
                     if parent_impl_type:
                         owner = _rust_type_last_segment(parent_impl_type)
                         impl_methods.setdefault((owner, func_name), set()).add(func_nid)
+                        key = (owner, func_name)
+                        impl_method_counts[key] = impl_method_counts.get(key, 0) + 1
                 else:
                     func_nid = file_item_nid(_make_id(stem, func_name), func_name)
                     add_node(func_nid, f"{func_name}()", line)
@@ -616,6 +640,35 @@ def extract_rust(path: Path) -> dict:
                                 else:
                                     add_edge(item_nid, tgt, "references", line,
                                              context="generic_arg")
+                struct_type_params: set[str] = set()
+                if t == "struct_item":
+                    struct_counts[item_name] = struct_counts.get(item_name, 0) + 1
+                    params = node.child_by_field_name("type_parameters")
+                    if params is not None:
+                        for param in params.named_children:
+                            name = param.child_by_field_name("name")
+                            if param.type == "type_parameter" and name is not None:
+                                struct_type_params.add(_read_text(name, source))
+                def field_receiver_type(type_node):
+                    if type_node is None:
+                        return None
+                    if type_node.type == "reference_type":
+                        type_node = type_node.child_by_field_name("type")
+                    if type_node is not None and type_node.type == "generic_type":
+                        wrapper = type_node.child_by_field_name("type")
+                        wrapper_name = _read_text(wrapper, source) if wrapper is not None else ""
+                        if not (wrapper_name == "Arc" and std_arc_imported
+                                and "Arc" not in struct_type_params):
+                            return None
+                        args = next((c for c in type_node.named_children if c.type == "type_arguments"), None)
+                        if args is None or len(args.named_children) != 1:
+                            return None
+                        type_node = args.named_children[0]
+                    if type_node is None or type_node.type != "type_identifier":
+                        return None
+                    name = _read_text(type_node, source)
+                    return name if name not in struct_type_params else None
+
                 if t in ("struct_item", "union_item"):
                     for c in node.children:
                         if c.type != "field_declaration_list":
@@ -631,6 +684,10 @@ def extract_rust(path: Path) -> dict:
                                                     "reference_type", "primitive_type"):
                                         type_node = fc
                                         break
+                            field_name = field.child_by_field_name("name")
+                            if t == "struct_item" and field_name is not None:
+                                field_type = field_receiver_type(type_node)
+                                field_types.setdefault((item_name, _read_text(field_name, source)), []).append(field_type)
                             refs = []
                             _rust_collect_type_refs(type_node, source, False, refs, local_type_names)
                             for ref_name, role in refs:
@@ -648,6 +705,10 @@ def extract_rust(path: Path) -> dict:
                         if c.type != "ordered_field_declaration_list":
                             continue
                         fline = c.start_point[0] + 1
+                        if t == "struct_item":
+                            for index, field_type_node in enumerate(c.children_by_field_name("type")):
+                                field_types.setdefault((item_name, str(index)), []).append(
+                                    field_receiver_type(field_type_node))
                         for tc in c.children:
                             if tc.type not in ("type_identifier", "generic_type",
                                                "scoped_type_identifier", "reference_type",
@@ -987,6 +1048,8 @@ def extract_rust(path: Path) -> dict:
             is_scoped_call: bool = False
             is_self_call: bool = False
             qualifier_type: str | None = None
+            is_self_field_call = False
+            field_owner: str | None = None
             if func_node:
                 if func_node.type == "identifier":
                     callee_name = _read_text(func_node, source)
@@ -998,6 +1061,15 @@ def extract_rust(path: Path) -> dict:
                     receiver = func_node.child_by_field_name("value")
                     if receiver is not None and receiver.type == "self":
                         is_self_call = True
+                    elif receiver is not None and receiver.type == "field_expression":
+                        base = receiver.child_by_field_name("value")
+                        member = receiver.child_by_field_name("field")
+                        if base is not None and base.type == "self" and member is not None:
+                            is_self_field_call = True
+                            owner = _rust_type_last_segment(self_type or "")
+                            candidates = field_types.get((owner, _read_text(member, source)), [])
+                            if struct_counts.get(owner) == 1 and len(candidates) == 1:
+                                field_owner = candidates[0]
                 elif func_node.type == "scoped_identifier":
                     # Type::method() — still allow in-file EXTRACTED match, but
                     # skip cross-file resolution: bare last-segment lookup ignores
@@ -1016,7 +1088,13 @@ def extract_rust(path: Path) -> dict:
                 and callee_name not in _LANGUAGE_BUILTIN_GLOBALS
                 and (callee_name not in _RUST_BUILTIN_TYPES or callee_name in local_types)
             ):
-                if qualifier_type is not None or (is_self_call and self_type):
+                if is_self_field_call:
+                    key = (field_owner or "", callee_name)
+                    owned = impl_methods.get(key, set())
+                    tgt_nid = (next(iter(owned)) if field_owner and
+                               struct_counts.get(field_owner) == 1 and
+                               impl_method_counts.get(key) == 1 and len(owned) == 1 else None)
+                elif qualifier_type is not None or (is_self_call and self_type):
                     # `Type::f()` / `Self::f()` / `self.f()` name the type whose
                     # method is called: bind only to that type's method in this
                     # file. Matching the bare name instead sent `Arc::new(x)` and
@@ -1058,6 +1136,8 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
+                elif is_self_field_call:
+                    pass  # No bare-name fallback for an unresolved field receiver.
                 elif is_scoped_call:
                     # A module-qualified call (`crate::m::f()`, `m::f()`, `super::m::f()`)
                     # goes to the cross-file pass with its qualifier, which binds it only
