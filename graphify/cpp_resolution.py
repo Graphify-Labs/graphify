@@ -133,13 +133,15 @@ class CppTypeLookup:
             complete_targets = set()
             for nid in targets:
                 definition = self.nodes[nid]
+                definitions = []
                 for file, binding in self.bindings.get(definition["_cpp_qualified"], []):
-                    if file != definition.get("source_file") or not binding.get("complete"):
+                    if not binding.get("complete"):
                         continue
                     if any(file in reachable and (file != at_source or binding["start"] <= at)
                            for at_source, at, reachable in contexts):
-                        complete_targets.add(nid)
-                        break
+                        definitions.append(file)
+                if len(definitions) == 1 and definitions[0] == definition.get("source_file"):
+                    complete_targets.add(nid)
             return next(iter(complete_targets)) if len(complete_targets) == 1 else None
         return None
 
