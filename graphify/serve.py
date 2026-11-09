@@ -660,13 +660,13 @@ _QUERY_DOC_SUFFIXES = (".md", ".rst", ".txt", ".yml", ".yaml", ".toml", ".cfg", 
 _QUERY_DOC_DIRS = frozenset({"doc", "docs", "example", "examples"})
 
 
-def _query_path_weight(terms: list[str]):
+def _query_path_weight(terms: list[str], demote_docs: bool = True):
     """Score multiplier per node for `query`: tests, docs, config files and nodes
     without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the question itself
     asks about tests (or docs); everything else counts 1.0."""
     words = {tok for t in terms for tok in _search_tokens(t)}
     keep_tests = bool(words & _QUERY_TEST_WORDS)
-    keep_docs = bool(words & _QUERY_DOC_WORDS)
+    keep_docs = (not demote_docs) or bool(words & _QUERY_DOC_WORDS)
 
     def weight(data: dict) -> float:
         path = str(data.get("source_file") or "").replace("\\", "/")
@@ -697,7 +697,12 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
 
 
 def _score_query(
-    G: nx.Graph, terms: list[str], *, collect_per_term_seeds: bool, path_weight=None
+    G: nx.Graph,
+    terms: list[str],
+    *,
+    collect_per_term_seeds: bool,
+    path_weight=None,
+    demote_docs: bool = True,
 ) -> _QueryScores:
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
@@ -1601,6 +1606,7 @@ def _query_graph_text(
     graph_path: str | None = None,
     seeds: list[str] | None = None,
     seed_root: Path | None = None,
+    demote_docs: bool = True,
 ) -> str:
     # Explicit start nodes: an external ranker -- embeddings, a learned
     # retriever, grep -- can choose where the traversal begins instead of the
@@ -1647,7 +1653,13 @@ def _query_graph_text(
     # — one combined + one per query token — re-walking the whole graph each
     # time; on a 100k-node, three-term benchmark ~71% of scoring time was
     # spent in those redundant per-term passes.
-    qs = _score_query(G, terms, collect_per_term_seeds=True, path_weight=_query_path_weight(terms))
+    qs = _score_query(
+        G,
+        terms,
+        collect_per_term_seeds=True,
+        path_weight=_query_path_weight(terms, demote_docs=demote_docs),
+        demote_docs=demote_docs,
+    )
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
     # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
@@ -3004,6 +3016,9 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        demote_docs = arguments.get("demote_docs", True)
+        if isinstance(demote_docs, str):
+            demote_docs = demote_docs.lower() not in ("false", "0", "no")
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -3013,6 +3028,7 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            demote_docs=demote_docs,
         )
         querylog.log_query(
             kind="mcp_query",

@@ -2066,7 +2066,7 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
-        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--depth N] [--graph path]"
+        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--no-doc-demotion] [--context C] [--seed X] [--budget N] [--depth N] [--graph path]"
         if len(sys.argv) < 3:
             print(_query_usage, file=sys.stderr)
             sys.exit(1)
@@ -2085,6 +2085,11 @@ def dispatch_command(cmd: str) -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        demote_docs_flag: bool | None = None
+        if "--no-doc-demotion" in sys.argv or "--no-demote-docs" in sys.argv:
+            demote_docs_flag = False
+        elif "--demote-docs" in sys.argv or "--doc-demotion" in sys.argv:
+            demote_docs_flag = True
         budget: int | None = None
         depth: int | None = None
         graph_path = _default_graph_path()
@@ -2093,7 +2098,13 @@ def dispatch_command(cmd: str) -> None:
         args = sys.argv[3:]
         i = 0
         while i < len(args):
-            if args[i] == "--budget" and i + 1 < len(args):
+            if args[i] in ("--no-doc-demotion", "--no-demote-docs"):
+                demote_docs_flag = False
+                i += 1
+            elif args[i] in ("--demote-docs", "--doc-demotion"):
+                demote_docs_flag = True
+                i += 1
+            elif args[i] == "--budget" and i + 1 < len(args):
                 try:
                     budget = int(args[i + 1])
                 except ValueError:
@@ -2206,6 +2217,11 @@ def dispatch_command(cmd: str) -> None:
             project_settings = {}
         effective_budget = budget if budget is not None else project_settings.get("query_budget", 2000)
         effective_depth = depth if depth is not None else project_settings.get("query_depth", 2)
+        effective_demote_docs = (
+            demote_docs_flag
+            if demote_docs_flag is not None
+            else project_settings.get("demote_docs", project_settings.get("query_demote_docs", True))
+        )
 
         import time as _time
         _t0 = _time.perf_counter()
@@ -2220,6 +2236,7 @@ def dispatch_command(cmd: str) -> None:
             graph_path=str(gp),
             seeds=seeds or None,
             seed_root=graph_root,
+            demote_docs=effective_demote_docs,
         )
         querylog.log_query(
             kind="query",
@@ -2231,6 +2248,7 @@ def dispatch_command(cmd: str) -> None:
             token_budget=effective_budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
             seeds=seeds or None,
+            demote_docs=effective_demote_docs,
         )
         _touch_query_stamp(gp)
         print(_result)
