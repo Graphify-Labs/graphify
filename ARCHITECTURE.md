@@ -157,8 +157,10 @@ Recovery is bounded to 128 conditional groups and 32 branch views; malformed,
 still-invalid, conflicting, unattributable or over-budget inputs retain their original parse
 errors. File-node `metadata.cpp_conditional_recovery` records original errors,
 branch ranges and coverage; guarded records carry `metadata.cpp_conditions`.
-The file range map also applies to later resolver-created edges. This is static
-branch-wise syntax coverage, not proof that all branches execute together.
+The file range map also applies to later resolver-created edges and parked C++
+calls; cross-repository linking carries the representative callsite's guards to
+its inferred edge while retaining the existing callee/receiver deduplication.
+This is static branch-wise syntax coverage, not proof that all branches execute together.
 AST cache schema 43 invalidates older template and conditional recovery records.
 
 ## Adding a new language extractor

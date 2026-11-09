@@ -3833,6 +3833,56 @@ def _recover_cpp_conditional_initializers(path: Path, source: bytes, original: d
     return annotate(merged)
 
 
+def _stamp_cpp_condition_provenance(nodes: list[dict], edges: list[dict]) -> None:
+    """Apply recovered source ranges to later resolver edges and parked callsites."""
+    ranges: dict[str, list[tuple[int, int, int, int]]] = {}
+    for node in nodes:
+        metadata = node.get("metadata")
+        coverage = metadata.get("cpp_conditional_recovery") if isinstance(metadata, dict) else None
+        if not isinstance(coverage, dict) or coverage.get("status") != "recovered":
+            continue
+        sf = node.get("source_file")
+        groups = coverage.get("groups")
+        if not isinstance(sf, str) or not sf or not isinstance(groups, list):
+            continue
+        sf = PurePath(sf).as_posix()
+        for group in groups:
+            if (not isinstance(group, dict) or type(group.get("line")) is not int
+                    or not isinstance(group.get("branches"), list)):
+                continue
+            for index, branch in enumerate(group["branches"]):
+                if (not isinstance(branch, dict)
+                        or any(type(branch.get(key)) is not int for key in ("start_line", "end_line"))):
+                    continue
+                ranges.setdefault(sf, []).append(
+                    (branch["start_line"], branch["end_line"], group["line"], index)
+                )
+    if not ranges:
+        return
+
+    def stamp(record: dict, file_key: str, line_key: str) -> None:
+        sf = PurePath(str(record.get(file_key) or "")).as_posix()
+        location = re.match(r"L(\d+)", str(record.get(line_key) or ""))
+        if sf not in ranges or location is None:
+            return
+        line = int(location[1])
+        conditions = [{"group_line": group_line, "branch": branch}
+                      for start, end, group_line, branch in ranges[sf] if start <= line <= end]
+        if conditions:
+            metadata = record.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["cpp_conditions"] = conditions
+
+    for edge in edges:
+        stamp(edge, "source_file", "source_location")
+    for node in nodes:
+        metadata = node.get("metadata")
+        if isinstance(metadata, dict):
+            for entry in metadata.get(UNRESOLVED_CALLS_KEY) or ():
+                if isinstance(entry, dict) and entry.get("lang") == "cpp":
+                    stamp(entry, "file", "line")
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
@@ -13269,6 +13319,8 @@ def extract(
         _df = _item.get("definition_file")
         if _df and "\\" in str(_df):
             _item["definition_file"] = PurePath(_df).as_posix()
+
+    _stamp_cpp_condition_provenance(all_nodes, all_edges)
 
     return {
         "nodes": all_nodes,
