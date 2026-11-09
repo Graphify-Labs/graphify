@@ -432,6 +432,10 @@ function updateGraphFilters() {{
     confidenceFilter.value ? JSON.parse(confidenceFilter.value) : null);
   nodesDS.update(RAW_NODES.map(n => ({{id: n.id, hidden: !visible.nodes.has(n.id), physics: visible.nodes.has(n.id)}})));
   edgesDS.update(RAW_EDGES.map((e, i) => ({{id: i, hidden: !visible.edges.has(i), physics: visible.edges.has(i)}})));
+  if (!visible.nodes.has(hoveredNodeId)) {{
+    hoveredNodeId = null;
+    container.style.cursor = 'default';
+  }}
   document.getElementById('visible-count').textContent = `${{visible.nodes.size}} nodes / ${{visible.edges.size}} edges visible`;
   document.getElementById('search-results').style.display = 'none';
   const selected = network.getSelectedNodes()[0];
@@ -737,6 +741,8 @@ def to_html(
     for u, v, data in G.edges(data=True):
         confidence = data.get("confidence", "EXTRACTED")
         relation = data.get("relation", "")
+        confidence = "" if confidence is None else str(confidence)
+        relation = "" if relation is None else str(relation)
         true_src = data.get("_src", u)
         true_tgt = data.get("_tgt", v)
         evidence = [f"{relation} [{confidence}]"]

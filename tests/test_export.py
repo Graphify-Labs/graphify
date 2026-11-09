@@ -1659,6 +1659,37 @@ console.log(JSON.stringify({initial,calls,empty,hidden,restoredCalls,restored:sn
     assert result["options"] == ["calls", "imports"]
 
 
+def test_to_html_unspecified_filter_and_hidden_hover_cannot_select_all_or_hidden_nodes(tmp_path):
+    import networkx as nx
+
+    graph = nx.MultiDiGraph()
+    for nid in ("a", "b", "c"):
+        graph.add_node(nid, label=nid, source_file=f"{nid}.py")
+    graph.add_edge("a", "b", relation=None, confidence=None)
+    graph.add_edge("b", "c", relation="calls", confidence="EXTRACTED")
+    out = tmp_path / "unspecified.html"
+    to_html(graph, {0: ["a", "b", "c"]}, str(out))
+    result = _run_sidebar_harness(out.read_text(encoding="utf-8"), """
+const visible = () => RAW_NODES.filter(n => !nodesDS.get(n.id).hidden).map(n => n.id).sort();
+relationFilter.value = JSON.stringify('');
+relationFilter.listeners.change();
+const unspecified = visible();
+hoveredNodeId = 'a';
+const selected = [];
+network.selectNodes = ids => selected.push(...ids);
+relationFilter.value = JSON.stringify('calls');
+relationFilter.listeners.change();
+els.graph.listeners.click();
+const calls = visible();
+confidenceFilter.value = JSON.stringify('');
+confidenceFilter.listeners.change();
+console.log(JSON.stringify({unspecified, calls, selected, hover:hoveredNodeId,
+  cursor:els.graph.style.cursor, empty:visible()}));
+""")
+    assert result == {"unspecified": ["a", "b"], "calls": ["b", "c"], "selected": [],
+                      "hover": None, "cursor": "default", "empty": []}
+
+
 def test_to_html_legend_label_escaped_once_without_title(tmp_path):
     """The legend label is HTML-escaped once for the innerHTML sink, so its DOM
     text (what the sidebar tooltip shows) is the raw label; no title attributes."""
