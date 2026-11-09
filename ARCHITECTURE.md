@@ -143,6 +143,23 @@ schema 41 retires entries without receiver chains and persistent class fields.
 Rebuild existing graphs with `graphify extract . --code-only --force` to populate
 unchanged headers before relying on changed-file-only updates.
 
+C++ plain class/struct forwards fold into a unique exactly qualified definition
+only when one declaration file reaches the other through unconditional, exactly
+resolved quoted includes in the scanned corpus. The definition keeps its ID and
+source site; `metadata.cpp_declaration_sites` retains every folded forward site.
+`_cpp_reconcile_files` records the source and include-proof files so CLI/watch
+updates re-extract the live group after an edit, deletion, or exclusion. New pairs
+refresh exact-identity candidates from the permitted unchanged corpus before
+the same proof checks run. A whole-file `#ifndef NAME` / `#define NAME` guard is
+recognized structurally; feature expressions are never evaluated. Unrelated
+same-name files, multiple definitions, templates/specializations, nested/local or
+anonymous scopes, and other conditional declarations/includes stay separate.
+A common third file including both declarations
+does not establish equivalence in this pass. Member overload/signature identity
+and non-sibling member declaration/definition folding remain unsupported.
+AST cache schema 44 retires records without class-kind and exact include proofs;
+rebuild existing graphs with `graphify extract . --code-only --force`.
+
 ## Adding a new language extractor
 
 1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.
