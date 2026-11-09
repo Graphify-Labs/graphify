@@ -159,6 +159,70 @@ void Run(Worker& x) { x.Work(); }
     assert _calls(result) == set()
 
 
+def test_deep_alias_chains_stop_without_recursion_failure(tmp_path):
+    aliases = "using Alias0 = Worker;\n" + "\n".join(
+        f"using Alias{i} = Alias{i - 1};" for i in range(1, 128))
+    _, result = _extract(tmp_path, "struct Worker { void Work(); };\n" + aliases
+                         + "\nvoid Run(Alias127& x) { x.Work(); }")
+    assert _calls(result) == set()
+
+
+def test_conditional_alias_alternatives_are_not_configured(tmp_path):
+    _, result = _extract(tmp_path, """
+struct First { void Work(); }; struct Second { void Work(); };
+#if PICK_FIRST
+using Alias = First;
+#else
+using Alias = Second;
+#endif
+void Run(Alias& x) { x.Work(); }
+""")
+    assert _calls(result) == set()
+
+
+def test_a_conditional_alias_hides_an_outer_alias_without_becoming_configured(tmp_path):
+    _, result = _extract(tmp_path, """
+struct First { void Work(); }; struct Second { void Work(); }; using Alias = First;
+void Run() {
+#ifdef PICK_SECOND
+using Alias = Second;
+#endif
+Alias x; x.Work();
+}
+""")
+    assert _calls(result) == set()
+
+
+def test_a_conventional_header_guard_allows_an_alias(tmp_path):
+    _, result = _extract(tmp_path, "void Run(Alias& x) { x.Work(); }", """
+#ifndef TYPES_HPP
+#define TYPES_HPP
+struct Worker { void Work(); }; using Alias = Worker;
+#endif
+""")
+    assert _calls(result) == {("Worker", ".Work()", "INFERRED")}
+
+
+def test_a_later_class_alias_blocks_an_outer_alias_in_an_inline_body(tmp_path):
+    _, result = _extract(tmp_path, """
+struct Good { void Work(); }; struct Bad { void Work(); }; using Alias = Good;
+struct Holder { void Run() { Alias x; x.Work(); } using Alias = Bad; };
+""")
+    assert not any(owner == "Good" for owner, _, _ in _calls(result, ".Run()"))
+
+
+@pytest.mark.parametrize("shadow", ["namespace Good = Other;", "using Good = Other;",
+                                     "namespace Good {}", "struct Good {};"])
+def test_a_qualified_prefix_blocks_fallback_to_an_outer_namespace(tmp_path, shadow):
+    other = "namespace Other {}" if shadow.startswith("namespace Good =") else "struct Other {};"
+    _, result = _extract(tmp_path, f"""
+namespace Good {{ struct Type {{ void Work(); }}; }}
+{other}
+namespace app {{ {shadow} void Run(Good::Type& x) {{ x.Work(); }} }}
+""")
+    assert _calls(result) == set()
+
+
 def test_incremental_alias_receiver_uses_persisted_header_facts(tmp_path):
     paths, original = _extract(tmp_path, "void Run(app::Alias& x) { x.Work(); }",
                               "namespace app { struct Worker { void Work(); }; using Alias = Worker; }")

@@ -70,6 +70,15 @@ class CppTypeLookup:
             candidates = [(file, b) for file, b in self.bindings.get(identity, [])
                           if file in visible and (not b["local"] if file != source else
                                                   b["start"] <= position < b["end"])]
+            if any(file == source and not b["local"] and b["start"] > position
+                   and b["scope"] in self.types for file, b in self.bindings.get(identity, [])):
+                return None
+            if not candidates and "::" in name:
+                prefix = "::".join(filter(None, (enclosing, name.split("::", 1)[0])))
+                if any(file in visible and (not b["local"] if file != source else
+                                            b["start"] <= position < b["end"])
+                       for file, b in self.bindings.get(prefix, [])):
+                    return None
             if not candidates and not absolute and "::" not in name:
                 for file, directive in self.directives.get(enclosing, []):
                     if file not in visible or (directive["local"] if file != source else
@@ -98,11 +107,15 @@ class CppTypeLookup:
             return next(iter(targets)) if len(targets) == 1 else None
         return None
 
-    def _expand(self, name: str, scope: str, source: str, position: int, seen: set) -> tuple[str, str] | None:
+    def _expand(self, name: str, scope: str, source: str, position: int, seen: set,
+                depth: int = 0) -> tuple[str, str] | None:
+        # shortcut: cap static expansion at 32 hops; raise only with a compiler-backed resolver.
+        if depth >= 32:
+            return None
         name = re.sub(r"\b(const|volatile)\b", "", name).replace("&", "").strip()
         smart = re.fullmatch(r"std::(?:unique_ptr|shared_ptr)\s*<\s*(.+)\s*>", name)
         if smart:
-            pointee = self._expand(smart[1], scope, source, position, seen)
+            pointee = self._expand(smart[1], scope, source, position, seen, depth + 1)
             return (pointee[0], "smart") if pointee and not pointee[1] else None
         match = re.fullmatch(rf"({_IDENTIFIER})\s*((?:\*\s*)*)", name)
         if not match:
@@ -117,7 +130,7 @@ class CppTypeLookup:
         key = (file, alias["start"])
         if key in seen or not alias["target"]:
             return None
-        target = self._expand(alias["target"], alias["scope"], file, alias["start"], seen | {key})
+        target = self._expand(alias["target"], alias["scope"], file, alias["start"], seen | {key}, depth + 1)
         if target is None or (shape and target[1] == "smart"):
             return None
         return target[0], target[1] + shape
