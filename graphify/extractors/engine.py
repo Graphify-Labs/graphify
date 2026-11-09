@@ -3419,6 +3419,96 @@ def _cpp_member_record(node, declarator, name: str, source: bytes) -> dict:
     return record
 
 
+def _cpp_plain_template_parameters(node, source: bytes) -> list[str]:
+    if node is None or node.type != "template_declaration":
+        return []
+    if len([c for c in node.named_children if c.type != "comment"]) != 2:
+        return []
+    parameters = node.child_by_field_name("parameters")
+    names = []
+    for parameter in parameters.named_children if parameters is not None else ():
+        if (parameter.type != "type_parameter_declaration"
+                or len(parameter.named_children) != 1
+                or parameter.named_children[0].type != "type_identifier"):
+            return []
+        names.append(_read_text(parameter.named_children[0], source))
+    return names if len(set(names)) == len(names) else []
+
+
+def _cpp_zero_arg_member_signature(node, source: bytes) -> tuple | None:
+    """Compare only nondependent, parameterless member declarations and definitions."""
+    type_node = node.child_by_field_name("type")
+    declarator = node.child_by_field_name("declarator")
+    if (type_node is None or type_node.type != "primitive_type"
+            or declarator is None or declarator.type != "function_declarator"
+            or any(c.type not in {"primitive_type", "function_declarator", "compound_statement", "comment"}
+                   for c in node.named_children)):
+        return None
+    name = declarator.child_by_field_name("declarator")
+    parameters = declarator.child_by_field_name("parameters")
+    if name is None or parameters is None or parameters.named_children:
+        return None
+    suffix = [c for c in declarator.named_children if c != name]
+    if any(c.type not in {"parameter_list", "type_qualifier", "ref_qualifier", "noexcept"}
+           or (c.type == "noexcept" and c.named_children) for c in suffix):
+        return None
+    return (_read_text(type_node, source), tuple("".join(_read_text(c, source).split()) for c in suffix))
+
+
+def _cpp_primary_template_function_name(node, source: bytes, classes: dict) -> str | None:
+    """Prove a same-file primary owner instead of erasing arbitrary template arguments.
+
+    shortcut: only unique parameterless primitive-returning members are matched,
+    use signature-aware template resolution for overloads or dependent signatures.
+    """
+    parameters = _cpp_plain_template_parameters(node.parent, source)
+    signature = _cpp_zero_arg_member_signature(node, source)
+    if not parameters or signature is None:
+        return None
+    declarator = node.child_by_field_name("declarator").child_by_field_name("declarator")
+    if declarator.type != "qualified_identifier":
+        return None
+    owner = declarator.child_by_field_name("scope")
+    member = declarator.child_by_field_name("name")
+    if owner is None or owner.type != "template_type" or member is None or member.type != "identifier":
+        return None
+    owner_name = owner.child_by_field_name("name")
+    arguments = owner.child_by_field_name("arguments")
+    if owner_name is None or owner_name.type != "type_identifier" or arguments is None:
+        return None
+    if ["".join(_read_text(c, source).split()) for c in arguments.named_children] != parameters:
+        return None
+    name = _read_text(owner_name, source)
+    candidates = classes.get(normalize_id(name), [])
+    if len(candidates) != 1:
+        return None
+    primary = candidates[0]
+    template = primary.parent
+    scope = node.parent.parent
+    if (scope is None or scope.type not in {"translation_unit", "declaration_list"}
+            or template is None or template.parent != scope
+            or len(_cpp_plain_template_parameters(template, source)) != len(parameters)
+            or _read_text(primary.child_by_field_name("name"), source) != name):
+        return None
+    body = primary.child_by_field_name("body")
+    if body is None:
+        return None
+    method = _read_text(member, source)
+    declarations = []
+    for child in body.named_children:
+        declaration = child
+        while declaration.type == "template_declaration":
+            declaration = declaration.named_children[-1]
+        for item in declaration.children_by_field_name("declarator"):
+            if normalize_id(_get_cpp_func_name(item, source) or "") == normalize_id(method):
+                declarations.append((child, declaration))
+    if (len(declarations) != 1 or declarations[0][0].type != "field_declaration"
+            or _get_cpp_func_name(declarations[0][1], source) != method
+            or _cpp_zero_arg_member_signature(declarations[0][1], source) != signature):
+        return None
+    return f"{name}::{method}"
+
+
 def _cpp_type_is_dependent(node, source: bytes) -> bool:
     """Template arguments may depend on a parameter; qualified concrete names do not."""
     parameters = _cpp_type_parameters_in_scope(node, source)
@@ -6927,6 +7017,16 @@ def _extract_generic(
     # guard excludes them to avoid false edges (#2137).
     callable_class_nids: set[str] = set()
     cpp_qualified_names: dict[str, str] = {}
+    cpp_classes: dict[str, list] = {}
+    if config.ts_module == "tree_sitter_cpp":
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            if current.type in config.class_types:
+                name = current.child_by_field_name("name")
+                if name is not None:
+                    cpp_classes.setdefault(normalize_id(_read_text(name, source)), []).append(current)
+            pending.extend(current.named_children)
     # Python only: per-function set of locally-bound names (params + local
     # assignment / for / with-as / comprehension targets). The indirect-dispatch
     # guard skips any call-argument identifier in the enclosing function's set,
@@ -8892,6 +8992,14 @@ def _extract_generic(
                         func_name = "{closure#" + str(php_closure_counts[_scope_key]) + "}"
                 else:
                     return
+            if config.ts_module == "tree_sitter_cpp" and "<" in func_name:
+                primary_name = _cpp_primary_template_function_name(node, source, cpp_classes)
+                primary_qualified = _cpp_qualified_name(node, primary_name, source) if primary_name else ""
+                if (primary_name is not None
+                        and primary_qualified
+                        and cpp_qualified_names.get(_make_id(stem, primary_name))
+                        == primary_qualified):
+                    func_name = primary_name
             sanitized_name = (
                 config.sanitize_symbol_name_fn(func_name)
                 if config.sanitize_symbol_name_fn is not None

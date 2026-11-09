@@ -215,9 +215,13 @@ C++ template wrappers preserve member ownership, including reference-returning
 declarations and matching same-file qualified definitions. Explicit calls such
 as `worker.Tick<int>()` resolve through the existing declared-receiver rules;
 dependent, unknown and ambiguous receivers do not acquire guessed targets.
-These are method-family nodes, not overload/specialization resolution. Generic
-templated owner normalization and cross-file declaration/definition merging
-remain outside this bounded support.
+These are method-family nodes, not overload/specialization resolution. Same-file
+primary owners such as `template<class T> void Box<T>::Run()` reuse a declared
+member only with unique owner/member declarations, plain ordered type parameters,
+and matching parameterless primitive-returning signatures (including cv/ref and
+bare noexcept qualifiers). Specializations, overloads, dependent signatures,
+constrained/defaulted/variadic templates, nested or shadowed owners, and cross-file
+template declaration/definition merging remain outside this bounded normalization.
 
 When conditional directives break an initializer or argument list, C++ extraction
 can recover separate, byte-preserving branch views. It does not evaluate defines,
