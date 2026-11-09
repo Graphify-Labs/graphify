@@ -6304,6 +6304,27 @@ def _resolve_cpp_member_calls(
                 return None
         return type_nid
 
+    def chain_park_name(rc: dict) -> str | None:
+        """The bare receiver-type name of a SINGLE-element C++ chain, so a call
+        onto a typed local whose class is declared in no local file can still be
+        PARKED for the cross-repo merge instead of dropped (#3152). A multi-hop
+        chain is not a single parkable name, and `this`/field roots are in-repo."""
+        chain = rc["cpp_receiver_chain"]
+        if len(chain) != 1 or "cpp_receiver_type" not in rc:
+            return None
+        name = re.sub(r"\b(const|volatile)\b", "", rc["cpp_receiver_type"]).strip()
+        identifier = r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*"
+        if chain[0][1] == "->":
+            smart = re.fullmatch(rf"std::(?:unique_ptr|shared_ptr)\s*<\s*({identifier})\s*>", name)
+            if smart:
+                name = smart[1]
+            elif name.endswith("*"):
+                name = name[:-1].strip()
+            else:
+                return None
+        name = name.removeprefix("::")
+        return name if re.fullmatch(r"[A-Za-z_]\w*", name) else None
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -6328,6 +6349,16 @@ def _resolve_cpp_member_calls(
         if "cpp_receiver_chain" in rc:
             type_nid = resolve_chain(rc)
             if type_nid is None:
+                # A single-element chain whose receiver type is known but declared
+                # in no local file is a cross-repo candidate: park it by type name
+                # for the merge to finish, as the non-chain receiver path does
+                # below — otherwise a typed local calling into another repo is
+                # silently dropped (#3152 regression from the chain resolver).
+                park_name = chain_park_name(rc)
+                if park_name is not None and not type_def_nids.get(_key(park_name)):
+                    _park_unresolved_member_call(
+                        node_by_id.get(caller), callee, park_name, "cpp", rc,
+                    )
                 continue
             type_qualified = receiver == "this" and len(rc["cpp_receiver_chain"]) == 1
         elif receiver == "this":
