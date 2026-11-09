@@ -155,6 +155,13 @@ def test_resolve_js_to_ts_when_real_file_is_ts(tmp_path):
     assert _resolve_js_module_path(written_as) == target
 
 
+def test_resolve_js_to_tsx_when_real_file_is_tsx(tmp_path):
+    """NodeNext .js specifiers may name a JSX-bearing TypeScript source."""
+    target = _write(tmp_path / "Component.tsx", "export const x = 1")
+    written_as = tmp_path / "Component.js"
+    assert _resolve_js_module_path(written_as) == target
+
+
 def test_resolve_jsx_to_tsx_when_real_file_is_tsx(tmp_path):
     target = _write(tmp_path / "Component.tsx", "export const x = 1")
     written_as = tmp_path / "Component.jsx"
@@ -188,6 +195,20 @@ def test_bare_path_import_resolves_in_ts_file(tmp_path):
     expected = _make_id(str(target))
     assert expected in _import_targets(result), (
         f"Bare-path .ts import must resolve to target node id; "
+        f"expected {expected}; got {_import_targets(result)}"
+    )
+
+
+def test_js_specifier_import_resolves_to_tsx_file(tmp_path):
+    """A NodeNext-style .js import must retain its edge to a .tsx source."""
+    target = _write(tmp_path / "Button.tsx",
+                    "export default function Button() { return null }\n")
+    importer = _write(tmp_path / "page.ts",
+                      "import Button from './Button.js'\nButton()\n")
+    result = extract_js(importer)
+    expected = _make_id(str(target))
+    assert expected in _import_targets(result), (
+        f".js specifier must resolve to the .tsx source node; "
         f"expected {expected}; got {_import_targets(result)}"
     )
 
@@ -328,6 +349,64 @@ def test_named_imports_emit_symbol_edges_after_resolution(tmp_path):
     )
     assert any("_bar" in t for t in targets), (
         f"Per-symbol `imports` edge for `bar` missing; got {targets}"
+    )
+
+
+# ── #4860 — relative specifiers with a ?query / #fragment suffix ─────────────
+
+
+def test_resolve_relative_specifier_with_query_string(tmp_path):
+    """`./foo.js?v=123` must resolve to the real `foo.js`."""
+    target = _write(tmp_path / "foo.js", "export const foo = 1")
+    assert _resolve_js_module_path("./foo.js?v=123", tmp_path) == target
+
+
+def test_resolve_relative_specifier_with_fragment(tmp_path):
+    """`./foo.js#frag` must resolve to the real `foo.js`."""
+    target = _write(tmp_path / "foo.js", "export const foo = 1")
+    assert _resolve_js_module_path("./foo.js#frag", tmp_path) == target
+
+
+def test_resolve_relative_specifier_with_query_and_fragment(tmp_path):
+    """Both suffixes together (`./foo.js?v=1#frag`) must be stripped."""
+    target = _write(tmp_path / "foo.js", "export const foo = 1")
+    assert _resolve_js_module_path("./foo.js?v=1#frag", tmp_path) == target
+
+
+def test_query_string_import_resolves_and_emits_no_phantom(tmp_path):
+    """The #4860 reproducer: `import { foo } from './lib/foo.js?v=134'`
+    must produce an `imports_from` edge to the real file and a per-symbol
+    `imports` edge for `foo`, with no phantom `ref_..._v_134` target."""
+    target = _write(tmp_path / "lib" / "foo.js", "export const foo = 1")
+    importer = _write(tmp_path / "page.js",
+                      "import { foo } from './lib/foo.js?v=134'\n")
+    result = extract_js(importer)
+    expected = _make_id(str(target))
+    targets = _import_targets(result)
+    assert expected in targets, (
+        f"Query-string import must resolve to the real file node; "
+        f"expected {expected}; got {targets}"
+    )
+    assert not any("_v_134" in t for t in targets), (
+        f"No phantom `_v_134` node should take the edge; got {targets}"
+    )
+    sym_targets = {str(e.get("target") or "") for e in result["edges"]
+                   if e.get("relation") == "imports"}
+    assert any("_foo" in t for t in sym_targets), (
+        f"Per-symbol `imports` edge for `foo` missing after resolution; "
+        f"got {sym_targets}"
+    )
+
+
+def test_query_string_does_not_affect_external_module(tmp_path):
+    """A bare (non-relative) specifier is untouched by the query-strip branch,
+    so external modules still fall through to the external reference path."""
+    importer = _write(tmp_path / "page.js",
+                      "import _ from 'lodash-es'\n")
+    targets = _import_targets(extract_js(importer))
+    assert any("lodash" in t for t in targets), (
+        f"External module specifier should still resolve externally; "
+        f"got {targets}"
     )
 
 

@@ -6,17 +6,113 @@ import os
 import unicodedata
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id
+from urllib.parse import unquote
+from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, classify_file
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 from graphify.security import sanitize_metadata
 
 
-_MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)')
+# A link destination is either <bracketed>, the only CommonMark form that may
+# contain spaces ([t](<My Note.md>)), or a bare run without whitespace. The
+# bracketed form is tried first so a spaced name is captured whole instead of
+# being cut at the first space; callers take whichever group matched. After the
+# `>` it only accepts a CommonMark title ("..", '..' or (..) without a nested
+# paren), so an unclosed `<` falls back to the bare form rather than swallowing
+# the links that follow on the line.
+_MD_INLINE_LINK_RE = re.compile(
+    r'(?<!\!)\[[^\]]*\]\(\s*(?:'
+    r'<([^<>\n]+)>\s*(?:"[^"\n]*"|\'[^\'\n]*\'|\([^()\n]*\))?\s*'
+    r'|<?([^)\s>]+)>?(?:\s+[^)]*)?'
+    r')\)')
 
-_MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
+_MD_REF_DEF_RE = re.compile(
+    r'^\s{0,3}\[([^\]]+)\]:\s*(?:<([^<>\n]+)>(?=\s*(?:["\'(]|$))|<?([^\s>]+)>?)')
 
-_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
+# Reference-style link uses: [text][label] or [label][]. The label resolves to
+# a separate definition (`[label]: target`), so the use — not the definition —
+# carries the citation evidence for its section (#4804).
+_MD_REF_LINK_RE = re.compile(r'(?<!\!)\[([^\]]*)\]\[([^\]]*)\]')
 
+_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+?)(?:\\?\|[^\]]*|#[^\]]*)?\]\]')
+
+# Document extensions a Markdown link may point at for a `references` edge, and
+# the extensions the Obsidian wikilink index covers.
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+
+# Source files can be linked as citations and resolved to references edges (#4804).
+_MD_CITEABLE_EXTS = _MD_LINKABLE_EXTS | CODE_EXTENSIONS
+
+# Inline code spans, single or double backtick delimited. Fenced blocks are
+# skipped before this runs, so a span here is prose citing a symbol by name.
+_MD_CODE_SPAN_RE = re.compile(r'(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)')
+
+# A code span naming a file path (e.g. `graphify/build.py`, `setup.py`).
+_MD_FILE_SPAN_RE = re.compile(r'^([A-Za-z0-9_./\-]+\.([A-Za-z0-9]+))$')
+
+# The two mention grammars a code span can carry. A path-qualified mention
+# (``src/pkg/mod.py::Widget::render``) names the defining file and a
+# ``::``-separated symbol chain, exactly as pytest node ids and cite-lint
+# citations do. A bare mention (``Widget``, ``render()``, ``pkg.Widget``) names
+# a symbol with no file evidence, so it resolves only on a unique match; the
+# dotted form keeps its qualifiers (``pkg``) as evidence the resolver checks.
+_MD_PATH_MENTION_RE = re.compile(
+    r'^([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+)::([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)(?:\(\))?$'
+)
+_MD_BARE_MENTION_RE = re.compile(
+    r'^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$'
+)
+# The namespace/member chain the other languages' docs write: ``App\Services\Mailer``
+# (PHP namespaces) and ``Mailer::send()`` (PHP, Rust, C++ type-qualified members).
+# Each segment is a plain identifier; the separators are ``\`` and ``::`` (#4610).
+_MD_NS_MENTION_RE = re.compile(
+    r'^[A-Za-z_]\w*(?:(?:::|\\)[A-Za-z_]\w*)+(?:\(\))?$'
+)
+# ``Foo::CONST`` names a constant and ``Foo::class`` a keyword: neither has a
+# node to land on, so the chain is not a mention.
+_MD_NS_NON_SYMBOL_RE = re.compile(r'^(?:class|[A-Z][A-Z0-9_]*)$')
+
+# An ATX heading (CommonMark): up to three spaces of indent (four is an indented
+# code block), 1-6 `#`, then whitespace and the text. An optional closing run of
+# `#` preceded by whitespace is not part of the text: `## Setup ##` is "Setup",
+# while `## C#` and `## Trailing \#` keep their `#`.
+_MD_ATX_HEADING_RE = re.compile(r'^ {0,3}(#{1,6})[ \t]+(.+)$')
+_MD_ATX_CLOSING_RE = re.compile(r'(?:^|[ \t]+)#+[ \t]*$')
+
+# A fenced code block line: a run of 3+ backticks or 3+ tildes, then the rest of
+# the line (an info string on an opener). Leading whitespace is accepted at any
+# depth, as before, so a fence inside a nested list item still counts.
+_MD_FENCE_RE = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+
+
+def _fence_open(line: str) -> "tuple[str, int] | None":
+    """(fence char, run length) when ``line`` opens a fenced code block.
+
+    CommonMark: a backtick fence's info string may not contain a backtick, so
+    a line that starts with an inline ```` ```code``` ```` span is prose, not a
+    fence. Tilde fences have no such restriction.
+    """
+    m = _MD_FENCE_RE.match(line)
+    if not m:
+        return None
+    run, rest = m.group(1), m.group(2)
+    if run[0] == "`" and "`" in rest:
+        return None
+    return run[0], len(run)
+
+
+def _fence_closes(line: str, fence: "tuple[str, int]") -> bool:
+    """True when ``line`` closes the block opened by ``fence``.
+
+    CommonMark: the closing run uses the opener's character, is at least as
+    long, and carries nothing but whitespace after it. So ``` does not close a
+    ~~~ block, ``` does not close a ```` block (the usual way a doc shows a
+    fenced example), and ``` followed by text is content.
+    """
+    m = _MD_FENCE_RE.match(line)
+    if not m:
+        return False
+    run, rest = m.group(1), m.group(2)
+    return run[0] == fence[0] and len(run) >= fence[1] and not rest.strip()
 
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
@@ -108,15 +204,11 @@ def _parse_frontmatter_fallback(fm_lines: list[str]) -> dict:
 _MD_LINK_INDEX_CACHE: "dict[str, dict[str, list[tuple[int, str, Path]]]]" = {}
 
 
-def _active_scan_root() -> "Path | None":
-    """The scan root of the extraction in flight, or None outside extract().
-
-    _safe_extract_with_xaml_root sets this for every extraction despite its
-    XAML-era name; a direct extract_markdown() call has no root and the
-    fallback stays off.
-    """
-    import graphify.extract as _extract
-    return getattr(_extract, "_XAML_ACTIVE_EXTRACT_ROOT", None)
+# The in-flight scan root now lives on extractors.base (correct import
+# direction: extract.py -> extractors/, never back), so a rename can no longer
+# silently disable link resolution the way the old getattr(graphify.extract, …,
+# None) could (#3666).
+from graphify.extractors.base import active_scan_root as _active_scan_root
 
 
 def _nfc(s: str) -> str:
@@ -129,20 +221,27 @@ def _build_link_index(root: Path) -> "dict[str, list[tuple[int, str, Path]]]":
     """Index every linkable document under *root* by NFC-normalized basename.
 
     Each entry maps basename -> [(depth, root-relative posix path, absolute
-    path)]. Directories in detect._SKIP_DIRS and dot-directories are pruned —
-    the same corpus boundary the scanner draws, and Obsidian itself does not
-    index dot-folders.
+    path)]. Directories in detect._SKIP_DIRS, dot-directories, and paths
+    excluded by .graphifyignore/.gitignore are pruned — the same corpus
+    boundary the scanner draws, and Obsidian itself does not index dot-folders
+    or ignored paths (#3822).
     """
-    from graphify.detect import _SKIP_DIRS
+    from graphify.detect import _SKIP_DIRS, ignored_predicate
+    root = Path(root)
+    ignored = ignored_predicate(root)
     index: dict[str, list[tuple[int, str, Path]]] = {}
     for dirpath, dirnames, filenames in os.walk(root):
+        dp = Path(dirpath)
         dirnames[:] = sorted(
-            d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+            d for d in dirnames
+            if not d.startswith(".") and d not in _SKIP_DIRS and not ignored(dp / d)
         )
         for fname in filenames:
             if Path(fname).suffix.lower() not in _MD_LINKABLE_EXTS:
                 continue
-            abs_path = Path(dirpath) / fname
+            abs_path = dp / fname
+            if ignored(abs_path):
+                continue
             rel = os.path.relpath(str(abs_path), str(root)).replace("\\", "/")
             index.setdefault(_nfc(fname), []).append(
                 (rel.count("/"), _nfc(rel), abs_path)
@@ -178,23 +277,75 @@ def _vault_lookup(target: str, root: Path) -> "Path | None":
         if c[1] == suffix or c[1].endswith("/" + suffix)
     ]
     if not matches:
+        # Obsidian writes vault-relative paths, so scanning a folder below the
+        # vault root meets links that start with that folder's own path
+        # ([[Corp/wiki/Fox]] from inside Corp/, #4559). Drop the longest such
+        # leading run and match the rest from the scan root.
+        root_parts = [_nfc(p) for p in Path(root).parts]
+        for k in range(len(parts) - 1, 0, -1):
+            if parts[:k] == root_parts[-k:]:
+                rest = "/".join(parts[k:])
+                matches = [c for c in candidates if c[1] == rest]
+                break
+    if not matches:
         return None
     return min(matches)[2]
 
 
+def _percent_decoded(target: str, source_dir: Path) -> str:
+    """Decode a URL-style link destination such as ``My%20Note.md``.
+
+    Inline and reference links are URLs, so a space or a non-ASCII character
+    in a file name is written percent-encoded (the form Obsidian writes when
+    wikilinks are turned off). A file whose name literally contains the
+    escape keeps precedence (``[x](100%25)`` beside ``100%25.md``), so a
+    link that resolved before still resolves to the same file. Wikilinks
+    carry the note name verbatim and never come through here.
+    """
+    if "%" not in target:
+        return target
+    decoded = unquote(target)
+    if decoded == target:
+        return target
+    literal = target if Path(target).suffix else target + ".md"
+    try:
+        if (source_dir / literal).is_file():
+            return target
+    except OSError:
+        pass
+    return decoded
+
+
+def _is_external_link(target: str) -> bool:
+    low = target.lower()
+    return "://" in target or low.startswith(("mailto:", "tel:", "//", "data:"))
+
+
 def _resolve_markdown_link(raw: str, source_dir: Path,
-                           wikilink: bool = False) -> "Path | None":
-    """Resolve a markdown link target to the absolute path of a sibling document.
+                           wikilink: bool = False,
+                           exts: "set[str] | None" = None) -> "Path | None":
+    """Resolve a markdown link target to the absolute path it names.
 
     Returns the resolved (normalized, not necessarily existing) path when the
-    target is a *local* relative/absolute file-path link to a document, or None
-    when it should be skipped: external URLs (http/https/mailto/protocol-
-    relative/data), pure in-page anchors (``#section``), and links to non-doc
-    file types (code/assets are handled by their own extractors).
+    target is a *local* relative/absolute file-path link to a linkable file, or
+    None when it should be skipped: external URLs (http/https/mailto/protocol-
+    relative/data), pure in-page anchors (``#section``), and links to
+    unlinkable file types (assets, unknown extensions).
+
+    ``exts`` is the set of linkable extensions; the default is document
+    extensions only. ``_MD_CITEABLE_EXTS`` additionally accepts source files,
+    which ``add_link`` turns into file citations (resolved to doc->file edges
+    at corpus time) rather than document edges.
 
     The anchor fragment (``#section``) and query (``?x=1``) are stripped before
     resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
-    Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
+    Inline and reference destinations are percent-decoded (``My%20Note.md``),
+    see _percent_decoded. Extension-less targets (typical of wikilinks) are
+    treated as sibling ``.md``.
+    A wikilink whose note name itself contains a dot (``[[note.en]]``,
+    ``[[v1.2 release]]``) gets the same ``.md`` completion, but only when that
+    document exists and no file graphify indexes sits at the literal target;
+    otherwise (``[[image.png]]``) it stays skipped.
 
     With ``wikilink=True``, a target whose lexically resolved path does not
     exist is retried as a vault-global lookup across the active scan root (see
@@ -209,15 +360,34 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
     target = target.split("#", 1)[0].split("?", 1)[0].strip()
     if not target:
         return None
-    low = target.lower()
-    if "://" in target or low.startswith(("mailto:", "tel:", "//", "data:")):
+    if _is_external_link(target):
         return None
+    if not wikilink:
+        # Decoding can reveal a scheme or a protocol-relative prefix
+        # (%2F%2Fhost), so the external-link guard runs again.
+        target = _percent_decoded(target, source_dir)
+        if _is_external_link(target):
+            return None
     suffix = Path(target).suffix.lower()
     if suffix == "":
         target = target + ".md"
         suffix = ".md"
-    if suffix not in _MD_LINKABLE_EXTS:
-        return None
+    linkable = _MD_LINKABLE_EXTS if exts is None else exts
+    if suffix not in linkable:
+        if not wikilink:
+            return None
+        # The suffix may be part of the note name ([[v1.2 release]]): try
+        # <name>.md through the same sibling-then-vault resolution and keep
+        # the link only when that document exists. A literal target graphify
+        # indexes itself ([[pic.png]] beside pic.png.md) keeps precedence.
+        literal = Path(os.path.normpath(str(source_dir / target)))
+        try:
+            if literal.is_file() and classify_file(literal) is not None:
+                return None
+            hit = _resolve_markdown_link(target + ".md", source_dir, wikilink=True)
+            return hit if hit is not None and hit.is_file() else None
+        except OSError:
+            return None
     candidate = Path(target)
     if not candidate.is_absolute():
         candidate = source_dir / candidate
@@ -234,6 +404,59 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
                 if hit is not None:
                     return Path(os.path.normpath(str(hit)))
     return resolved
+
+def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
+    """Classify one inline code span as a symbol mention, file citation, or None.
+
+    Returns ``(path, names)``:
+    - for a path-qualified mention (``src/mod.py::Widget::render``), ``path`` is
+      the cited file and ``names`` is the symbol chain;
+    - for a bare or dotted mention (``Widget``, ``pkg.Widget``), ``path`` is None
+      and ``names`` is the symbol chain;
+    - for a source-file span (``graphify/build.py``, ``setup.py``), ``path`` is
+      the file path and ``names`` is empty, so resolution can record it as file
+      evidence (#4804).
+    Spans that read as a shell command, an expression, a document name
+    (``README.md``) or prose yield None.
+    """
+    text = span.strip()
+    if not text or " " in text:
+        return None
+    m = _MD_PATH_MENTION_RE.match(text)
+    if m:
+        return m.group(1), m.group(2).split("::")
+    if not text.endswith("()"):
+        fm = _MD_FILE_SPAN_RE.match(text)
+        if fm and "." + fm.group(2).lower() in CODE_EXTENSIONS:
+            return text, []
+    m = _MD_BARE_MENTION_RE.match(text)
+    if m:
+        if "." in text:
+            # ``a.b.Name`` is a qualified symbol; ``setup.py`` is a source-file
+            # citation handled by _MD_FILE_SPAN_RE above (and re-caught here for a
+            # non-ASCII path). A document name (``README.md``) is not a mention:
+            # only code files are evidence for a bare mention. Other file-like
+            # spans (``pyproject.toml``) classify as a mention and are rejected at
+            # resolution, where the qualifier ``pyproject`` matches no callable.
+            if "." + m.group(1) in CODE_EXTENSIONS:
+                return text, []
+            if "." + m.group(1) in DOC_EXTENSIONS:
+                return None
+            return None, text.rstrip("()").split(".")
+        return None, [m.group(1)]
+    # ``App\Services\Mailer`` and ``Mailer::send()``: a namespace/member chain,
+    # split on ``\`` and ``::`` the way the dotted form splits on ``.``. A span
+    # that is only a namespace root (``App\``) is dropped: it names no symbol.
+    m = _MD_NS_MENTION_RE.match(text)
+    if m:
+        is_call = text.endswith("()")
+        body = text[:-2] if is_call else text
+        parts = re.split(r"::|\\", body)
+        if not is_call and body.endswith("::" + parts[-1]) and _MD_NS_NON_SYMBOL_RE.match(parts[-1]):
+            return None
+        return None, parts
+    return None
+
 
 def extract_markdown(path: Path) -> dict:
     """Extract structural nodes and edges from a Markdown file.
@@ -253,17 +476,37 @@ def extract_markdown(path: Path) -> dict:
     Produces edges for:
     - file --contains--> heading
     - parent heading --contains--> child heading (nesting by level)
-    - heading --references--> other node (when backtick `Name` matches a known pattern)
     - file --references--> linked document, for inline ``[text](./other.md)``,
       reference-style ``[label]: ./other.md`` and ``[[wikilink]]`` links, so a
       hub doc (``index.md`` / ``table-of-contents.md``) becomes a real hub node
       instead of an under-connected orphan (#1376). The target node ID is built
       from the resolved target path with the same recipe as the target file's
       own node, so the edge merges into that node (no ghost node). External
-      URLs, in-page anchors, images and non-document targets are skipped.
+      URLs, in-page anchors, images and non-document targets are skipped; a
+      link that names a source file is not a document edge either, it is
+      recorded as a file citation (below).
 
-    Fenced code blocks (``` ... ```) are skipped during parsing so their
-    contents don't get treated as headings, but no node is emitted for
+    Inline code spans on heading and body lines (backtick-quoted ``Widget``,
+    ``render()``, ``pkg.Widget`` or ``src/mod.py::Widget::render``) are
+    collected as ``raw_calls`` tagged ``language: "markdown"`` rather than
+    edges: the symbol they cite lives in another file, so the match is made
+    once every file is extracted and ids are final, by the
+    ``markdown_mentions`` language resolver (see
+    ``graphify.markdown_resolution``). The dotted form travels with its
+    qualifiers, which the resolver checks against the match's owners and
+    file path. That pass emits
+    heading --references--> code symbol (page --references--> symbol for a
+    mention above the first heading): EXTRACTED for the path-qualified form,
+    INFERRED for a bare name that matches exactly one code symbol. A bare
+    free-function name whose label reads as prose (``token``, ``raw``) requires
+    evidence from its defining file in the citing section (#4804).
+    Source-file links are recorded as file citations and resolved at corpus time.
+    The shared cross-file call pass skips these raw_calls, so a mention never
+    becomes a ``calls`` edge.
+
+    Fenced code blocks (``` ... ``` or ~~~ ... ~~~, closed by a run of the
+    same character at least as long, per CommonMark) are skipped during
+    parsing so their contents don't get treated as headings, but no node is emitted for
     them — they were always orphans (only a single contains edge to the
     parent doc) and inflated the disconnected-component count (#1077).
 
@@ -275,7 +518,7 @@ def extract_markdown(path: Path) -> dict:
     No tree-sitter dependency — pure line-by-line parsing.
     """
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_source_text(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -283,7 +526,39 @@ def extract_markdown(path: Path) -> dict:
     str_path = str(path)
     nodes: list[dict] = []
     edges: list[dict] = []
+    raw_calls: list[dict] = []
     seen_ids: set[str] = set()
+    seen_mentions: set[tuple[str, "str | None", tuple[str, ...]]] = set()
+
+    def add_mention(caller_nid: str, span: str, line: int) -> None:
+        mention = _code_span_mention(span)
+        if mention is None:
+            return
+        cited_path, names = mention
+        key = (caller_nid, cited_path, tuple(names))
+        if key in seen_mentions:
+            return
+        seen_mentions.add(key)
+        raw_call = {
+            "caller_nid": caller_nid,
+            "callee": names[-1] if names else "",
+            "is_member_call": False,
+            "language": "markdown",
+            "context": span.strip(),
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        }
+        if cited_path is not None:
+            raw_call["path"] = cited_path
+        if len(names) > 1:
+            raw_call["qualifiers"] = names[:-1]
+        if cited_path is None and _MD_NS_MENTION_RE.match(span.strip()):
+            # A `\`/`::` chain carries its namespace root as a qualifier the way
+            # a dotted mention does, but a PSR-4 root (`App\`) maps to the scan
+            # directory and has no path segment: the resolver may drop leading
+            # qualifiers a candidate cannot account for (#4610).
+            raw_call["ns_qualified"] = True
+        raw_calls.append(raw_call)
 
     def add_node(nid: str, label: str, line: int, file_type: str = "document",
                  node_kind: str = "heading", extra: "dict | None" = None) -> None:
@@ -310,18 +585,75 @@ def extract_markdown(path: Path) -> dict:
     fm_lines, body_start = _split_frontmatter(lines)
     frontmatter = sanitize_metadata(_parse_frontmatter(fm_lines))
 
+    # Pre-scan reference definitions so a use can resolve to a definition that
+    # appears later in the document (#4804). Fenced code blocks are skipped.
+    ref_defs: dict[str, str] = {}
+    _in_fence = False
+    for _line in lines:
+        _stripped = _line.strip()
+        if _stripped.startswith("```"):
+            _in_fence = not _in_fence
+            continue
+        if _in_fence:
+            continue
+        _ref_def = _MD_REF_DEF_RE.match(_line)
+        if _ref_def:
+            _label = _ref_def.group(1)
+            _url = _ref_def.group(2) or _ref_def.group(3)
+            if _url:
+                ref_defs[_label] = _url
+
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1, node_kind="page",
              extra={"frontmatter": frontmatter} if frontmatter else None)
 
     source_dir = path.parent
+
+    def _is_code_file_link(raw: str, base: Path) -> bool:
+        """Whether *raw* resolves to a source file (not a document or asset)."""
+        resolved = _resolve_markdown_link(raw, base, exts=_MD_CITEABLE_EXTS)
+        if resolved is None:
+            return False
+        suffix = resolved.suffix.lower()
+        return suffix in CODE_EXTENSIONS and suffix not in _MD_LINKABLE_EXTS
+
     # Dedup link edges by resolved target node so a hub doc that links to the
     # same sibling many times yields one edge, not N (keeps weights meaningful).
     linked_targets: set[str] = set()
+    seeded_citations: set[tuple[str, str]] = set()
 
-    def add_link(raw: str, line: int, wikilink: bool = False) -> None:
-        resolved = _resolve_markdown_link(raw, source_dir, wikilink=wikilink)
+    def add_link(raw: str, line: int, owner: str = file_nid,
+                 wikilink: bool = False) -> None:
+        resolved = _resolve_markdown_link(raw, source_dir, wikilink=wikilink,
+                                          exts=_MD_CITEABLE_EXTS)
         if resolved is None:
+            return
+        suffix = resolved.suffix.lower()
+        if suffix in CODE_EXTENSIONS and suffix not in _MD_LINKABLE_EXTS:
+            # Record source file link as citation; resolver mints edge if scanned (#4804).
+            try:
+                cited = os.path.relpath(
+                    str(resolved), str(source_dir)
+                ).replace("\\", "/")
+            except ValueError:  # different drives on Windows
+                cited = str(resolved).replace("\\", "/")
+            key = (owner, cited)
+            if key in seeded_citations:
+                return
+            seeded_citations.add(key)
+            raw_calls.append({
+                "caller_nid": file_nid,
+                "evidence_owner": owner,
+                "callee": "",
+                "is_member_call": False,
+                "language": "markdown",
+                "context": cited,
+                "source_file": str_path,
+                "source_location": f"L{line}",
+                "path": cited,
+                "file_link": True,
+                "wikilink": wikilink,
+            })
             return
         # Build the target ID with the SAME recipe as the target file's own
         # node (_make_id(str(path)) at extract time, canonicalized to
@@ -350,44 +682,48 @@ def extract_markdown(path: Path) -> dict:
 
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
-    in_code_block = False
+    fence: "tuple[str, int] | None" = None  # (char, length) of the open fence
 
     for line_num_0, line_text in enumerate(lines):
         line_num = line_num_0 + 1
 
         # Skip over fenced code blocks so their contents are not parsed as
         # headings, but do not emit nodes/edges for them (#1077).
-        stripped = line_text.strip()
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
+        if fence is not None:
+            if _fence_closes(line_text, fence):
+                fence = None
             continue
-
-        if in_code_block:
+        opened = _fence_open(line_text)
+        if opened is not None:
+            fence = opened
             continue
-
-        # Markdown links -> document references (#1376). Scanned on every
-        # non-fenced line (including heading lines, which the heading branch
-        # below `continue`s past) so links anywhere in the doc are captured.
-        for m in _MD_INLINE_LINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num)
-        for m in _MD_WIKILINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num, wikilink=True)
-        ref_def = _MD_REF_DEF_RE.match(line_text)
-        if ref_def:
-            add_link(ref_def.group(1), line_num)
 
         # Inside the frontmatter block a leading `#` is a YAML comment, not an
         # H1. Links above are still scanned there on purpose: review workflows
         # put wikilinks in frontmatter (e.g. a `consulted:` list), and those are
         # real references. Only heading detection is suppressed.
         if line_num_0 < body_start:
+            for m in _MD_INLINE_LINK_RE.finditer(line_text):
+                add_link(m.group(1) or m.group(2), line_num, owner=file_nid)
+            for m in _MD_REF_LINK_RE.finditer(line_text):
+                _text, _label = m.group(1), m.group(2)
+                _label = _label or _text
+                if _label in ref_defs:
+                    add_link(ref_defs[_label], line_num, owner=file_nid)
+            for m in _MD_WIKILINK_RE.finditer(line_text):
+                add_link(m.group(1), line_num, owner=file_nid, wikilink=True)
+            ref_def = _MD_REF_DEF_RE.match(line_text)
+            if ref_def:
+                _url = ref_def.group(2) or ref_def.group(3)
+                if _url and not _is_code_file_link(_url, source_dir):
+                    add_link(_url, line_num, owner=file_nid)
             continue
 
         # Detect headings: # Heading, ## Heading, etc.
-        heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)
-        if heading_match:
+        heading_match = _MD_ATX_HEADING_RE.match(line_text)
+        title = _MD_ATX_CLOSING_RE.sub("", heading_match.group(2).strip()) if heading_match else ""
+        if heading_match and title:
             level = len(heading_match.group(1))
-            title = heading_match.group(2).strip()
             h_nid = _make_id(stem, title)
             # Avoid duplicate heading IDs by appending line number
             if h_nid in seen_ids:
@@ -403,6 +739,43 @@ def extract_markdown(path: Path) -> dict:
             add_edge(parent, h_nid, "contains", line_num)
 
             heading_stack.append((level, h_nid))
+            # Links in the heading itself belong to this heading.
+            for m in _MD_INLINE_LINK_RE.finditer(title):
+                add_link(m.group(1) or m.group(2), line_num, owner=h_nid)
+            for m in _MD_REF_LINK_RE.finditer(title):
+                _text, _label = m.group(1), m.group(2)
+                _label = _label or _text
+                if _label in ref_defs:
+                    add_link(ref_defs[_label], line_num, owner=h_nid)
+            for m in _MD_WIKILINK_RE.finditer(title):
+                add_link(m.group(1), line_num, owner=h_nid, wikilink=True)
+            # A code span in the heading itself is that heading's mention.
+            for m in _MD_CODE_SPAN_RE.finditer(title):
+                add_mention(h_nid, m.group(2), line_num)
             continue
 
-    return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
+        # Body prose: links and code spans belong to the enclosing heading
+        # (the page when the text precedes the first heading).
+        owner = heading_stack[-1][1] if heading_stack else file_nid
+        for m in _MD_INLINE_LINK_RE.finditer(line_text):
+            add_link(m.group(1) or m.group(2), line_num, owner=owner)
+        for m in _MD_REF_LINK_RE.finditer(line_text):
+            _text, _label = m.group(1), m.group(2)
+            _label = _label or _text
+            if _label in ref_defs:
+                add_link(ref_defs[_label], line_num, owner=owner)
+        for m in _MD_WIKILINK_RE.finditer(line_text):
+            add_link(m.group(1), line_num, owner=owner, wikilink=True)
+        ref_def = _MD_REF_DEF_RE.match(line_text)
+        if ref_def:
+            # A definition is not a use. A document definition keeps its
+            # page-level link edge; a source-file definition creates no
+            # citation at all — only its uses carry section evidence (#4804).
+            _url = ref_def.group(2) or ref_def.group(3)
+            if _url and not _is_code_file_link(_url, source_dir):
+                add_link(_url, line_num, owner=file_nid)
+        for m in _MD_CODE_SPAN_RE.finditer(line_text):
+            add_mention(owner, m.group(2), line_num)
+
+    return {"nodes": nodes, "edges": edges, "raw_calls": raw_calls,
+            "input_tokens": 0, "output_tokens": 0}

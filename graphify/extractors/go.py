@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.ids import DeclIdRegistry
+from graphify.extractors.base import (
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+    _read_text,
+)
+from graphify.extractors.resolution import _go_import_path_for_file
 
 
 _GO_PREDECLARED_TYPES = frozenset({
@@ -42,14 +50,81 @@ _GO_PREDECLARED_FUNCS = frozenset({
     "recover",
 })
 
-def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
-    """Walk a Go type expression; append (name, role) tuples."""
+# The tree-sitter-go nodes a type argument parses as (`new(T)`, `make([]pkg.T, n)`);
+# an ordinary argument is an expression and never one of these.
+_GO_TYPE_NODES = frozenset({
+    "type_identifier", "qualified_type", "pointer_type", "generic_type", "slice_type",
+    "array_type", "map_type", "channel_type", "parenthesized_type",
+})
+
+def _go_alias_re_exports(alias_node, source: bytes) -> bool:
+    """Whether `type A = pkg.A` (or `pkg.A[...]`) re-exports another package's type
+    under its own name. Such an alias denotes that very type and declares no new
+    name, so it gets no node: references to `A` keep resolving to the original
+    instead of tying between the two. Any other alias introduces a name."""
+    target = alias_node.child_by_field_name("type")
+    if target is not None and target.type == "generic_type":
+        target = target.child_by_field_name("type")
+    if target is None or target.type != "qualified_type":
+        return False
+    name, target_name = alias_node.child_by_field_name("name"), target.child_by_field_name("name")
+    return (name is not None and target_name is not None
+            and _read_text(name, source) == _read_text(target_name, source))
+
+
+def _go_type_param_names(decl_node, source: bytes) -> frozenset[str]:
+    """Names bound by a declaration's generic type parameters.
+
+    Covers a function/type's own `[T any, R comparable]` list and, for a method,
+    the receiver's `(b Box[T])` type arguments (Go methods cannot declare their
+    own type parameters; they reuse the receiver's). These names are local
+    bindings, not corpus symbols, so a signature's use of them must not mint a
+    sourceless stub.
+    """
+    names: set[str] = set()
+    for child in decl_node.children:
+        if child.type != "type_parameter_list":
+            continue
+        for decl in child.children:
+            if decl.type != "type_parameter_declaration":
+                continue
+            for c in decl.children:
+                if c.type == "identifier":
+                    text = _read_text(c, source)
+                    if text:
+                        names.add(text)
+    receiver = decl_node.child_by_field_name("receiver")
+    if receiver is not None:
+        stack = [receiver]
+        while stack:
+            n = stack.pop()
+            if n.type == "type_arguments":
+                leaves = [n]
+                while leaves:
+                    leaf = leaves.pop()
+                    if leaf.type == "type_identifier":
+                        text = _read_text(leaf, source)
+                        if text:
+                            names.add(text)
+                    leaves.extend(leaf.children)
+                continue
+            stack.extend(n.children)
+    return frozenset(names)
+
+
+def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
+                          skip: frozenset[str] = frozenset()) -> None:
+    """Walk a Go type expression; append (name, role) tuples.
+
+    Names in ``skip`` (the enclosing declaration's generic type parameters) are
+    local bindings, not references, and are dropped.
+    """
     if node is None:
         return
     t = node.type
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text and text not in _GO_PREDECLARED_TYPES:
+        if text and text not in _GO_PREDECLARED_TYPES and text not in skip:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "qualified_type":
@@ -63,24 +138,172 @@ def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
         type_field = node.child_by_field_name("type")
         if type_field is not None:
             sub: list[tuple[str, str]] = []
-            _go_collect_type_refs(type_field, source, generic, sub)
+            _go_collect_type_refs(type_field, source, generic, sub, skip)
             out.extend(sub)
         for c in node.children:
             if c.type == "type_arguments":
                 for arg in c.children:
                     if arg.is_named:
-                        _go_collect_type_refs(arg, source, True, out)
+                        _go_collect_type_refs(arg, source, True, out, skip)
         return
     if t in ("pointer_type", "slice_type", "array_type", "map_type",
              "channel_type", "parenthesized_type"):
         for c in node.children:
             if c.is_named:
-                _go_collect_type_refs(c, source, generic, out)
+                _go_collect_type_refs(c, source, generic, out, skip)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _go_collect_type_refs(c, source, generic, out)
+                _go_collect_type_refs(c, source, generic, out, skip)
+
+def _go_strip_generic_args(type_text: str) -> str:
+    """Drop a generic instantiation's type arguments from a receiver type's text.
+
+    ``(b *Box[T])`` reads its ``type`` field as ``*Box[T]`` verbatim (after the
+    leading ``*`` is stripped, ``Box[T]``), but the type declaration's own id
+    is keyed on the bare name alone: ``type Box[T any] struct {...}`` captures
+    ``[T any]`` as a separate ``type_parameter_list``, never part of the name.
+    Without stripping this before building an id from it, a generic receiver's
+    id never matched its own type's id, so a generic type's methods attached
+    to a node disconnected from the type itself (#3368) — this must run
+    everywhere a receiver's raw type text turns into an id, not only one of
+    them, or the two computations silently disagree.
+    """
+    return type_text.split("[", 1)[0].strip()
+
+
+def _go_single_type_name(node, source: bytes) -> str | None:
+    """The one declared type a Go type expression names, or None.
+
+    `Greeter`, `*Greeter`, `pkg.Greeter` and `*pkg.Greeter` qualify, and generic
+    arguments do not change the receiver's base type. A slice, map or channel
+    element is not the receiver of `x.M()`. A qualified type keeps its package
+    qualifier as written (`pkg.Greeter`): no bare local name can stand for it, so
+    the resolver binds it only through the file's import of `pkg`.
+    """
+    while node is not None and node.type in ("pointer_type", "parenthesized_type", "generic_type"):
+        node = node.child_by_field_name("type") or next(
+            (c for c in node.children if c.is_named), None,
+        )
+    if node is not None and node.type == "qualified_type":
+        package = node.child_by_field_name("package")
+        name_node = node.child_by_field_name("name")
+        if package is None or name_node is None:
+            return None
+        return f"{_read_text(package, source)}.{_read_text(name_node, source)}"
+    if node is None or node.type != "type_identifier":
+        return None
+    name = _read_text(node, source)
+    return name if name and name not in _GO_PREDECLARED_TYPES else None
+
+
+def _go_inferred_composite_bindings(names, values, source: bytes):
+    """Pair same-position declared names with composite-literal values.
+
+    Shared by `x := T{}` (`short_var_declaration`) and `var x = T{}` (a
+    type-less `var_spec`): both bind a name to the type of a same-position
+    `T{}` / `&T{}` value. Yields (name text, inferred type) for each pair
+    that is in fact a composite literal.
+    """
+    for name_node, value in zip(names, values):
+        if value.type == "unary_expression":
+            value = value.child_by_field_name("operand") or value
+        if value.type != "composite_literal":
+            continue
+        type_name = _go_single_type_name(value.child_by_field_name("type"), source)
+        if type_name:
+            yield _read_text(name_node, source), type_name
+
+
+def _go_receiver_type_table(
+    root, source: bytes, *, package_only: bool = False,
+) -> dict[str, str | None]:
+    """Collect declared or composite-literal receiver types, preserving unknown bindings.
+
+    Unknown local bindings shadow package variables. Package-only tables exclude
+    fields and function bodies so unrelated scopes cannot supply a receiver type.
+    """
+    table: dict[str, str | None] = {}
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        t = n.type
+        if t == "block" or (t == "func_literal" and n != root):
+            continue
+        if package_only and t in (
+            "function_declaration", "method_declaration", "func_literal", "type_declaration",
+        ):
+            continue
+        if t in (
+            "field_declaration", "parameter_declaration",
+            "variadic_parameter_declaration", "var_spec",
+        ):
+            names = [c for c in n.children if c.type in ("field_identifier", "identifier")]
+            type_name = (None if t == "variadic_parameter_declaration"
+                         else _go_single_type_name(n.child_by_field_name("type"), source))
+            inferred = {}
+            if t == "var_spec" and not type_name:
+                value = n.child_by_field_name("value")
+                if value is not None:
+                    inferred = dict(_go_inferred_composite_bindings(
+                        names, [c for c in value.children if c.is_named], source,
+                    ))
+            for name_node in names:
+                name = _read_text(name_node, source)
+                table.setdefault(name, type_name or inferred.get(name))
+        elif t == "short_var_declaration":
+            left, right = n.child_by_field_name("left"), n.child_by_field_name("right")
+            if left is not None and right is not None:
+                names = [c for c in left.children if c.type == "identifier"]
+                values = [c for c in right.children if c.is_named]
+                inferred = dict(_go_inferred_composite_bindings(names, values, source))
+                for name_node in names:
+                    name = _read_text(name_node, source)
+                    table.setdefault(name, inferred.get(name))
+        elif t == "range_clause" and any(c.type == ":=" for c in n.children):
+            left = n.child_by_field_name("left")
+            for name_node in left.named_children if left is not None else ():
+                if name_node.type == "identifier":
+                    table.setdefault(_read_text(name_node, source), None)
+        stack.extend(reversed(n.children))
+    return table
+
+
+def _go_struct_field_types(root, source: bytes) -> dict[str, dict[str, str]]:
+    """``struct name -> {field name -> TypeName}`` for every struct this file declares.
+
+    Only a named field whose type `_go_single_type_name` accepts is kept, the same rule
+    the flat receiver table applies. Unlike that table it stays keyed by the struct, so a
+    method in another file of the package can read the fields of its own receiver.
+    """
+    fields_by_struct: dict[str, dict[str, str]] = {}
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type in ("function_declaration", "method_declaration"):
+            continue
+        if n.type == "type_spec":
+            name_node = n.child_by_field_name("name")
+            body = n.child_by_field_name("type")
+            if name_node is not None and body is not None and body.type == "struct_type":
+                fields: dict[str, str] = {}
+                for fdl in body.children:
+                    if fdl.type != "field_declaration_list":
+                        continue
+                    for field in fdl.children:
+                        if field.type != "field_declaration":
+                            continue
+                        type_name = _go_single_type_name(field.child_by_field_name("type"), source)
+                        for c in field.children if type_name else ():
+                            if c.type == "field_identifier":
+                                fields.setdefault(_read_text(c, source), type_name)
+                if fields:
+                    fields_by_struct[_read_text(name_node, source)] = fields
+            continue
+        stack.extend(n.children)
+    return fields_by_struct
+
 
 def extract_go(path: Path) -> dict:
     """Extract functions, methods, type declarations, and imports from a .go file."""
@@ -93,7 +316,7 @@ def extract_go(path: Path) -> dict:
     try:
         language = Language(tsgo.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -107,7 +330,17 @@ def extract_go(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, object]] = []
+    # The receiver name identifies `s.field` as an owned field; scope bindings keep
+    # parameters and locals distinct from package variables, even with unknown types.
+    function_bodies: list[tuple[str, object, str | None, str | None, dict[str, str | None]]] = []
+    # Fed to the `_callable` / `_callable_class` stamp below (#2438): the indirect-call
+    # guard and the cross-repo member-call pass both read them off the node.
+    callable_nids: set[str] = set()
+    callable_class_nids: set[str] = set()
+    # Go interfaces are satisfied implicitly, so nothing else in the output tells an
+    # interface's method requirements from a struct's methods; `graphify.go_dispatch`
+    # reads this stamp to know which owners are interfaces.
+    interface_nids: set[str] = set()
     # local package name (including aliases) -> written Go import path
     go_imported_pkgs: dict[str, str] = {}
 
@@ -140,9 +373,10 @@ def extract_go(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    decl_registry = DeclIdRegistry(reserved_ids=(file_nid,))
 
     def ensure_named_node(name: str, line: int) -> str:
-        nid = _make_id(pkg_scope, name)
+        nid = type_symbol_nid(name)
         if nid in seen_ids:
             return nid
         nid = _make_id(name)
@@ -165,7 +399,13 @@ def extract_go(path: Path) -> dict:
             })
         return nid
 
-    def emit_go_method_refs(func_node, func_nid: str, line: int) -> None:
+    def emit_go_method_refs(func_node, func_nid: str, line: int,
+                            type_params: frozenset[str] = frozenset()) -> None:
+        # The signature's own generic type parameters (and, for a method, those
+        # bound by the receiver or an enclosing generic interface) are local
+        # bindings, not references — dropping them keeps a `[T any]` signature
+        # from minting a sourceless `T` god node every generic function shares.
+        skip = type_params | _go_type_param_names(func_node, source)
         params = func_node.child_by_field_name("parameters")
         if params is not None:
             for p in params.children:
@@ -173,7 +413,7 @@ def extract_go(path: Path) -> dict:
                     continue
                 type_node = p.child_by_field_name("type")
                 refs: list[tuple[str, str]] = []
-                _go_collect_type_refs(type_node, source, False, refs)
+                _go_collect_type_refs(type_node, source, False, refs, skip)
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
                     tgt = ensure_named_node(ref_name, line)
@@ -192,7 +432,7 @@ def extract_go(path: Path) -> dict:
                                 type_node = c
                                 break
                     refs = []
-                    _go_collect_type_refs(type_node, source, False, refs)
+                    _go_collect_type_refs(type_node, source, False, refs, skip)
                     for ref_name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "return_type"
                         tgt = ensure_named_node(ref_name, line)
@@ -200,12 +440,39 @@ def extract_go(path: Path) -> dict:
                             add_edge(func_nid, tgt, "references", line, context=ctx)
             else:
                 refs = []
-                _go_collect_type_refs(result, source, False, refs)
+                _go_collect_type_refs(result, source, False, refs, skip)
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "return_type"
                     tgt = ensure_named_node(ref_name, line)
                     if tgt != func_nid:
                         add_edge(func_nid, tgt, "references", line, context=ctx)
+
+    def emit_go_package_var_type_refs(var_decl) -> None:
+        # The types a package-level `var` names, in its declared type (`var x T`), a
+        # composite literal (`pkg.T{}`, `&T{}`) or a type argument (`new(*pkg.T)`,
+        # `make(map[K]V)`), are referenced by the file, which owns the initialiser
+        # (#2360). Without this a file holding only a dependency-injection set
+        # (`wire.Bind(new(Iface), new(*Impl))`) referenced nothing. A closure body is
+        # function code and is left to the call walk.
+        stack = [var_decl]
+        while stack:
+            n = stack.pop()
+            if n.type == "func_literal":
+                continue
+            type_nodes = []
+            if n.type in ("var_spec", "composite_literal"):
+                type_nodes.append(n.child_by_field_name("type"))
+            elif n.type == "argument_list":
+                type_nodes.extend(c for c in n.children if c.type in _GO_TYPE_NODES)
+            for type_node in type_nodes:
+                refs: list[tuple[str, str]] = []
+                _go_collect_type_refs(type_node, source, False, refs)
+                for ref_name, role in refs:
+                    ctx = "generic_arg" if role == "generic_arg" else "variable_type"
+                    line = type_node.start_point[0] + 1
+                    add_edge(file_nid, ensure_named_node(ref_name, line), "references",
+                             line, context=ctx)
+            stack.extend(c for c in n.children if c not in type_nodes)
 
     # Node IDs are casefolded (ids.py), so `Run` and `run` declared in one file
     # produce the same id and add_node silently dropped the second — the unexported
@@ -224,6 +491,12 @@ def extract_go(path: Path) -> dict:
     # once the sibling exists, so salting it re-points nothing. When the collision
     # has no unique exported member (`Run`/`RUN`), every member is salted rather
     # than picking one arbitrarily, so the result never depends on declaration order.
+    #
+    # Type declarations follow the same rule: `type ResponseWriter interface` and
+    # `type responseWriter struct` share an id too, and the struct used to vanish
+    # with its methods hung off the interface. A salted type's methods, receivers
+    # and in-file references go through the salted id. The census is per file, so a
+    # pair split across two files of one package is not covered here.
     case_groups: dict[str, set[str]] = {}
 
     def _receiver_type_of(node) -> str | None:
@@ -234,7 +507,9 @@ def extract_go(path: Path) -> dict:
             if param.type == "parameter_declaration":
                 type_node = param.child_by_field_name("type")
                 if type_node:
-                    return _read_text(type_node, source).lstrip("*").strip()
+                    return _go_strip_generic_args(
+                        _read_text(type_node, source).lstrip("*").strip()
+                    )
                 break
         return None
 
@@ -245,12 +520,43 @@ def extract_go(path: Path) -> dict:
         name = _read_text(name_node, source)
         if node.type == "method_declaration":
             receiver_type = _receiver_type_of(node)
-            base = _make_id(pkg_scope, receiver_type) if receiver_type else stem
+            base = type_symbol_nid(receiver_type) if receiver_type else stem
         else:
             base = stem
         return _make_id(base, name), name
 
+    def _scan_type_names(node) -> None:
+        # Types first: a method is keyed under its owner's final id, which is
+        # salted when the owner's own name collides. An alias (`type A = B`) is a
+        # `type_alias`, not a `type_spec`, and declares a type name all the same.
+        if node.type == "type_spec" or (
+            node.type == "type_alias" and not _go_alias_re_exports(node, source)
+        ):
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                name = _read_text(name_node, source)
+                case_groups.setdefault(_make_id(pkg_scope, name), set()).add(name)
+        if node.type in ("function_declaration", "method_declaration"):
+            return
+        for child in node.children:
+            _scan_type_names(child)
+
     def _scan_declarations(node) -> None:
+        if node.type == "type_spec":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                owner_nid = type_symbol_nid(_read_text(name_node, source))
+                for body in node.children:
+                    if body.type != "interface_type":
+                        continue
+                    for elem in body.children:
+                        if elem.type != "method_elem":
+                            continue
+                        method_name = elem.child_by_field_name("name")
+                        if method_name is not None:
+                            name = _read_text(method_name, source)
+                            plain_nid = _make_id(owner_nid, name)
+                            case_groups.setdefault(plain_nid, set()).add(name)
         if node.type in ("function_declaration", "method_declaration"):
             found = _plain_symbol_nid(node)
             if found:
@@ -259,15 +565,20 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             _scan_declarations(child)
 
-    def symbol_nid(plain_nid: str, name: str) -> str:
+    def symbol_nid(plain_nid: str, name: str, kind: str = "fn") -> str:
+        nid = plain_nid
         names = case_groups.get(plain_nid) or set()
-        if len(names) < 2:
-            return plain_nid
-        exported = [n for n in names if n[:1].isupper()]
-        if len(exported) == 1 and name == exported[0]:
-            return plain_nid
-        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-        return _make_id(plain_nid, salt)
+        if len(names) >= 2 and not (len([n for n in names if n[:1].isupper()]) == 1
+                                    and name == [n for n in names if n[:1].isupper()][0]):
+            salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+            nid = _make_id(plain_nid, salt)
+        return decl_registry.resolve(nid, name, kind, seen_ids)
+
+    def type_symbol_nid(name: str) -> str:
+        plain_nid = _make_id(pkg_scope, name)
+        if name not in case_groups.get(plain_nid, ()):
+            return decl_registry.resolve(plain_nid, name, "type", seen_ids)
+        return symbol_nid(plain_nid, name, "type")
 
     def walk(node) -> None:
         t = node.type
@@ -279,22 +590,31 @@ def extract_go(path: Path) -> dict:
                 line = node.start_point[0] + 1
                 func_nid = symbol_nid(_make_id(stem, func_name), func_name)
                 add_node(func_nid, f"{func_name}()", line)
+                callable_nids.add(func_nid)
                 add_edge(file_nid, func_nid, "contains", line)
                 emit_go_method_refs(node, func_nid, line)
                 body = node.child_by_field_name("body")
                 if body:
-                    function_bodies.append((func_nid, body))
+                    function_bodies.append(
+                        (func_nid, body, None, None,
+                         _go_receiver_type_table(node, source)))
             return
 
         if t == "method_declaration":
             receiver = node.child_by_field_name("receiver")
             receiver_type: str | None = None
+            receiver_name: str | None = None
             if receiver:
                 for param in receiver.children:
                     if param.type == "parameter_declaration":
                         type_node = param.child_by_field_name("type")
                         if type_node:
-                            receiver_type = _read_text(type_node, source).lstrip("*").strip()
+                            receiver_type = _go_strip_generic_args(
+                                _read_text(type_node, source).lstrip("*").strip()
+                            )
+                        name_node = param.child_by_field_name("name")
+                        if name_node:
+                            receiver_name = _read_text(name_node, source)
                         break
             name_node = node.child_by_field_name("name")
             if not name_node:
@@ -303,8 +623,9 @@ def extract_go(path: Path) -> dict:
             line = node.start_point[0] + 1
 
             if receiver_type:
-                parent_nid = _make_id(pkg_scope, receiver_type)
+                parent_nid = type_symbol_nid(receiver_type)
                 add_node(parent_nid, receiver_type, line)
+                callable_class_nids.add(parent_nid)
                 method_nid = symbol_nid(_make_id(parent_nid, method_name), method_name)
                 add_node(method_nid, f".{method_name}()", line)
                 add_edge(parent_nid, method_nid, "method", line)
@@ -312,25 +633,39 @@ def extract_go(path: Path) -> dict:
                 method_nid = symbol_nid(_make_id(stem, method_name), method_name)
                 add_node(method_nid, f"{method_name}()", line)
                 add_edge(file_nid, method_nid, "contains", line)
+            callable_nids.add(method_nid)
 
             emit_go_method_refs(node, method_nid, line)
             body = node.child_by_field_name("body")
             if body:
-                function_bodies.append((method_nid, body))
+                function_bodies.append(
+                    (method_nid, body, receiver_name, receiver_type,
+                     _go_receiver_type_table(node, source)))
             return
 
         if t == "type_declaration":
             for child in node.children:
-                if child.type != "type_spec":
+                if child.type not in ("type_spec", "type_alias"):
+                    continue
+                if child.type == "type_alias" and _go_alias_re_exports(child, source):
                     continue
                 name_node = child.child_by_field_name("name")
                 if not name_node:
                     continue
                 type_name = _read_text(name_node, source)
                 line = child.start_point[0] + 1
-                type_nid = _make_id(pkg_scope, type_name)
+                type_nid = type_symbol_nid(type_name)
                 add_node(type_nid, type_name, line)
+                callable_class_nids.add(type_nid)
                 add_edge(file_nid, type_nid, "contains", line)
+                if child.type == "type_alias":
+                    # `type A = B` is a declaration like `type A B`: references to
+                    # it land here instead of minting a sourceless stub. Its
+                    # right-hand side is not walked.
+                    continue
+                # A generic type's own parameters (`type Box[T any]`) are local
+                # bindings; a field or method using `T` must not mint a stub.
+                type_params = _go_type_param_names(child, source)
                 # Type body: struct fields (with embeds) or interface embedding.
                 type_body = None
                 for tc in child.children:
@@ -356,7 +691,7 @@ def extract_go(path: Path) -> dict:
                                         type_node = fc
                                         break
                             refs: list[tuple[str, str]] = []
-                            _go_collect_type_refs(type_node, source, False, refs)
+                            _go_collect_type_refs(type_node, source, False, refs, type_params)
                             for ref_name, role in refs:
                                 tgt = ensure_named_node(ref_name, field.start_point[0] + 1)
                                 if tgt == type_nid:
@@ -369,7 +704,30 @@ def extract_go(path: Path) -> dict:
                                     add_edge(type_nid, tgt, "references",
                                              field.start_point[0] + 1, context=ctx)
                 elif type_body.type == "interface_type":
+                    interface_nids.add(type_nid)
                     for elem in type_body.children:
+                        if elem.type == "method_elem":
+                            # A method requirement declared in the interface body
+                            # is part of the interface's contract. Emit it as a
+                            # method node so the interface isn't left an empty
+                            # shell and calls against the interface can resolve
+                            # (mirrors receiver methods and the way the other
+                            # extractors capture interface members).
+                            m_name_node = elem.child_by_field_name("name")
+                            if m_name_node is None:
+                                for mc in elem.children:
+                                    if mc.type == "field_identifier":
+                                        m_name_node = mc
+                                        break
+                            if m_name_node is None:
+                                continue
+                            m_name = _read_text(m_name_node, source)
+                            m_line = elem.start_point[0] + 1
+                            m_nid = symbol_nid(_make_id(type_nid, m_name), m_name)
+                            add_node(m_nid, f".{m_name}()", m_line)
+                            add_edge(type_nid, m_nid, "method", m_line)
+                            emit_go_method_refs(elem, m_nid, m_line, type_params)
+                            continue
                         if elem.type != "type_elem":
                             continue
                         # A type_elem that is a generics type-set constraint -
@@ -385,7 +743,7 @@ def extract_go(path: Path) -> dict:
                         refs = []
                         for sub in elem.children:
                             if sub.is_named:
-                                _go_collect_type_refs(sub, source, False, refs)
+                                _go_collect_type_refs(sub, source, False, refs, type_params)
                         for ref_name, role in refs:
                             tgt = ensure_named_node(ref_name, elem.start_point[0] + 1)
                             if tgt == type_nid:
@@ -399,6 +757,17 @@ def extract_go(path: Path) -> dict:
                             else:
                                 add_edge(type_nid, tgt, "references",
                                          elem.start_point[0] + 1, context="generic_arg")
+            return
+
+        if t == "var_declaration" and node.parent is not None and node.parent.type == "source_file":
+            # A package-level `var` initialiser runs at package init and has no enclosing
+            # function, so its calls, including those inside a `var f = func() {...}`
+            # closure, are credited to the file, the owner a module-level call already
+            # gets elsewhere. Without this they were never walked and the callee lost the
+            # caller (#2360).
+            emit_go_package_var_type_refs(node)
+            function_bodies.append(
+                (file_nid, node, None, None, _go_receiver_type_table(node, source)))
             return
 
         if t == "import_declaration":
@@ -433,11 +802,56 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             walk(child)
 
+    _scan_type_names(root)
     _scan_declarations(root)
     walk(root)
 
+    # A type carries both markers, as in the tree-sitter engine: `_callable_class` is
+    # the narrowing, not a separate kind. A type also carries its import path from go.mod:
+    # a `pkg.T` receiver binds only to a `T` declared at the path the caller imports `pkg`
+    # from, and on an incremental rebuild an unchanged declaring file reaches the resolver
+    # only as its nodes.
+    package_path = _go_import_path_for_file(path.absolute(), path.absolute().parent)
+    for n in nodes:
+        if n["id"] in callable_nids or n["id"] in callable_class_nids:
+            n["_callable"] = True
+            if n["id"] in callable_class_nids:
+                n["_callable_class"] = True
+                if package_path:
+                    n["_go_package_path"] = package_path
+        if n["id"] in interface_nids:
+            n["metadata"] = {"language": "go", "kind": "interface"}
+
+    # The field types of the structs this file declares ride on the file node, keyed by
+    # struct id, so a method in a sibling file can type `s.field` (#3368). Not on the
+    # struct node: every file holding a method of the struct emits that id too, so an
+    # incremental rebuild of a method file would shadow the declaring file's copy.
+    # A `pkg.T` field is stored as `<import path>.T`: the method file reading it may not
+    # import `pkg` at all, so the qualifier is settled by this file's imports.
+    struct_fields: dict[str, dict[str, str]] = {}
+    for name, fields in _go_struct_field_types(root, source).items():
+        typed: dict[str, str] = {}
+        for field, type_name in fields.items():
+            alias, dot, bare = type_name.partition(".")
+            if not dot:
+                typed[field] = type_name
+            elif alias in go_imported_pkgs:
+                typed[field] = f"{go_imported_pkgs[alias]}.{bare}"
+        if typed:
+            struct_fields[type_symbol_nid(name)] = dict(sorted(typed.items()))
+    if struct_fields:
+        file_node = next(n for n in nodes if n["id"] == file_nid)
+        file_node["_go_fields"] = dict(sorted(struct_fields.items()))
+
+    type_table = _go_receiver_type_table(root, source)
+    package_types = _go_receiver_type_table(root, source, package_only=True)
+    local_type_names = {n["label"] for n in nodes if n["id"] in callable_class_nids}
+
+    method_nids = {e["target"] for e in edges if e["relation"] == "method"}
     label_to_nid: dict[str, str] = {}
     for n in nodes:
+        if n["id"] in method_nids:
+            continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
         label_to_nid[normalised] = n["id"]
@@ -445,15 +859,27 @@ def extract_go(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def walk_calls(node, caller_nid: str) -> None:
+    def walk_calls(node, caller_nid: str, self_name: str | None,
+                   self_type: str | None, scope_types: dict[str, str | None]) -> None:
         if node.type in ("function_declaration", "method_declaration"):
             return
+        if node.type in (
+            "block", "if_statement", "for_statement", "expression_switch_statement",
+            "type_switch_statement", "select_statement", "expression_case", "type_case",
+            "communication_case", "default_case", "func_literal",
+        ):
+            scope_types = scope_types.copy()
+            if node.type == "func_literal":
+                scope_types.update(_go_receiver_type_table(node, source))
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
             callee_name: str | None = None
             is_member_call: bool = False
             is_bare_identifier: bool = False
             package_receiver: str | None = None
+            member_receiver: str | None = None
+            member_receiver_type: str | None = None
+            field_owner: str | None = None
             import_path: str | None = None
             if func_node:
                 if func_node.type == "identifier":
@@ -469,6 +895,34 @@ def extract_go(path: Path) -> dict:
                     if not is_member_call:
                         package_receiver = receiver_name
                         import_path = go_imported_pkgs[receiver_name]
+                    elif operand is not None and operand.type == "identifier":
+                        member_receiver = receiver_name
+                        member_receiver_type = scope_types.get(receiver_name)
+                        if receiver_name not in scope_types and receiver_name in local_type_names:
+                            member_receiver_type = receiver_name
+                    elif operand is not None and operand.type == "parenthesized_expression":
+                        expression = operand
+                        while (expression.type == "parenthesized_expression"
+                               and expression.named_children):
+                            expression = expression.named_children[0]
+                        if (expression.type == "unary_expression"
+                                and _read_text(expression, source).startswith("*")):
+                            expression = expression.child_by_field_name("operand")
+                            name = _read_text(expression, source) if expression is not None else ""
+                            if name in local_type_names and name not in scope_types:
+                                member_receiver = name
+                                member_receiver_type = name
+                    elif operand is not None and operand.type == "selector_expression":
+                        # `s.logger.Log()` names the receiver by the field only when `s` is
+                        # this method's own receiver; any other head could be a package or
+                        # a variable whose type the flat table does not know.
+                        inner = operand.child_by_field_name("operand")
+                        if (self_name and inner is not None and inner.type == "identifier"
+                                and _read_text(inner, source) == self_name
+                                and scope_types.get(self_name) == self_type):
+                            member_receiver = _read_text(
+                                operand.child_by_field_name("field"), source)
+                            field_owner = self_type
                     if field:
                         callee_name = _read_text(field, source)
             if is_bare_identifier and callee_name in _GO_PREDECLARED_FUNCS:
@@ -478,8 +932,9 @@ def extract_go(path: Path) -> dict:
                 # of raw_calls, so the cross-file pass cannot bind it either.
                 callee_name = None
             if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
-                # Never resolve an imported selector through a bare local name.
-                tgt_nid = None if import_path else label_to_nid.get(callee_name)
+                # 成员调用必须按接收者类型解析；裸名不能证明方法属于该接收者。
+                tgt_nid = (None if import_path or is_member_call
+                           else label_to_nid.get(callee_name))
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
@@ -502,15 +957,75 @@ def extract_go(path: Path) -> dict:
                         "is_member_call": is_member_call,
                         "language": "go",
                         "receiver": package_receiver,
+                        # A key of its own: `receiver` means "imported package" here, and
+                        # the Swift/Python/Ruby member-call resolvers select on
+                        # `is_member_call` plus `receiver` without checking the language,
+                        # so a Go name placed there binds to their types in a mixed corpus.
+                        "member_receiver": member_receiver,
+                        "receiver_type": member_receiver_type,
+                        "receiver_bound": not field_owner and member_receiver in scope_types,
+                        # Field ownership remains explicit when the struct is declared
+                        # in a sibling file of the package.
+                        "field_owner": field_owner,
                         "import_path": import_path,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
+            # A method value passed as an argument (`routing.Wrap(s.Handle)`,
+            # `r.Get("/p", s.Handle)`) is how Go registers a handler or callback. It is
+            # not a call here, so it never reached the branch above and the method had
+            # no caller. Record it for the member-call resolver as an indirect call
+            # through the receiver's declared type (#1566). `s.field.Handle` is typed
+            # through the field, as a direct `s.field.M()` is, only when `s` is this
+            # method's own receiver.
+            args = node.child_by_field_name("arguments")
+            for arg in args.children if args is not None else ():
+                if arg.type != "selector_expression":
+                    continue
+                operand = arg.child_by_field_name("operand")
+                field = arg.child_by_field_name("field")
+                if operand is None or field is None:
+                    continue
+                arg_field_owner: str | None = None
+                if operand.type == "identifier":
+                    name = _read_text(operand, source)
+                    if name in go_imported_pkgs:
+                        continue
+                    arg_receiver_type = scope_types.get(name)
+                elif operand.type == "selector_expression":
+                    inner = operand.child_by_field_name("operand")
+                    if not (self_name and inner is not None and inner.type == "identifier"
+                            and _read_text(inner, source) == self_name
+                            and scope_types.get(self_name) == self_type):
+                        continue
+                    name = _read_text(operand.child_by_field_name("field"), source)
+                    arg_receiver_type = None
+                    arg_field_owner = self_type
+                else:
+                    continue
+                raw_calls.append({
+                    "caller_nid": caller_nid,
+                    "callee": _read_text(field, source),
+                    "is_member_call": True,
+                    "indirect": True,
+                    "context": "argument",
+                    "language": "go",
+                    "receiver": None,
+                    "member_receiver": name,
+                    "receiver_type": arg_receiver_type,
+                    "receiver_bound": name in scope_types if not arg_field_owner else False,
+                    "field_owner": arg_field_owner,
+                    "import_path": None,
+                    "source_file": str_path,
+                    "source_location": f"L{arg.start_point[0] + 1}",
+                })
         for child in node.children:
-            walk_calls(child, caller_nid)
+            walk_calls(child, caller_nid, self_name, self_type, scope_types)
+            if child.type in ("short_var_declaration", "var_spec", "range_clause"):
+                scope_types.update(_go_receiver_type_table(child, source))
 
-    for caller_nid, body_node in function_bodies:
-        walk_calls(body_node, caller_nid)
+    for caller_nid, body_node, self_name, self_type, scope_types in function_bodies:
+        walk_calls(body_node, caller_nid, self_name, self_type, scope_types)
 
     valid_ids = seen_ids
     clean_edges = []
@@ -524,4 +1039,5 @@ def extract_go(path: Path) -> dict:
         "edges": clean_edges,
         "raw_calls": raw_calls,
         "go_imports": dict(go_imported_pkgs),
+        "go_type_table": {"path": str_path, "table": type_table, "package_vars": package_types},
     }

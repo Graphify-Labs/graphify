@@ -87,6 +87,109 @@ def test_richness_counts_content_not_placement():
         _rich(attributes={"protocol": "mqtt"}))
 
 
+def test_provenance_beats_a_richer_sourceless_stub():
+    """#3775: source_file/source_location are in _RICHNESS_IGNORED_KEYS, so
+    a stub with no real location could out-score and replace a genuine,
+    located declaration purely on incidental field count. The issue's own
+    exact repro."""
+    real = {
+        "id": "docs_guide_setup", "label": "Setup", "file_type": "concept",
+        "source_file": "docs/guide.md", "source_location": "L12",
+        "attributes": {"kind": "section"},
+    }
+    stub = {
+        "id": "setup", "label": "Setup", "file_type": "concept",
+        "source_file": "", "type": "external", "external": True,
+        "_origin": "semantic",
+    }
+    from graphify.dedup import _content_richness
+    assert _content_richness(stub) > _content_richness(real), (
+        "test fixture: the stub must out-score the real node on pure "
+        "field count for this to exercise the bug"
+    )
+    assert _pick_winner([real, stub])["id"] == "docs_guide_setup"
+    assert _pick_winner([stub, real])["id"] == "docs_guide_setup"
+
+
+def test_richness_still_decides_when_both_sides_have_provenance():
+    """The provenance tiebreak must only activate when the two sides
+    disagree on having a source_file -- when both (or neither) have one,
+    the existing #3372 richness-then-length ordering is unchanged."""
+    rich = _rich()
+    shallow = _shallow()
+    assert rich["source_file"] and shallow["source_file"], (
+        "test fixture: both candidates must carry a source_file so the "
+        "provenance tiebreak cannot distinguish them"
+    )
+    assert _pick_winner([rich, shallow])["id"] == rich["id"]
+    assert _pick_winner([shallow, rich])["id"] == rich["id"]
+
+
+def test_located_record_beats_a_richer_source_file_only_stub():
+    """Review finding on #3775: source_location is richness-ignored too, so
+    two source-bearing candidates could still be ordered by field count
+    alone, letting a record with a source_file but no source_location (the
+    codebase genuinely emits source_location: None, see
+    _merge_missing_attributes) out-score one that also knows exactly where
+    in the file it lives."""
+    located = {
+        "id": "docs_guide_setup", "label": "Setup", "file_type": "concept",
+        "source_file": "docs/guide.md", "source_location": "L12",
+    }
+    unlocated_but_richer = {
+        "id": "setup", "label": "Setup", "file_type": "concept",
+        "source_file": "docs/guide.md", "source_location": None,
+        "attributes": {"kind": "section"}, "description": "extra content",
+    }
+    from graphify.dedup import _content_richness
+    assert _content_richness(unlocated_but_richer) > _content_richness(located), (
+        "test fixture: the unlocated stub must out-score the located node "
+        "on pure field count for this to exercise the bug"
+    )
+    assert _pick_winner([located, unlocated_but_richer])["id"] == "docs_guide_setup"
+    assert _pick_winner([unlocated_but_richer, located])["id"] == "docs_guide_setup"
+
+
+def test_richness_still_decides_when_both_sides_have_a_location():
+    """The source_location tiebreak must only activate when the two sides
+    disagree on having one -- when both have a real location, richness (then
+    length) still decides, same as before this fix."""
+    rich = _rich()
+    shallow = _shallow()
+    assert rich["source_location"] and shallow["source_location"], (
+        "test fixture: both candidates must carry a source_location so the "
+        "location tiebreak cannot distinguish them"
+    )
+    assert _pick_winner([rich, shallow])["id"] == rich["id"]
+    assert _pick_winner([shallow, rich])["id"] == rich["id"]
+
+
+def test_a_stray_source_location_without_a_source_file_grants_no_edge():
+    """Review finding on PR 3786: a source_location with no source_file (a
+    location pointing at an unstated file -- possible if a survivor's own
+    source_file is an empty string rather than None when
+    _merge_missing_attributes backfills only source_location) is not a real
+    provenance signal and must not out-rank a fully bare candidate that
+    happens to be richer. Richness decides here, same as if neither side
+    had any provenance field at all."""
+    stray_location = {
+        "id": "b_setup", "label": "Setup", "file_type": "concept",
+        "source_file": "", "source_location": "L9",
+    }
+    richer_bare = {
+        "id": "a_setup", "label": "Setup", "file_type": "concept",
+        "source_file": "", "attributes": {"kind": "section"},
+        "description": "more content",
+    }
+    from graphify.dedup import _content_richness
+    assert _content_richness(richer_bare) > _content_richness(stray_location), (
+        "test fixture: the bare candidate must out-score the stray-location "
+        "one on richness for this to exercise the gate"
+    )
+    assert _pick_winner([stray_location, richer_bare])["id"] == "a_setup"
+    assert _pick_winner([richer_bare, stray_location])["id"] == "a_setup"
+
+
 def test_edges_rewire_to_the_rich_survivor():
     edges = [{"source": "sources_notes_widget_x", "target": "other",
               "relation": "references", "source_file": "sources/notes.md"}]

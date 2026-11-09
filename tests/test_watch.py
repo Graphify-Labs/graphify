@@ -47,6 +47,14 @@ def test_watched_extensions_includes_code():
     assert ".go" in _WATCHED_EXTENSIONS
     assert ".rs" in _WATCHED_EXTENSIONS
 
+def test_verilog_header_triggers_code_rebuild_without_llm(tmp_path):
+    header = tmp_path / "defs.vh"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+
+    assert ".vh" in _WATCHED_EXTENSIONS
+    assert _batch_triggers_rebuild([header]) is True
+    assert _batch_needs_llm_flag([header]) is False
+
 def test_watched_extensions_includes_docs():
     assert ".md" in _WATCHED_EXTENSIONS
     assert ".txt" in _WATCHED_EXTENSIONS
@@ -133,6 +141,47 @@ def test_doc_only_deletion_full_rebuild_evicts_md_nodes(tmp_path):
     assert "run()" in labels
 
 
+def test_post_merge_style_unscoped_rebuild_heals_a_resurrected_node(tmp_path):
+    """#2418: the graphify merge driver union merges graph.json, which can
+    resurrect a node for a symbol that was deleted on one side of the merge.
+    A rebuild SCOPED to an unrelated changed file (what the commit hook
+    runs) must NOT heal it -- the resurrected symbol's own file was never
+    touched. The UNSCOPED rebuild the new merge hook performs (the same
+    body as the checkout hook: _rebuild_code with no changed_paths) must."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "src").mkdir(parents=True)
+    (corpus / "src" / "util.py").write_text("def helper_alpha(): return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    real_node = next(n for n in data["nodes"] if n["id"] == "src_util_helper_alpha")
+    # Simulate what the union merge driver does: resurrect a node dict shaped
+    # exactly like a real AST node (same _origin/source_location fields a
+    # genuine prior extraction on the other side of the merge would carry),
+    # for a symbol that was deleted on THIS side.
+    phantom = {**real_node, "id": "src_util_helper_doomed", "label": "helper_doomed()"}
+    data["nodes"].append(phantom)
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    def has_phantom() -> bool:
+        g = json.loads(graph_path.read_text(encoding="utf-8"))
+        return any(n["id"] == "src_util_helper_doomed" for n in g["nodes"])
+
+    assert has_phantom()
+
+    (corpus / "src" / "unrelated.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[corpus / "src" / "unrelated.py"], acquire_lock=False
+    ) is True
+    assert has_phantom(), "a rebuild scoped to an unrelated file must not have healed the phantom"
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    assert not has_phantom(), "the unscoped rebuild must heal the resurrected node"
+
+
 def test_rebuild_code_reports_unclassified_files(tmp_path, capsys):
     """#3511: `graphify extract` has surfaced files it saw but could not
     classify (no supported extension/shebang) since #1692; the update/watch
@@ -150,6 +199,22 @@ def test_rebuild_code_reports_unclassified_files(tmp_path, capsys):
     assert "2 file(s) not classified" in out
     assert "Main.lean" in out
     assert "Util.lean" in out
+
+
+def test_rebuild_code_warns_loudly_when_most_of_the_corpus_is_unclassified(tmp_path, capsys):
+    """#2942: a bare count reads as routine even when it is most of the
+    corpus. The update/watch rebuild path must carry detect()'s louder
+    warning through to its own console output, same as `graphify extract`."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for i in range(30):
+        (corpus / f"doc{i}.xml").write_text("<root/>\n", encoding="utf-8")
+    for i in range(10):
+        (corpus / f"code{i}.py").write_text(f"def f{i}(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = capsys.readouterr().out
+    assert "warning: 30 of 40 files seen (75%)" in out
 
 
 # --- watch() import error without watchdog ---
@@ -227,7 +292,6 @@ def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
 # --- _rebuild_lock (GH-858) ---
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_writes_pid_with_newline(tmp_path):
     out = tmp_path / "graphify-out"
     lock_path = out / ".rebuild.lock"
@@ -238,7 +302,6 @@ def test_rebuild_lock_writes_pid_with_newline(tmp_path):
         assert contents == f"{os.getpid()}\n", contents
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_removed_after_release(tmp_path):
     """GH-858: lock file must be unlinked once the rebuild completes so
     downstream waiters that poll for its absence unblock promptly."""
@@ -249,7 +312,6 @@ def test_rebuild_lock_removed_after_release(tmp_path):
     assert not lock_path.exists(), "lock file should be unlinked after release"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_does_not_accumulate_pids_across_runs(tmp_path):
     """GH-858: each acquisition truncates and rewrites the PID line rather
     than appending, so the file never grows into a digit-concatenation."""
@@ -261,6 +323,137 @@ def test_rebuild_lock_does_not_accumulate_pids_across_runs(tmp_path):
             assert got is True
             assert lock_path.read_text(encoding="utf-8") == expected
         assert not lock_path.exists()
+
+
+# --- _rebuild_lock: msvcrt branch on a filesystem without byte-range locks (#4924) ---
+#
+# On the WSL share (\\wsl.localhost\<distro>\...) seen from Windows,
+# msvcrt.locking raises EINVAL on every call. The Windows branch used to treat
+# every OSError as "another rebuild holds it": the blocking `graphify update`
+# CLI spun in a `while True` forever, and the non-blocking git hooks queued
+# their change and returned with no lock holder left to drain it. These run the
+# msvcrt branch on any OS through a stand-in module, with fcntl hidden.
+
+
+def _use_fake_msvcrt(monkeypatch, *, errnos=(), always=None):
+    """Install a stand-in msvcrt whose locking() raises OSError(code) for each
+    code in ``errnos`` (then succeeds), or for every call when ``always`` is set.
+    Unlock calls always succeed. Returns the list of lock attempts made."""
+    import types
+
+    attempts = []
+    pending = list(errnos)
+
+    def locking(fd, mode, nbytes):
+        if mode == fake.LK_UNLCK:
+            return
+        attempts.append(mode)
+        code = always if always is not None else (pending.pop(0) if pending else None)
+        if code is not None:
+            raise OSError(code, os.strerror(code))
+
+    fake = types.SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0, locking=locking)
+    monkeypatch.setitem(sys.modules, "fcntl", None)  # `import fcntl` -> ImportError
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    return attempts
+
+
+def _bounded_sleep(monkeypatch, limit=20):
+    """Replace watch's time.sleep so a retry loop that never ends fails the test
+    instead of hanging it. Returns the list of requested sleeps."""
+    import types
+    import graphify.watch as watch
+
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) > limit:
+            raise AssertionError("_rebuild_lock kept retrying a lock error that can never clear")
+
+    monkeypatch.setattr(watch, "time", types.SimpleNamespace(sleep=sleep))
+    return slept
+
+
+def test_rebuild_lock_blocking_does_not_spin_when_filesystem_cannot_lock(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    attempts = _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=True) as got:
+        assert got is True
+        # It created the file only to try the lock; that empty file is gone
+        # again before the rebuild runs, so no stale lock is left (GH-858).
+        assert not (out / ".rebuild.lock").exists()
+    assert slept == []
+    assert len(attempts) == 1
+    err = capsys.readouterr().err
+    assert "does not support byte-range locks" in err
+    assert str(out / ".rebuild.lock") in err
+    assert not (out / ".rebuild.lock").exists()
+
+
+@pytest.mark.parametrize("blocking", [True, False])
+def test_rebuild_lock_unsupported_filesystem_leaves_another_holders_lock_file_alone(
+    tmp_path, monkeypatch, capsys, blocking
+):
+    """The repo is on the WSL share and a WSL-side rebuild already holds a
+    flock on .rebuild.lock (its PID inside). The Windows caller that cannot lock
+    must not write its PID over the holder's or unlink the path on release:
+    unlinking lets the next WSL-side caller flock a fresh inode while the first
+    holder is still rebuilding (#4273)."""
+    import errno
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    lock_path = out / ".rebuild.lock"
+    lock_path.write_text("12345\n", encoding="utf-8")
+    inode_before = os.stat(lock_path).st_ino
+    _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=blocking) as got:
+        assert got is True
+        assert lock_path.read_text(encoding="utf-8") == "12345\n"
+    assert lock_path.read_text(encoding="utf-8") == "12345\n"
+    assert os.stat(lock_path).st_ino == inode_before
+    assert "does not support byte-range locks" in capsys.readouterr().err
+
+
+def test_rebuild_lock_non_blocking_proceeds_when_filesystem_cannot_lock(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    _use_fake_msvcrt(monkeypatch, always=errno.EINVAL)
+    _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=False) as got:
+        assert got is True, "an unsupported lock is not 'another rebuild is running'"
+    assert "does not support byte-range locks" in capsys.readouterr().err
+
+
+def test_rebuild_lock_blocking_still_waits_while_msvcrt_lock_is_contended(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    attempts = _use_fake_msvcrt(monkeypatch, errnos=(errno.EACCES, errno.EACCES))
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=True) as got:
+        assert got is True
+    assert len(attempts) == 3
+    assert slept == [0.05, 0.05]
+    assert "byte-range" not in capsys.readouterr().err
+
+
+def test_rebuild_lock_non_blocking_still_yields_false_while_msvcrt_lock_is_contended(tmp_path, monkeypatch, capsys):
+    import errno
+
+    out = tmp_path / "graphify-out"
+    _use_fake_msvcrt(monkeypatch, always=errno.EACCES)
+    slept = _bounded_sleep(monkeypatch)
+    with _rebuild_lock(out, blocking=False) as got:
+        assert got is False
+    assert slept == []
+    assert "byte-range" not in capsys.readouterr().err
 
 
 def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_path, monkeypatch):
@@ -279,6 +472,57 @@ def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_pa
     saved = (corpus / "graphify-out" / ".graphify_root").read_text(encoding="utf-8")
     assert saved == ".", (
         f".graphify_root must preserve the user-supplied path; got {saved!r}"
+    )
+
+
+def test_graphify_root_is_resolved_when_graphify_out_is_shared_and_absolute(
+    tmp_path, monkeypatch
+):
+    """#3375: when GRAPHIFY_OUT is an absolute, shared location (the
+    multi worktree setup from #686), the same marker file is reachable from
+    any worktree's CWD, not just the one that wrote it. Preserving a raw
+    relative value there, as #777 does for the default, git portable case,
+    would make the marker resolve against whichever worktree happens to read
+    it later instead of the one that was actually scanned. It must be
+    written as an absolute path in this case."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+
+    shared_out = tmp_path / "shared-graphify-out"
+    monkeypatch.setattr("graphify.watch._GRAPHIFY_OUT", str(shared_out))
+    monkeypatch.chdir(corpus)
+
+    assert _rebuild_code(Path("."), acquire_lock=False) is True
+
+    saved = (shared_out / ".graphify_root").read_text(encoding="utf-8")
+    assert saved == str(corpus.resolve()), (
+        f".graphify_root must be resolved when GRAPHIFY_OUT is absolute; got {saved!r}"
+    )
+
+
+def test_graphify_root_still_preserves_relative_when_graphify_out_is_relative(
+    tmp_path, monkeypatch
+):
+    """Companion to the fix above: an ordinary, relative GRAPHIFY_OUT (the
+    default, no #686 shared output configured) must keep the #777 behaviour
+    of preserving the caller supplied relative path, so this fix only
+    changes the shared output case and does not regress the common one."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+
+    monkeypatch.chdir(corpus)
+    assert _rebuild_code(Path("."), acquire_lock=False) is True
+
+    saved = (corpus / "graphify-out" / ".graphify_root").read_text(encoding="utf-8")
+    assert saved == ".", (
+        f"a relative GRAPHIFY_OUT must still preserve the caller supplied "
+        f"path; got {saved!r}"
     )
 
 
@@ -329,16 +573,23 @@ def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
 
     out = corpus / "graphify-out"
     labels_file = out / ".graphify_labels.json"
+    pending_file = out / ".graphify_labels.pending.json"
     sig_file = out / ".graphify_labels.json.sig"
     assert sig_file.exists(), "rebuild must persist membership signatures beside labels"
 
-    # Stand in for an LLM naming pass: give every community a distinctive name,
-    # leaving the signatures untouched so they still describe THIS clustering.
-    labels = json.loads(labels_file.read_text(encoding="utf-8"))
-    assert labels, "expected the first rebuild to write community labels"
+    # A from-empty rebuild's hub-fallback names land in the pending sidecar,
+    # not the tracked file (#3334) -- read the cid list from there.
+    pending = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert pending, "expected the first rebuild to write pending hub-fallback labels"
+
+    # Stand in for an LLM naming pass: give every community a distinctive,
+    # CURATED name (a real naming pass promotes a pending entry into the
+    # tracked file), leaving the signatures untouched so they still describe
+    # THIS clustering.
     labels_file.write_text(
-        json.dumps({cid: f"Named-{cid}" for cid in labels}), encoding="utf-8"
+        json.dumps({cid: f"Named-{cid}" for cid in pending}), encoding="utf-8"
     )
+    pending_file.unlink()
 
     # Grow the corpus so clustering changes, then rebuild incrementally.
     for name in ("b.py", "c.py", "d.py"):
@@ -387,6 +638,187 @@ def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
                 f"node {node['id']} carries stale community_name "
                 f"{node['community_name']!r}"
             )
+
+
+def test_rebuild_keeps_label_on_majority_overlap(tmp_path, monkeypatch):
+    """#2298: an update that adds one node to a community keeps the saved name
+    when the previous members are still a strict majority of the new set."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = (
+        "def alpha():\n    return beta()\n\n"
+        "def beta():\n    return gamma()\n\n"
+        "def gamma():\n    return 1\n"
+    )
+    (corpus / "a.py").write_text(source, encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    communities: dict[int, list[str]] = {}
+    previous: dict[str, int] = {}
+    for node in graph["nodes"]:
+        cid = node.get("community")
+        node_id = node.get("id")
+        if cid is None or node_id is None:
+            continue
+        communities.setdefault(int(cid), []).append(str(node_id))
+        previous[str(node_id)] = int(cid)
+    assert communities, "expected the first rebuild to cluster at least one community"
+    largest = max(communities, key=lambda cid: (len(communities[cid]), -cid))
+    assert len(communities[largest]) >= 2, (
+        f"largest community {largest} has {communities[largest]}; need at least 2 nodes"
+    )
+
+    distinctive = "Kept Majority Name"
+    labels_file.write_text(json.dumps({str(largest): distinctive}), encoding="utf-8")
+
+    (corpus / "a.py").write_text(
+        source + "\ndef delta():\n    return alpha()\n",
+        encoding="utf-8",
+    )
+
+    def _cluster_extend_largest(G, *args, **kwargs):
+        grouped: dict[int, list[str]] = {}
+        for node in G.nodes:
+            nid = str(node)
+            cid = previous.get(nid, largest)
+            grouped.setdefault(cid, []).append(nid)
+        return grouped
+
+    import graphify.cluster  # bind the submodule; the package attribute is lazy
+
+    monkeypatch.setattr(graphify.cluster, "cluster", _cluster_extend_largest)
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    saved = json.loads(labels_file.read_text(encoding="utf-8"))
+    assert distinctive in saved.values()
+
+
+def test_rebuild_code_keeps_hub_fallback_labels_out_of_the_tracked_file(tmp_path):
+    """#3334: a from-empty rebuild (a fresh clone, a new worktree, any CI job
+    with no prior graphify-out/) names every community by its deterministic
+    hub, but that name is not something anyone reviewed or asked to commit.
+    Writing it into the same tracked file as genuinely curated names meant a
+    routine rebuild kept appending placeholder entries to a file the project
+    is told to commit as its reviewed semantic layer. The tracked file must
+    stay empty on a first, from-empty rebuild; the fallback names must still
+    be findable (in the pending sidecar) and must still reach the report."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    pending_file = out / ".graphify_labels.pending.json"
+
+    tracked = json.loads(labels_file.read_text(encoding="utf-8"))
+    assert tracked == {}, (
+        f"a from-empty rebuild must not write hub-fallback names into the "
+        f"tracked labels file; got {tracked}"
+    )
+    assert pending_file.exists(), "hub-fallback names must land in the pending sidecar"
+    pending = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert pending, "expected at least one hub-fallback label in the sidecar"
+
+    # The fallback names must still reach graph.json, unaffected by the split:
+    # every node's community_name comes from the merged (curated + pending)
+    # labels dict, not from the tracked file alone.
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    names_seen = {
+        str(n.get("community")): n.get("community_name")
+        for n in graph["nodes"] if n.get("community") is not None
+    }
+    for cid, name in pending.items():
+        assert names_seen.get(cid) == name, (
+            f"community {cid}'s hub-fallback name did not reach graph.json "
+            f"(expected {name!r}, saw {names_seen.get(cid)!r})"
+        )
+
+
+def test_rebuild_code_reuses_pending_labels_without_regenerating(tmp_path):
+    """A hub-fallback name, once written to the pending sidecar, must be
+    REUSED on the next rebuild (not silently regenerated every run) as long
+    as the community's membership hasn't changed -- matching the existing
+    reuse guarantee already given to curated labels."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = corpus / "graphify-out"
+    pending_file = out / ".graphify_labels.pending.json"
+    first = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert first
+
+    # Hand-edit the pending sidecar to a distinguishable value, then force a
+    # real rebuild (unrelated file added, so the topology fast path is
+    # skipped and the label merge logic actually runs) without touching the
+    # community's own membership.
+    pending_file.write_text(
+        json.dumps({cid: "Reused Fallback Name" for cid in first}), encoding="utf-8"
+    )
+    (corpus / "unrelated.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    second = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert "Reused Fallback Name" in second.values(), (
+        f"pending label was regenerated instead of reused; got {second}"
+    )
+
+
+def test_rebuild_code_promotes_curated_label_and_drops_it_from_pending(tmp_path):
+    """A community that starts as an unreviewed hub fallback and then gets a
+    real (curated) name -- simulating what a `graphify label` pass does --
+    must end up in the tracked file, not still duplicated in the pending
+    sidecar."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    pending_file = out / ".graphify_labels.pending.json"
+    pending = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert pending
+
+    # Promote every pending entry into the tracked file, as a real naming
+    # pass would, and remove it from pending.
+    labels_file.write_text(
+        json.dumps({cid: f"Curated {cid}" for cid in pending}), encoding="utf-8"
+    )
+    pending_file.unlink()
+
+    (corpus / "unrelated.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    tracked_after = json.loads(labels_file.read_text(encoding="utf-8"))
+    for cid in pending:
+        assert tracked_after.get(cid, "").startswith("Curated "), (
+            f"promoted label for community {cid} did not survive in the tracked file"
+        )
+    if pending_file.exists():
+        pending_after = json.loads(pending_file.read_text(encoding="utf-8"))
+        assert set(pending_after) & set(pending) == set(), (
+            "a promoted community must not still appear in the pending sidecar"
+        )
 
 
 def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monkeypatch):
@@ -751,6 +1183,7 @@ def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot delete the current working directory")
 def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monkeypatch, capsys):
     """Detached hooks can inherit a CWD that no longer exists.
 
@@ -775,6 +1208,7 @@ def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monk
     assert "current working directory no longer exists" in out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot delete the current working directory")
 def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(tmp_path, monkeypatch):
     """GRAPHIFY_REPO_ROOT lets detached hook rebuilds recover from a deleted CWD."""
     from graphify.watch import _rebuild_code
@@ -1239,7 +1673,6 @@ def test_rebuild_code_preupgrade_marker_less_node_one_cycle_lag(tmp_path):
     assert "bar()" in labels(healed), "surviving symbol must be kept throughout"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
     """GH-858: a non-blocking caller that fails to acquire the lock must not
     truncate the holder's PID payload."""
@@ -1252,6 +1685,70 @@ def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
             assert inner is False
             # Holder's PID line must still be intact.
             assert lock_path.read_text(encoding="utf-8") == held_contents
+
+
+def _rebuild_lock_holder_for_test(out_dir, name, hold, q):
+    """Module-level so `spawn`-mode multiprocessing can pickle it (#4273)."""
+    with _rebuild_lock(out_dir, blocking=True):
+        q.put((name, "enter", time.monotonic()))
+        time.sleep(hold)
+        q.put((name, "exit", time.monotonic()))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="#4273 is a POSIX flock/unlink race")
+def test_rebuild_lock_unlink_does_not_let_a_third_caller_in_while_a_waiter_holds(tmp_path):
+    """#4273: flock() locks the open file's inode, not the path. Unlinking the
+    path on release used to let a blocked waiter end up holding the lock on
+    an orphaned inode while a later caller opened the (recreated) path fresh
+    and acquired an unrelated, never-locked inode immediately — two holders
+    inside the critical section at once.
+
+    A (held briefly) -> B (blocked waiter, acquires once A releases) -> C
+    (arrives after A releases, while B is still holding). C must never enter
+    while B is still inside.
+    """
+    import multiprocessing as mp
+
+    out = tmp_path / "graphify-out"
+    holder = _rebuild_lock_holder_for_test
+    q = mp.Queue()
+    a = mp.Process(target=holder, args=(out, "A", 0.4, q))
+    a.start()
+    time.sleep(0.15)
+    b = mp.Process(target=holder, args=(out, "B", 0.6, q))  # parks in flock() on the old inode
+    b.start()
+    a.join()
+    time.sleep(0.15)  # A has released; B should now hold the lock on a fresh inode
+    c = mp.Process(target=holder, args=(out, "C", 0.2, q))  # must NOT get in until B exits
+    c.start()
+    b.join()
+    c.join()
+
+    events = sorted((q.get() for _ in range(6)), key=lambda e: e[2])
+    intervals = {}
+    for name, kind, t in events:
+        intervals.setdefault(name, {})[kind] = t
+
+    b_enter, b_exit = intervals["B"]["enter"], intervals["B"]["exit"]
+    c_enter = intervals["C"]["enter"]
+    assert not (b_enter < c_enter < b_exit), (
+        f"C entered at {c_enter} while B held the lock ({b_enter}..{b_exit}): {events}"
+    )
+
+
+def test_rebuild_lock_blocks_concurrent_process(tmp_path):
+    """#3881: concurrent processes cannot acquire the rebuild lock simultaneously."""
+    import subprocess
+    out = tmp_path / "graphify-out"
+    with _rebuild_lock(out) as outer:
+        assert outer is True
+        script = (
+            "import sys; from pathlib import Path; "
+            "from graphify.watch import _rebuild_lock; "
+            f"sys.exit(0 if _rebuild_lock(Path(r'{out}'), blocking=False).__enter__() else 42)"
+        )
+        proc = subprocess.run([sys.executable, "-c", script], capture_output=True)
+        assert proc.returncode == 42
 
 
 def test_rebuild_code_is_idempotent_when_cluster_ids_flap(tmp_path, monkeypatch):
@@ -1368,6 +1865,64 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
+def test_watch_non_linux_handler_accepts_events_without_watched_entry(
+    tmp_path, monkeypatch
+):
+    """#5075: macOS and Windows keep the recursive schedule, so their handler
+    must accept file events even though the manual `watched` map is empty."""
+    import threading
+
+    from graphify import watch as watch_mod
+    from watchdog import observers
+    from watchdog.events import FileCreatedEvent
+    from watchdog.observers import polling
+
+    watch_root = tmp_path / "corpus"
+    watch_root.mkdir()
+    target = watch_root / "app.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+
+    captured = {}
+    rebuild_calls: list[Path] = []
+
+    class FakeObserver:
+        def schedule(self, handler, path, *, recursive=False, event_filter=None):
+            captured["handler"] = handler
+            captured["recursive"] = recursive
+
+        def start(self):
+            pass
+
+    fake = FakeObserver()
+    monkeypatch.setattr(observers, "Observer", lambda: fake)
+    monkeypatch.setattr(polling, "PollingObserver", lambda: fake)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        watch_mod, "_rebuild_code", lambda p, **kw: rebuild_calls.append(p) or True
+    )
+    monkeypatch.setattr(watch_mod, "_notify_only", lambda p: None)
+
+    thread = threading.Thread(
+        target=watch_mod.watch,
+        args=(watch_root,),
+        kwargs={"debounce": 0.1},
+        daemon=True,
+    )
+    thread.start()
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and "handler" not in captured:
+        time.sleep(0.01)
+    assert captured.get("recursive") is True
+
+    captured["handler"].on_any_event(FileCreatedEvent(str(target)))
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not rebuild_calls:
+        time.sleep(0.05)
+    assert rebuild_calls, "the recursive handler dropped a real file event"
+
+
+@pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
 def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     """gh-928: .graphifyignore must be parsed exactly once at watch() startup,
     not per filesystem event. Otherwise busy volumes re-read the file
@@ -1460,13 +2015,13 @@ def test_check_shrink_allows_shrink_within_rebuilt_sources(capsys):
     """#1116: a symbol removed from a re-extracted file is a legitimate shrink —
     every lost node belongs to a rebuilt source, so the write proceeds (no --force)."""
     existing = {"nodes": [
-        {"id": "a", "source_file": "m.py"},
-        {"id": "b", "source_file": "m.py"},
-        {"id": "c", "source_file": "other.py"},
+        {"id": "a", "source_file": "m.py", "_origin": "ast"},
+        {"id": "b", "source_file": "m.py", "_origin": "ast"},
+        {"id": "c", "source_file": "other.py", "_origin": "ast"},
     ], "links": []}
     new = {"nodes": [
-        {"id": "a", "source_file": "m.py"},
-        {"id": "c", "source_file": "other.py"},
+        {"id": "a", "source_file": "m.py", "_origin": "ast"},
+        {"id": "c", "source_file": "other.py", "_origin": "ast"},
     ], "links": []}
     ok = _check_shrink(False, existing, new, rebuilt_sources={"m.py"})
     assert ok is True
@@ -1549,6 +2104,117 @@ def test_check_shrink_allows_growth():
         new_data=_shrink_payload(60),
     )
     assert ok is True
+
+
+def _masked_semantic_loss():
+    """#2229: AST growth plus a new sourceless stub hides one lost rationale id.
+
+    The total rises (4 → 7). The semantic count stays at 2 because pathlib_Path
+    fills the slot. src/app.ts is rebuilt and is not deleted, so a rebuilt-set
+    excuse also accepts the loss.
+    """
+    def ast(node_id, line):
+        return {
+            "id": node_id,
+            "source_file": "src/app.ts",
+            "_origin": "ast",
+            "source_location": f"L{line}",
+            "file_type": "code",
+        }
+
+    def rationale(node_id):
+        return {
+            "id": node_id,
+            "source_file": "src/app.ts",
+            "_origin": "semantic",
+            "source_location": None,
+            "file_type": "rationale",
+        }
+
+    saved = {"nodes": [
+        ast("app_ts", 1),
+        ast("app_ts_main", 2),
+        rationale("rationale_kept"),
+        rationale("rationale_lost"),
+    ], "links": []}
+    new = {"nodes": [
+        ast("app_ts", 1),
+        ast("app_ts_main", 2),
+        ast("app_ts_hook", 10),
+        ast("app_ts_route", 20),
+        ast("app_ts_util", 30),
+        rationale("rationale_kept"),
+        {
+            "id": "pathlib_Path",
+            "source_file": "",
+            "source_location": None,
+            "file_type": "concept",
+        },
+    ], "links": []}
+    return saved, new
+
+
+def test_check_shrink_refuses_lost_semantic_id_when_total_grows(capsys):
+    """#2229: a larger total must not write away a saved rationale id."""
+    saved, new = _masked_semantic_loss()
+    assert len(new["nodes"]) > len(saved["nodes"])
+    ok = _check_shrink(False, saved, new, rebuilt_sources={"src/app.ts"})
+    assert ok is False
+    assert "rationale_lost" in capsys.readouterr().err
+
+
+def test_check_shrink_allows_deleted_code_file_when_semantic_ids_remain(capsys):
+    """A removed code file may drop its nodes. A rationale id on a file that
+    is still present must stay, and that pair still writes."""
+    existing = {"nodes": [
+        {"id": "gone_fn", "source_file": "gone.py", "_origin": "ast", "source_location": "L1"},
+        {"id": "gone_rationale", "source_file": "gone.py", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "stay_rationale", "source_file": "stay.md", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ], "links": []}
+    new = {"nodes": [
+        {"id": "stay_rationale", "source_file": "stay.md", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ], "links": []}
+    ok = _check_shrink(
+        False,
+        existing,
+        new,
+        rebuilt_sources={"gone.py"},
+        deleted_sources={"gone.py"},
+    )
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stub", [
+    {"id": "json", "external": True, "source_file": "", "file_type": "concept", "_origin": "semantic"},
+    {"id": "json", "type": "external", "source_file": "", "file_type": "concept", "_origin": "semantic"},
+])
+def test_check_shrink_allows_dropped_import_stub_when_total_grows(capsys, stub):
+    """Removing an import drops its auto-minted stub. Added code can make the
+    total grow. That write must succeed without --force."""
+    def code(node_id):
+        return {
+            "id": node_id,
+            "source_file": "app.py",
+            "_origin": "ast",
+            "source_location": "L1",
+            "file_type": "code",
+        }
+    existing = {"nodes": [
+        code("app"),
+        code("app_load"),
+        stub,
+    ], "links": []}
+    new = {"nodes": [
+        code("app"),
+        code("app_load"),
+        code("app_extra"),
+        code("app_more"),
+    ], "links": []}
+    assert len(new["nodes"]) > len(existing["nodes"])
+    ok = _check_shrink(False, existing, new, rebuilt_sources={"app.py"})
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
 
 
 def test_check_shrink_unlinks_tmp_on_refuse(tmp_path):
@@ -1951,7 +2617,6 @@ def test_queue_pending_noop_on_empty_list(tmp_path):
     assert not (out / _PENDING_FILENAME).exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_code_queues_on_lock_contention(tmp_path, monkeypatch, capsys):
     """#1059: when the rebuild lock is held, an incremental hook must queue
     its changed_paths to .pending_changes and print 'queued' instead of
@@ -1986,7 +2651,6 @@ def test_rebuild_code_queues_on_lock_contention(tmp_path, monkeypatch, capsys):
         assert pending.read_text(encoding="utf-8").splitlines() == ["a.py", "b.py"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_code_merges_pending_on_acquire(tmp_path, monkeypatch):
     """#1059: the process that acquires the lock must drain .pending_changes
     and pass the merged change set to the inner rebuild call."""
@@ -2026,7 +2690,6 @@ def test_rebuild_code_merges_pending_on_acquire(tmp_path, monkeypatch):
     assert not (out / watch_mod._PENDING_FILENAME).exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_code_drains_late_arrivals(tmp_path, monkeypatch):
     """#1059: after the primary rebuild, the lock-holder must loop and drain
     any paths queued by hooks that arrived mid-rebuild."""
@@ -2092,8 +2755,111 @@ def test_rebuild_code_full_corpus_skips_pending_queue(tmp_path, monkeypatch):
     # Full-corpus rebuild passes None to the inner call (does not merge in
     # the queued paths — a full rebuild already covers them).
     assert seen == [None]
-    # The queue still gets drained on entry so stale entries don't leak,
-    # but no late-arrival loop runs for the full-corpus path.
+    # The queue is drained on entry so stale entries don't leak; nothing
+    # arrived mid-run, so the late-arrival loop has nothing to do.
+    assert not (out / watch_mod._PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_full_request_queues_marker_on_contention(tmp_path, capsys):
+    """#4274: a full-corpus request that loses the lock must leave a
+    .pending_full marker instead of being dropped behind a 'queued' log."""
+    from graphify.watch import _rebuild_code, _rebuild_lock, _PENDING_FULL_FILENAME
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+
+    with _rebuild_lock(out, blocking=False) as outer_got:
+        assert outer_got is True
+        assert _rebuild_code(tmp_path) is False
+        assert "changes queued" in capsys.readouterr().out
+        assert (out / _PENDING_FULL_FILENAME).exists()
+
+
+def test_rebuild_code_empty_change_set_does_not_claim_queued(tmp_path, capsys):
+    """#4274: 'changes queued' is printed only when something was queued."""
+    from graphify.watch import _rebuild_code, _rebuild_lock, _PENDING_FILENAME
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+
+    with _rebuild_lock(out, blocking=False) as outer_got:
+        assert outer_got is True
+        assert _rebuild_code(tmp_path, changed_paths=[]) is False
+        assert "changes queued" not in capsys.readouterr().out
+        assert not (out / _PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_holder_runs_queued_full_pass(tmp_path, monkeypatch):
+    """#4274: a full request queued while an incremental rebuild holds the
+    lock must make the holder run one more full pass before releasing."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            paths = kwargs.get("changed_paths")
+            seen.append(None if paths is None else [p.as_posix() for p in paths])
+            if len(seen) == 1:
+                watch_mod._queue_pending_full(out)
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path, changed_paths=[Path("own.py")]) is True
+    assert seen == [["own.py"], None]
+    assert not (out / watch_mod._PENDING_FULL_FILENAME).exists()
+
+
+def test_rebuild_code_full_pass_upgrades_from_queued_marker(tmp_path, monkeypatch):
+    """#4274: an incremental holder that finds a full marker already queued
+    runs a full rebuild instead of its incremental one."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    watch_mod._queue_pending_full(out)
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            seen.append(kwargs.get("changed_paths"))
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path, changed_paths=[Path("own.py")]) is True
+    assert seen == [None]
+    assert not (out / watch_mod._PENDING_FULL_FILENAME).exists()
+    assert not (out / watch_mod._PENDING_FILENAME).exists()
+
+
+def test_rebuild_code_full_rebuild_drains_late_arrivals(tmp_path, monkeypatch):
+    """#4274: incremental work queued after a full rebuild walked the corpus
+    must be applied by that rebuild's holder before it releases the lock."""
+    from graphify import watch as watch_mod
+    from graphify.watch import _rebuild_code as orig_rebuild
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    seen: list = []
+
+    def fake_inner(watch_path, **kwargs):
+        if kwargs.get("acquire_lock") is False:
+            paths = kwargs.get("changed_paths")
+            seen.append(None if paths is None else [p.as_posix() for p in paths])
+            if len(seen) == 1:
+                watch_mod._queue_pending(out, [Path("late.py")])
+        return True
+
+    monkeypatch.setattr(watch_mod, "_rebuild_code", fake_inner)
+
+    assert orig_rebuild(tmp_path) is True
+    assert seen == [None, ["late.py"]]
     assert not (out / watch_mod._PENDING_FILENAME).exists()
 
 
@@ -2640,6 +3406,77 @@ def test_rebuild_code_quick_scans_doc_without_semantic_nodes(tmp_path):
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert {"notes", "notes_alpha", "notes_beta"} <= ids
+
+
+def test_rebuild_code_quick_scans_markdown_classified_as_paper(tmp_path):
+    """#4750: a .md that detect() classifies as a paper (arXiv id, "arxiv",
+    an Abstract heading) is still Markdown. The AST-only rebuild must
+    quick-scan it like any other doc instead of giving it zero nodes, while a
+    PDF paper (no AST extractor) stays out of the rebuild."""
+    from graphify.detect import detect
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (corpus / "paper_notes.md").write_text(
+        "# Notes on a paper\n\narXiv 2501.00001\n\n## Abstract\n\nWe study X.\n",
+        encoding="utf-8",
+    )
+    (corpus / "plain_notes.md").write_text("# Plain notes\n\n## Section\n\nSome text.\n", encoding="utf-8")
+    (corpus / "scan.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    files = detect(corpus)["files"]
+    assert any(Path(p).name == "paper_notes.md" for p in files["paper"]), "precondition: .md classified as paper"
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    nodes = json.loads((corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8"))["nodes"]
+    by_source = {Path(n.get("source_file") or "").name for n in nodes}
+    assert "paper_notes.md" in by_source, "paper-classified Markdown got zero nodes (#4750)"
+    assert "plain_notes.md" in by_source
+    assert "scan.pdf" not in by_source
+
+
+@pytest.mark.parametrize("incremental", [False, True])
+def test_rebuild_code_does_not_quick_scan_semantic_backed_paper_markdown(tmp_path, incremental):
+    """#4750 x #1915: a paper-classified .md that already carries a semantic
+    (LLM) layer must not get an AST heading layer on top once papers enter the
+    quick-scan. Its semantic nodes stay the sole representation, on a full and
+    on an incremental rebuild."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    paper = corpus / "paper_notes.md"
+    paper.write_text(
+        "# Notes on a paper\n\narXiv 2501.00001\n\n## Abstract\n\nWe study X.\n",
+        encoding="utf-8",
+    )
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    semantic_ids = {"paper_notes_paper", "paper_notes_method"}
+    data["nodes"].extend([
+        {"id": "paper_notes_paper", "label": "Notes on a paper", "file_type": "paper",
+         "source_file": "paper_notes.md"},
+        {"id": "paper_notes_method", "label": "Method", "file_type": "concept",
+         "source_file": "paper_notes.md"},
+    ])
+    data["links"].append(
+        {"source": "paper_notes_paper", "target": "paper_notes_method", "relation": "describes",
+         "confidence": "INFERRED", "source_file": "paper_notes.md"},
+    )
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    before = len(data["nodes"])
+
+    kwargs = {"changed_paths": [paper]} if incremental else {}
+    _rebuild_code(corpus, no_cluster=True, acquire_lock=False, **kwargs)
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    paper_ids = {n["id"] for n in after if Path(n.get("source_file") or "").name == "paper_notes.md"}
+    assert paper_ids == semantic_ids, f"AST layer added on a semantic-backed paper: {paper_ids - semantic_ids}"
+    assert len(after) == before
 
 
 def test_full_rebuild_preserves_semantic_backed_doc_ast_layer(tmp_path):
@@ -3514,6 +4351,225 @@ def test_incremental_rebuild_preserves_python_call_to_unchanged_target(tmp_path)
     assert sorted(_2406_calls(_2406_graph(corpus))) == sorted(full)
 
 
+# --- Rust generic self calls into unchanged impls ---------------------------
+
+_RUST_GENERIC_STATE = "pub struct Bucket<T> { value: T }\n"
+_RUST_GENERIC_METHOD = (
+    "impl<T> Bucket<T> {\n"
+    "    pub fn fetch_value(&self) {}\n"
+    "}\n"
+)
+_RUST_GENERIC_CALLER = (
+    "impl<U> Bucket<U> {\n"
+    "    pub fn run(&self) {\n%s        self.fetch_value();\n"
+    "    }\n"
+    "}\n"
+)
+
+
+def _rust_generic_seed(tmp_path):
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    (corpus / "state.rs").write_text(_RUST_GENERIC_STATE, encoding="utf-8")
+    (corpus / "method.rs").write_text(_RUST_GENERIC_METHOD, encoding="utf-8")
+    (corpus / "caller.rs").write_text(
+        _RUST_GENERIC_CALLER % "", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _rust_generic_call(graph):
+    caller = _2406_nid(graph, ".run()", "caller.rs")
+    callee = _2406_nid(graph, ".fetch_value()", "method.rs")
+    return (caller, callee) in _2406_calls(graph)
+
+
+def test_incremental_rust_generic_self_call_uses_unchanged_impl_context(tmp_path):
+    """A changed generic caller retains its call into an unchanged impl block."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _rust_generic_seed(tmp_path)
+    assert _rust_generic_call(_2406_graph(corpus))
+
+    caller = corpus / "caller.rs"
+    caller.write_text(
+        _RUST_GENERIC_CALLER % "        let marker = 1;\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _rust_generic_call(_2406_graph(corpus))
+
+
+def test_incremental_rust_generic_self_call_legacy_marker_fails_closed(tmp_path):
+    """A pre-marker graph does not guess; re-extraction restores the edge."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _rust_generic_seed(tmp_path)
+    graph_path = corpus / "graphify-out" / "graph.json"
+    legacy = _2406_graph(corpus)
+    assert any(node.get("_rust_impl_key") for node in legacy["nodes"])
+    for node in legacy["nodes"]:
+        node.pop("_rust_impl_key", None)
+    graph_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    caller = corpus / "caller.rs"
+    caller.write_text(
+        _RUST_GENERIC_CALLER % "        let marker = 1;\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert not _rust_generic_call(_2406_graph(corpus))
+
+    state = corpus / "state.rs"
+    method = corpus / "method.rs"
+    state.write_text(_RUST_GENERIC_STATE + "// refreshed\n", encoding="utf-8")
+    method.write_text(_RUST_GENERIC_METHOD + "// refreshed\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[state, method, caller],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    assert _rust_generic_call(_2406_graph(corpus))
+
+
+def test_incremental_rust_generic_self_call_keeps_module_ambiguity(tmp_path):
+    """A collapsed same-file declaration count survives context projection."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "state.rs").write_text(
+        "pub mod a { pub struct Bucket<T>(pub T); }\n"
+        "pub mod b { pub struct Bucket<T>(pub T); }\n",
+        encoding="utf-8",
+    )
+    (corpus / "a_impl.rs").write_text(
+        "impl<T> Bucket<T> { pub fn fetch_value(&self) {} }\n",
+        encoding="utf-8",
+    )
+    (corpus / "fallback.rs").write_text(
+        "pub trait Fallback { fn fetch_value(&self) {} }\n",
+        encoding="utf-8",
+    )
+    caller = corpus / "b_impl.rs"
+    caller.write_text(
+        "impl<T> Fallback for Bucket<T> {}\n"
+        "impl<U> Bucket<U> { pub fn run(&self) { self.fetch_value(); } }\n",
+        encoding="utf-8",
+    )
+
+    def has_call():
+        graph = _2406_graph(corpus)
+        run_id = _2406_nid(graph, ".run()", "b_impl.rs")
+        return any(
+            edge.get("relation") == "calls" and edge.get("source") == run_id
+            for edge in graph.get("links", graph.get("edges", []))
+        )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert not has_call()
+    caller.write_text(
+        "impl<T> Fallback for Bucket<T> {}\n"
+        "impl<U> Bucket<U> {\n"
+        "    pub fn run(&self) { let marker = 1; self.fetch_value(); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert not has_call()
+
+
+# --- #3567: inherited Ruby calls into unchanged ancestry --------------------
+
+
+def _3567_seed(tmp_path, *, singleton=False, grandparent=False):
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    helper = (
+        "  class << self\n    def helper(value); value; end\n  end\n"
+        if singleton
+        else "  def helper(value); value; end\n"
+    )
+    if grandparent:
+        (corpus / "grand.rb").write_text(
+            f"class Grand\n{helper}end\n", encoding="utf-8"
+        )
+        (corpus / "base.rb").write_text(
+            "class Base < Grand\nend\n", encoding="utf-8"
+        )
+    else:
+        (corpus / "base.rb").write_text(
+            f"class Base\n{helper}end\n", encoding="utf-8"
+        )
+    declaration = "def self.call" if singleton else "def call"
+    (corpus / "child.rb").write_text(
+        f"class Child < Base\n  {declaration}\n"
+        "    helper(1)\n  end\nend\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _3567_call(graph):
+    nodes = {node["id"]: node for node in graph.get("nodes", [])}
+    matches = [
+        (edge, nodes.get(edge.get("target"), {}))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "calls"
+        and nodes.get(edge.get("source"), {}).get("label") == ".call()"
+        and nodes.get(edge.get("target"), {}).get("label") == ".helper()"
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+@pytest.mark.parametrize(
+    ("singleton", "grandparent", "target_file"),
+    [(False, True, "grand.rb"), (True, False, "base.rb")],
+)
+def test_incremental_ruby_inherited_call_matches_full_build(
+    tmp_path, singleton, grandparent, target_file
+):
+    """A changed caller keeps the full-build confidence and target."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _3567_seed(
+        tmp_path, singleton=singleton, grandparent=grandparent
+    )
+    full_edge, full_target = _3567_call(_2406_graph(corpus))
+    assert full_edge.get("confidence") == "EXTRACTED"
+    assert full_target.get("source_file") == target_file
+
+    caller = corpus / "child.rb"
+    declaration = "def self.call" if singleton else "def call"
+    caller.write_text(
+        f"class Child < Base\n  {declaration}\n"
+        "    marker = 1\n    helper(1)\n  end\nend\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+
+    incremental_edge, incremental_target = _3567_call(_2406_graph(corpus))
+    assert incremental_edge.get("confidence") == "EXTRACTED"
+    assert incremental_edge.get("confidence_score") == 1.0
+    assert incremental_target.get("source_file") == target_file
+
+
 # --- #2437 / #2438: member + indirect calls into unchanged files -------------
 # The #2406 resolution context now also carries the unchanged corpus's
 # contains/method edges (member-call resolvers, #2437) and the persisted
@@ -3900,6 +4956,125 @@ def test_read_only_events_with_real_watchdog_classes():
     assert not _is_read_only_event(we.FileClosedEvent("/tmp/x.py"))
 
 
+def _run_watch_with_fake_observer(tmp_path, monkeypatch, fake_observer):
+    """Run watch() far enough to capture the schedule() call, then bail."""
+    from graphify import watch as watch_mod
+    from watchdog.observers import polling
+    from watchdog import observers
+
+    monkeypatch.setattr(observers, "Observer", lambda: fake_observer)
+    monkeypatch.setattr(polling, "PollingObserver", lambda: fake_observer)
+
+    class StopWatch(Exception):
+        pass
+
+    def start():
+        raise StopWatch
+
+    fake_observer.start = start
+
+    with pytest.raises(StopWatch):
+        watch_mod.watch(tmp_path, debounce=0.1)
+
+
+@pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
+def test_watch_schedules_change_only_event_filter(tmp_path, monkeypatch):
+    """#5033: read-only events must be excluded from the kernel inotify mask.
+
+    Without event_filter watchdog asks for IN_OPEN / IN_CLOSE_NOWRITE, and its
+    own recursive setup walk overflows the inotify queue on ~4,000 directories.
+    """
+    from graphify.watch import _watch_event_filter
+    from watchdog import events as we
+
+    captured = {}
+
+    class FakeObserver:
+        def schedule(self, handler, path, *, recursive=False, event_filter=None):
+            captured["recursive"] = recursive
+            captured["event_filter"] = list(event_filter or [])
+
+    _run_watch_with_fake_observer(tmp_path, monkeypatch, FakeObserver())
+
+    assert captured["recursive"] is (not sys.platform.startswith("linux"))
+    assert captured["event_filter"] == _watch_event_filter()
+    assert we.FileOpenedEvent not in captured["event_filter"]
+    if hasattr(we, "FileClosedNoWriteEvent"):
+        assert we.FileClosedNoWriteEvent not in captured["event_filter"]
+
+
+@pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
+def test_watch_falls_back_when_watchdog_lacks_event_filter(tmp_path, monkeypatch):
+    """watchdog < 4 has no event_filter; scheduling must still work (#5033)."""
+    captured = {}
+
+    class OldObserver:
+        def schedule(self, handler, path, recursive=False):
+            captured["recursive"] = recursive
+            captured["called"] = True
+
+    _run_watch_with_fake_observer(tmp_path, monkeypatch, OldObserver())
+
+    assert captured == {
+        "recursive": not sys.platform.startswith("linux"),
+        "called": True,
+    }
+
+
+@pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
+def test_watch_warns_when_observer_cannot_filter(tmp_path, monkeypatch, caplog):
+    """A silent fallback would let a future watchdog change re-enable #5033."""
+    import logging
+
+    captured = {}
+
+    class OldObserver:
+        def schedule(self, handler, path, recursive=False):
+            captured["called"] = True
+
+    with caplog.at_level(logging.WARNING, logger="graphify.watch"):
+        _run_watch_with_fake_observer(tmp_path, monkeypatch, OldObserver())
+
+    assert captured["called"] is True
+    assert any("event_filter" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
+def test_watch_warns_when_observer_hides_event_filter_in_kwargs(
+    tmp_path, monkeypatch, caplog
+):
+    """`schedule(**kwargs)` is not detected; the warning must still fire."""
+    import logging
+
+    captured = {}
+
+    class KwargsObserver:
+        def schedule(self, handler, path, **kwargs):
+            captured.update(kwargs)
+
+    with caplog.at_level(logging.WARNING, logger="graphify.watch"):
+        _run_watch_with_fake_observer(tmp_path, monkeypatch, KwargsObserver())
+
+    assert captured == {"recursive": not sys.platform.startswith("linux")}
+    assert any("event_filter" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
+def test_installed_watchdog_observer_declares_event_filter():
+    """Pin the real observer, not just a fake, so a future removal is visible."""
+    from importlib.metadata import version
+
+    from watchdog.observers import Observer
+
+    from graphify.watch import _observer_accepts_event_filter
+
+    major = int(version("watchdog").split(".", 1)[0])
+    if major < 4:
+        pytest.skip("watchdog < 4 does not support event_filter")
+
+    assert _observer_accepts_event_filter(Observer())
+
+
 def _markdown_reconcile_fixture(tmp_path, files, nodes, links):
     corpus = tmp_path / "corpus"
     corpus.mkdir()
@@ -3946,11 +5121,13 @@ def _ast_reference(source, target, source_file, **extra):
     }
 
 
-def test_markdown_reconcile_links_new_source_to_semantic_target(tmp_path):
+@pytest.mark.parametrize("suffix", [".md", ".mdx", ".qmd", ".skill"])
+def test_markdown_reconcile_links_new_source_to_semantic_target(tmp_path, suffix):
     """#1915/#1954: a fresh source reaches a semantic-only target."""
+    source_file = f"a{suffix}"
     corpus, graph_path = _markdown_reconcile_fixture(
         tmp_path,
-        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        {source_file: "[link](b.md)\n", "b.md": "target\n"},
         [_semantic_doc("b_sem", "b.md")],
         [],
     )
@@ -4004,15 +5181,100 @@ def test_markdown_reconcile_preserves_ambiguous_source(tmp_path):
     assert references[0]["sentinel"] == "keep"
 
 
-def test_markdown_reconcile_prunes_removed_authored_link(tmp_path):
+@pytest.mark.parametrize("suffix", [".md", ".mdx", ".qmd", ".skill"])
+def test_markdown_reconcile_prunes_removed_authored_link(tmp_path, suffix):
     """#1915/#1954: removing a Markdown link removes its owned AST edge."""
+    source_file = f"a{suffix}"
     corpus, graph_path = _markdown_reconcile_fixture(
         tmp_path,
-        {"a.md": "no link\n", "b.md": "target\n"},
-        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
-        [_ast_reference("a_sem", "b_sem", "a.md")],
+        {source_file: "no link\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", source_file), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", source_file)],
     )
 
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
+
+
+@pytest.mark.parametrize("suffix", [".md", ".mdx", ".qmd", ".skill"])
+def test_markdown_reconcile_repoints_incremental_link_to_semantic_target(
+    tmp_path, suffix
+):
+    """A changed Markdown source reuses the target's semantic representative."""
+    source_file = f"a{suffix}"
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {source_file: "[link](b.md)\n", "b.md": "target\n"},
+        [
+            {
+                "id": "a",
+                "label": source_file,
+                "node_kind": "page",
+                "file_type": "document",
+                "source_file": source_file,
+                "source_location": "L1",
+                "_origin": "ast",
+            },
+            _semantic_doc("b_sem", "b.md"),
+        ],
+        [],
+    )
+
+    for _ in range(2):
+        assert _rebuild_code(
+            corpus,
+            changed_paths=[corpus / source_file],
+            no_cluster=True,
+            acquire_lock=False,
+        ) is True
+        links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+        references = [edge for edge in links if edge.get("relation") == "references"]
+        assert len(references) == 1
+        assert {references[0]["source"], references[0]["target"]} == {"a", "b_sem"}
+
+
+@pytest.mark.parametrize("suffix", [".md", ".mdx", ".qmd", ".skill"])
+def test_markdown_reconcile_preserves_links_on_extraction_error(
+    tmp_path, monkeypatch, suffix
+):
+    """A failed parse cannot claim ownership of persisted authored links."""
+    import graphify.extract as extract_module
+
+    source_file = f"a{suffix}"
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {source_file: "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", source_file), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", source_file, sentinel="keep")],
+    )
+    source_path = (corpus / source_file).resolve()
+    real_extract = extract_module._safe_extract_with_xaml_root
+    fail_source = True
+
+    def controlled_extract(extractor, path, root):
+        if fail_source and path.resolve() == source_path:
+            return {"nodes": [], "edges": [], "error": "simulated read failure"}
+        return real_extract(extractor, path, root)
+
+    monkeypatch.setattr(
+        extract_module, "_safe_extract_with_xaml_root", controlled_extract
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert references[0]["sentinel"] == "keep"
+
+    fail_source = False
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"a_sem", "b_sem"}
+
+    (corpus / source_file).write_text("no link\n", encoding="utf-8")
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
     assert not any(edge.get("relation") == "references" for edge in links)
@@ -4362,3 +5624,588 @@ def test_rebase_relative_source_files_rebases_definition_file(tmp_path):
     node = payload["nodes"][0]
     assert node["source_file"] == "pkg/src/Foo.h"
     assert node["definition_file"] == "pkg/src/Foo.cpp"
+
+
+def test_no_cluster_rebuild_survives_a_permission_error_on_replace(tmp_path, monkeypatch):
+    """#2689: on a VMware HGFS shared folder, os.replace over a graph.json
+    read earlier in the same process raises PermissionError even on the same
+    drive. The no_cluster incremental rebuild path must fall back instead of
+    aborting the whole run."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    (corpus / "app.py").write_text("def run(): pass\ndef added(): pass\n", encoding="utf-8")
+
+    monkeypatch.setattr(os, "replace", lambda src, dst: (_ for _ in ()).throw(
+        PermissionError("simulated HGFS WinError 5")
+    ))
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "added()" in labels, "the fallback must still land the new content"
+
+
+def test_clustered_rebuild_survives_a_permission_error_on_replace(tmp_path, monkeypatch):
+    """Same #2689 fallback requirement for the default (clustered) rebuild
+    path, the second of the two watch.py call sites."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    (corpus / "app.py").write_text("def run(): pass\ndef added(): pass\n", encoding="utf-8")
+
+    monkeypatch.setattr(os, "replace", lambda src, dst: (_ for _ in ()).throw(
+        PermissionError("simulated HGFS WinError 5")
+    ))
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "added()" in labels, "the fallback must still land the new content"
+
+
+# ── #3695: fail-closed preserved nodes survive AST ownership & shrink guard ───
+
+
+def test_full_rebuild_preserves_alive_source_removed_from_detected_corpus(
+    tmp_path, monkeypatch, capsys
+):
+    """#3695 invariant 1: An alive source removed from the detected corpus survives
+    a full rebuild under fail-closed preservation."""
+    from graphify import detect as detect_mod
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    nodes_before = {n["id"]: n for n in data["nodes"]}
+    assert any(n.get("source_file") == "b.py" for n in nodes_before.values())
+
+    # Simulate b.py being dropped from detected corpus while remaining alive on disk
+    real_detect = detect_mod.detect
+
+    def narrowed(root, **kwargs):
+        res = real_detect(root, **kwargs)
+        res["files"]["code"] = [
+            f for f in res["files"]["code"] if not str(f).endswith("b.py")
+        ]
+        return res
+
+    monkeypatch.setattr(detect_mod, "detect", narrowed)
+    capsys.readouterr()
+
+    # Explicit full rebuild (changed_paths=None)
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    out = capsys.readouterr().out
+    assert "fail-closed: kept" in out
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    sources = {n.get("source_file") for n in after["nodes"]}
+    assert "b.py" in sources
+    labels = {n.get("label") for n in after["nodes"]}
+    assert "beta()" in labels
+
+
+def test_ast_ownership_does_not_evict_fail_closed_preserved_node(
+    tmp_path, monkeypatch, capsys
+):
+    """#3695 invariant 1 & 2: AST ownership pass must not evict AST-tier nodes
+    belonging to a source that fail-closed explicitly preserved, even when full_rebuild
+    is True and AST ownership filtering evaluates."""
+    from graphify import detect as detect_mod
+    from graphify.watch import _rebuild_code
+    import graphify.watch as watch_mod
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    worker = corpus / "worker.py"
+    worker.write_text(
+        "def work():\n    pass\n\nclass Job:\n    pass\n", encoding="utf-8"
+    )
+    (corpus / "main.py").write_text("def start():\n    pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    worker_ast_ids = {
+        n["id"] for n in data["nodes"] if n.get("source_file") == "worker.py"
+    }
+    assert len(worker_ast_ids) >= 2
+
+    # Drop worker.py from scan corpus while alive on disk
+    real_detect = detect_mod.detect
+
+    def narrowed(root, **kwargs):
+        res = real_detect(root, **kwargs)
+        res["files"]["code"] = [
+            f for f in res["files"]["code"] if not str(f).endswith("worker.py")
+        ]
+        return res
+
+    monkeypatch.setattr(detect_mod, "detect", narrowed)
+
+    # When worker.py is evaluated against AST ownership eviction (e.g. from an
+    # unlinked/replaced file event in deleted_source_identities):
+    worker_id = Path(os.path.abspath(worker)).as_posix()
+    real_reconcile = watch_mod._reconcile_existing_graph
+
+    def reconcile_with_eviction(existing_graph, result, **kwargs):
+        kwargs["deleted_source_identities"] = set(kwargs.get("deleted_source_identities", ())) | {worker_id}
+        return real_reconcile(existing_graph, result, **kwargs)
+
+    monkeypatch.setattr(watch_mod, "_reconcile_existing_graph", reconcile_with_eviction)
+    capsys.readouterr()
+
+    # Trigger full rebuild: AST ownership pass runs with full_rebuild=True
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_ids = {n["id"] for n in after["nodes"]}
+    for ast_id in worker_ast_ids:
+        assert ast_id in after_ids, (
+            f"AST node {ast_id} was evicted by AST ownership despite fail-closed"
+        )
+    assert "fail-closed: kept" in capsys.readouterr().out
+
+
+def test_reextracted_source_still_evicts_stale_ast_nodes(tmp_path):
+    """#3695 invariant 2: Genuine re-extracted sources must retain existing AST
+    ownership behavior (#1116/#2333), evicting stale AST nodes."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "service.py").write_text(
+        "def old_handler():\n    pass\ndef permanent():\n    pass\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    ids_before = {
+        n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    }
+    assert "service_old_handler" in ids_before
+
+    # Modify service.py removing old_handler and adding new_handler
+    (corpus / "service.py").write_text(
+        "def new_handler():\n    pass\ndef permanent():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    # Full rebuild: re-extracts service.py
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    ids_after = {
+        n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    }
+    assert "service_new_handler" in ids_after
+    assert "service_old_handler" not in ids_after, (
+        "stale AST node from re-extracted source must be evicted (#1116/#2333)"
+    )
+
+
+def test_shrink_involving_fail_closed_sources_does_not_deadlock_shrink_guard(
+    tmp_path, monkeypatch, capsys
+):
+    """#3695 invariant 3: When a shrink occurs on a rebuild that also has fail-closed
+    sources, the shrink guard does not deadlock with 'Refusing to overwrite'."""
+    from graphify import detect as detect_mod
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    # a.py has 3 functions, b.py has 1 function
+    (corpus / "a.py").write_text(
+        "def f1(): pass\ndef f2(): pass\ndef f3(): pass\n", encoding="utf-8"
+    )
+    (corpus / "b.py").write_text("def helper(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    initial_count = len(json.loads(graph_path.read_text(encoding="utf-8"))["nodes"])
+
+    # Now shrink a.py: remove 2 functions (net shrink from initial_count)
+    (corpus / "a.py").write_text("def f1(): pass\n", encoding="utf-8")
+
+    # And simulate b.py leaving the detected corpus while alive
+    real_detect = detect_mod.detect
+
+    def narrowed(root, **kwargs):
+        res = real_detect(root, **kwargs)
+        res["files"]["code"] = [
+            f for f in res["files"]["code"] if not str(f).endswith("b.py")
+        ]
+        return res
+
+    monkeypatch.setattr(detect_mod, "detect", narrowed)
+    capsys.readouterr()
+
+    # Full rebuild: net shrink occurs (a.py lost nodes), and b.py is fail-closed.
+    # Must NOT deadlock on shrink guard!
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    new_count = len(data["nodes"])
+    assert new_count < initial_count
+    # b.py's helper() node survived
+    labels = {n.get("label") for n in data["nodes"]}
+    assert "helper()" in labels
+    assert "f1()" in labels
+    assert "f2()" not in labels
+
+def test_requires_symlinks_rebuild_symlink_worker(requires_symlinks, tmp_path, capsys):
+    """Exercise true OS symlinks for #3695 on platforms supporting them."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+
+    fpm_worker = corpus / "plugins" / "fpm-core" / "services" / "hub" / "worker.py"
+    fpm_worker.parent.mkdir(parents=True)
+    fpm_worker.write_text(
+        "def run_worker():\n    pass\n\ndef process_task():\n    pass\n",
+        encoding="utf-8",
+    )
+    hub_worker = corpus / "services" / "hub" / "worker.py"
+    hub_worker.parent.mkdir(parents=True)
+    hub_worker.symlink_to(fpm_worker)
+
+    app = corpus / "app.py"
+    app.write_text("def main():\n    pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {n.get("label") for n in data["nodes"]}
+    assert "run_worker()" in labels
+
+
+def test_rebuild_code_sidecar_writes_are_atomic_and_labels_first(tmp_path, monkeypatch):
+    """A rebuild interrupted between the labels and signature writes must not
+    leave stale labels that look verified.
+
+    The staleness guard compares the SAVED signatures against ones recomputed
+    from the current clustering — not against the labels. So publishing the
+    signatures first and crashing leaves a sidecar already describing the new
+    clustering beside the old labels: the guard recomputes the same signatures,
+    finds them equal, and silently keeps names for a clustering that no longer
+    exists. Labels must land first, so the sidecar trails and the guard sees a
+    mismatch it can re-label. Each write is also atomic, so a kill mid-write
+    can never publish a half-written sidecar.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    sig_file = out / ".graphify_labels.json.sig"
+
+    # Record the order in which the sidecars are published, and prove each one
+    # is published atomically (rename into place) rather than truncate-in-place.
+    order: "list[str]" = []
+    import os
+    from pathlib import Path
+
+    def _label(name: str) -> "str | None":
+        if name.endswith(".graphify_labels.json.sig"):
+            return "sig"
+        if name.endswith(".graphify_labels.json"):
+            return "labels"
+        return None
+
+    real_replace = os.replace
+    real_write_text = Path.write_text
+    real_open = __builtins__["open"] if isinstance(__builtins__, dict) else __builtins__.open
+
+    def _tracking_replace(src, dst, *a, **kw):
+        tag = _label(str(dst))
+        if tag:
+            order.append(tag)
+        return real_replace(src, dst, *a, **kw)
+
+    def _tracking_write_text(self, *a, **kw):
+        tag = _label(str(self))
+        if tag:
+            # Recorded as non-atomic: the sidecar is truncated in place.
+            order.append(tag + ":non-atomic")
+        return real_write_text(self, *a, **kw)
+
+    def _tracking_open(file, mode="r", *a, **kw):
+        # A writing open() straight onto a sidecar path is non-atomic; the
+        # atomic helper opens a temp file and renames it, so it never trips this.
+        # `backup_if_protected` copies the sidecars into a dated backup folder
+        # before the rebuild advances them — that is a copy of the OLD file, not
+        # a publish of the new one, so only the live out/ paths are tracked.
+        if any(m in str(mode) for m in ("w", "a", "+")):
+            path = Path(file)
+            if path.parent == out and _label(path.name):
+                order.append(_label(path.name) + ":non-atomic")
+        return real_open(file, mode, *a, **kw)
+
+    monkeypatch.setattr(os, "replace", _tracking_replace)
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+    monkeypatch.setattr("builtins.open", _tracking_open)
+
+    # Grow the corpus so clustering changes and the sidecars are rewritten.
+    for name in ("b.py", "c.py", "d.py"):
+        (corpus / name).write_text(
+            f"def {name[0]}_one():\n    return {name[0]}_two()\n\n"
+            f"def {name[0]}_two():\n    return 2\n",
+            encoding="utf-8",
+        )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    assert not [o for o in order if o.endswith(":non-atomic")], (
+        f"sidecars must be published atomically (temp + rename), saw {order}"
+    )
+    assert "sig" in order and "labels" in order, (
+        f"expected both sidecars to be rewritten, saw {order}"
+    )
+    assert order.index("labels") < order.index("sig"), (
+        "labels must be written BEFORE the signature sidecar: signatures first "
+        "would let a crash leave a matching sidecar beside stale labels, which "
+        f"the staleness guard cannot detect; saw {order}"
+    )
+
+    # Both sidecars must be parseable — a torn write would fail here.
+    assert json.loads(sig_file.read_text(encoding="utf-8")) is not None
+    assert json.loads(labels_file.read_text(encoding="utf-8")) is not None
+
+
+def test_full_yaml_rebuild_retains_rich_source_provenance_with_same_basename(tmp_path):
+    """#4896: AST-upgrading same-named YAML files must not lose reviewed
+    source-specific semantic data, while an evidence-free file twin may fold.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    for sub in ("a", "b"):
+        src = root / sub / "case-a.yaml"
+        src.parent.mkdir()
+        src.write_text(
+            "case_id: A\nmode: strict\nrequired_set:\n"
+            "  - lint\nresults:\n  lint:\n    status: PASS\n",
+            encoding="utf-8",
+        )
+
+    out = root / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(root))
+    saved = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "reviewed_yaml", "label": "case-a.yaml",
+             "source_file": "a/case-a.yaml", "file_type": "document",
+             "_origin": "semantic", "source_location": None,
+             "rationale": "Separately reviewed semantic finding"},
+            {"id": "plain_yaml", "label": "case-a.yaml",
+             "source_file": "b/case-a.yaml", "file_type": "code",
+             "_origin": "semantic", "source_location": None},
+        ],
+        "links": [], "hyperedges": [],
+    }
+    graph = out / "graph.json"
+    graph.write_text(json.dumps(saved), encoding="utf-8")
+    assert _rebuild_code(root, changed_paths=None, no_cluster=False,
+                         block_on_lock=True) is True
+
+    candidate = json.loads(graph.read_text(encoding="utf-8"))
+    nodes = {n["id"]: n for n in candidate["nodes"]}
+    assert nodes["reviewed_yaml"]["rationale"] == (
+        "Separately reviewed semantic finding"
+    )
+    assert nodes["reviewed_yaml"]["source_file"] == "a/case-a.yaml"
+    assert "plain_yaml" not in nodes  # accounted same-source AST fold
+    for path in ("a/case-a.yaml", "b/case-a.yaml"):
+        assert any(
+            n.get("_origin") == "ast" and n.get("source_file") == path
+            for n in candidate["nodes"]
+        ), f"expected freshly extracted AST for {path}"
+
+@pytest.mark.parametrize("incremental", [False, True])
+def test_full_rebuild_ast_id_collision_keeps_reviewed_yaml_node_and_edges(tmp_path, incremental):
+    """New YAML AST ID equal to a legacy semantic ID must keep BOTH tiers.
+    A subsequent rebuild must reuse the same deterministic AST alias.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    root = tmp_path / "watch"
+    root.mkdir()
+    target = root / "config" / "settings.yaml"
+    target.parent.mkdir()
+    target.write_text("tasks:\n  - id: build\n    enabled: true\n", encoding="utf-8")
+    assert _rebuild_code(root, changed_paths=None, block_on_lock=True, no_cluster=False)
+    output = root / "graphify-out" / "graph.json"
+    payload = json.loads(output.read_text())
+    ast = next(
+        n for n in payload["nodes"]
+        if n.get("_origin") == "ast" and n.get("label") == "settings.yaml"
+    )
+    protected_id = ast["id"]
+    ast.update({
+        "_origin": "semantic", "source_location": None,
+        "file_type": "document", "rationale": "Reviewed setting",
+        "author": "QA", "captured_at": "2026-11-01",
+    })
+    payload["nodes"].append({
+        "id": "reviewed_context", "label": "Reviewed context",
+        "_origin": "semantic", "file_type": "concept",
+        "source_file": "config/settings.yaml",
+    })
+    payload["links"].append({
+        "source": "reviewed_context", "target": protected_id,
+        "relation": "references", "source_file": "config/settings.yaml",
+        "_origin": "semantic",
+    })
+    output.write_text(json.dumps(payload))
+    assert _rebuild_code(
+        root, changed_paths=[target] if incremental else None,
+        block_on_lock=True, no_cluster=False
+    )
+    current = json.loads(output.read_text())
+    records = {n["id"]: n for n in current["nodes"]}
+    assert records[protected_id]["_origin"] == "semantic"
+    for field in ("rationale", "author", "captured_at"):
+        assert records[protected_id][field] == ast[field]
+    ast_aliases = [
+        n for n in records.values()
+        if n.get("_origin") == "ast" and n.get("label") == "settings.yaml"
+    ]
+    assert len(ast_aliases) == 1
+    alias = ast_aliases[0]["id"]
+    assert alias != protected_id and alias.startswith(protected_id + "__ast_")
+    assert any(
+        {e["source"], e["target"]} == {"reviewed_context", protected_id}
+        for e in current["links"]
+    )
+    assert any(
+        alias in (e["source"], e["target"])
+        for e in current["links"]
+    ), "fresh AST links must target the rekeyed AST file"
+    assert _rebuild_code(root, changed_paths=None, block_on_lock=True, no_cluster=False)
+    again = json.loads(output.read_text())
+    later = {n["id"]: n for n in again["nodes"]}
+    assert later[protected_id]["rationale"] == "Reviewed setting"
+    assert later[alias]["_origin"] == "ast"
+
+
+def test_metadata_shrink_guard_rejects_same_id_ast_overwrite():
+    """A node count increase never compensates for lost semantic rationale."""
+    from graphify.watch import _check_shrink
+    saved = {"nodes": [
+        {"id": "yaml_node", "_origin": "semantic",
+         "source_file": "config/settings.yaml", "rationale": "Reviewed"}
+    ]}
+    damaged = {"nodes": [
+        {"id": "yaml_node", "_origin": "ast",
+         "source_file": "config/settings.yaml", "source_location": "L1"},
+        {"id": "new_function", "_origin": "ast"}
+    ]}
+    assert _check_shrink(False, saved, damaged) is False
+    kept = {"nodes": [dict(saved["nodes"][0]), {"id": "new_function"}]}
+    assert _check_shrink(False, saved, kept) is True
+
+def test_sourceless_ast_collision_keeps_semantic_tier(tmp_path):
+    """A sourceless AST placeholder must not clobber a reviewed semantic ID."""
+    import json
+    from graphify.watch import _reconcile_existing_graph
+
+    doc = tmp_path / "notes.md"
+    doc.write_text("## Record\n")
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(tmp_path))
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({
+        "nodes": [{"id": "memory", "label": "Memory",
+                   "_origin": "semantic", "file_type": "document",
+                   "source_file": "notes.md", "rationale": "Reviewed evidence"}],
+        "links": [], "hyperedges": [],
+    }))
+    fresh = {"nodes": [{
+        "id": "memory", "_origin": "ast", "label": "Memory",
+        "file_type": "code", "source_file": "", "source_location": "",
+    }], "edges": [], "hyperedges": []}
+    result, _ = _reconcile_existing_graph(
+        graph, fresh, out=out, project_root=tmp_path, watch_root=tmp_path,
+        code_files=[], extract_targets=[], full_rebuild=True,
+        deleted_paths=set(), deleted_source_identities=set(),
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    assert nodes["memory"]["rationale"] == "Reviewed evidence"
+    assert nodes["memory"]["_origin"] == "semantic"
+    assert len(nodes) == 2
+    assert next(i for i in nodes if i != "memory").startswith("memory__ast_")
+
+@pytest.mark.parametrize("full_rebuild", [False, True])
+def test_multiple_ast_records_colliding_with_reviewed_semantic_id(
+    tmp_path, full_rebuild,
+):
+    """Two distinct AST sources sharing an ID must not hijack semantic evidence.
+    They retain their existing AST-side coalescing and reuse one stable alias.
+    """
+    import json
+    from graphify.watch import _reconcile_existing_graph
+
+    (tmp_path / "notes.md").write_text("## Reviewed node\n")
+    a, b = tmp_path / "a.py", tmp_path / "b.py"
+    a.write_text("def one(): pass\n")
+    b.write_text("def two(): pass\n")
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(tmp_path))
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({
+        "nodes": [{"id": "shared_registry", "label": "Registry",
+                   "_origin": "semantic", "file_type": "document",
+                   "source_file": "notes.md",
+                   "rationale": "Original reviewed registry"}],
+        "links": [], "hyperedges": [],
+    }))
+    records = [
+        {"id": "shared_registry", "_origin": "ast", "label": "Registry",
+         "file_type": "code", "source_file": str(path),
+         "source_location": "L1"} for path in (a, b)
+    ]
+    edges = [
+        {"source": "shared_registry", "target": "ast_target",
+         "source_file": str(a), "_origin": "ast"},
+    ]
+    result, _ = _reconcile_existing_graph(
+        graph, {"nodes": records, "edges": edges, "hyperedges": []},
+        out=out, project_root=tmp_path, watch_root=tmp_path,
+        code_files=[a, b], extract_targets=[a, b],
+        full_rebuild=full_rebuild, deleted_paths=set(),
+        deleted_source_identities=set(),
+    )
+    sem = next(
+        n for n in result["nodes"] if n.get("id") == "shared_registry"
+    )
+    assert sem["rationale"] == "Original reviewed registry"
+    aliases = [
+        n["id"] for n in result["nodes"]
+        if n.get("_origin") == "ast" and n.get("label") == "Registry"
+    ]
+    assert len(aliases) == 2 and aliases[0] == aliases[1]
+    assert aliases[0].startswith("shared_registry__ast_")
+    assert result["edges"][0]["source"] == aliases[0]

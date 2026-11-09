@@ -5,6 +5,8 @@ import sys
 from unittest.mock import patch
 import pytest
 
+from graphify.install import _PLATFORM_CONFIG
+
 
 PLATFORMS = {
     "claude": (".claude/skills/graphify/SKILL.md",),
@@ -199,6 +201,137 @@ def test_install_claude_md_success_output_unchanged(tmp_path, monkeypatch, capsy
     assert "  CLAUDE.md        ->  already registered (no change)" in second
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin rights on Windows")
+@pytest.mark.parametrize("existing", [True, False], ids=["existing-target", "new-target"])
+def test_install_claude_md_names_the_symlink_target_it_wrote(tmp_path, monkeypatch, capsys, existing):
+    """#3805: a symlinked ~/.claude/CLAUDE.md gets the block written into the
+    file it points to, so the output must name that file too. It used to print
+    only the link path, and the rules file elsewhere changed without a word."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    rules = tmp_path / "rules.md"
+    if existing:
+        rules.write_text("# my rules\n", encoding="utf-8")
+    link = home / ".claude" / "CLAUDE.md"
+    link.symlink_to(rules)
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    assert link.is_symlink(), "the link itself must be left in place"
+    assert "# graphify\n" in rules.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    verb = "skill registered in" if existing else "created at"
+    assert f"  CLAUDE.md        ->  {verb} {link} -> {rules.resolve()}\n" in out, out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin rights on Windows")
+def test_uninstall_claude_md_names_the_symlink_target_it_edited(tmp_path, capsys):
+    """#3805, removal side: the project-scoped cleanup edits the symlink target too."""
+    from graphify.install import _remove_claude_skill_registration
+
+    (tmp_path / ".claude").mkdir()
+    rules = tmp_path / "rules.md"
+    rules.write_text("# my rules\n\n# graphify\n- skill line\n", encoding="utf-8")
+    link = tmp_path / ".claude" / "CLAUDE.md"
+    link.symlink_to(rules)
+
+    _remove_claude_skill_registration(tmp_path)
+
+    assert rules.read_text(encoding="utf-8") == "# my rules\n"
+    out = capsys.readouterr().out
+    assert f"registration removed from {link} -> {rules.resolve()}\n" in out, out
+
+
+def test_install_claude_md_does_not_skip_on_an_unrelated_mention_of_the_word(tmp_path, monkeypatch):
+    """#3668: the idempotency guard used to be a bare `"graphify" in content`
+    substring check, so any pre-existing mention of the word anywhere in the
+    file (a note to self, an unrelated project instruction) was wrongly
+    treated as "already registered" and the real block never got written."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    claude_md = home / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir(parents=True)
+    claude_md.write_text("See https://github.com/Graphify-Labs/graphify for details.\n", encoding="utf-8")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    content = claude_md.read_text(encoding="utf-8")
+    assert "# graphify\n" in content, (
+        f"an unrelated mention of the word must not suppress the real "
+        f"registration block; got {content!r}"
+    )
+    assert "See https://github.com/Graphify-Labs/graphify for details." in content, (
+        "the user's own pre-existing content must survive"
+    )
+
+
+def test_install_claude_md_refreshes_a_stale_registration_block(tmp_path, monkeypatch):
+    """#3668: a previously-installed block that has since been hand-edited (or
+    predates a skill-path change) must be refreshed on re-install, not
+    silently left stale because the bare word "graphify" is still present."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    claude_md = home / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir(parents=True)
+    claude_md.write_text(
+        "# graphify\n- an old, hand-edited line that does not match the "
+        "current registration text\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    content = claude_md.read_text(encoding="utf-8")
+    assert "hand-edited line" not in content, "the stale block must be replaced, not kept"
+    assert "Trigger: `/graphify`" in content, "the current registration text must be written"
+
+
+def test_register_always_on_block_writes_without_newline_translation(tmp_path, monkeypatch):
+    """#3668: Path.write_text opens in text mode, which on Windows turns a
+    pre-existing bare-LF file's WHOLE content into CRLF just to append a few
+    lines. newline="" must be passed so no translation happens. The bug
+    itself is only observable on Windows, so this checks the call was made
+    correctly rather than depending on the host OS's own newline handling."""
+    from graphify import install as install_mod
+
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("Some existing notes.\n", encoding="utf-8")
+
+    calls: list[dict] = []
+    orig_write_text = Path.write_text
+
+    def _tracking_write_text(self, *args, **kwargs):
+        calls.append(kwargs)
+        return orig_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+
+    install_mod._register_always_on_block(
+        target, "  CLAUDE.md        ->  ", install_mod._skill_registration()
+    )
+
+    assert calls, "write_text should have been called"
+    assert calls[-1].get("newline") == "", (
+        f"write_text must pass newline='' so the rest of the file's line "
+        f"endings are never translated; got kwargs {calls[-1]!r}"
+    )
+
+
 def test_install_codebuddy(tmp_path):
     _install(tmp_path, "codebuddy")
     assert (tmp_path / ".codebuddy" / "skills" / "graphify" / "SKILL.md").exists()
@@ -384,7 +517,7 @@ def test_codex_skill_uses_graphify_with_existing_graph():
     fast-path block, which jumps straight to the query flow when a graph exists.
     """
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text(encoding="utf-8")
     assert "Fast path — existing graph" in skill
     assert "skip Steps 1–5 entirely and jump straight to `## For /graphify query`" in skill
     assert "graphify query" in skill
@@ -633,6 +766,25 @@ def test_uninstall_project_without_platform_removes_project_installs(tmp_path, m
     assert not (project / ".claude" / "CLAUDE.md").exists()
 
 
+@pytest.mark.parametrize("platform", sorted(_PLATFORM_CONFIG))
+def test_uninstall_removes_every_platform_user_skill(tmp_path, monkeypatch, platform):
+    """Bare `graphify uninstall` removes the user-scope skill `install --platform X`
+    wrote for every platform, not only claude/codebuddy/amp/agents."""
+    from graphify.__main__ import main
+    from graphify.install import _platform_skill_destination
+    home = tmp_path / "home"
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "install", "--platform", platform])
+        main()
+        skill = _platform_skill_destination(platform)
+        assert skill.exists()
+        monkeypatch.setattr(sys, "argv", ["graphify", "uninstall"])
+        main()
+    assert not skill.parent.exists()
+    assert not (home / ".config" / "kilo" / "command" / "graphify.md").exists()
+
+
 def test_antigravity_uninstall_project_removes_project_skill_only(tmp_path, monkeypatch):
     from graphify.__main__ import main
     home = tmp_path / "home"
@@ -852,24 +1004,73 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
     assert "tool.execute.before" in plugin.read_text()
 
 
+def test_opencode_global_install_writes_plugin_to_config_dir(tmp_path, monkeypatch):
+    """A global install puts the plugin in ~/.config/opencode/plugins, where
+    OpenCode loads global plugins, and writes nothing under the cwd (#3398)."""
+    from graphify.install import install
+
+    cwd = tmp_path / "some-project"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+    install("opencode")
+
+    plugin = Path.home() / ".config" / "opencode" / "plugins" / "graphify.js"
+    assert "tool.execute.before" in plugin.read_text(encoding="utf-8")
+    assert not (cwd / ".opencode").exists()
+    assert not (Path.home() / ".config" / "opencode" / ".opencode").exists()
+
+
+def test_opencode_project_install_keeps_plugin_in_project(tmp_path, monkeypatch):
+    from graphify.install import install
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    install("opencode", project=True, project_dir=proj)
+
+    assert (proj / ".opencode" / "plugins" / "graphify.js").exists()
+    assert not (Path.home() / ".config" / "opencode" / "plugins").exists()
+    assert not (elsewhere / ".opencode").exists()
+
+
+def test_uninstall_all_removes_the_global_opencode_plugin(tmp_path, monkeypatch):
+    from graphify.install import install, uninstall_all
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    install("opencode")
+    plugin = Path.home() / ".config" / "opencode" / "plugins" / "graphify.js"
+    assert plugin.exists()
+
+    uninstall_all(proj)
+
+    assert not plugin.exists()
+
+
 def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
     """The bash reminder string must not contain backticks or $(...) (regression test for #1413).
 
-    The plugin prepends `echo "<reminder>" && <cmd>` to the user's bash command.
-    Backticks or $() inside the reminder trigger bash command substitution
+    The plugin prepends `echo "<reminder>" ; <cmd>` to the user's shell command.
+    Backticks or $() inside the reminder trigger command substitution
     when the echo runs, which both corrupts tool output and silently executes
     the very graphify command we are only suggesting.
     """
     _agents_install(tmp_path, "opencode")
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     body = plugin.read_text()
-    # Extract the echoed reminder string literal between the double-quotes
-    # of the `output.args.command = 'echo "..." && ' +` line.
+    # Extract the echoed reminder between the double-quotes of the REMINDER
+    # string literal (the leading quote keeps the header comment out of it).
     import re
 
-    m = re.search(r'echo "([^"]*)"', body)
+    m = re.search(r"'echo \"([^\"]*)\"", body)
     assert m, "echo reminder not found in plugin body"
     reminder = m.group(1)
+    assert reminder.startswith("[graphify]")
     assert "`" not in reminder, f"backtick in reminder would trigger command substitution: {reminder!r}"
     assert "$(" not in reminder, f"$() in reminder would trigger command substitution: {reminder!r}"
 
@@ -881,47 +1082,246 @@ def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
     in PowerShell 5.1, Bash, and POSIX shells."""
     _agents_install(tmp_path, "opencode")
     body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
-    # The prepend line ends with the separator before `' +`.
-    assert '" ; \' +' in body or '." ; \' +' in body, "reminder should join with ';'"
-    assert '" && \' +' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
+    # The REMINDER literal ends with the separator.
+    assert '." ; \';' in body, "reminder should join with ';'"
+    assert '" && ' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
 
 
-def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
-    """opencode install registers the plugin in .opencode/opencode.json."""
+def test_opencode_plugin_default_export_serves_both_runtimes(tmp_path):
+    """OpenCode 2 rejects a plugin without a default export that has `id` and
+    `setup()` (#3554). OpenCode 1 reads `server()` from that same export and
+    throws when an export with an `id` lacks it. A plain file in
+    .opencode/plugins/ cannot resolve an opencode package either."""
     _agents_install(tmp_path, "opencode")
-    config_file = tmp_path / ".opencode" / "opencode.json"
-    assert config_file.exists()
+    body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    assert "export default {" in body
+    assert "id: `graphify-${" in body
+    assert "async setup(ctx)" in body
+    assert "async server(" in body
+    assert '"@opencode' not in body, "no import from an opencode package"
+
+
+def _run_opencode_plugin_harness(tmp_path, body):
+    """Run `body` (JavaScript) with the installed plugin imported as `plugin`,
+    a second copy of the file at another path as `other`, and the helpers
+    `v2(plugin, directory)` / `v1(plugin, directory)` that drive a plugin the
+    way OpenCode 2 and OpenCode 1 do. Returns what `body` returns, as JSON."""
     import json as _json
+    import shutil
+    import subprocess
 
-    config = _json.loads(config_file.read_text())
-    assert any("graphify.js" in p for p in config.get("plugin", []))
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+
+    _agents_install(tmp_path, "opencode")
+    (tmp_path / "graphify-out").mkdir()
+    (tmp_path / "graphify-out" / "graph.json").write_text("{}")
+    (tmp_path / "empty").mkdir()
+    installed = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    # .mjs so node treats the copies as ES modules whatever its version.
+    first = tmp_path / "project.mjs"
+    second = tmp_path / "home.mjs"
+    first.write_text(installed)
+    second.write_text(installed)
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(
+        f"""
+import * as mod from {_json.dumps(first.as_uri())};
+import * as otherMod from {_json.dumps(second.as_uri())};
+const plugin = mod.default;
+const other = otherMod.default;
+const graph = {_json.dumps(str(tmp_path))};
+const empty = {_json.dumps(str(tmp_path / "empty"))};
+
+const v2 = async (plugin, directory) => {{
+  let hook;
+  const registered = [];
+  await plugin.setup({{
+    location: {{ directory }},
+    tool: {{ hook: async (name, fn) => {{ registered.push(name); hook = fn; }} }},
+  }});
+  const fire = (event) => {{ hook(event); return event.input.command; }};
+  const run = (tool, sessionID, command) => fire({{ tool, sessionID, input: {{ command }} }});
+  return {{ registered, run, fire }};
+}};
+const v1 = async (plugin, directory) => {{
+  const hooks = await plugin.server({{ directory }});
+  const fire = async (tool, output) => {{ await hooks["tool.execute.before"]({{ tool }}, output); return output.args.command; }};
+  return Object.assign((tool, command) => fire(tool, {{ args: {{ command }} }}), {{ fire }});
+}};
+
+const result = await (async () => {{
+{body}
+}})();
+console.log(JSON.stringify({{ exports: Object.keys(mod), ...result }}));
+"""
+    )
+    result = subprocess.run([node, str(harness)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    return _json.loads(result.stdout)
 
 
-def test_opencode_agents_install_merges_existing_config(tmp_path):
-    """opencode install preserves existing .opencode/opencode.json keys."""
+def _opencode_reminded(command):
+    return command.startswith('echo "[graphify] ') and command.endswith('" ; ls')
+
+
+def test_opencode_plugin_prepends_the_reminder_on_opencode_2(tmp_path):
+    """OpenCode 2 calls `setup(ctx)`; the command tool is "shell" and the
+    reminder goes out once per session."""
+    seen = _run_opencode_plugin_harness(tmp_path, """
+  const two = await v2(plugin, graph);
+  return {
+    registered: two.registered,
+    commands: [
+      two.run("read", "a", "ls"),
+      two.run("shell", "a", "ls"),
+      two.run("shell", "a", "ls"),
+      two.run("shell", "b", "ls"),
+    ],
+    no_command: two.run("shell", "c") ?? null,
+    no_graph: (await v2(plugin, empty)).run("shell", "d", "ls"),
+  };
+""")
+    assert seen["exports"] == ["default"]
+    assert seen["registered"] == ["execute.before"]
+    untouched, first, again, other_session = seen["commands"]
+    assert untouched == "ls" and again == "ls"
+    assert _opencode_reminded(first) and _opencode_reminded(other_session)
+    assert seen["no_command"] is None
+    assert seen["no_graph"] == "ls"
+
+
+def test_opencode_plugin_prepends_the_reminder_on_opencode_1(tmp_path):
+    """OpenCode 1 calls `server()`; the command tool is "bash" and the reminder
+    goes out once per project directory."""
+    seen = _run_opencode_plugin_harness(tmp_path, """
+  const one = await v1(plugin, graph);
+  const bare = { args: {} };
+  await one.fire("bash", bare);
+  return {
+    no_command: "command" in bare.args,
+    commands: [await one("read", "ls"), await one("bash", "ls"), await one("bash", "ls")],
+    no_graph: await (await v1(plugin, empty))("bash", "ls"),
+  };
+""")
+    assert seen["no_command"] is False
+    untouched, first, again = seen["commands"]
+    assert untouched == "ls" and again == "ls"
+    assert _opencode_reminded(first)
+    assert seen["no_graph"] == "ls"
+
+
+def test_opencode_plugin_copies_in_two_directories_do_not_collide(tmp_path):
+    """`graphify opencode install` run in ~ and again in a project leaves two
+    copies that OpenCode loads together. OpenCode 2 fails the second plugin
+    with the same id ("Duplicate plugin ID"), so each copy needs its own id,
+    and together they must still add the reminder only once."""
+    seen = _run_opencode_plugin_harness(tmp_path, """
+  const [a, b] = [await v2(plugin, graph), await v2(other, graph)];
+  const event = { tool: "shell", sessionID: "s", input: { command: "ls" } };
+  a.fire(event);
+  b.fire(event);
+  const [c, d] = [await v1(plugin, graph), await v1(other, graph)];
+  const output = { args: { command: "ls" } };
+  await c.fire("bash", output);
+  await d.fire("bash", output);
+  return { ids: [plugin.id, other.id], v2: event.input.command, v1: output.args.command };
+""")
+    first, second = seen["ids"]
+    assert first != second
+    assert first.startswith("graphify-") and second.startswith("graphify-")
+    assert _opencode_reminded(seen["v2"]) and seen["v2"].count("[graphify]") == 1
+    assert _opencode_reminded(seen["v1"]) and seen["v1"].count("[graphify]") == 1
+
+
+def test_opencode_agents_install_does_not_register_plugin_in_config(tmp_path):
+    """opencode install leaves opencode.json alone. OpenCode loads every file in
+    .opencode/plugins/ on its own, and OpenCode 2 reads the bare path older
+    releases registered as an npm package name and fails to install it (#3732)."""
+    _agents_install(tmp_path, "opencode")
+    assert not (tmp_path / ".opencode" / "opencode.json").exists()
+
+
+def test_opencode_agents_install_keeps_existing_config(tmp_path):
+    """opencode install preserves an existing .opencode/opencode.json."""
     import json as _json
 
     config_file = tmp_path / ".opencode" / "opencode.json"
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(_json.dumps({"model": "claude-opus-4-5", "plugin": []}))
     _agents_install(tmp_path, "opencode")
-    config = _json.loads(config_file.read_text())
-    assert config["model"] == "claude-opus-4-5"
-    assert any("graphify.js" in p for p in config["plugin"])
+    assert _json.loads(config_file.read_text()) == {"model": "claude-opus-4-5", "plugin": []}
+
+
+@pytest.mark.parametrize("key", ["plugin", "plugins"])
+def test_opencode_agents_install_drops_the_entry_an_older_release_wrote(tmp_path, key):
+    """The bare-path entry goes, under the OpenCode 1 key or the OpenCode 2 one;
+    other plugins and other keys stay."""
+    import json as _json
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(_json.dumps({
+        "model": "claude-opus-4-5",
+        key: [".opencode/plugins/graphify.js", "opencode-other-plugin"],
+    }))
+    _agents_install(tmp_path, "opencode")
+    assert _json.loads(config_file.read_text()) == {
+        "model": "claude-opus-4-5",
+        key: ["opencode-other-plugin"],
+    }
+
+
+def test_opencode_agents_install_leaves_unreadable_config_alone(tmp_path, capsys):
+    """A config that is not plain JSON (OpenCode accepts comments) is not
+    rewritten, which would drop the comments. The user is told what to remove."""
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text('{ // my settings\n  "plugin": [".opencode/plugins/graphify.js"]\n}')
+    before = config_file.read_text()
+    _agents_install(tmp_path, "opencode")
+    assert config_file.read_text() == before
+    out = capsys.readouterr().out
+    assert 'remove ".opencode/plugins/graphify.js" from its plugin list by hand' in out
+
+
+@pytest.mark.parametrize("body", ['[".opencode/plugins/graphify.js"]', '{"plugin": ".opencode/plugins/graphify.js"}'])
+def test_opencode_agents_install_leaves_an_unexpected_config_shape_alone(tmp_path, body):
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(body)
+    _agents_install(tmp_path, "opencode")
+    assert config_file.read_text() == body
+
+
+def test_opencode_config_rewrite_keeps_non_ascii_values_readable(tmp_path):
+    import json as _json
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        _json.dumps({"username": "Zoë", "plugin": [".opencode/plugins/graphify.js"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _agents_install(tmp_path, "opencode")
+    text = config_file.read_text(encoding="utf-8")
+    assert _json.loads(text) == {"username": "Zoë"}
+    assert "Zoë" in text
 
 
 def test_opencode_agents_uninstall_removes_plugin(tmp_path):
-    """opencode uninstall removes the plugin file and deregisters from opencode.json."""
+    """opencode uninstall removes the plugin file and the opencode.json entry
+    an older release registered it with."""
     import json as _json
 
     _agents_install(tmp_path, "opencode")
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.write_text(_json.dumps({"plugin": [".opencode/plugins/graphify.js"]}))
     _agents_uninstall(tmp_path, platform="opencode")
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     assert not plugin.exists()
-    config_file = tmp_path / ".opencode" / "opencode.json"
-    if config_file.exists():
-        config = _json.loads(config_file.read_text())
-        assert not any("graphify.js" in p for p in config.get("plugin", []))
+    assert _json.loads(config_file.read_text()) == {}
 
 
 def test_kilo_agents_install_writes_agents_md(tmp_path):
@@ -1034,9 +1434,8 @@ def test_kilo_uninstall_removes_plugin_registration_and_command(tmp_path):
     _kilo_install(project_dir, home_dir)
     _kilo_uninstall(project_dir, home_dir)
     assert not (home_dir / ".config" / "kilo" / "command" / "graphify.md").exists()
-    assert not (
-        home_dir / ".config" / "kilo" / "skills" / "graphify" / "SKILL.md"
-    ).exists()
+    # The whole skill dir, references/ included, not only SKILL.md.
+    assert not (home_dir / ".config" / "kilo" / "skills" / "graphify").exists()
     assert not (project_dir / ".kilo" / "plugins" / "graphify.js").exists()
     config_file = project_dir / ".kilo" / "kilo.json"
     if config_file.exists():
@@ -1128,6 +1527,36 @@ def test_gemini_install_merges_existing_gemini_md(tmp_path):
     content = (tmp_path / "GEMINI.md").read_text()
     assert "# My project rules" in content
     assert "graphify-out/GRAPH_REPORT.md" in content
+
+
+def test_gemini_install_writes_gemini_md_without_newline_translation(tmp_path, monkeypatch):
+    """#3668: same CRLF issue as _register_always_on_block, here in the
+    GEMINI.md write. Path.write_text opens in text mode, which on Windows
+    would turn a pre-existing bare-LF GEMINI.md's WHOLE content into CRLF
+    just to merge in a few lines. Checks the call was made correctly rather
+    than depending on the host OS's own newline handling."""
+    from graphify.__main__ import gemini_install
+
+    gemini_md = tmp_path / "GEMINI.md"
+    gemini_md.write_text("# My project rules\n", encoding="utf-8")
+
+    calls: list[dict] = []
+    orig_write_text = Path.write_text
+
+    def _tracking_write_text(self, *args, **kwargs):
+        if self == gemini_md:
+            calls.append(kwargs)
+        return orig_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+
+    gemini_install(tmp_path)
+
+    assert calls, "write_text should have been called for GEMINI.md"
+    assert calls[-1].get("newline") == "", (
+        f"write_text must pass newline='' so the rest of the file's line "
+        f"endings are never translated; got kwargs {calls[-1]!r}"
+    )
 
 
 def test_gemini_uninstall_removes_section(tmp_path):
@@ -1274,7 +1703,7 @@ def test_hermes_skill_destination_posix_uses_home():
     from graphify.__main__ import _platform_skill_destination
     with patch("graphify.__main__.platform.system", return_value="Linux"):
         dst = _platform_skill_destination("hermes", project=False)
-    assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst
+    assert dst.as_posix().endswith(".hermes/skills/graphify/SKILL.md"), dst
 
 
 def _cli_dispatched_commands() -> set[str]:
@@ -1306,6 +1735,7 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     an unrecognized one exits non-zero and would break every Bash tool call.
     """
     import json
+    import shlex
 
     from graphify.install import _install_codex_hook
 
@@ -1324,13 +1754,66 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     assert "hook-check" in dispatched, "sanity: parser must find known commands"
 
     for entry in entries:
-        # command is "<abs exe path> <subcommand> [args...]"
-        parts = entry["command"].split()
+        # command is "<abs exe path> <subcommand> [args...]" and the exe path is
+        # double-quoted when it contains spaces (parity with the claude/gemini
+        # hooks), so split the way a shell would.
+        parts = shlex.split(entry["command"])
         subcommand = parts[1] if len(parts) > 1 else ""
         assert subcommand in dispatched, (
             f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
             f"(#2165). Known commands: {sorted(dispatched)}"
         )
+
+
+def test_hook_commands_quote_a_spaced_resolved_exe(tmp_path, monkeypatch):
+    """A resolved install path containing spaces must be double-quoted in every
+    hook command, whatever shell runs it (Git Bash on Windows, cmd.exe, sh on
+    POSIX): unquoted, the shell word-splits the command at the first space and
+    the guard can never fire (#522/#1987 follow-up).
+
+    The claude and gemini hooks already quoted since their #522 fix; codex was
+    missed. shlex parsing proves the old unquoted codex form failed:
+    ``shlex.split("C:/Program Files/.../graphify.EXE hook-check")`` starts at
+    ``'C:/Program'`` instead of the exe.
+    """
+    import json
+    import shlex
+
+    from graphify.install import (
+        _claude_pretooluse_hooks,
+        _gemini_hook,
+        _install_codex_hook,
+        _is_graphify_hook_command,
+    )
+
+    spaced_exe = "C:/Program Files/Graphify/graphify.EXE"
+    monkeypatch.setattr(
+        "graphify.install._resolve_graphify_exe", lambda project=False: spaced_exe
+    )
+
+    _install_codex_hook(tmp_path)
+    codex_doc = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    commands = [
+        h["command"]
+        for group in (
+            _claude_pretooluse_hooks()
+            + [_gemini_hook()]
+            + codex_doc["hooks"]["PreToolUse"]
+        )
+        for h in group["hooks"]
+    ]
+
+    assert commands, "no hook command resolved"
+    for command in commands:
+        argv = shlex.split(command)
+        assert argv[0] == spaced_exe, (
+            f"spaced exe must survive quoting as one first word, got argv[0]={argv[0]!r} "
+            f"from {command!r}"
+        )
+        assert argv[1] in ("hook-guard", "hook-check"), argv
+        # a quoted command must still be recognized as graphify's own, or an
+        # uninstall/reinstall cycle on a spaced path would strand the entry.
+        assert _is_graphify_hook_command(command), command
 
 
 # --- #3129: project-scoped installs must not embed a machine-absolute path ----
@@ -1454,3 +1937,60 @@ def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
             main()
 
     assert not [c for c in _hook_commands(settings.read_text(encoding="utf-8")) if "graphify" in c]
+
+
+def test_copy_skill_file_ignores_precreated_predictable_tmp_symlink(tmp_path, monkeypatch):
+    """A pre-created symlink at SKILL.md.tmp must not overwrite its target during skill install."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    sentinel = tmp_path / "outside" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("sentinel-untouched\n", encoding="utf-8")
+
+    skill_dir = home / ".claude" / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    predictable_tmp = skill_dir / "SKILL.md.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    assert sentinel.read_text(encoding="utf-8") == "sentinel-untouched\n"
+    assert (skill_dir / "SKILL.md").is_file()
+    assert not list(skill_dir.glob(".SKILL.md.*.tmp"))
+
+
+def test_vscode_install_ignores_precreated_predictable_tmp_symlink(tmp_path, monkeypatch):
+    """A pre-created symlink at SKILL.md.tmp must not overwrite its target during vscode_install."""
+    from graphify.__main__ import vscode_install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    sentinel = tmp_path / "outside" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("sentinel-untouched\n", encoding="utf-8")
+
+    skill_dir = home / ".copilot" / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    predictable_tmp = skill_dir / "SKILL.md.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        vscode_install(project_dir=project)
+
+    assert sentinel.read_text(encoding="utf-8") == "sentinel-untouched\n"
+    assert (skill_dir / "SKILL.md").is_file()
+    assert not list(skill_dir.glob(".SKILL.md.*.tmp"))

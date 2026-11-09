@@ -1,11 +1,14 @@
 # fetch URLs (tweet/arxiv/pdf/web) and save as annotated markdown
 from __future__ import annotations
+from collections.abc import Callable
+from contextlib import suppress
 import json
 import re
 import uuid
 import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
+from os import linesep
 from pathlib import Path
 
 from graphify.security import safe_fetch, safe_fetch_text, validate_url
@@ -62,18 +65,24 @@ def _safe_filename(url: str, suffix: str) -> str:
     return name + suffix
 
 
+def _host_is(host: str, *domains: str) -> bool:
+    """True when *host* is one of *domains* or a subdomain of one."""
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
 def _detect_url_type(url: str) -> str:
     """Classify the URL for targeted extraction."""
-    lower = url.lower()
-    if "twitter.com" in lower or "x.com" in lower:
-        return "tweet"
-    if "arxiv.org" in lower:
-        return "arxiv"
-    if "github.com" in lower:
-        return "github"
-    if "youtube.com" in lower or "youtu.be" in lower:
-        return "youtube"
     parsed = urllib.parse.urlparse(url)
+    # Match the host, not the URL text: dropbox.com and netflix.com contain "x.com".
+    host = (parsed.hostname or "").rstrip(".")
+    if _host_is(host, "twitter.com", "x.com"):
+        return "tweet"
+    if _host_is(host, "arxiv.org"):
+        return "arxiv"
+    if _host_is(host, "github.com"):
+        return "github"
+    if _host_is(host, "youtube.com", "youtu.be"):
+        return "youtube"
     path = parsed.path.lower()
     if path.endswith(".pdf"):
         return "pdf"
@@ -103,8 +112,15 @@ def _html_to_markdown(html: str, url: str) -> str:
 
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
-    # Normalize to twitter.com for oEmbed
-    oembed_url = url.replace("x.com", "twitter.com")
+    # Normalize to twitter.com for oEmbed. Rewrite the host only: a plain
+    # text replace also rewrote "x.com" wherever it appeared in the path or query.
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").rstrip(".")
+    if _host_is(host, "x.com"):
+        host = host[: -len("x.com")] + "twitter.com"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        parts = parts._replace(netloc=netloc)
+    oembed_url = urllib.parse.urlunsplit(parts)
     oembed_api = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
     try:
         data = json.loads(safe_fetch_text(oembed_api))
@@ -208,12 +224,51 @@ Source: {url}
     return content, filename
 
 
-def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
-    """Download a binary file (PDF, image) directly."""
-    filename = _safe_filename(url, suffix)
+def _free_capture_path(target_dir: Path, filename: str) -> Path:
+    """Pick *filename*, or the first free numbered variant, in *target_dir*.
+
+    Uses lstat so no existing directory entry is replaced, including a
+    dangling symlink that a write would otherwise follow out of the corpus.
+    The writer still needs an exclusive open to reserve the selected name.
+    """
+    stem, suffix = Path(filename).stem, Path(filename).suffix
     out_path = target_dir / filename
-    out_path.write_bytes(safe_fetch(url))
-    return out_path
+    counter = 1
+    while True:
+        try:
+            out_path.lstat()
+        except FileNotFoundError:
+            return out_path
+        out_path = target_dir / f"{stem}_{counter}{suffix}"
+        counter += 1
+
+
+def _write_capture(target_dir: Path, filename: str, content: str | Callable[[], bytes]) -> Path:
+    """Write a capture under a unique name without clobbering another writer."""
+    out_path = _free_capture_path(target_dir, filename)
+    # Inspect the destination before fetching, and fetch at most once per capture.
+    payload = content() if callable(content) else content
+    if isinstance(payload, str):
+        # Preserve the newline translation of Path.write_text on Windows.
+        payload = payload.replace("\n", linesep).encode("utf-8")
+    while True:
+        try:
+            handle = out_path.open("xb")
+        except FileExistsError:
+            out_path = _free_capture_path(target_dir, filename)
+            continue
+        try:
+            with handle:
+                handle.write(payload)
+        except (OSError, UnicodeError):
+            with suppress(OSError):
+                out_path.unlink()
+            raise
+        return out_path
+
+
+def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
+    return _write_capture(target_dir, _safe_filename(url, suffix), lambda: safe_fetch(url))
 
 
 def ingest(url: str, target_dir: Path, author: str | None = None, contributor: str | None = None) -> Path:
@@ -257,15 +312,7 @@ def ingest(url: str, target_dir: Path, author: str | None = None, contributor: s
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise RuntimeError(f"ingest: failed to fetch {url!r}: {exc}") from exc
 
-    out_path = target_dir / filename
-    # Avoid overwriting - append counter if needed
-    counter = 1
-    while out_path.exists() and counter < 1000:
-        stem = Path(filename).stem
-        out_path = target_dir / f"{stem}_{counter}.md"
-        counter += 1
-
-    out_path.write_text(content, encoding="utf-8")
+    out_path = _write_capture(target_dir, filename, content)
     print(f"Saved {url_type}: {out_path.name}")
     return out_path
 

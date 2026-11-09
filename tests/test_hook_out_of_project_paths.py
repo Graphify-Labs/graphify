@@ -152,12 +152,12 @@ def test_driveless_rooted_path_outside_the_project_is_silent(tmp_path, monkeypat
 def test_in_project_relative_path_still_nudges(tmp_path, monkeypatch):
     """The guard must keep firing for the paths it exists to catch."""
     _project(tmp_path)
-    assert "MANDATORY" in _invoke(tmp_path, monkeypatch, "src/mod.py")
+    assert "knowledge graph at" in _invoke(tmp_path, monkeypatch, "src/mod.py")
 
 
 def test_in_project_absolute_path_still_nudges(tmp_path, monkeypatch):
     f = _project(tmp_path)
-    assert "MANDATORY" in _invoke(tmp_path, monkeypatch, f)
+    assert "knowledge graph at" in _invoke(tmp_path, monkeypatch, f)
 
 
 def test_absolute_path_outside_the_project_is_still_silent(tmp_path, monkeypatch):

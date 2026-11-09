@@ -84,8 +84,11 @@ def test_file_hash_is_order_independent_across_roots(tmp_path, monkeypatch):
 
     content = f.read_bytes()
     exp_rel = hashlib.sha256(content + b"\x00" + b"doc.txt").hexdigest()
+    # The abs-path salt is case-preserving: it enters the digest as written, not
+    # lowercased, so README.md and readme.md no longer collide on a case-sensitive
+    # filesystem (#4925, #4937).
     exp_abs = hashlib.sha256(
-        content + b"\x00" + str(cache._normalize_path(f).resolve()).replace("\\", "/").lower().encode()
+        content + b"\x00" + str(cache._normalize_path(f).resolve()).replace("\\", "/").encode()
     ).hexdigest()
 
     # rel-first order

@@ -65,7 +65,7 @@ def link_shared_type_declarations(merged: "nx.Graph") -> int:
                     relation=SHARED_TYPE_RELATION,
                     context="cross_repo",
                     confidence="INFERRED",
-                    confidence_score=0.9,
+                    confidence_score=0.85,
                     source_file=str(merged.nodes[left].get("source_file") or ""),
                     weight=1.0,
                     _src=left,

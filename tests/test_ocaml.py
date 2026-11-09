@@ -177,3 +177,114 @@ def test_missing_file_returns_error(tmp_path):
     r = extract_ocaml(tmp_path / "nope.ml")
     assert r["nodes"] == [] and r["edges"] == []
     assert "error" in r
+
+
+CLASSES = """\
+let log s = print_string s
+
+class counter = object
+  val mutable count = 0
+  method get = count
+  method incr = count <- count + 1
+end
+
+class widget = object
+  method render = log "rendered"
+end
+"""
+
+
+def test_impl_extracts_classes_methods_and_instance_vars(tmp_path):
+    r = extract_ocaml(_write(tmp_path, "ui.ml", CLASSES))
+    assert "error" not in r
+    labels = _labels(r)
+    # the classes, their methods, and their instance variables are all present
+    assert {"counter", "get", "incr", "count", "widget", "render"} <= labels
+    # methods hang off their class via the "method" relation
+    method = _rel_pairs(r, "method")
+    assert {("counter", "get"), ("counter", "incr"),
+            ("widget", "render")} <= method
+    # an instance `val` is a field, so it uses "contains"
+    contains = _rel_pairs(r, "contains")
+    assert ("counter", "count") in contains
+
+
+def test_class_method_body_calls_are_attributed_to_the_method(tmp_path):
+    r = extract_ocaml(_write(tmp_path, "ui.ml", CLASSES))
+    # `method render = log ...` calls the top-level `log`, credited to render
+    assert ("render", "log") in _rel_pairs(r, "calls")
+
+
+CLASS_INTERFACE = """\
+class counter : object
+  val count : int
+  method get : int
+  method incr : unit
+end
+"""
+
+
+def test_interface_extracts_class_signatures(tmp_path):
+    r = extract_ocaml(_write(tmp_path, "counter.mli", CLASS_INTERFACE))
+    assert "error" not in r
+    assert {"counter", "get", "incr", "count"} <= _labels(r)
+    method = _rel_pairs(r, "method")
+    assert {("counter", "get"), ("counter", "incr")} <= method
+    contains = _rel_pairs(r, "contains")
+    assert ("counter", "count") in contains
+    # a signature has no expression body -> no calls
+    assert not [e for e in r["edges"] if e["relation"] == "calls"]
+
+
+AND_CHAINED_MODULES = """\
+module Alpha = struct
+  let f x = x
+end
+and Beta = struct
+  let g x = x
+end
+"""
+
+
+def test_and_chained_modules_are_not_dropped(tmp_path):
+    """`module A = ... and B = ...` nests every binding under ONE
+    module_definition node; taking only the first silently dropped every
+    module after it, along with everything defined inside it."""
+    r = extract_ocaml(_write(tmp_path, "pair.ml", AND_CHAINED_MODULES))
+    assert "error" not in r
+    assert {"Alpha", "f", "Beta", "g"} <= _labels(r)
+    defines = _rel_pairs(r, "defines")
+    assert {("pair.ml", "Alpha"), ("pair.ml", "Beta")} <= defines
+    contains = _rel_pairs(r, "contains")
+    assert {("Alpha", "f"), ("Beta", "g")} <= contains
+
+
+AND_CHAINED_CLASSES = """\
+class alpha = object
+  method m = 1
+end
+and beta = object
+  method n = 2
+end
+"""
+
+
+def test_and_chained_classes_are_not_dropped(tmp_path):
+    """`class a = ... and b = ...` (mutually recursive classes) nests every
+    binding under ONE class_definition node the same way modules do; taking
+    only the first silently dropped every class after it."""
+    r = extract_ocaml(_write(tmp_path, "pair.ml", AND_CHAINED_CLASSES))
+    assert "error" not in r
+    assert {"alpha", "m", "beta", "n"} <= _labels(r)
+    method = _rel_pairs(r, "method")
+    assert {("alpha", "m"), ("beta", "n")} <= method
+
+
+def test_single_module_and_class_are_unaffected(tmp_path):
+    """Control: a lone module/class (no `and` chain) must still resolve to
+    its own name and line, not the file's or each other's."""
+    r = extract_ocaml(_write(tmp_path, "solo.ml", "module Solo = struct\n  let v = 1\nend\n"))
+    assert "error" not in r
+    assert {"Solo", "v"} <= _labels(r)
+    node = next(n for n in r["nodes"] if n["label"] == "Solo")
+    assert node["source_location"] == "L1"
