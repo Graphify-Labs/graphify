@@ -6159,15 +6159,16 @@ def _resolve_cpp_member_calls(
 
     The shared cross-file pass drops every ``is_member_call`` because a bare method
     name (``bar``) collides across the corpus and inflates god-nodes (#543/#1219).
-    The C++ extractor records each member call's receiver and a per-file
-    ``var -> ClassName`` table (``cpp_type_table``) built from local declarations.
+    The C++ extractor records lexical receiver bindings, access chains and
+    class-scoped field types. Older scoped-call records also use a per-file
+    ``var -> ClassName`` table (``cpp_type_table``).
     This pass types the receiver, then emits an edge ONLY when that type resolves
     to exactly ONE definition (the god-node guard).
 
     Receiver typing, by precision tier:
       * ``Foo::bar()`` — the scope ``Foo`` names the type explicitly -> EXTRACTED.
       * ``this->bar()`` — the receiver is the caller's own enclosing class -> EXTRACTED.
-      * ``f.bar()`` / ``f->bar()`` — ``f`` typed via the file's local table -> INFERRED.
+      * ``f.bar()`` / ``f->bar()`` and field chains — declared receiver types -> INFERRED.
     A receiver whose type can't be inferred locally is SKIPPED (no guess): a false
     call edge is worse than a missing one. The ``_merge_decl_def_classes`` pass has
     already folded each header/impl class pair into one node, so a paired class is a
@@ -6231,6 +6232,78 @@ def _resolve_cpp_member_calls(
         if n.get("source_file") and label.endswith("()") and "::" in label:
             qualified_method_nids.setdefault(label, []).append(n["id"])
 
+    # Receiver chains use literal, case-sensitive identities, including namespaces.
+    qualified_types: dict[str, list[str]] = {}
+    simple_types: dict[str, list[str]] = {}
+    exact_methods: dict[tuple[str, str], set[str]] = {}
+    for n in all_nodes:
+        identity = n.get("_cpp_qualified")
+        if identity and "_cpp_fields" in n and n.get("id") in contained and _is_type_like_definition(n):
+            qualified_types.setdefault(identity, []).append(n["id"])
+            simple_types.setdefault(identity.rsplit("::", 1)[-1], []).append(n["id"])
+    for rel in ("defines", "method"):
+        grouped: dict[tuple[str, str], set[str]] = {}
+        for e in all_edges:
+            target_node = node_by_id.get(e.get("target", ""), {})
+            label = target_node.get("label", "")
+            if e.get("relation") == rel and label.endswith("()"):
+                name = label.removesuffix("()").lstrip(".").rsplit("::", 1)[-1]
+                grouped.setdefault((e["source"], name), set()).add(e["target"])
+        exact_methods.update(grouped)
+
+    def chain_type(name: str, scope: str, operator: str) -> str | None:
+        name = re.sub(r"\b(const|volatile)\b", "", name).strip()
+        identifier = r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*"
+        if operator == "->":
+            smart = re.fullmatch(rf"std::(?:unique_ptr|shared_ptr)\s*<\s*({identifier})\s*>", name)
+            if smart:
+                name = smart[1]
+            elif name.endswith("*"):
+                name = name[:-1].strip()
+            else:
+                return None
+        elif operator != ".":
+            return None
+        if not re.fullmatch(identifier, name):
+            return None
+        absolute = name.startswith("::")
+        name = name.removeprefix("::")
+        if not absolute:
+            while scope:
+                candidates = qualified_types.get(f"{scope}::{name}", [])
+                if candidates:
+                    return candidates[0] if len(candidates) == 1 else None
+                scope = scope.rsplit("::", 1)[0] if "::" in scope else ""
+        candidates = qualified_types.get(name, [])
+        if not candidates and not absolute and "::" not in name:
+            candidates = simple_types.get(name, [])
+        return candidates[0] if len(candidates) == 1 else None
+
+    def resolve_chain(rc: dict) -> str | None:
+        chain = rc["cpp_receiver_chain"]
+        if not chain:
+            return None
+        root_name = chain[0][0]
+        owner = enclosing_type.get(rc["caller_nid"], "")
+        owner_node = node_by_id.get(owner, {})
+        scope = rc.get("cpp_receiver_scope", owner_node.get("_cpp_qualified", ""))
+        if root_name == "this":
+            name = owner_node.get("_cpp_qualified", "") + "*"
+        elif "cpp_receiver_type" in rc:
+            name = rc["cpp_receiver_type"]
+        else:
+            name = owner_node.get("_cpp_fields", {}).get(root_name, "")
+        type_nid = ""
+        for index, (member, operator) in enumerate(chain):
+            if index:
+                owner_node = node_by_id.get(type_nid, {})
+                name = owner_node.get("_cpp_fields", {}).get(member, "")
+                scope = owner_node.get("_cpp_qualified", "")
+            type_nid = chain_type(name, scope, operator)
+            if type_nid is None:
+                return None
+        return type_nid
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -6252,7 +6325,12 @@ def _resolve_cpp_member_calls(
             continue
         # Determine the receiver's type and the resulting confidence.
         qualified_fallback_label: str | None = None
-        if receiver == "this":
+        if "cpp_receiver_chain" in rc:
+            type_nid = resolve_chain(rc)
+            if type_nid is None:
+                continue
+            type_qualified = receiver == "this" and len(rc["cpp_receiver_chain"]) == 1
+        elif receiver == "this":
             # this->bar(): receiver is the caller's own enclosing class.
             type_nid = enclosing_type.get(caller)
             if not type_nid:
@@ -6305,7 +6383,11 @@ def _resolve_cpp_member_calls(
                 continue
             type_nid = type_defs[0]
             type_qualified = False
-        method_nid = method_index.get((type_nid, _key(callee)))
+        if "cpp_receiver_chain" in rc:
+            methods = exact_methods.get((type_nid, callee), set())
+            method_nid = next(iter(methods)) if len(methods) == 1 else None
+        else:
+            method_nid = method_index.get((type_nid, _key(callee)))
         if method_nid is None and qualified_fallback_label is not None:
             candidates = qualified_method_nids.get(qualified_fallback_label, [])
             if len(candidates) == 1:

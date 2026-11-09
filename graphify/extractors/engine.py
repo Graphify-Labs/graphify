@@ -3287,9 +3287,66 @@ def _cpp_qualified_name(node, name: str, source: bytes) -> str:
     return "::".join([*reversed(parents), name])
 
 
-def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int]]]:
+def _cpp_declared_receiver_type(node, declarator, source: bytes) -> str:
+    """Keep qualification and pointer shape; unsupported declarations stay unknown."""
+    type_node = node.child_by_field_name("type")
+    if type_node is None or type_node.type not in {
+        "type_identifier", "qualified_identifier", "template_type",
+    }:
+        return ""
+    name = _read_text(type_node, source)
+    while declarator is not None and declarator.type not in {"identifier", "field_identifier"}:
+        if declarator.type == "pointer_declarator":
+            name += "*"
+        elif declarator.type not in {"reference_declarator", "init_declarator"}:
+            return ""
+        inner = declarator.child_by_field_name("declarator")
+        if inner is None and declarator.type == "reference_declarator":
+            inner = next((c for c in declarator.named_children if c.type != "type_qualifier"), None)
+        declarator = inner
+    return name if declarator is not None else ""
+
+
+def _cpp_receiver_chain(node, source: bytes) -> list[list[str]]:
+    """Pairs of receiver/member names and their following access operators."""
+    members, operators = [], []
+    while node is not None:
+        if node.type == "parenthesized_expression" and len(node.named_children) == 1:
+            node = node.named_children[0]
+        elif node.type == "field_expression":
+            field = node.child_by_field_name("field")
+            operator = node.child_by_field_name("operator")
+            if field is None or field.type != "field_identifier" or operator is None:
+                return []
+            members.append(_read_text(field, source))
+            operators.append(_read_text(operator, source))
+            node = node.child_by_field_name("argument")
+        elif node.type in {"identifier", "this"}:
+            members.append(_read_text(node, source))
+            return [list(pair) for pair in zip(reversed(members[1:]), reversed(operators))]
+        else:
+            return []
+    return []
+
+
+def _cpp_class_fields(node, source: bytes) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    body = node.child_by_field_name("body")
+    if body is not None:
+        for field in body.named_children:
+            if field.type != "field_declaration":
+                continue
+            for declarator in field.children_by_field_name("declarator"):
+                name = _cpp_declarator_name(declarator, source)
+                if name:
+                    value = _cpp_declared_receiver_type(field, declarator, source)
+                    fields[name] = value if fields.get(name, value) == value else ""
+    return fields
+
+
+def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int, str, str]]]:
     """Lexical lifetimes of named C++ locals/parameters, not corpus callees."""
-    ranges: dict[str, list[tuple[int, int]]] = {}
+    ranges: dict[str, list[tuple[int, int, str, str]]] = {}
     scopes = {"compound_statement", "for_statement", "for_range_loop", "if_statement",
               "switch_statement", "catch_clause", "function_definition", "lambda_expression"}
     stack = [body]
@@ -3302,15 +3359,22 @@ def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, 
         node = stack.pop()
         if node.type in {"class_specifier", "struct_specifier", "function_definition"}:
             continue
-        if node.type in {"declaration", "parameter_declaration", "optional_parameter_declaration"}:
+        if node.type in {"declaration", "parameter_declaration", "optional_parameter_declaration",
+                         "lambda_capture_initializer"}:
             scope = node.parent
             while scope is not None and scope.type not in scopes:
                 scope = scope.parent
             if scope is not None:
-                for declarator in node.children_by_field_name("declarator"):
+                declarators = node.children_by_field_name(
+                    "left" if node.type == "lambda_capture_initializer" else "declarator")
+                for declarator in declarators:
                     name = _cpp_declarator_name(declarator, source)
                     if name:
-                        ranges.setdefault(name, []).append((declarator.start_byte, scope.end_byte))
+                        ranges.setdefault(name, []).append((
+                            declarator.start_byte, scope.end_byte,
+                            _cpp_declared_receiver_type(node, declarator, source),
+                            _cpp_qualified_name(node, "", source).rstrip(":"),
+                        ))
         stack.extend(node.named_children)
     return ranges
 
@@ -6998,6 +7062,9 @@ def _extract_generic(
                 cpp_qualified_names[class_nid] = (
                     qualified if cpp_qualified_names.get(class_nid, qualified) == qualified else ""
                 )
+                if node.child_by_field_name("body") is not None:
+                    class_node = next(n for n in nodes if n["id"] == class_nid)
+                    class_node["_cpp_fields"] = _cpp_class_fields(node, source)
             # A nested class/object/trait is contained by its ENCLOSING type, not
             # the file (#2040). parent_class_nid is threaded down the walk for
             # every language and is always a real class-like node (never a
@@ -10214,28 +10281,29 @@ def _extract_generic(
                                 obj.child_by_field_name("name"), source)
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
+                cpp_chain = []
+                cpp_binding = None
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
-                        if any(start <= node.start_byte < end for start, end in
+                        if any(start <= node.start_byte < end for start, end, *_ in
                                cpp_local_bindings.get(caller_nid, {}).get(callee_name, ())):
                             callee_name = None
                     elif func_node.type == "field_expression":
                         # `f.bar()` / `f->bar()` / `this->bar()`: receiver is the
                         # `argument` (object) field, callee is the `field` (#1547).
-                        # Capture a simple-identifier (or `this`) receiver so the
-                        # cross-file pass can resolve it through the file's type
-                        # table; chained receivers (`a.b.method()`) are left to bail.
+                        # Preserve the full chain for class-scoped cross-file lookup.
                         is_member_call = True
                         name = func_node.child_by_field_name("field")
                         if name:
                             callee_name = _read_text(name, source)
-                        obj = func_node.child_by_field_name("argument")
-                        if obj is not None and obj.type == "identifier":
-                            member_receiver = _read_text(obj, source)
-                        elif obj is not None and obj.type == "this":
-                            member_receiver = "this"
+                        cpp_chain = _cpp_receiver_chain(func_node, source)
+                        if cpp_chain:
+                            member_receiver = cpp_chain[0][0]
+                            bindings = [b for b in cpp_local_bindings.get(caller_nid, {}).get(
+                                member_receiver, ()) if b[0] <= node.start_byte < b[1]]
+                            cpp_binding = max(bindings, key=lambda b: b[0]) if bindings else None
                     elif func_node.type == "qualified_identifier":
                         # `Foo::bar()`: the scope (`Foo`) is the receiver type named
                         # explicitly in source (EXTRACTED), the name is the callee.
@@ -10501,16 +10569,15 @@ def _extract_generic(
                 # name must not pick whichever `m` this file declares: through
                 # `Base* b`, `b->draw()` bound to the file's `Derived::draw`.
                 # Deferring sends it to _resolve_cpp_member_calls, which types x
-                # from the file's local/parameter/field table and bails when it
-                # can't. An untyped receiver and `this->m()` keep the in-file
-                # binding they had.
+                # from lexical bindings and class fields. Chains must defer even
+                # when their root has no known type; bare-name matching is unsafe.
                 _cpp_member_defer = (
                     config.ts_module == "tree_sitter_cpp"
                     and is_member_call
                     and not is_scoped_call
-                    and member_receiver is not None
-                    and member_receiver != "this"
-                    and member_receiver in type_table
+                    and func_node is not None and func_node.type == "field_expression"
+                    and (len(cpp_chain) != 1 or member_receiver in type_table
+                         or (cpp_binding is not None and bool(cpp_binding[2])))
                 )
                 if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
@@ -10726,6 +10793,11 @@ def _extract_generic(
                         # suffix sets, so a source_file suffix alone can't separate them.
                         if config.ts_module == "tree_sitter_cpp":
                             rc_entry["lang"] = "cpp"
+                            if func_node is not None and func_node.type == "field_expression":
+                                rc_entry["cpp_receiver_chain"] = cpp_chain
+                                if cpp_binding is not None:
+                                    rc_entry["cpp_receiver_type"] = cpp_binding[2]
+                                    rc_entry["cpp_receiver_scope"] = cpp_binding[3]
                         # PHP: separate a scoped class call (`Helper::m()`, source-
                         # qualified) from an instance member call (`$g->m()`), whose
                         # receiver is a variable the resolver must type through the
@@ -11113,7 +11185,7 @@ def _extract_generic(
     # every function body so the cross-file member-call pass can type a receiver
     # (#1547). File-scoped (not per-body): a later body's `Foo f;` doesn't clobber
     # an earlier binding (`var not in table`), keeping resolution conservative.
-    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int]]]] = {}
+    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int, str, str]]]] = {}
     if config.ts_module == "tree_sitter_cpp":
         # Each function's table first: a local shadows a parameter there. The
         # file table is shared by every function, so a name typed differently in
