@@ -3340,6 +3340,20 @@ def _cpp_is_header_guard(node, source: bytes) -> bool:
                    for line in _read_text(node, source).splitlines())
 
 
+def _cpp_lookup_scope(node, source: bytes) -> str:
+    """Lexical scope keeps unnamed-namespace barriers without naming their types."""
+    parents = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type in {"namespace_definition", "class_specifier", "struct_specifier"}:
+            part = parent.child_by_field_name("name")
+            if part is None and parent.type != "namespace_definition":
+                return ""
+            parents.append(_read_text(part, source) if part is not None else "(anonymous)")
+        parent = parent.parent
+    return "::".join(reversed(parents))
+
+
 def _cpp_qualified_name(node, name: str, source: bytes) -> str:
     """Literal enclosing namespace/type identity; anonymous scopes are unknown."""
     parents = []
@@ -3446,24 +3460,6 @@ def _cpp_receiver_chain(node, source: bytes) -> list[list[str]]:
     return []
 
 
-def _cpp_is_header_guard(node, source: bytes) -> bool:
-    """Recognize only a whole-file #ifndef NAME / #define NAME wrapper."""
-    if (node.type != "preproc_ifdef" or node.parent is None
-            or node.parent.type != "translation_unit" or node.children[0].type != "#ifndef"):
-        return False
-    siblings = [n for n in node.parent.named_children if n.type != "comment"]
-    contents = [n for n in node.named_children if n.type != "comment"]
-    if (siblings != [node] or len(contents) < 2 or contents[1].type != "preproc_def"
-            or any(n.type in {"preproc_else", "preproc_elif", "preproc_elifdef"} for n in contents)):
-        return False
-    name = node.child_by_field_name("name")
-    define = contents[1].child_by_field_name("name")
-    if name is None or define is None or _read_text(name, source) != _read_text(define, source):
-        return False
-    return not any(line.replace(" ", "").replace("\t", "").startswith("#undef")
-                   for line in _read_text(node, source).splitlines())
-
-
 def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, int], dict[str, str]]:
     """Persist lexical type declarations; unsupported aliases still shadow outer names."""
     bindings, includes, include_paths = [], {}, {}
@@ -3488,7 +3484,7 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
         if node.type not in {"alias_declaration", "type_definition", "class_specifier", "struct_specifier", "union_specifier",
                              "using_declaration", "namespace_definition", "namespace_alias_definition"}:
             continue
-        scope = _cpp_qualified_name(node, "", source).rstrip(":")
+        scope = _cpp_lookup_scope(node, source)
         parent = node.parent
         block = None
         dependent = False
@@ -3555,6 +3551,12 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
                              "directive": directive, "namespace": node.type == "namespace_definition",
                              "start": node.start_byte, "end": block.end_byte if block is not None else len(source),
                              "local": block is not None, "block": block.start_byte if block is not None else 0})
+            # An unnamed namespace implicitly exposes its declarations in its parent.
+            projected_scope = scope
+            while block is None and not directive and projected_scope.split("::")[-1] == "(anonymous)":
+                projected_scope = projected_scope.rsplit("::", 1)[0] if "::" in projected_scope else ""
+                bindings.append({**bindings[-1], "scope": projected_scope, "target": "", "alias": True,
+                                 "complete": False, "namespace": False, "implicit_anonymous": True})
     return bindings, includes, include_paths
 
 
@@ -3672,7 +3674,7 @@ def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, 
                         ranges.setdefault(name, []).append((
                             declarator.start_byte, scope.end_byte,
                             _cpp_declared_receiver_type(node, declarator, source),
-                            _cpp_qualified_name(node, "", source).rstrip(":"),
+                            _cpp_lookup_scope(node, source),
                         ))
         stack.extend(node.named_children)
     return ranges
@@ -11123,7 +11125,7 @@ def _extract_generic(
                         if config.ts_module == "tree_sitter_cpp":
                             rc_entry["lang"] = "cpp"
                             rc_entry["cpp_call_byte"] = node.start_byte
-                            rc_entry["cpp_call_scope"] = _cpp_qualified_name(node, "", source).rstrip(":")
+                            rc_entry["cpp_call_scope"] = _cpp_lookup_scope(node, source)
                             rc_entry["cpp_scoped_call"] = func_node is not None and func_node.type == "qualified_identifier"
                             if func_node is not None and func_node.type == "field_expression":
                                 rc_entry["cpp_receiver_chain"] = cpp_chain
