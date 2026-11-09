@@ -3472,6 +3472,14 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
         node = pending.pop()
         pending.extend(reversed(node.named_children))
         if node.type == "preproc_include":
+            parent = node.parent
+            while parent is not None and parent.type not in {
+                "namespace_definition", "class_specifier", "struct_specifier", "union_specifier",
+                "function_definition", "compound_statement",
+            }:
+                parent = parent.parent
+            if parent is not None:
+                continue
             line = str(node.start_point[0] + 1)
             includes[line] = node.start_byte
             path = node.child_by_field_name("path")

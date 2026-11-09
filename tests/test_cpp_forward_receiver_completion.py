@@ -117,6 +117,53 @@ void Tick(Client& c) { c.worker->Run(); }
     assert _calls(result) == set()
 
 
+@pytest.mark.parametrize("scope", ["namespace other", "struct Scope", "void IncludeOnly()"])
+def test_scoped_includes_do_not_complete_a_global_forward_type(tmp_path, scope):
+    _, result = _extract(tmp_path, "struct Worker; struct Client { Worker* worker; };", f"""
+#include "client.hpp"
+{scope} {{
+#include "worker.hpp"
+}};
+void Tick(Client& c) {{ c.worker->Run(); }}
+""")
+    assert _calls(result) == set()
+
+
+def test_a_linkage_wrapper_does_not_change_an_includes_lexical_scope(tmp_path):
+    _, result = _extract(tmp_path, "struct Worker; struct Client { Worker* worker; };", """
+#include "client.hpp"
+extern "C" {
+#include "worker.hpp"
+}
+void Tick(Client& c) { c.worker->Run(); }
+""")
+    assert _calls(result) == {"worker.hpp"}
+
+
+def test_a_namespace_injected_definition_does_not_complete_an_outer_type(tmp_path):
+    _, result = _extract(tmp_path, "struct Worker; struct Client { Worker* worker; };", """
+#include "client.hpp"
+namespace other {
+#include "worker.hpp"
+void Tick(Client& c) { c.worker->Run(); }
+}
+""")
+    assert _calls(result) == set()
+
+
+@pytest.mark.parametrize("before", [True, False])
+def test_base_alias_completion_stops_at_the_base_specifier(tmp_path, before):
+    definition = "struct Worker { void Run(); };"
+    derived = "struct Client : Parent {};"
+    client = "struct Worker; using Parent = Worker; " + (
+        definition + derived if before else derived + definition)
+    _, result = _extract(tmp_path, client, """
+#include "client.hpp"
+void Tick(Client& c) { c.Run(); }
+""", worker="")
+    assert _calls(result) == ({"client.hpp"} if before else set())
+
+
 def test_persisted_forward_field_facts_use_the_changed_callers_includes(tmp_path):
     paths, original = _extract(tmp_path, "struct Worker; struct Client { Worker* worker; };", """
 #include "client.hpp"
