@@ -295,3 +295,50 @@ Second
     assert result.get("parse_errors")
     assert _coverage(result)["status"] == "unrecovered"
     assert _coverage(result)["reason"] == "branch-spanning records lack source guard provenance"
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("expression", ["w.Tick<int>()", "Fetch()"])
+def test_later_resolver_edges_keep_the_callsite_conditions(tmp_path, warm, expression):
+    header = tmp_path / "worker.hpp"
+    header.write_text("int Fetch() { return 1; }\n"
+                      "struct Worker { template<class T> int Tick() { return 1; } };", encoding="utf-8")
+    caller = tmp_path / "use.cpp"
+    caller.write_text('''#include "worker.hpp"
+void Run(Worker& w) { int values[] = {
+#if FEATURE
+''' + expression + ''',
+#else
+0,
+#endif
+}; }
+''', encoding="utf-8")
+    result = extract.extract([header, caller], root=tmp_path, cache_root=tmp_path, parallel=False)
+    cold_calls = [e for e in result["edges"] if e["relation"] == "calls"]
+    if warm:
+        result = extract.extract([caller, header], root=tmp_path, cache_root=tmp_path, parallel=False)
+    calls = [e for e in result["edges"] if e["relation"] == "calls"]
+    assert calls == cold_calls
+    assert len(calls) == 1
+    assert calls[0]["metadata"]["cpp_conditions"] == [{"group_line": 3, "branch": 0}]
+    assert calls[0]["source_file"] == "use.cpp"
+    assert calls[0]["source_location"] == "L4"
+    if not warm:
+        fresh = extract.extract(
+            [caller], root=tmp_path, cache_root=tmp_path, parallel=False,
+            resolution_context_nodes=[n for n in result["nodes"] if n.get("source_file") != "use.cpp"],
+            resolution_context_edges=[e for e in result["edges"] if e.get("source_file") != "use.cpp"],
+        )
+        assert [e for e in fresh["edges"] if e["relation"] == "calls"] == calls
+
+
+@pytest.mark.parametrize("coverage", [
+    {"status": "unrecovered", "groups": [{"line": 1, "branches": [{"start_line": 2, "end_line": 4}]}]},
+    {"status": "recovered", "groups": None},
+    {"status": "recovered", "groups": [{"line": 1, "branches": [None, {"start_line": "2", "end_line": 4}]}]},
+])
+def test_unrecovered_or_malformed_cached_ranges_cannot_add_conditions(coverage):
+    nodes = [{"source_file": "use.cpp", "metadata": {"cpp_conditional_recovery": coverage}}]
+    edge = {"source_file": "use.cpp", "source_location": "L3"}
+    extract._stamp_cpp_condition_provenance(nodes, [edge])
+    assert "metadata" not in edge
