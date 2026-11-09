@@ -8750,8 +8750,10 @@ def _extract_generic(
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
                     )
-                func_nid = decl_node(func_nid, sanitized_name, "fn",
-                                     f"{func_name}()", line)
+                if not (config.ts_module == "tree_sitter_cpp" and "::" in func_name
+                        and cpp_qualified_names.get(func_nid) == _cpp_qualified_name(node, func_name, source)):
+                    func_nid = decl_node(func_nid, sanitized_name, "fn",
+                                         f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
             callable_def_nids.add(func_nid)  # function / method def is callable
             if config.ts_module == "tree_sitter_cpp" and (parent_class_nid or "::" in func_name):
