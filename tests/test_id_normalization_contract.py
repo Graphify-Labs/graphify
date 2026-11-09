@@ -160,6 +160,30 @@ def test_turkish_identifier_ids_match_between_extractor_and_builder():
     assert minted == "islem_i_slemyap"
 
 
+def test_normalize_id_caseless_stable_for_combining_mark_sequences():
+    """Regression: casefold and NFKC do not commute, and a single
+    ``NFKC(casefold(...))`` pass left ``normalize_id(s) != normalize_id(s.casefold())``
+    for combining-mark sequences — e.g. Greek ypogegrammeni (U+0345) followed by a
+    combining accent, where pre-casefolding turns U+0345 into ``ι`` which NFKC then
+    composes with the accent into a precomposed char the single pass never saw.
+    The fixpoint loop makes normalize_id caseless-stable. (Deterministic pin so the
+    fix does not rely on the hypothesis property re-drawing these codepoints.)"""
+    import re as _re
+    cases = [
+        "\u0345\u0300",          # ypogegrammeni + grave (minimal falsifying case)
+        "\u0345\u0301",          # ypogegrammeni + acute
+        "\u0345\u0300\u0301",
+        "a\u0345\u0300b",
+        "\u01f0\u0f35\u0345",   # ǰ + Tibetan mark + ypogegrammeni (hypothesis example)
+    ]
+    for s in cases:
+        assert normalize_id(s) == normalize_id(s.casefold()), (
+            s.encode("unicode_escape"), normalize_id(s), normalize_id(s.casefold()),
+        )
+        assert normalize_id(normalize_id(s)) == normalize_id(s)           # still idempotent
+        assert not _re.search(r"[^\w]", normalize_id(s).replace("_", ""))  # still word-only
+
+
 def test_both_callers_share_one_implementation():
     """Guard against re-forking: the two public callers must resolve to the same
     underlying function object as graphify.ids.normalize_id."""

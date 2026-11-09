@@ -142,6 +142,7 @@ def _gh(*args: str) -> list | dict | None:
     try:
         result = subprocess.run(
             ["gh", *args],
+            stdin=subprocess.DEVNULL,
             # Decode gh's output as UTF-8, not the Windows cp1252 locale codec: gh
             # emits UTF-8 JSON with non-Latin1 titles/logins (emoji, فارسی), and the
             # default text=True decode crashes on those (#1505 fixed the same in llm).
@@ -157,50 +158,92 @@ def _gh(*args: str) -> list | dict | None:
 def _detect_default_branch(repo: str | None = None) -> str:
     """Auto-detect the repo's default branch via gh, then git, then fall back to 'main'."""
     # Try gh first — works for any repo, not just the current directory
-    args = ["repo", "view", "--json", "defaultBranchRef"]
+    args = ["repo", "view"]
     if repo:
-        args += ["--repo", repo]
+        args.append(repo)
+    args += ["--json", "defaultBranchRef"]
     data = _gh(*args)
     if data and data.get("defaultBranchRef", {}).get("name"):
         return data["defaultBranchRef"]["name"]
-    # Fall back to git symbolic-ref for the current repo
-    try:
-        result = subprocess.run(
-            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
-        if result.returncode == 0:
-            # refs/remotes/origin/main → main
-            ref = result.stdout.strip()
-            return ref.split("/")[-1] if ref else "main"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    # Fall back to git symbolic-ref for the current repo (only when repo is not specified)
+    if not repo:
+        try:
+            result = subprocess.run(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
+            )
+            if result.returncode == 0:
+                # refs/remotes/origin/main → main. Strip the prefix rather than
+                # keep the last segment, so a default branch with a slash in its
+                # name (release/2.x) survives whole.
+                ref = result.stdout.strip()
+                return ref.removeprefix("refs/remotes/origin/") or "main"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
     return "main"
 
 
 _CI_FAILURE_CONCLUSIONS = frozenset({"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"})
 
+# CheckStatusState has six values: REQUESTED, QUEUED, IN_PROGRESS, COMPLETED,
+# WAITING and PENDING. Every one but COMPLETED means the run has not finished,
+# so it carries no conclusion yet and nothing else in the rollup speaks for it.
+# Matching only IN_PROGRESS/QUEUED left WAITING (a job held by a deployment
+# protection rule), REQUESTED and PENDING runs invisible — NONE on their own,
+# and masked as SUCCESS by any sibling check that had already passed.
+_CI_PENDING_STATUSES = frozenset({"REQUESTED", "QUEUED", "IN_PROGRESS", "WAITING", "PENDING"})
+
 
 def _parse_ci(rollup: list) -> str:
     if not rollup:
         return "NONE"
-    conclusions = {r.get("conclusion") for r in rollup if r.get("conclusion")}
-    if conclusions & _CI_FAILURE_CONCLUSIONS:
+    # statusCheckRollup mixes two entry types: CheckRun (GitHub Actions and other
+    # check apps) carries status/conclusion, while StatusContext (commit statuses
+    # from external CI such as Jenkins or CircleCI) carries only state, one of
+    # SUCCESS, FAILURE, ERROR, PENDING or EXPECTED. Read both.
+    conclusions = {r.get("conclusion") or r.get("state") for r in rollup} - {None, ""}
+    if conclusions & (_CI_FAILURE_CONCLUSIONS | {"ERROR"}):
         return "FAILURE"
     statuses = {r.get("status") for r in rollup}
-    if "IN_PROGRESS" in statuses or "QUEUED" in statuses:
+    if statuses & _CI_PENDING_STATUSES or conclusions & {"PENDING", "EXPECTED"}:
         return "PENDING"
     if "SUCCESS" in conclusions:
         return "SUCCESS"
     return "NONE"
 
 
+_PR_JSON_FIELDS = (
+    "number,title,state,headRefName,baseRefName,author,isDraft,"
+    "reviewDecision,statusCheckRollup,updatedAt"
+)
+
+
+def _parse_pr_dict(item: dict, expected_base: str) -> PRInfo:
+    updated_raw = item.get("updatedAt")
+    if updated_raw:
+        updated = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+    else:
+        updated = datetime.now(timezone.utc)
+    return PRInfo(
+        number=item.get("number", 0),
+        title=item.get("title", ""),
+        branch=item.get("headRefName", ""),
+        base_branch=item.get("baseRefName", ""),
+        author=item["author"]["login"] if item.get("author") else "?",
+        is_draft=item.get("isDraft", False),
+        review_decision=item.get("reviewDecision") or "",
+        ci_status=_parse_ci(item.get("statusCheckRollup") or []),
+        updated_at=updated,
+        expected_base=expected_base,
+    )
+
+
 def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50) -> list[PRInfo]:
     resolved_base = base or _detect_default_branch(repo)
     args = [
         "pr", "list", "--state", "open", "--limit", str(limit),
-        "--json", "number,title,headRefName,baseRefName,author,isDraft,"
-                  "reviewDecision,statusCheckRollup,updatedAt",
+        "--json", _PR_JSON_FIELDS,
     ]
     if repo:
         args += ["--repo", repo]
@@ -209,22 +252,26 @@ def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50)
     if raw is None:
         raise RuntimeError("gh CLI not found or not authenticated. Run: gh auth login")
 
-    prs = []
-    for item in raw:
-        updated = datetime.fromisoformat(item["updatedAt"].replace("Z", "+00:00"))
-        prs.append(PRInfo(
-            number=item["number"],
-            title=item["title"],
-            branch=item["headRefName"],
-            base_branch=item["baseRefName"],
-            author=item["author"]["login"] if item.get("author") else "?",
-            is_draft=item.get("isDraft", False),
-            review_decision=item.get("reviewDecision") or "",
-            ci_status=_parse_ci(item.get("statusCheckRollup") or []),
-            updated_at=updated,
-            expected_base=resolved_base,
-        ))
-    return prs
+    return [_parse_pr_dict(item, resolved_base) for item in raw]
+
+
+def fetch_pr(number: int, repo: str | None = None, base: str | None = None) -> PRInfo | None:
+    resolved_base = base or _detect_default_branch(repo)
+    args = [
+        "pr", "view", str(number),
+        "--json", _PR_JSON_FIELDS,
+    ]
+    if repo:
+        args += ["--repo", repo]
+
+    raw = _gh(*args)
+    if raw is None or not isinstance(raw, dict):
+        return None
+    if raw.get("state") != "OPEN":
+        return None
+
+    return _parse_pr_dict(raw, resolved_base)
+
 
 
 def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
@@ -232,7 +279,11 @@ def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
     if repo:
         args += ["--repo", repo]
     try:
-        result = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        result = subprocess.run(
+            ["gh", *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+        )
         if result.returncode != 0:
             return []
         return [l.strip() for l in result.stdout.splitlines() if l.strip()]
@@ -303,6 +354,7 @@ def fetch_worktrees() -> dict[str, str]:
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
         )
         if result.returncode != 0:
@@ -349,7 +401,10 @@ def build_community_labels(data: dict, top_n: int = 4) -> dict[int, list[str]]:
 
 
 def attach_graph_impact(
-    prs: list[PRInfo], graph_path: Path, repo: str | None = None
+    prs: list[PRInfo],
+    graph_path: Path,
+    repo: str | None = None,
+    include_wrong_base: bool = False,
 ) -> dict[int, list[str]]:
     """Fetch PR file lists concurrently, compute graph impact, return community labels."""
     data = _load_graph_json(graph_path)
@@ -372,7 +427,7 @@ def attach_graph_impact(
         file_to_nodes[src] += 1
 
     # Fetch diffs concurrently — gh pr diff is the bottleneck (network I/O)
-    actionable = [pr for pr in prs if pr.status != "WRONG-BASE"]
+    actionable = [pr for pr in prs if include_wrong_base or pr.status != "WRONG-BASE"]
     workers = min(8, len(actionable)) if actionable else 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
         future_to_pr = {
@@ -729,20 +784,26 @@ def cmd_prs(argv: list[str]) -> None:
     for pr in prs:
         pr.worktree_path = worktrees.get(pr.branch)
 
-    # Graph impact is expensive (concurrent gh pr diff calls) — only fetch when
-    # the user actually needs it: deep dive, triage, and conflict detection.
-    community_labels: dict[int, list[str]] = {}
-    needs_impact = graph_path.exists() and (pr_number is not None or do_triage or do_conflicts)
-    if needs_impact:
-        community_labels = attach_graph_impact(prs, graph_path, repo)
-
     if pr_number is not None:
         match = next((p for p in prs if p.number == pr_number), None)
         if not match:
+            match = fetch_pr(pr_number, repo=repo, base=base)
+            if match and match.branch:
+                match.worktree_path = worktrees.get(match.branch)
+        if not match:
             print(red(f"  PR #{pr_number} not found in open PRs."), file=sys.stderr)
             sys.exit(1)
+        if graph_path.exists():
+            attach_graph_impact([match], graph_path, repo, include_wrong_base=True)
         render_pr_detail(match, repo)
         return
+
+    # Graph impact is expensive (concurrent gh pr diff calls) — only fetch when
+    # the user actually needs it: triage and conflict detection.
+    community_labels: dict[int, list[str]] = {}
+    needs_impact = graph_path.exists() and (do_triage or do_conflicts)
+    if needs_impact:
+        community_labels = attach_graph_impact(prs, graph_path, repo)
 
     if do_triage:
         render_dashboard(prs, base, show_wrong_base)

@@ -367,6 +367,26 @@ def test_pg_introspect_import_error():
     assert "graphifyy[postgres]" in str(exc_info.value)
 
 
+def test_pg_introspect_grammar_error_surfaces():
+    """If extract_sql reports an error (e.g. tree-sitter-sql missing), the
+    introspection must raise instead of returning an empty graph — otherwise
+    the CLI prints "PostgreSQL: 0 nodes" as if the database were empty."""
+    mock_psycopg = _make_mock_psycopg(
+        [("public", "users", "BASE TABLE")], [], [], []
+    )
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        with patch(
+            "graphify.pg_introspect.extract_sql",
+            return_value={
+                "nodes": [],
+                "edges": [],
+                "error": "tree_sitter_sql not installed. Run: pip install tree-sitter-sql",
+            },
+        ):
+            with pytest.raises(ImportError, match="tree_sitter_sql not installed"):
+                introspect_postgres("postgresql://myhost/mydb")
+
+
 def test_pg_introspect_uri_forward_slashes():
     """Assert that the virtual path in postgresql introspection output uses forward slashes on all platforms."""
     mock_psycopg = _make_mock_psycopg([], [], [], [], host="some-host", dbname="some-db")

@@ -170,3 +170,293 @@ def test_incremental_qualified_resolution_uses_unchanged_context(tmp_path: Path)
         and edge.get("target") in full_user_ids
         for edge in changed["edges"]
     )
+
+
+def _case_only_sibling_corpus(tmp_path: Path) -> None:
+    """Exported wrapper + unexported worker of the same name, plus a decoy."""
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg_a = tmp_path / "pkga"
+    pkg_a.mkdir()
+    (pkg_a / "a.go").write_text(
+        "package pkga\n"
+        "\n"
+        "func Run() error {\n"
+        "\treturn run(1)\n"
+        "}\n"
+        "\n"
+        "func run(n int) error {\n"
+        "\treturn nil\n"
+        "}\n"
+    )
+    pkg_b = tmp_path / "pkgb"
+    pkg_b.mkdir()
+    (pkg_b / "b.go").write_text(
+        "package pkgb\n\nfunc run(s string) error {\n\treturn nil\n}\n"
+    )
+
+
+def test_case_only_sibling_functions_are_both_extracted(tmp_path: Path) -> None:
+    """``Run`` and ``run`` in one file are two symbols, not one."""
+    _case_only_sibling_corpus(tmp_path)
+    result = _extract(tmp_path)
+
+    exported = _ids(result, label="Run", suffix="a.go")
+    unexported = _ids(result, label="run", suffix="a.go")
+    assert len(exported) == 1, f"exported Run missing: {exported}"
+    assert len(unexported) == 1, f"unexported run missing: {unexported}"
+    assert exported != unexported, "Run and run collapsed onto one node id"
+
+
+def test_case_only_sibling_does_not_bind_to_another_package(tmp_path: Path) -> None:
+    """``Run`` calls its own file's ``run``, never another package's."""
+    _case_only_sibling_corpus(tmp_path)
+    result = _extract(tmp_path)
+
+    exported = _ids(result, label="Run", suffix="a.go")
+    foreign = _ids(result, label="run", suffix="b.go")
+    phantom = [
+        edge
+        for edge in result["edges"]
+        if edge.get("relation") == "calls"
+        and edge.get("source") in exported
+        and edge.get("target") in foreign
+    ]
+    assert phantom == [], f"Run bound to another package's unexported run: {phantom}"
+
+
+def test_case_only_sibling_exported_keeps_stable_id(tmp_path: Path) -> None:
+    """The exported member keeps the plain id whether or not a sibling exists.
+
+    Cross-package edges and graph.json entries from files an incremental rebuild
+    does not touch all target the exported symbol, so its id must not depend on
+    the presence of an unexported case-only sibling.
+    """
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "pkga"
+    pkg.mkdir()
+    solo = "package pkga\n\nfunc Run() error {\n\treturn nil\n}\n"
+    with_sibling = (
+        "package pkga\n"
+        "\n"
+        "func Run() error {\n"
+        "\treturn run(1)\n"
+        "}\n"
+        "\n"
+        "func run(n int) error {\n"
+        "\treturn nil\n"
+        "}\n"
+    )
+
+    (pkg / "a.go").write_text(solo)
+    solo_ids = _ids(_extract(tmp_path), label="Run", suffix="a.go")
+
+    (pkg / "a.go").write_text(with_sibling)
+    result = _extract(tmp_path)
+    exported = _ids(result, label="Run", suffix="a.go")
+    unexported = _ids(result, label="run", suffix="a.go")
+
+    assert exported == solo_ids, (
+        f"adding an unexported sibling moved the exported id: {solo_ids} -> {exported}"
+    )
+    assert unexported and unexported != exported
+
+
+def test_incremental_sibling_addition_keeps_cross_package_edge(tmp_path: Path) -> None:
+    """A hook-style partial rebuild must not re-point edges from untouched files.
+
+    Build the full corpus, then add an unexported ``run`` sibling and re-extract
+    ONLY a.go (the --update path). The stored ``Start -> Run`` edge from the
+    untouched app package has to keep pointing at the exported ``Run``.
+    """
+    from graphify.build import build_from_json, build_merge
+    from graphify.export import to_json
+
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    (tmp_path / "pkga").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "pkga" / "a.go").write_text(
+        "package pkga\n\nfunc Run() error {\n\treturn nil\n}\n"
+    )
+    (tmp_path / "app" / "app.go").write_text(
+        'package app\n\nimport "example.com/repro/pkga"\n\n'
+        "func Start() error {\n\treturn pkga.Run()\n}\n"
+    )
+
+    full = _extract(tmp_path)
+    graph = build_from_json(full, root=str(tmp_path), directed=False)
+    graph_path = tmp_path / "graph.json"
+    to_json(graph, {i: [n] for i, n in enumerate(graph.nodes)}, str(graph_path))
+
+    (tmp_path / "pkga" / "a.go").write_text(
+        "package pkga\n"
+        "\n"
+        "func Run() error {\n"
+        "\treturn run(1)\n"
+        "}\n"
+        "\n"
+        "func run(n int) error {\n"
+        "\treturn nil\n"
+        "}\n"
+    )
+    partial = extract(
+        [tmp_path / "pkga" / "a.go"],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+    )
+    merged = build_merge(
+        [partial], graph_path=str(graph_path), root=str(tmp_path), directed=False
+    )
+
+    # The merged graph is undirected; edge iteration order is arbitrary. The
+    # build stores the real direction in _src/_tgt, so read those.
+    start_targets = {
+        merged.nodes[d.get("_tgt", v)].get("label")
+        for u, v, d in merged.edges(data=True)
+        if d.get("relation") == "calls" and "start" in str(d.get("_src", u))
+    }
+    assert start_targets == {"Run()"}, (
+        f"cross-package edge re-pointed after partial rebuild: {start_targets}"
+    )
+
+
+def test_case_only_sibling_methods_are_both_extracted(tmp_path: Path) -> None:
+    """Methods ``Get`` and ``get`` on the same type in one file are two symbols,
+    not one — the receiver-based id path must salt the collision too (#2779)."""
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "pkga"
+    pkg.mkdir()
+    (pkg / "a.go").write_text(
+        "package pkga\n\n"
+        "type Store struct{}\n\n"
+        "func (s Store) Get() int { return s.get() }\n\n"
+        "func (s Store) get() int { return 0 }\n"
+    )
+    result = _extract(tmp_path)
+    exported = _ids(result, label="Get", suffix="a.go")
+    unexported = _ids(result, label="get", suffix="a.go")
+    assert len(exported) == 1, f"exported Get missing: {exported}"
+    assert len(unexported) == 1, f"unexported get missing: {unexported}"
+    assert exported != unexported, "Get and get collapsed onto one node id"
+
+
+def test_case_only_sibling_all_exported_are_both_extracted(tmp_path: Path) -> None:
+    """When no member is the unique exported one (``Run`` and ``RUN`` both start
+    uppercase), each is salted so neither is dropped (#2779, all-salted branch)."""
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "pkga"
+    pkg.mkdir()
+    (pkg / "a.go").write_text(
+        "package pkga\n\n"
+        "func Run() int { return 1 }\n\n"
+        "func RUN() int { return 2 }\n"
+    )
+    result = _extract(tmp_path)
+    run1 = _ids(result, label="Run", suffix="a.go")
+    run2 = _ids(result, label="RUN", suffix="a.go")
+    assert len(run1) == 1 and len(run2) == 1, f"Run={run1} RUN={run2}"
+    assert run1 != run2, "Run and RUN collapsed onto one node id"
+
+
+# The shape of gin's response_writer.go: an exported interface and the unexported
+# struct implementing it differ only by case, so both minted one type id.
+_GIN_IFACE = "type ResponseWriter interface {\n\tStatus() int\n\tWritten() bool\n}\n"
+_GIN_STRUCT = (
+    "type responseWriter struct {\n\tstatus int\n}\n"
+    "\n"
+    "func (w *responseWriter) Status() int {\n\treturn w.status\n}\n"
+    "\n"
+    "func (w *responseWriter) reset() {\n\tw.status = 0\n}\n"
+)
+_GIN_CONTEXT = "type Context struct {\n\twriterMem responseWriter\n\tWriter    ResponseWriter\n}\n"
+
+
+def _gin_corpus(tmp_path: Path, *blocks: str) -> dict:
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "gin"
+    pkg.mkdir(exist_ok=True)
+    (pkg / "response_writer.go").write_text("package gin\n\n" + "\n".join(blocks))
+    return _extract(tmp_path)
+
+
+def _by_label(result: dict, label: str) -> list[dict]:
+    return [n for n in result["nodes"] if n.get("label") == label]
+
+
+def _owners(result: dict, method: str) -> set[str]:
+    by_id = {n["id"]: n for n in result["nodes"]}
+    return {
+        by_id[e["source"]]["label"]
+        for e in result["edges"]
+        if e.get("relation") == "method"
+        and by_id.get(e.get("target"), {}).get("label") == f".{method}()"
+    }
+
+
+def test_case_only_sibling_types_are_both_extracted(tmp_path: Path) -> None:
+    """``type ResponseWriter`` and ``type responseWriter`` in one file are two
+    types (#2779 covered functions and methods, not ``type`` declarations)."""
+    result = _gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT)
+    iface, struct = _by_label(result, "ResponseWriter"), _by_label(result, "responseWriter")
+    assert [n["source_location"] for n in iface] == ["L3"], iface
+    assert [n["source_location"] for n in struct] == ["L8"], struct
+    assert iface[0]["id"] != struct[0]["id"]
+
+
+def test_case_only_sibling_type_keeps_its_own_methods(tmp_path: Path) -> None:
+    """The struct's methods hang off the struct, not off the interface, and a
+    method both declare is two nodes, one per type."""
+    result = _gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT)
+    assert _owners(result, "reset") == {"responseWriter"}
+    assert _owners(result, "Status") == {"ResponseWriter", "responseWriter"}
+    assert _owners(result, "Written") == {"ResponseWriter"}
+
+
+def test_case_only_sibling_type_field_reference_lands_on_the_struct(tmp_path: Path) -> None:
+    result = _gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    field_targets = {
+        by_id[e["target"]]["label"]
+        for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "field"
+        and by_id.get(e.get("source"), {}).get("label") == "Context"
+    }
+    assert field_targets == {"responseWriter", "ResponseWriter"}, field_targets
+
+
+def test_case_only_sibling_exported_type_keeps_stable_ids(tmp_path: Path) -> None:
+    """The exported type and its methods keep the ids they have with no
+    unexported sibling in the file, so stored edges to them never move."""
+
+    def interface_ids(result: dict) -> set[str]:
+        iface = _by_label(result, "ResponseWriter")[0]["id"]
+        return {iface} | {
+            e["target"] for e in result["edges"]
+            if e.get("relation") == "method" and e.get("source") == iface
+        }
+
+    solo = interface_ids(_gin_corpus(tmp_path, _GIN_IFACE))
+    assert len(solo) == 3
+    assert interface_ids(_gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT)) == solo
+
+
+def test_case_only_sibling_type_ids_do_not_depend_on_declaration_order(tmp_path: Path) -> None:
+    def ids(result: dict) -> set[tuple[str, str]]:
+        return {(n["label"], n["id"]) for n in result["nodes"] if n.get("source_file")}
+
+    forward = ids(_gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT))
+    backward = ids(_gin_corpus(tmp_path, _GIN_STRUCT, _GIN_IFACE, _GIN_CONTEXT))
+    assert forward == backward
+
+
+def test_non_colliding_types_keep_their_ids_beside_a_colliding_pair(tmp_path: Path) -> None:
+    """Only the members of a collision group can move: the other types in the
+    file, exported or not, keep the ids they have in a file without the pair."""
+    other = "type node struct {\n\tpath string\n}\n"
+
+    def ids(result: dict) -> dict[str, str]:
+        return {n["label"]: n["id"] for n in result["nodes"]
+                if n.get("label") in ("Context", "node")}
+
+    alone = ids(_gin_corpus(tmp_path, _GIN_CONTEXT, other))
+    assert ids(_gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT, other)) == alone

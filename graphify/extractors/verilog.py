@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 def _sv_first_identifier(node, source: bytes) -> str | None:
@@ -47,8 +47,20 @@ _SV_PARENS_INNER = r"(?:[^()]|\([^()]*\))*"
 
 _SV_PARENS = r"\(" + _SV_PARENS_INNER + r"\)"
 
+# The return type is optional: a `new` constructor never has one, and a plain
+# `function foo(...);` implicitly returns a 1-bit value. Without the `?` here,
+# every constructor method - the single most common one in a SystemVerilog
+# class - matched nothing at all: no node, no parameter-type references.
 _SV_FUNC_RE = re.compile(
-    r"\bfunction\s+([A-Za-z_]\w*(?:\s*#\s*" + _SV_PARENS + r")?)\s+(\w+)\s*"
+    r"\bfunction\s+(?:([A-Za-z_]\w*(?:\s*#\s*" + _SV_PARENS + r")?)\s+)?(\w+)\s*"
+    r"\((" + _SV_PARENS_INNER + r")\)\s*;",
+    re.MULTILINE,
+)
+
+# A class method declared `task` instead of `function` has no return type to
+# capture, otherwise the same header shape.
+_SV_TASK_RE = re.compile(
+    r"\btask\s+(\w+)\s*"
     r"\((" + _SV_PARENS_INNER + r")\)\s*;",
     re.MULTILINE,
 )
@@ -167,21 +179,30 @@ def _augment_systemverilog_semantics(
             for iface_name in _sv_split_type_list(impl.group(1)):
                 add_edge(class_nid, iface_name.split("#", 1)[0].strip(), "implements", line)
 
-        body_without_functions = re.sub(
+        # A `task` method's own locals (and any typed declaration inside its
+        # body) must not leak into the field scan below, exactly like a
+        # function's body already doesn't - so both get stripped the same way.
+        body_without_methods = re.sub(
             r"\bfunction\b.*?\bendfunction\b",
             lambda m: "\n" * m.group(0).count("\n"),
             body,
+            flags=re.DOTALL,
+        )
+        body_without_methods = re.sub(
+            r"\btask\b.*?\bendtask\b",
+            lambda m: "\n" * m.group(0).count("\n"),
+            body_without_methods,
             flags=re.DOTALL,
         )
         # Optional leading class-property qualifiers (rand/local/protected/etc.)
         # must be consumed: otherwise a qualified field like `rand Config x;`
         # (three tokens) fails the `<type> <name>;` shape and its type reference
         # is silently dropped.
-        for field in re.finditer(r"^\s*(?:(?:rand|randc|local|protected|static|const|automatic|var)\s+)*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;", body_without_functions, re.MULTILINE):
+        for field in re.finditer(r"^\s*(?:(?:rand|randc|local|protected|static|const|automatic|var)\s+)*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;", body_without_methods, re.MULTILINE):
             # Count to the start of the type token (group 1), not the match
             # start: `^\s*` consumes the leading newline(s), so field.start()
             # would resolve to the class's line instead of the field's.
-            field_line = line + body_without_functions.count("\n", 0, field.start(1))
+            field_line = line + body_without_methods.count("\n", 0, field.start(1))
             for ref_name, role in _sv_collect_type_refs(field.group(1), skip=type_params):
                 add_edge(class_nid, ref_name, "references", field_line, "generic_arg" if role == "generic_arg" else "field")
 
@@ -193,14 +214,30 @@ def _augment_systemverilog_semantics(
             edges.append({"source": class_nid, "target": func_nid, "relation": "method",
                           "confidence": "EXTRACTED", "confidence_score": 1.0,
                           "source_file": str_path, "source_location": f"L{func_line}", "weight": 1.0})
-            for ref_name, role in _sv_collect_type_refs(return_type, skip=type_params):
-                add_edge(func_nid, ref_name, "references", func_line, "generic_arg" if role == "generic_arg" else "return_type")
+            if return_type:
+                for ref_name, role in _sv_collect_type_refs(return_type, skip=type_params):
+                    add_edge(func_nid, ref_name, "references", func_line, "generic_arg" if role == "generic_arg" else "return_type")
             for param in _sv_split_type_list(params):
                 pm = _SV_PARAM_RE.match(param)
                 if not pm:
                     continue
                 for ref_name, role in _sv_collect_type_refs(pm.group(1), skip=type_params):
                     add_edge(func_nid, ref_name, "references", func_line, "generic_arg" if role == "generic_arg" else "parameter_type")
+
+        for tm in _SV_TASK_RE.finditer(body):
+            task_name, params = tm.group(1), tm.group(2)
+            task_line = line + body.count("\n", 0, tm.start())
+            task_nid = _make_id(class_nid, task_name)
+            add_node(task_nid, task_name, task_line)
+            edges.append({"source": class_nid, "target": task_nid, "relation": "method",
+                          "confidence": "EXTRACTED", "confidence_score": 1.0,
+                          "source_file": str_path, "source_location": f"L{task_line}", "weight": 1.0})
+            for param in _sv_split_type_list(params):
+                pm = _SV_PARAM_RE.match(param)
+                if not pm:
+                    continue
+                for ref_name, role in _sv_collect_type_refs(pm.group(1), skip=type_params):
+                    add_edge(task_nid, ref_name, "references", task_line, "generic_arg" if role == "generic_arg" else "parameter_type")
 
 def extract_verilog(path: Path) -> dict:
     """Extract modules, functions, tasks, package imports, instantiations, and
@@ -215,7 +252,7 @@ def extract_verilog(path: Path) -> dict:
     try:
         language = Language(tsverilog.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -242,6 +279,21 @@ def extract_verilog(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+
+    # Pre-scan module names so an instantiation resolves to a module defined
+    # later in the same file — Verilog allows instantiating a module declared
+    # further down the source (or in any order across the compilation unit).
+    local_modules: set[str] = set()
+
+    def _scan_modules(node) -> None:
+        if node.type == "module_declaration":
+            mn = _sv_first_identifier(_sv_child(node, "module_header"), source)
+            if mn:
+                local_modules.add(mn)
+        for child in node.children:
+            _scan_modules(child)
+
+    _scan_modules(root)
 
     def walk(node, module_nid: str | None = None) -> None:
         t = node.type
@@ -309,8 +361,28 @@ def extract_verilog(path: Path) -> dict:
                              else _sv_first_identifier(node, source))
                 if inst_type:
                     line = node.start_point[0] + 1
-                    tgt_nid = _make_id(inst_type)
-                    add_node(tgt_nid, inst_type, line)
+                    if inst_type in local_modules:
+                        # The instantiated module is defined in this file: point
+                        # at its definition id (`_make_id(stem, name)`) instead of
+                        # minting a second, bare-id node for the same module. A
+                        # bare `_make_id(name)` never matches the scoped definition
+                        # id, so the module was split into a real definition node
+                        # and a phantom instantiation-target duplicate.
+                        tgt_nid = _make_id(stem, inst_type)
+                    else:
+                        # Defined in another file: emit a SOURCELESS stub so the
+                        # corpus-level rewire collapses it onto the real
+                        # definition. A sourced stub bakes this file's path into
+                        # the id and blocks the rewire — the #1402 phantom
+                        # duplicate the other extractors avoid the same way.
+                        tgt_nid = _make_id(inst_type)
+                        if tgt_nid not in seen_ids:
+                            seen_ids.add(tgt_nid)
+                            nodes.append({
+                                "id": tgt_nid, "label": inst_type,
+                                "file_type": "code", "source_file": "",
+                                "source_location": "", "confidence_score": 1.0,
+                            })
                     add_edge(module_nid, tgt_nid, "instantiates", line)
 
         for child in node.children:
