@@ -5,17 +5,14 @@ claude and its reuse twins (antigravity, kimi) install progressively: a lean
 SKILL.md plus a references/ sidecar. Every other host whose bundle has not
 shipped yet still installs today's byte-identical monolith.
 
-The plumbing tests below stage a hand-made fake bundle in claude's slot so the
-dir-copy, version-stamp, reinstall, and uninstall flow can be exercised with
-fixed, asserted content. The fixture backs up the real committed bundle and
-restores it on teardown, so the working tree is never disturbed.
+The plumbing tests below stage a hand-made fake bundle in a throwaway package
+root (not in the real package), so the working tree is never disturbed.
 """
 from __future__ import annotations
 
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,40 +25,77 @@ import graphify.__main__ as mainmod
 PKG_DIR = Path(graphify.__file__).parent
 
 
+class _FakeBundle(str):
+    """The platform name, carrying the staged fake package root.
+
+    A str subclass so existing ``platform = fake_bundle`` call sites keep
+    working while tests that need the staged bundle path (the read-only-package
+    test) can read ``fake_bundle.pkg_root``.
+    """
+
+    pkg_root: Path
+
+
+def _stage_fake_package(root: Path, *, references: "tuple[str, str] | None" = ("# extraction spec fragment\n", "# query fragment\n")) -> Path:
+    """Materialise a throwaway mini graphify package for the install tests.
+
+    The installer resolves every packaged asset relative to
+    ``graphify.install.__file__`` (skill bodies, ``skills/<bundle>/references/``,
+    ``always_on/*.md``, ``command-kilo.md``). Pointing that ``__file__`` at a
+    fake package root under ``tmp_path`` lets the tests stage their fake bundle
+    there instead of moving the real committed bundle out of the on-disk
+    package: a killed run (SIGTERM/SIGKILL runs no ``finally`` blocks) used to
+    leave the fake bundle in the package, dirtying the checkout, and a second
+    pytest on the same checkout read a package whose bundle was moved away
+    (#4603). With the fake root nothing under the real package is ever touched,
+    so nothing can be left behind.
+
+    ``references=None`` stages the malformed-bundle layout instead: a bundle dir
+    present with no ``references/`` subdir (the hard-fail case).
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    # Monolith bodies and the kilo command file, so monolith-platform installs
+    # through the fake root keep working.
+    for pattern in ("skill*.md", "command-kilo.md"):
+        for packaged in PKG_DIR.glob(pattern):
+            shutil.copy2(packaged, root / packaged.name)
+    shutil.copytree(PKG_DIR / "always_on", root / "always_on")
+    shutil.copytree(PKG_DIR / "skills", root / "skills")
+
+    bundle_dir = root / "skills" / "claude"
+    if references is None:
+        shutil.rmtree(bundle_dir)
+        bundle_dir.mkdir(parents=True)
+        # Bundle dir present, but no references/ subdir inside it.
+        (bundle_dir / "SKILL.md").write_text("body\n", encoding="utf-8")
+    else:
+        refs_dir = bundle_dir / "references"
+        shutil.rmtree(refs_dir)
+        refs_dir.mkdir(parents=True)
+        (refs_dir / "extraction-spec.md").write_text(references[0], encoding="utf-8")
+        (refs_dir / "query.md").write_text(references[1], encoding="utf-8")
+    return root
+
+
+def _fake_package_file(root: Path):
+    """Point ``graphify.install``'s asset resolution at the staged fake root."""
+    return patch("graphify.install.__file__", str(root / "install.py"))
+
+
 @pytest.fixture()
-def fake_bundle():
-    """Stage a fake references/ bundle in claude's slot, then restore the real one.
+def fake_bundle(tmp_path):
+    """Stage a fake references/ bundle in a throwaway package root.
 
     Yields the platform name. claude is used because its skill_refs bundle is
-    "claude" and it has no extra plugin wiring. The real committed bundle is
-    moved aside for the duration and put back afterward, so the on-disk package
-    is left exactly as found.
+    "claude" and it has no extra plugin wiring. The fake bundle lives in a
+    private package root under ``tmp_path`` and the installer is pointed at it
+    via ``graphify.install.__file__``, so the real on-disk package (and the
+    checkout) is never modified (#4603).
     """
-    platform = "claude"
-    bundle = mainmod._PLATFORM_CONFIG[platform]["skill_refs"]
-    skills_root = PKG_DIR / "skills"
-    bundle_dir = skills_root / bundle
-    refs_dir = bundle_dir / "references"
-
-    created_root = not skills_root.exists()
-    backup_dir = None
-    if bundle_dir.exists():
-        backup_dir = Path(tempfile.mkdtemp()) / "bundle_backup"
-        shutil.move(str(bundle_dir), str(backup_dir))
-
-    refs_dir.mkdir(parents=True, exist_ok=True)
-    (refs_dir / "extraction-spec.md").write_text("# extraction spec fragment\n", encoding="utf-8")
-    (refs_dir / "query.md").write_text("# query fragment\n", encoding="utf-8")
-    try:
+    platform = _FakeBundle("claude")
+    platform.pkg_root = _stage_fake_package(tmp_path / "fakepkg")
+    with _fake_package_file(platform.pkg_root):
         yield platform
-    finally:
-        if bundle_dir.exists():
-            shutil.rmtree(bundle_dir, ignore_errors=True)
-        if backup_dir is not None:
-            shutil.move(str(backup_dir), str(bundle_dir))
-            shutil.rmtree(backup_dir.parent, ignore_errors=True)
-        elif created_root:
-            shutil.rmtree(skills_root, ignore_errors=True)
 
 
 def _install(tmp_path, platform):
@@ -184,34 +218,18 @@ def test_hard_fail_when_bundle_dir_present_but_references_missing(tmp_path, monk
     A wholly-absent bundle dir is the opposite case (a host whose wave has not
     shipped) and falls back to monolith, covered by
     ``test_unbuilt_bundle_host_falls_back_to_monolith``.
-    """
-    platform = "claude"
-    bundle = mainmod._PLATFORM_CONFIG[platform]["skill_refs"]
-    skills_root = PKG_DIR / "skills"
-    bundle_dir = skills_root / bundle
 
-    created_root = not skills_root.exists()
-    backup_dir = None
-    if bundle_dir.exists():
-        backup_dir = Path(tempfile.mkdtemp()) / "bundle_backup"
-        shutil.move(str(bundle_dir), str(backup_dir))
-    # Bundle dir present, but no references/ subdir inside it.
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    (bundle_dir / "SKILL.md").write_text("body\n", encoding="utf-8")
-    try:
+    The malformed bundle is staged in a throwaway package root
+    (``_stage_fake_package(..., references=None)``), so the real package is
+    never modified (#4603).
+    """
+    root = _stage_fake_package(tmp_path / "malformedpkg", references=None)
+    with _fake_package_file(root):
         with pytest.raises(SystemExit) as exc:
             with patch("graphify.__main__.Path.home", return_value=tmp_path):
                 monkeypatch.chdir(tmp_path)
                 mainmod._copy_skill_file("claude")
         assert exc.value.code == 1
-    finally:
-        if bundle_dir.exists():
-            shutil.rmtree(bundle_dir, ignore_errors=True)
-        if backup_dir is not None:
-            shutil.move(str(backup_dir), str(bundle_dir))
-            shutil.rmtree(backup_dir.parent, ignore_errors=True)
-        elif created_root:
-            shutil.rmtree(skills_root, ignore_errors=True)
 
 
 def _first_unbuilt_progressive_host():
@@ -277,8 +295,10 @@ def test_claude_install_ships_lean_core_and_references(tmp_path):
     assert "references/extraction-spec.md" in body
     # The full embedded subagent prompt was moved out into the references.
     assert '"file_type":"code|document|paper|image|rationale|concept"' not in body
-    # The lean core is materially smaller than the old ~1156-line monolith.
-    assert len(body.splitlines()) < 800
+    # The lean core is materially smaller than the old ~1156-line monolith. The
+    # ceiling has a little headroom for the #4762 per-block `.graphify_root` reads
+    # (one line per Python block) while staying well under the monolith.
+    assert len(body.splitlines()) < 820
     # The version stamp covers SKILL.md + references/ together.
     assert (skill_dir / ".graphify_version").read_text() == mainmod.__version__
     # The eight on-demand fragments all landed.
@@ -392,6 +412,8 @@ def _build_wheel_names(repo_root):
     declared dev dependency, so an environment that runs this test is expected to
     have it. A silent skip is how a packaging regression slips through CI.
     """
+    import contextlib
+    import hashlib
     import subprocess
     import sys
     import tempfile
@@ -405,7 +427,27 @@ def _build_wheel_names(repo_root):
             "installed; it is a declared dev dependency (run `uv sync --all-extras`)"
         )
 
-    with tempfile.TemporaryDirectory() as outdir:
+    # Serialise with the other `python -m build --no-isolation` builder
+    # (test_wheel_packaging): both write the checkout's shared `build/` dir, so
+    # two concurrent pytest runs on one checkout must not build at once (#4603).
+    # Keyed by repo path in the temp dir; fcntl is released by the OS on kill.
+    @contextlib.contextmanager
+    def _wheel_build_lock():
+        try:
+            import fcntl
+        except ImportError:
+            yield
+            return
+        key = hashlib.sha256(str(repo_root).encode()).hexdigest()[:16]
+        lock_path = Path(tempfile.gettempdir()) / f"graphify-wheel-build-{key}.lock"
+        with open(lock_path, "a+") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+    with tempfile.TemporaryDirectory() as outdir, _wheel_build_lock():
         result = subprocess.run(
             [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", outdir, str(repo_root)],
             capture_output=True,
@@ -526,8 +568,7 @@ def test_install_from_read_only_package_dir(tmp_path, fake_bundle):
     staged copy is made writable first.
     """
     platform = fake_bundle
-    bundle = mainmod._PLATFORM_CONFIG[platform]["skill_refs"]
-    refs_src = PKG_DIR / "skills" / bundle / "references"
+    refs_src = platform.pkg_root / "skills" / "claude" / "references"
 
     modes = {p: p.stat().st_mode for p in (refs_src, *refs_src.rglob("*"))}
     for path in modes:
@@ -546,3 +587,66 @@ def test_install_from_read_only_package_dir(tmp_path, fake_bundle):
     # The installed sidecar must stay writable, or the next install cannot
     # rmtree it to swap in a new one.
     assert os.access(refs, os.W_OK)
+
+
+def test_install_skill_references_ignores_precreated_predictable_tmp_symlink_to_file(tmp_path):
+    """A pre-created symlink at references.tmp pointing to an outside file must not be followed."""
+    sentinel = tmp_path / "outside" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("sentinel-untouched\n", encoding="utf-8")
+
+    skill_dir = tmp_path / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    skill_dst = skill_dir / "SKILL.md"
+    skill_dst.write_text("skill", encoding="utf-8")
+
+    predictable_tmp = skill_dir / "references.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    refs_src = PKG_DIR / "skills" / "claude" / "references"
+    mainmod._install_skill_references(skill_dst, refs_src)
+
+    assert sentinel.read_text(encoding="utf-8") == "sentinel-untouched\n"
+    assert (skill_dir / "references" / "extraction-spec.md").is_file()
+    assert not list(skill_dir.glob(".references.*.tmp"))
+
+
+def test_install_skill_references_ignores_precreated_predictable_tmp_symlink_to_dir(tmp_path):
+    """A pre-created symlink at references.tmp pointing to an outside directory must not be followed or deleted."""
+    sentinel_dir = tmp_path / "outside_dir"
+    sentinel_dir.mkdir(parents=True)
+    sentinel_file = sentinel_dir / "sentinel.txt"
+    sentinel_file.write_text("sentinel-dir-untouched\n", encoding="utf-8")
+
+    skill_dir = tmp_path / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    skill_dst = skill_dir / "SKILL.md"
+    skill_dst.write_text("skill", encoding="utf-8")
+
+    predictable_tmp = skill_dir / "references.tmp"
+    try:
+        predictable_tmp.symlink_to(sentinel_dir, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation not permitted: {exc}")
+
+    refs_src = PKG_DIR / "skills" / "claude" / "references"
+    mainmod._install_skill_references(skill_dst, refs_src)
+
+    assert sentinel_file.exists()
+    assert sentinel_file.read_text(encoding="utf-8") == "sentinel-dir-untouched\n"
+    assert {p.name for p in sentinel_dir.iterdir()} == {"sentinel.txt"}
+    assert (skill_dir / "references" / "extraction-spec.md").is_file()
+    assert not list(skill_dir.glob(".references.*.tmp"))
+
+
+import pytest as _pytest_posix
+
+
+@_pytest_posix.fixture(autouse=True)
+def _posix_skill_layout(monkeypatch):
+    """hermes installs to a different directory on Windows; these tests
+    assert the POSIX layout, so pin it."""
+    monkeypatch.setattr("platform.system", lambda: "Linux")

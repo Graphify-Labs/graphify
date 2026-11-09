@@ -46,6 +46,34 @@ def test_cohesion_score_range():
         score = cohesion_score(G, nodes)
         assert 0.0 <= score <= 1.0
 
+def test_cohesion_score_ignores_self_loops():
+    # #3558: a recursive calls self-loop must not inflate the ratio. Two nodes
+    # with one real edge plus a self-loop is still fully cohesive (1.0), not 2.0.
+    G = nx.Graph()
+    G.add_edge("a", "b")
+    G.add_edge("a", "a")  # recursion self-loop
+    score = cohesion_score(G, ["a", "b"])
+    assert score == 1.0
+
+def test_cohesion_score_self_loops_only_is_zero():
+    # Self-loops alone are not inter-node connectivity.
+    G = nx.Graph()
+    G.add_nodes_from(["a", "b", "c"])
+    for n in ("a", "b", "c"):
+        G.add_edge(n, n)
+    score = cohesion_score(G, ["a", "b", "c"])
+    assert score == 0.0
+
+def test_cohesion_score_range_with_self_loops():
+    # The 0..1 bound holds even when every node carries a self-loop.
+    G = nx.complete_graph(4)
+    G = nx.relabel_nodes(G, {i: str(i) for i in G.nodes})
+    for n in list(G.nodes):
+        G.add_edge(n, n)
+    score = cohesion_score(G, list(G.nodes))
+    assert 0.0 <= score <= 1.0
+    assert score == 1.0
+
 def test_score_all_keys_match_communities():
     G = make_graph()
     communities = cluster(G)
@@ -135,6 +163,32 @@ def test_native_leiden_matches_graspologic_wrapper(monkeypatch):
     assert _grouping(native) == _grouping(wrapper), (
         f"native path diverged from the wrapper: {native} vs {wrapper}"
     )
+
+
+def test_native_leiden_returns_complete_partition():
+    """The native-only dependency path used on Python 3.13+ must run Leiden,
+    not silently fall through to NetworkX Louvain."""
+    import pytest
+    if sys.version_info < (3, 13):
+        pytest.skip("graspologic-native is required directly on Python 3.13+")
+    pytest.importorskip("graspologic_native")
+    import graphify.cluster as cl
+
+    G = nx.Graph()
+    G.add_node("isolated")
+    for a, b in [("a1", "a2"), ("a1", "a3"), ("a2", "a3"),
+                 ("b1", "b2"), ("b1", "b3"), ("b2", "b3"), ("a1", "b1")]:
+        G.add_edge(a, b)
+
+    partition = cl._native_leiden(G, 1.0)
+
+    assert partition is not None
+    assert set(partition) == set(G)
+    assert _grouping(partition) == {
+        frozenset({"a1", "a2", "a3"}),
+        frozenset({"b1", "b2", "b3"}),
+        frozenset({"isolated"}),
+    }
 
 
 def test_native_leiden_returns_none_when_binding_absent(monkeypatch):

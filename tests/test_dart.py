@@ -588,9 +588,11 @@ class TestDart(unittest.TestCase):
         nodes = result["nodes"]
         edges = result["edges"]
 
-        # A. Bug D redirect: No child file node should be created in nodes
+        # A. Bug D redirect: the part keeps its own file node (so it can be looked
+        # up by name), but its symbols are redirected to the parent library below.
         child_node = next((n for n in nodes if n["label"] == "child_part.dart"), None)
-        self.assertIsNone(child_node)
+        self.assertIsNotNone(child_node)
+        self.assertEqual(child_node["id"], _make_id(str(child_file)))
 
         # B. Check that defines edge source is parent file ID
         parent_fid = _make_id(str(parent_file.resolve()))
@@ -695,6 +697,174 @@ class TestDart(unittest.TestCase):
         inherits = next(e for e in result["edges"] if e["relation"] == "inherits")
         self.assertEqual(inherits["source_location"], "L3")
 
+
+    def test_part_file_keeps_its_own_node(self):
+        """A `part of` file is a real source file: it must be findable by name and
+        linked to its library and its declarations, while those declarations keep
+        the library's id namespace (Bug D redirect)."""
+        lib_file = self.temp_path / "settlement.dart"
+        lib_file.write_text("part 'derive.dart';\n\nclass Settlement {}\n", encoding="utf-8")
+        part_file = self.temp_path / "derive.dart"
+        part_file.write_text(textwrap.dedent("""\
+            part of 'settlement.dart';
+
+            class DeriveHelper {}
+
+            void deriveAll() {}
+            """), encoding="utf-8")
+
+        result = extract_dart(part_file)
+        lib_nid = _make_id(str(lib_file.resolve()))
+        part_nid = _make_id(str(part_file))
+
+        part_node = next(n for n in result["nodes"] if n["id"] == part_nid)
+        self.assertEqual(part_node["label"], "derive.dart")
+        self.assertEqual(part_node["source_file"], str(part_file))
+
+        includes = [e for e in result["edges"] if e["relation"] == "includes"]
+        self.assertEqual([(e["source"], e["target"]) for e in includes], [(lib_nid, part_nid)])
+        self.assertEqual(includes[0]["source_location"], "L1")
+
+        defined = {e["target"] for e in result["edges"]
+                   if e["source"] == lib_nid and e["relation"] == "defines"}
+        contained = {e["target"] for e in result["edges"]
+                     if e["source"] == part_nid and e["relation"] == "contains"}
+        labels = {n["id"]: n["label"] for n in result["nodes"]}
+        self.assertEqual({labels[t] for t in defined}, {"DeriveHelper", "deriveAll"})
+        self.assertEqual(contained, defined)
+        # Ids stay in the library's namespace: nothing is minted under the part's stem.
+        part_stem = _make_id(_file_stem(part_file))
+        for nid in defined:
+            self.assertFalse(nid.startswith(part_stem + "_"), nid)
+
+    def test_conditional_uris_emit_every_branch(self):
+        """A configurable export/import must link every platform branch, not only
+        the default URI; a string literal inside the condition is not a URI."""
+        code = textwrap.dedent("""\
+        import 'conn_stub.dart'
+            if (dart.library.io) 'conn_io.dart'
+            if (dart.library.js_interop) 'conn_web.dart';
+        import 'flags.dart' if (app.flavor == 'prod') 'flags_prod.dart';
+        export 'service_stub.dart' if (dart.library.io) "service_io.dart";
+        """)
+        path = self.temp_path / "facade.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        file_nid = _make_id(str(path))
+
+        def targets(relation, context):
+            return {
+                e["target"]
+                for e in result["edges"]
+                if e["source"] == file_nid
+                and e["relation"] == relation
+                and e.get("context") == context
+            }
+
+        self.assertEqual(targets("imports", None), {_make_id("conn_stub.dart"), _make_id("flags.dart")})
+        self.assertEqual(
+            targets("imports", "conditional_uri"),
+            {_make_id("conn_io.dart"), _make_id("conn_web.dart"), _make_id("flags_prod.dart")},
+        )
+        self.assertEqual(targets("exports", None), {_make_id("service_stub.dart")})
+        self.assertEqual(targets("exports", "conditional_uri"), {_make_id("service_io.dart")})
+        labels = {n["label"] for n in result["nodes"]}
+        self.assertNotIn("prod", labels)
+        loc = {
+            e["target"]: e["source_location"]
+            for e in result["edges"]
+            if e["relation"] in ("imports", "exports")
+        }
+        self.assertEqual(loc[_make_id("conn_web.dart")], "L3")
+        self.assertEqual(loc[_make_id("service_io.dart")], "L5")
+
+    def test_anonymous_extension_is_detected(self):
+        """An unnamed `extension on Type { ... }` must mint a node and an
+        `extends` edge, exactly like a named extension does; the fallback
+        label it already carried for this case never actually matched."""
+        code = textwrap.dedent("""
+        extension on String {
+          String shout() => toUpperCase();
+        }
+        """)
+        path = self.temp_path / "shout.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        ext_node = next((n for n in result["nodes"] if n["label"] == "Extension on String"), None)
+        self.assertIsNotNone(ext_node)
+
+        extends_string = next(
+            (e for e in result["edges"] if e["source"] == ext_node["id"] and e["relation"] == "extends"),
+            None,
+        )
+        self.assertIsNotNone(extends_string)
+        self.assertEqual(extends_string["target"], "string")
+
+    def test_named_extension_is_unaffected(self):
+        """A control for the fix above: a named extension must still resolve
+        exactly as before, not fall into the anonymous-fallback label."""
+        code = textwrap.dedent("""
+        extension StringExtensions on String {
+          String whisper() => toLowerCase();
+        }
+        """)
+        path = self.temp_path / "whisper.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        ext_node = next((n for n in result["nodes"] if n["label"] == "StringExtensions"), None)
+        self.assertIsNotNone(ext_node)
+        self.assertIsNone(next((n for n in result["nodes"] if "anonymous_extension" in n["id"]), None))
+
+    def test_mixin_on_clause_with_multiple_superclass_constraints(self):
+        """A mixin's `on` clause may list several superclass constraints,
+        comma-separated (`mixin Foo on A, B {}`); every one of them must get
+        an `inherits` edge, not just the first."""
+        code = textwrap.dedent("""
+        mixin Selectable on Comparable<Selectable>, State<WidgetState> {
+          void select() {}
+        }
+        """)
+        path = self.temp_path / "selectable.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        mixin_node = next((n for n in result["nodes"] if n["label"] == "Selectable"), None)
+        self.assertIsNotNone(mixin_node)
+
+        inherits_targets = {
+            e["target"] for e in result["edges"]
+            if e["source"] == mixin_node["id"] and e["relation"] == "inherits"
+        }
+        self.assertEqual(inherits_targets, {"comparable", "state"})
+
+        # The generic argument of the dropped second constraint must still
+        # surface as a reference, exactly like the first constraint's does.
+        ref_targets = {
+            e["target"] for e in result["edges"]
+            if e["source"] == mixin_node["id"] and e["relation"] == "references"
+        }
+        self.assertIn("widgetstate", ref_targets)
+
+    def test_mixin_on_clause_with_single_superclass_constraint_is_unaffected(self):
+        """A control for the fix above: a mixin with only one `on` superclass
+        constraint must still resolve exactly as before."""
+        code = textwrap.dedent("""
+        mixin AuthMixin on BaseWidget {}
+        """)
+        path = self.temp_path / "auth_mixin.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        mixin_node = next((n for n in result["nodes"] if n["label"] == "AuthMixin"), None)
+        self.assertIsNotNone(mixin_node)
+
+        inherits = [
+            e for e in result["edges"]
+            if e["source"] == mixin_node["id"] and e["relation"] == "inherits"
+        ]
+        self.assertEqual([e["target"] for e in inherits], ["basewidget"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,13 +4,17 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
+
+# A match starting with `typedef` is declared in step 2.5, so the variable and
+# method passes skip it. Precompiled: those passes test every match they make.
+_TYPEDEF_LINE = re.compile(r"\s*typedef\b")
 
 
 def extract_dart(path: Path) -> dict:
     """Extract classes, mixins, functions, imports, generic calls, and annotations from a .dart file using regex."""
     try:
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_source_text(path)
     except OSError:
         return {"error": f"cannot read {path}"}
 
@@ -45,6 +49,7 @@ def extract_dart(path: Path) -> dict:
     # Check if this is a part-of file and redirect to parent
     part_of_match = re.search(r"^\s*part\s+of\s+['\"]([^'\"]+)['\"]", src_clean, re.MULTILINE)
     is_part = False
+    part_of_line = None
     if part_of_match:
         parent_ref = part_of_match.group(1)
         if parent_ref.endswith(".dart"):
@@ -54,13 +59,16 @@ def extract_dart(path: Path) -> dict:
                     stem = _file_stem(parent_path)
                     file_nid = _make_id(str(parent_path))
                     is_part = True
+                    part_of_line = _line_at(part_of_match.start(1))
             except Exception:
                 pass
 
-    nodes = []
-    if not is_part:
-        nodes.append({"id": file_nid, "label": path.name, "file_type": "code",
-                      "source_file": str(path), "source_location": None})
+    # Every scanned file keeps its own file node. For a part file the symbols
+    # still belong to the library (file_nid above); the part's node is linked
+    # from the library and to its symbols at the end of extraction.
+    own_nid = _make_id(str(path))
+    nodes = [{"id": own_nid, "label": path.name, "file_type": "code",
+              "source_file": str(path), "source_location": None}]
     edges = []
     defined: set[str] = set()
 
@@ -195,35 +203,45 @@ def extract_dart(path: Path) -> dict:
             header_end = len(rest)
         header = rest[:header_end]
 
-        base_class = None
-        generics = None
         mixins_list = []
         interfaces_list = []
 
-        # Parse extends or on
-        extends_m = re.search(r"^\s*(?:extends|on)\s+([a-zA-Z0-9_.]+)", header)
+        def _consume_generic_args(text: str) -> tuple[str | None, str]:
+            if not text.strip().startswith("<"):
+                return None, text
+            start_idx = text.find("<")
+            depth = 1
+            i = start_idx + 1
+            while i < len(text) and depth > 0:
+                if text[i] == "<":
+                    depth += 1
+                elif text[i] == ">":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start_idx + 1 : i], text[i + 1:]
+                i += 1
+            return None, text
+
+        # Parse extends or on. A mixin's `on` clause may list several
+        # superclass constraints, comma-separated (`mixin Foo on A, B {}`);
+        # `extends` never does, since Dart classes have single inheritance.
+        base_entries: list[tuple[str, str | None]] = []
+        extends_m = re.search(r"^\s*(extends|on)\s+([a-zA-Z0-9_.]+)", header)
         if extends_m:
-            base_class = extends_m.group(1)
-            rest_header = header[extends_m.end():]
-            if rest_header.strip().startswith("<"):
-                start_idx = rest_header.find("<")
-                depth = 1
-                i = start_idx + 1
-                while i < len(rest_header) and depth > 0:
-                    if rest_header[i] == "<":
-                        depth += 1
-                    elif rest_header[i] == ">":
-                        depth -= 1
-                        if depth == 0:
-                            generics = rest_header[start_idx + 1 : i]
-                            break
-                    i += 1
-                if generics is not None:
-                    header = rest_header[i + 1:]
-                else:
-                    header = rest_header
-            else:
-                header = rest_header
+            is_on = extends_m.group(1) == "on"
+            base_class = extends_m.group(2)
+            header = header[extends_m.end():]
+            generics, header = _consume_generic_args(header)
+            base_entries.append((base_class, generics))
+
+            if is_on:
+                while True:
+                    comma_m = re.match(r"\s*,\s*([a-zA-Z0-9_.]+)", header)
+                    if not comma_m:
+                        break
+                    header = header[comma_m.end():]
+                    extra_generics, header = _consume_generic_args(header)
+                    base_entries.append((comma_m.group(1), extra_generics))
 
         # Parse with
         with_m = re.search(r"^\s*with\s+", header)
@@ -243,8 +261,8 @@ def extract_dart(path: Path) -> dict:
         if impl_m:
             interfaces_list = _split_types(header[impl_m.end():])
 
-        # Map extends inheritance relation
-        if base_class:
+        # Map extends/on inheritance relation(s)
+        for base_class, generics in base_entries:
             base_nid = _make_id(base_class)
             add_node(base_nid, base_class, source_file=None)
             add_edge(class_nid, base_nid, "inherits", line=class_line)
@@ -392,21 +410,42 @@ def extract_dart(path: Path) -> dict:
                      add_edge(target_nid, provider_nid, "defines", context="riverpod_provider", line=annotation_line)
 
     # 2.5 Typedefs (Type Aliases)
-    typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([a-zA-Z0-9_<>,.?\s]+);"
-    for m in re.finditer(typedef_pattern, src_clean, re.MULTILINE):
-        typedef_name = m.group(1)
-        typedef_line = _line_at(m.start(1))
-        target_type = m.group(2).split("<")[0].split(".")[-1].strip()
-        if target_type not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}:
+    # `typedef Name<T> = <type>;`, whose type may be a function type with
+    # parentheses (`void Function(int)`), and the legacy function-typedef form
+    # `typedef int Compare(Object a, Object b);`. Every alias is a node in this
+    # file. Only an alias of a plain named type references it: a function
+    # type's leading name is its return type, not the type it aliases.
+    typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([^;]+);"
+    # Return-type tokens are whitespace-separated runs that cannot contain
+    # whitespace themselves, so a long line that never reaches `(` fails in
+    # linear time instead of trying every way to split it into tokens.
+    legacy_typedef_pattern = r"^[ \t]*typedef[ \t]+(?:[\w<>,.?]+[ \t]+)*?(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\("
+    typedef_builtins = {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}
+    # Most files declare no typedef: skip both scans with one substring test.
+    for pattern in (typedef_pattern, legacy_typedef_pattern) if "typedef" in src_clean else ():
+        for m in re.finditer(pattern, src_clean, re.MULTILINE):
+            typedef_name = m.group(1)
+            typedef_line = _line_at(m.start(1))
             typedef_nid = _make_id(stem, typedef_name)
+            if typedef_nid in defined:
+                continue
             add_node(typedef_nid, typedef_name, line=typedef_line)
             add_edge(file_nid, typedef_nid, "defines", line=typedef_line)
-            target_nid = _make_id(target_type)
-            add_node(target_nid, target_type, source_file=None)
-            add_edge(typedef_nid, target_nid, "references", context="typedef", line=typedef_line)
+            named = re.fullmatch(r"([\w.]+)\s*(?:<.*>)?\s*\??", m.group(2).strip(), re.DOTALL) if pattern is typedef_pattern else None
+            target_type = named.group(1).split(".")[-1] if named else ""
+            if target_type and target_type not in typedef_builtins:
+                target_nid = _make_id(target_type)
+                add_node(target_nid, target_type, source_file=None)
+                add_edge(typedef_nid, target_nid, "references", context="typedef", line=typedef_line)
 
-    # 3. Extensions (extension MyExt on MyClass)
-    ext_pattern = r"^\s{0,4}extension\s+(\w+)?(?:<[^>]+>)?\s+on\s+(\w+)"
+    # 3. Extensions (extension MyExt on MyClass, or the anonymous `extension on
+    # MyClass` form). The name and its generics sit in one optional group,
+    # together with the whitespace that follows them: splitting that
+    # whitespace into two separate `\s+` runs (one before the name, one
+    # before `on`) makes both demand at least one space of their own, which
+    # a single space between `extension` and `on` can never satisfy when the
+    # name is absent, so the anonymous form never matched at all.
+    ext_pattern = r"^\s{0,4}extension\s+(?:(\w+)\s*(?:<[^>]+>)?\s+)?on\s+(\w+)"
     for m in re.finditer(ext_pattern, src_clean, re.MULTILINE):
         ext_name = m.group(1) or f"{stem}_anonymous_extension"
         target_class = m.group(2)
@@ -430,6 +469,8 @@ def extract_dart(path: Path) -> dict:
         destructured_names = m.group(3)
 
         if not re.match(r"^\s*(?:late|final|const|var)\b", m.group(0)) and not var_type:
+            continue
+        if _TYPEDEF_LINE.match(m.group(0)):  # declared as an alias in 2.5
             continue
 
         if single_name:
@@ -459,6 +500,8 @@ def extract_dart(path: Path) -> dict:
     # Restrict indentation to 0-2 spaces to avoid matching nested local functions or methods inside multiline switch statements
     method_pattern = r"^\s{0,2}(?:factory\s+|static\s+|async\s+|external\s+|abstract\s+)?(?:\([^)]+\)|[a-zA-Z0-9_<>,.?]+)(?:\s+[a-zA-Z0-9_<>,.?]+){0,3}\s+(\w+(?:\.\w+)?)\s*\("
     for m in re.finditer(method_pattern, src_clean, re.MULTILINE):
+        if _TYPEDEF_LINE.match(m.group(0)):  # legacy alias, declared in 2.5
+            continue
         raw_name = m.group(1)
         name = raw_name.split(".")[-1]
         if name in {"if", "for", "while", "switch", "catch", "return", "void", "dynamic", "final", "const", "get", "set"}:
@@ -535,17 +578,28 @@ def extract_dart(path: Path) -> dict:
                           line=_line_at(brace_pos + om.start(1)))
 
     # 6. Imports and Exports
-    for m in re.finditer(r"""^\s*import\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
-        pkg = m.group(1)
-        tgt_nid = _make_id(pkg)
-        add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "imports", line=_line_at(m.start(1)))
-
-    for m in re.finditer(r"""^\s*export\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
-        pkg = m.group(1)
-        tgt_nid = _make_id(pkg)
-        add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "exports", line=_line_at(m.start(1)))
+    # A directive may carry configurable URIs that pick a platform-specific
+    # library: `export 'x_stub.dart' if (dart.library.io) 'x_io.dart';`. The
+    # default URI keeps its plain edge; every `if (...)` alternative is emitted
+    # too, tagged context="conditional_uri", because the real implementation
+    # usually lives there. A string literal inside the condition itself
+    # (`if (dart.library.io == 'true')`) is part of the test, not a URI.
+    quoted = r"""(?:'[^']*'|"[^"]*")"""
+    condition = rf"""if\s*\(\s*[\w.]+\s*(?:==\s*{quoted}\s*)?\)\s*"""
+    branch_re = re.compile(rf"""{condition}(['"])(?P<uri>[^'"]+)\1""")
+    for kind, relation in (("import", "imports"), ("export", "exports")):
+        directive_re = re.compile(
+            rf"""^\s*{kind}\s+(['"])(?P<uri>[^'"]+)\1(?P<branches>(?:\s*{condition}{quoted})*)""",
+            re.MULTILINE,
+        )
+        for m in directive_re.finditer(src_clean):
+            uris: list[tuple[str, int, str | None]] = [(m.group("uri"), m.start("uri"), None)]
+            for bm in branch_re.finditer(m.group("branches")):
+                uris.append((bm.group("uri"), m.start("branches") + bm.start("uri"), "conditional_uri"))
+            for pkg, offset, context in uris:
+                tgt_nid = _make_id(pkg)
+                add_node(tgt_nid, pkg, source_file=None)
+                add_edge(file_nid, tgt_nid, relation, context=context, line=_line_at(offset))
 
     # 7. Generic Invocations / Type Lookups (Universal Dependency Lookup)
     # Matches any method call with type parameters: methodName<Type>() or object.methodName<Type>()
@@ -560,5 +614,15 @@ def extract_dart(path: Path) -> dict:
             add_node(target_nid, clean_name, source_file=None)
             add_edge(file_nid, target_nid, "references", context="type_lookup",
                       line=_line_at(m.start(1)))
+
+    if is_part:
+        # The library includes this part; the part physically contains the
+        # declarations the library defines from it. Ids stay in the library's
+        # namespace, so the library is not split in two.
+        part_edges = [{**e, "source": own_nid, "relation": "contains"}
+                      for e in edges
+                      if e["source"] == file_nid and e["relation"] == "defines"]
+        add_edge(file_nid, own_nid, "includes", line=part_of_line)
+        edges.extend(part_edges)
 
     return {"nodes": nodes, "edges": edges}

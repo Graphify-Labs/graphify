@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_source_text
 from graphify.extractors.resolution import _pascal_resolve_class, _pascal_resolve_unit
 from pathlib import Path
 from typing import Any, Callable
@@ -28,7 +28,7 @@ _PAS_USES_RE = re.compile(
 
 _PAS_TYPE_HEADER_RE = re.compile(
     r"\b(?P<name>[A-Za-z_]\w*)(?:\s*<[^>]+>)?\s*=\s*(?:packed\s+)?"
-    r"(?P<kind>class|interface)\b"
+    r"(?P<kind>class|interface|record)\b"
     r"(?:\s*\(\s*(?P<bases>[^)]*)\s*\))?",
     re.IGNORECASE,
 )
@@ -36,7 +36,7 @@ _PAS_TYPE_HEADER_RE = re.compile(
 _PAS_END_SEMI_RE = re.compile(r"\bend\s*;", re.IGNORECASE)
 
 _PAS_METHOD_DECL_RE = re.compile(
-    r"\b(?:procedure|function|constructor|destructor)\s+"
+    r"\b(?:procedure|function|constructor|destructor|operator)\s+"
     r"(?P<name>[A-Za-z_]\w*)"
     r"(?:\s*\([^)]*\))?"
     r"(?:\s*:\s*[\w<>,\s.]+)?"
@@ -45,7 +45,7 @@ _PAS_METHOD_DECL_RE = re.compile(
 )
 
 _PAS_IMPL_HEADER_RE = re.compile(
-    r"\b(?:procedure|function|constructor|destructor)\s+"
+    r"\b(?:procedure|function|constructor|destructor|operator)\s+"
     r"(?P<qual>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)"
     r"(?:\s*<[^>]+>)?"
     r"(?:\s*\([^)]*\))?"
@@ -66,8 +66,8 @@ _PAS_KEYWORDS = frozenset({
     "with", "inherited", "result", "var", "const", "type", "nil", "true",
     "false", "exit", "break", "continue", "uses", "unit", "program",
     "library", "interface", "implementation", "initialization", "finalization",
-    "procedure", "function", "constructor", "destructor", "class", "record",
-    "object", "array", "string", "integer", "boolean", "real", "char",
+    "procedure", "function", "constructor", "destructor", "operator", "class",
+    "record", "object", "array", "string", "integer", "boolean", "real", "char",
     "writeln", "write", "readln", "read", "assigned", "length", "high",
     "low", "inc", "dec", "new", "dispose", "setlength", "copy", "pos",
     "trim", "format", "inttostr", "strtoint", "ord", "chr", "sizeof",
@@ -233,7 +233,7 @@ def _extract_pascal_regex(path: Path) -> dict:
     is unavailable. Produces the same node/edge schema as the tree-sitter pass.
     """
     try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = _read_source_text(path, warn=False)
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": str(exc)}
 
@@ -457,7 +457,7 @@ def extract_pascal(path: Path) -> dict:
     try:
         language = Language(tspascal.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception:
@@ -545,11 +545,43 @@ def extract_pascal(path: Path) -> dict:
         if t == "declType":
             type_name = None
             kind_node = None
+            enum_node = None
             for child in node.children:
                 if child.type == "identifier" and type_name is None:
                     type_name = _read(child)
                 elif child.type in ("declClass", "declIntf", "declHelper") and kind_node is None:
                     kind_node = child
+                elif child.type == "type" and enum_node is None:
+                    # An enumerated type (`TColor = (clRed, clGreen);`) nests its
+                    # values under type -> declEnum -> declEnumValue.
+                    enum_node = next(
+                        (gc for gc in child.children if gc.type == "declEnum"), None
+                    )
+            if type_name and enum_node is not None:
+                # A Pascal enumerated type is a named type whose values are its
+                # cases. Without this branch declType matched only class/interface/
+                # helper kinds, so the whole enum type AND its values fell through
+                # and were dropped. Emit the type node plus a `case_of` edge per
+                # value — the Pascal parity of Java #1719 / C# / Swift / Scala enums.
+                enum_nid = _make_id(stem, type_name)
+                add_node(enum_nid, type_name, line)
+                add_edge(parent_nid, enum_nid, "contains", line)
+                for value in enum_node.children:
+                    if value.type != "declEnumValue":
+                        continue
+                    value_name_node = next(
+                        (c for c in value.children if c.type == "identifier"), None
+                    )
+                    if value_name_node is None:
+                        continue
+                    value_name = _read(value_name_node)
+                    if not value_name:
+                        continue
+                    value_line = value.start_point[0] + 1
+                    value_nid = _make_id(enum_nid, value_name)
+                    add_node(value_nid, value_name, value_line)
+                    add_edge(enum_nid, value_nid, "case_of", value_line)
+                return
             if type_name and kind_node:
                 cls_nid = _make_id(stem, type_name)
                 add_node(cls_nid, type_name, line)

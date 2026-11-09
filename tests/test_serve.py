@@ -1,5 +1,8 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
+import importlib.util
 import json
+import subprocess
+import sys
 import unicodedata
 
 import pytest
@@ -7,6 +10,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 
 from graphify.serve import (
+    _node_arg,
     _strip_diacritics,
     _communities_from_graph,
     _score_nodes,
@@ -30,6 +34,7 @@ from graphify.serve import (
     _subgraph_to_text,
     _cut_lines_to_budget,
     _load_graph,
+    _neighbor_lines,
     _community_header,
     _search_tokens,
     _shortest_path_text,
@@ -449,6 +454,50 @@ def test_query_terms_drops_question_stopwords():
     # "how does the frontier cache work" must reduce to the content terms, or it
     # seeds on "how"/"the"/"work" (which prefix-match prose labels) instead.
     assert _query_terms("how does the frontier cache work") == ["frontier", "cache"]
+
+
+def test_query_terms_drops_get_question_filler():
+    assert _query_terms("how does payroll.approve get authorized") == [
+        "payroll", "approve", "authorized",
+    ]
+
+
+@pytest.mark.parametrize("verb", ["gets", "got", "getting"])
+def test_query_terms_drops_get_variants(verb):
+    assert _query_terms(f"payroll {verb} authorized") == ["payroll", "authorized"]
+
+
+@pytest.mark.parametrize(("question", "expected"), [
+    ("get", ["get"]),
+    ("how do I get it", ["how", "get"]),
+])
+def test_query_terms_get_only_falls_back_to_unfiltered(question, expected):
+    assert _query_terms(question) == expected
+
+
+def test_pick_seeds_get_question_ignores_framework_hub():
+    # #4684: unlike the short, low-degree leaves guarded by #1602, a framework
+    # decorator hub must not become a seed just because the question says get.
+    G = nx.DiGraph()
+    G.add_node("get", label="Get")
+    G.add_node("approve", label="approvePayroll", source_file="src/payroll.ts")
+    G.add_node("authorize", label="authorize", source_file="src/auth.ts")
+    G.add_edge("approve", "authorize")
+    for i in range(20):
+        controller = f"controller_{i}"
+        G.add_node(controller, label=f"Controller{i}")
+        G.add_edge(controller, "get", relation="imports")
+
+    terms = _query_terms("how does payroll approve get authorized")
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term,
+        term_order=qs.term_order,
+    )
+    assert "get" not in seeds
+    assert "approve" in seeds
+    # Node lookup remains unfiltered even when get is a query stopword.
+    assert _find_node(G, "Get") == ["get"]
 
 
 def test_query_terms_all_stopwords_falls_back_to_unfiltered():
@@ -973,6 +1022,37 @@ def test_pick_seeds_per_term_guarantee_does_not_reintroduce_generic_dupe(monkeyp
     assert len(get_seeds) == 1, f"per-term guarantee reintroduced a GET dupe: {seeds}"
 
 
+def test_pick_seeds_keeps_same_label_node_that_is_only_match_for_a_term():
+    """A node sharing a seeded label must still be seeded when it is the only
+    match for a query term the label doesn't contain: `alpha` matches only
+    `alpha_pre`'s source path, so the seeded `PreToolUse` twin can't cover it (#5027)."""
+    G = nx.Graph()
+    G.add_node("hooks_pre", label="PreToolUse", source_file="plugins/core/lib/core_hooks/handler/pre_tool_use.rb")
+    G.add_node("hooks_run", label=".run", source_file="plugins/core/lib/core_hooks/handler/pre_tool_use.rb")
+    G.add_node("alpha_pre", label="PreToolUse", source_file="plugins/core-alpha/lib/alpha/pre_tool_use.rb")
+    G.add_edge("hooks_pre", "hooks_run")
+    qs = _score_query(G, ["core", "alpha", "PreToolUse", "hook", "handler"], collect_per_term_seeds=True)
+    assert qs.best_seed_by_term["alpha"] == "alpha_pre"
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term, term_order=qs.term_order)
+    assert "alpha_pre" in seeds, f"only match for 'alpha' was dropped by the label cap: {seeds}"
+
+
+def test_pick_seeds_per_term_still_caps_same_label_winner_of_a_label_term():
+    """The #5027 exception is narrow: when the term is part of the shared label,
+    the seeded twin already matches it, so a different same-label winner is still
+    capped. `get2` wins `get` on the degree tie-break while the first loop seeds
+    `get0`, so this reaches the per-term cap (#1766)."""
+    G = nx.DiGraph()
+    for i in range(3):
+        G.add_node(f"get{i}", label="GET", source_file=f"r{i}.py")
+    G.add_node("x", label="x_helper", source_file="x.py")
+    G.add_edge("get2", "x")
+    qs = _score_query(G, ["get"], collect_per_term_seeds=True)
+    assert qs.best_seed_by_term["get"] == "get2"
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    assert seeds == ["get0"], f"per-term guarantee added a second GET: {seeds}"
+
+
 def test_score_nodes_scores_identical_labels_equally():
     """Guard against a per-label multiplicity penalty leaking into _score_nodes
     (shared by shortest_path / explain endpoint resolution): two nodes with the
@@ -1125,6 +1205,22 @@ def test_query_graph_text_context_filter_aliases_resolve():
 
 
 # --- Chinese segmentation ---
+
+def test_serve_import_is_clean_under_syntax_warnings(tmp_path):
+    """Optional tokenizers must remain importable under Python's strict warning mode."""
+    if importlib.util.find_spec("jieba") is None:
+        pytest.skip("jieba tokenizer extra is not installed")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-X", f"pycache_prefix={tmp_path / 'pycache'}",
+            "-W", "error::SyntaxWarning",
+            "-c", "import graphify.serve as serve; assert serve._jieba is not None",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 def test_query_terms_chinese_segments_with_cached_jieba(monkeypatch):
     """Chinese text should use the cached jieba module and keep the original term."""
@@ -1666,6 +1762,30 @@ def test_shortest_path_tool_undirected_opt_in():
     assert "Shortest path (2 hops)" in out
     assert out.count("<--calls--") == 2
     assert "-->" not in out
+
+
+def test_shortest_path_tool_routes_through_a_contains_edge(tmp_path):
+    """#3878 (serve mirror): a directed path from a symbol out to the file that
+    defines a symbol it calls must route through the reverse of the stored
+    file -> symbol `contains` edge, instead of dead-ending at 'No directed
+    path'. The printed hop still shows the real stored direction (`<--contains--`).
+    """
+    G = nx.DiGraph()
+    for n in ("a.py", "b.py", "helper_a", "helper_b"):
+        G.add_node(n, label=n)
+    G.add_edge("a.py", "helper_a", relation="contains")
+    G.add_edge("b.py", "helper_b", relation="contains")
+    G.add_edge("helper_a", "helper_b", relation="calls")
+
+    out = _shortest_path_text(G, {"source": "helper_a", "target": "b.py"})
+    assert "No directed path" not in out
+    assert "Shortest path (2 hops)" in out
+    # calls hop forward, then back out to the file via the reverse contains hop,
+    # printed in its true stored direction.
+    assert "--calls-->" in out
+    assert "<--contains--" in out
+
+
 def test_underscore_query_matches_hyphenated_label():
     r"""Separator-blind seeding: `_` must split like `-` does.
 
@@ -1735,6 +1855,59 @@ def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
     nid, err = _resolve_single_node(G, "nonexistent")
     assert nid is None
     assert "No node matching" in err
+
+
+def test_resolve_single_node_reports_a_substring_near_miss_as_such():
+    """`MailController` must not come back as `EmailController` (#3917)."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="EmailController",
+               source_file="Controller/EmailController.php", source_location="L12")
+
+    nid, err = _resolve_single_node(G, "mailcontroller")
+    assert nid is None
+    assert err.startswith("No exact match for 'mailcontroller'")
+    assert "EmailController" in err
+    assert "Controller/EmailController.php L12" in err
+    assert "Controller/EmailController.php::EmailController" in err
+
+
+def test_resolve_single_node_still_takes_a_prefix_shorthand():
+    """Prefix matching is how a caller starts typing a name, so it still resolves."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="EmailController",
+               source_file="Controller/EmailController.php", source_location="L12")
+
+    assert _resolve_single_node(G, "email") == ("mail", None)
+
+
+def test_resolve_single_node_prefers_an_exact_name_over_a_substring():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("mail", label="MailController", source_file="Controller/MailController.php")
+    G.add_node("email", label="EmailController", source_file="Controller/EmailController.php")
+
+    assert _resolve_single_node(G, "mailcontroller") == ("mail", None)
+
+
+def test_near_miss_lists_at_most_five_candidates():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    for i in range(7):
+        G.add_node(f"c{i}", label=f"A{i}PostController", source_file=f"Controller/Post{i}.php")
+
+    nid, err = _resolve_single_node(G, "post")
+    assert nid is None
+    assert "A0PostController" in err
+    assert "A4PostController" in err
+    assert "A5PostController" not in err
+    assert "... and 2 more" in err
+
 
 
 # --- rationale attribute scoring (#2293) ---
@@ -1808,3 +1981,188 @@ def test_query_graph_text_seeds_the_node_whose_rationale_answers_a_why_question(
     )
     header = text.split("\n\n", 1)[0]
     assert "FAB visibility rule" in header, header
+
+
+def test_node_arg_accepts_label_node_id_and_id_aliases():
+    # get_node/get_neighbors must serve a client that passes the node under any of these keys;
+    # a node_id-only call used to raise KeyError('label') instead of resolving.
+    assert _node_arg({"label": "Foo()"}) == "Foo()"
+    assert _node_arg({"node_id": "Foo()"}) == "Foo()"
+    assert _node_arg({"id": "Foo()"}) == "Foo()"
+    # label wins when several are present; a non-string is coerced, not fatal
+    assert _node_arg({"label": "a", "node_id": "b"}) == "a"
+    assert _node_arg({"node_id": 123}) == "123"
+    # nothing usable -> empty string, so the caller can answer with guidance
+    assert _node_arg({}) == ""
+    assert _node_arg({"relation_filter": "calls"}) == ""
+
+
+def test_dotted_python_symbol_resolves_by_module_path():
+    """`pkg.mod.func` / `pkg.mod:func` resolve via the module's file (#4366)."""
+    from graphify.serve import _resolve_single_node
+    G = nx.Graph()
+    G.add_node("cli_main", label="main()", source_file="src/pkg/cli.py", source_location="L26")
+    G.add_node("other_main", label="main()", source_file="src/pkg/other.py", source_location="L5")
+    G.add_node("engine_scan", label="scan()", source_file="src/pkg/engine/__init__.py", source_location="L9")
+    G.add_node("wf", label="scan job", source_file=".github/workflows/scan.yml", source_location="L1")
+    for query, expected in [
+        ("pkg.cli.main", "cli_main"),
+        ("pkg.cli:main", "cli_main"),
+        ("pkg.other.main()", "other_main"),
+        ("pkg.engine.scan", "engine_scan"),
+    ]:
+        assert _resolve_single_node(G, query) == (expected, None), query
+    nid, err = _resolve_single_node(G, "pkg.missing.main")
+    assert nid is None and err
+
+
+def test_dotted_python_symbol_same_file_tie_is_refused():
+    """A function and a same-named method in one module are a tie, not a guess."""
+    from graphify.serve import _resolve_single_node
+    G = nx.Graph()
+    G.add_node("f", label="run()", source_file="pkg/mod.py", source_location="L1")
+    G.add_node("m", label=".run()", source_file="pkg/mod.py", source_location="L9")
+    nid, err = _resolve_single_node(G, "pkg.mod.run")
+    assert nid is None and err.startswith("Ambiguous")
+
+
+def test_dotted_python_symbol_same_file_tie_is_refused_by_path_endpoint():
+    """`path` refuses the same dotted tie `get_node`/`explain` do (#4366)."""
+    from graphify.serve import _resolve_path_endpoint
+    G = nx.Graph()
+    G.add_node("f", label="run()", source_file="pkg/mod.py", source_location="L1")
+    G.add_node("m", label=".run()", source_file="pkg/mod.py", source_location="L9")
+    nid, _, err = _resolve_path_endpoint(G, "pkg.mod.run")
+    assert nid is None and err.startswith("Ambiguous")
+# --- parallel-edge preservation (#4500) ---
+
+def _parallel_edge_graph_json(tmp_path):
+    """A graph.json like the #4500 reporter's: parallel links stored while the
+    serialized flag says multigraph:false."""
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "src_app_app", "label": "App()"},
+            {"id": "src_app_app_applyseed", "label": "applySeed()"},
+        ],
+        "links": [
+            {"source": "src_app_app", "target": "src_app_app_applyseed",
+             "relation": "contains", "confidence": "EXTRACTED",
+             "source_file": "src/App.tsx", "source_location": "80"},
+            {"source": "src_app_app", "target": "src_app_app_applyseed",
+             "relation": "calls", "confidence": "EXTRACTED",
+             "source_file": "src/App.tsx", "source_location": "163"},
+        ],
+    }))
+    return str(p)
+
+
+def test_load_graph_repairs_multigraph_false_with_parallel_links(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    assert G.is_multigraph()
+    # graph_stats reports G.number_of_edges(): the reporter's 134 stored links
+    # became 131 loaded edges; here both must survive.
+    assert G.number_of_edges() == 2
+    got = sorted(
+        d.get("relation")
+        for u, v, d in G.edges(data=True)
+        if (u, v) == ("src_app_app", "src_app_app_applyseed")
+    )
+    assert got == ["calls", "contains"], got
+
+
+def test_load_graph_keeps_simple_graph_simple(tmp_path):
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [{"id": "a", "label": "a"}, {"id": "b", "label": "b"}],
+        "links": [{"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"}],
+    }))
+    G = _load_graph(str(p))
+    assert not G.is_multigraph()
+    assert G.number_of_edges() == 1
+
+
+def test_neighbor_lines_shows_every_parallel_relationship(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    lines = _neighbor_lines(G, "src_app_app")
+    assert len(lines) == 2, lines
+    assert any("[contains]" in l and "App.tsx:80" in l for l in lines), lines
+    assert any("[calls]" in l and "App.tsx:163" in l for l in lines), lines
+    # each relationship keeps its own metadata: no combined/merged edge
+    assert len({l for l in lines}) == 2
+
+
+def test_neighbor_lines_relation_filter_applies_per_edge(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    lines = _neighbor_lines(G, "src_app_app", rel_filter="calls")
+    assert len(lines) == 1, lines
+    assert "[calls]" in lines[0]
+
+
+def test_subgraph_to_text_renders_every_parallel_edge(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    text = _subgraph_to_text(
+        G,
+        {"src_app_app", "src_app_app_applyseed"},
+        [("src_app_app", "src_app_app_applyseed")],
+    )
+    edge_lines = [l for l in text.splitlines() if l.startswith("EDGE ")]
+    assert len(edge_lines) == 2, edge_lines
+    assert any("--contains " in l and "App.tsx:80" in l for l in edge_lines), edge_lines
+    assert any("--calls " in l and "App.tsx:163" in l for l in edge_lines), edge_lines
+
+
+def test_query_graph_text_surfaces_parallel_relationships(tmp_path):
+    G = _load_graph(_parallel_edge_graph_json(tmp_path))
+    text = _query_graph_text(G, "applySeed", token_budget=2000)
+    assert "--contains " in text, text
+    assert "--calls " in text, text
+
+
+# --- a tie only by case goes to the exact spelling ---------------------------
+
+def _case_pair_graph() -> nx.Graph:
+    # Go keeps `CheckHealth` and `checkHealth` apart (#2779): an exported method
+    # and its unexported helper on one type, in one file.
+    G = nx.Graph()
+    G.add_node("api_server_checkhealth", label=".CheckHealth()",
+               source_file="api/server.go", source_location="L9")
+    G.add_node("api_server_checkhealth_efb2ee", label=".checkHealth()",
+               source_file="api/server.go", source_location="L13")
+    G.add_edge("api_server_checkhealth", "api_server_checkhealth_efb2ee", relation="calls")
+    return G
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("CheckHealth", "api_server_checkhealth"),
+    ("checkHealth", "api_server_checkhealth_efb2ee"),
+    (".checkHealth()", "api_server_checkhealth_efb2ee"),
+])
+def test_a_name_spelled_exactly_wins_a_tie_that_is_only_case(query, expected):
+    from graphify.serve import _resolve_single_node
+
+    nid, err = _resolve_single_node(_case_pair_graph(), query)
+    assert err is None, err
+    assert nid == expected
+
+
+def test_a_case_tie_neither_spelling_matches_stays_ambiguous():
+    from graphify.serve import _resolve_single_node
+
+    nid, err = _resolve_single_node(_case_pair_graph(), "checkhealth")
+    assert nid is None
+    assert err.startswith("Ambiguous:"), err
+
+
+def test_an_exact_spelling_does_not_break_a_tie_between_two_files():
+    # Same spelling in two files is a real ambiguity: case cannot settle it.
+    from graphify.serve import _resolve_single_node
+
+    G = _case_pair_graph()
+    G.add_node("web_router_checkhealth", label=".CheckHealth()",
+               source_file="web/router.go", source_location="L4")
+    nid, err = _resolve_single_node(G, "CheckHealth")
+    assert nid is None
+    assert err.startswith("Ambiguous:"), err

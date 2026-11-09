@@ -98,6 +98,74 @@ def test_php_ambiguous_base_disambiguated_by_use(tmp_path: Path):
     assert "Cms" in tgt["source_file"] and "Models" not in tgt["source_file"]
 
 
+def test_php_aliased_import_edge_shares_target_with_plain_import(tmp_path: Path):
+    """#3421: an `imports` edge for an aliased `use` clause always targeted
+    the bare imported class name (the last segment of the qualified name),
+    completely ignoring the alias. A file with a PLAIN `use GuzzleHttp\\Client;`
+    and a file with an ALIASED `use GuzzleHttp\\Client as HttpClient;` both
+    minted a stub keyed by "Client", so the resolver's alias -> FQN lookup
+    (keyed by "httpclient" for the aliased file) missed and the aliased
+    file's edge stayed stuck, unresolved, on the bare stub -- while the
+    plain file's edge correctly resolved to the external FQN stub. Two
+    files importing the SAME external class ended up with TWO different
+    import targets, splitting the class identity (the exact real-world
+    case an alias exists for: disambiguating two same-named classes from
+    different namespaces)."""
+    a = _write(
+        tmp_path / "src/A.php",
+        "<?php\nnamespace App;\n"
+        "use GuzzleHttp\\Client;\n"
+        "class A { public function __construct(private Client $client) {} }\n",
+    )
+    b = _write(
+        tmp_path / "src/B.php",
+        "<?php\nnamespace App;\n"
+        "use GuzzleHttp\\Client as HttpClient;\n"
+        "class B { public function __construct(private HttpClient $client) {} }\n",
+    )
+    result = extract([a, b], cache_root=tmp_path)
+
+    imports = {
+        e["source"]: e["target"]
+        for e in result["edges"]
+        if e["relation"] == "imports"
+    }
+    src_a_id = next(n["id"] for n in result["nodes"] if n.get("label") == "A.php")
+    src_b_id = next(n["id"] for n in result["nodes"] if n.get("label") == "B.php")
+    assert src_a_id in imports and src_b_id in imports
+    assert imports[src_a_id] == imports[src_b_id], (
+        f"plain and aliased imports of the same class split into different "
+        f"targets: {imports}"
+    )
+    tgt = _node_by_id(result, imports[src_a_id])
+    assert tgt is not None and tgt.get("label") == "GuzzleHttp\\Client"
+
+
+def test_php_distinct_aliases_for_same_named_classes_do_not_collapse(tmp_path: Path):
+    """The reason an alias exists at all: disambiguating two DIFFERENT
+    classes that share a bare name (App\\Models\\Session vs
+    Shopify\\Auth\\Session). Fixing #3421 by preferring the alias for an
+    import edge's target must not go too far the other way and collapse
+    genuinely different classes onto one node just because they were both
+    imported under an alias."""
+    a = _write(
+        tmp_path / "src/A.php",
+        "<?php\nnamespace App;\n"
+        "use App\\Models\\Session as ModelSession;\n"
+        "use Shopify\\Auth\\Session as ShopifySession;\n"
+        "class A {\n"
+        "    public function __construct(private ModelSession $m, private ShopifySession $s) {}\n"
+        "}\n",
+    )
+    result = extract([a], cache_root=tmp_path)
+
+    imports = {e["target"] for e in result["edges"] if e["relation"] == "imports"}
+    labels = {_node_by_id(result, t).get("label") for t in imports}
+    assert "App\\Models\\Session" in labels
+    assert "Shopify\\Auth\\Session" in labels
+    assert len(imports) == 2, f"distinct aliased classes collapsed onto one target: {imports}"
+
+
 def test_php_use_alias_resolves(tmp_path: Path):
     _write(
         tmp_path / "src/Foo/Bar.php",

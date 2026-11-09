@@ -112,6 +112,18 @@ def test_member_call_with_multiple_type_arguments(tmp_path):
     )
 
 
+def test_null_conditional_member_call_with_type_argument(tmp_path):
+    """`r?.Do<T>()` carries its type arguments on the member_binding_expression
+    name, not on a member_access_expression, so it needs the same walk (#3797)."""
+    refs = _refs(tmp_path, {
+        "T.cs": _TYPES,
+        "P.cs": "public class Probe { public void A(Registry r) => r?.Do<IThing>(); }\n",
+    })
+    assert (".A()", "IThing") in refs, (
+        "null-conditional call `recv?.Do<T>()` must emit a generic_arg reference to T"
+    )
+
+
 def test_nested_type_argument_in_call_site(tmp_path):
     refs = _refs(tmp_path, {
         "T.cs": _TYPES,

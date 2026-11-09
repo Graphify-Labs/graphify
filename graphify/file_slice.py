@@ -21,11 +21,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from graphify.extractors.base import _read_source_text
 
 # Plain-text document types where boundary-based slicing is meaningful and where
-# `_file_to_text` is a straight ``read_text`` (so a char range matches the bytes
-# the model is shown). Deliberately excludes code (.py, .ts, ...) and binary
-# docs (.pdf) — those are never sliced.
+# `_file_to_text` reads them with ``_read_source_text``, the same reader as
+# `unit_source_text` (so a char range matches the text the model is shown).
+# Deliberately excludes code (.py, .ts, ...) and binary docs (.pdf) — those are
+# never sliced.
 #
 # This set has to keep pace with ``detect.DOC_EXTENSIONS``: anything classified
 # as a document reaches the semantic pass, and anything the pass sees that is
@@ -37,7 +39,8 @@ from pathlib import Path
 # addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
 _SPLITTABLE_TEXT_SUFFIXES = frozenset({
     ".md", ".mdx", ".markdown", ".txt", ".rst",
-    ".qmd", ".skill", ".html", ".yaml", ".yml",
+    ".qmd", ".skill", ".html",
+    ".j2", ".jinja", ".jinja2",
 })
 
 # Document types whose BYTES are not what the model is shown. `llm._file_to_text`
@@ -64,6 +67,7 @@ def _pdf_text(path: Path) -> str:
 # rather than once per slice, and so a file rewritten mid-run is re-read instead
 # of served a stale body. Bounded: the entries are whole documents, and a large
 # corpus should not pin all of them in memory.
+# Resolve the path so relative names in different corpus roots cannot share text.
 _CONVERTED_TEXT_CACHE: "dict[tuple, str]" = {}
 _CONVERTED_TEXT_CACHE_MAX = 64
 
@@ -76,10 +80,10 @@ def unit_source_text(path: Path) -> str:
     the offsets a slice carries always index the same string the model sees.
     """
     if path.suffix.lower() not in _CONVERTED_TEXT_SUFFIXES:
-        return path.read_text(encoding="utf-8", errors="replace")
+        return _read_source_text(path, warn=False)
     try:
         st = path.stat()
-        key = (str(path), st.st_size, st.st_mtime_ns)
+        key = (str(path.resolve()), st.st_size, st.st_mtime_ns)
     except OSError:
         return _pdf_text(path)
     hit = _CONVERTED_TEXT_CACHE.get(key)

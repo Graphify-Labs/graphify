@@ -96,6 +96,8 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_reserved
         or ip.is_loopback
         or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
         or ip in _CGN_NETWORK
     )
 
@@ -115,7 +117,20 @@ def validate_url(url: str) -> str:
             f"Got: {url!r}"
         )
 
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"Blocked URL containing embedded credentials. Got: {url!r}")
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Blocked URL with an invalid port. Got: {url!r}") from exc
+    if port == 0:
+        raise ValueError(f"Blocked URL with port 0. Got: {url!r}")
+
     hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"Blocked URL without a hostname. Got: {url!r}")
+
     if hostname:
         # Block known cloud metadata hostnames
         if hostname.lower() in _BLOCKED_HOSTS:
@@ -391,6 +406,48 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 _MAX_LABEL_LEN = 256
 
 
+# Credential shapes redacted from free text that is persisted into the graph
+# (rationale/comment labels). Shape-based only, so it is risk reduction rather
+# than a guarantee: vendor-prefixed tokens, PEM private-key blocks and URL
+# userinfo. Boundaries are alphanumeric-only lookarounds rather than \b so a
+# token glued to an identifier by `_` (`token_ghp_...`, `AKIA..._prod`) still
+# matches.
+_SECRET_SHAPE_RE = re.compile(
+    # Header through the END line, or to end of text when the block is cut off:
+    # the base64 body is the secret, not the header.
+    r"(?s:-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+    r"(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|.*))"
+    r"|(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])"
+    r"|(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}"
+    r"|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{22,}"
+    r"|(?<![A-Za-z0-9])xox[abeoprs]-[A-Za-z0-9-]{10,}"
+    r"|(?<![A-Za-z0-9])[sr]k_(?:live|test)_[A-Za-z0-9]{10,}"
+    # Require a digit so hyphenated prose (`sk-learn-compatible-...`) is left alone.
+    r"|(?<![A-Za-z0-9])sk-(?:ant-|proj-)?(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{20,}"
+    r"|(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}"
+    # Payload segment may be tiny (`e30` is `{}`).
+    r"|(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{10,}"
+    r"|(?<=\bBearer )[A-Za-z0-9._~+/=-]{16,}"
+    # Userinfo up to the LAST `@` before the host: the user may be empty
+    # (`redis://:pw@host`) and the password may contain `@` or `/`.
+    r"|(?<=://)[^\s/@]*:[^\s?#]*(?=@[^\s@/?#]+)"
+)
+
+REDACTED_MARKER = "[redacted]"
+
+
+def redact_secrets(text: str | None) -> str:
+    """Replace credential-shaped substrings in *text* with ``[redacted]``.
+
+    Applied to free text copied out of source files (docstrings and ``# WHY:``
+    style comments) before it becomes a node label, so a token pasted into a
+    comment does not land in graph.json / graph.html / GRAPH_REPORT.md.
+    """
+    if not text:
+        return "" if text is None else text
+    return _SECRET_SHAPE_RE.sub(REDACTED_MARKER, str(text))
+
+
 def sanitize_label(text: str | None) -> str:
     """Strip control characters and cap length.
 
@@ -411,6 +468,7 @@ def sanitize_label(text: str | None) -> str:
 
 _METADATA_MAX_VALUE_LEN = 512
 _METADATA_MAX_LIST_ITEMS = 50
+_METADATA_MAX_ATTRIBUTES = 100
 
 
 def _sanitize_metadata_string(value: object) -> str:

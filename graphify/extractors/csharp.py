@@ -11,32 +11,71 @@ the core migration happens.
 from __future__ import annotations
 
 import html
+from collections.abc import Iterable
 from pathlib import Path
 
 from graphify.extractors.base import _make_id
+from graphify.rcfile import effective_suffix
 
 
-def _build_csharp_type_def_index(all_nodes: list[dict]) -> dict[tuple[str, str], str]:
+def is_csharp_constructor_node(node: dict) -> bool:
+    """A C# constructor node (instance, static or primary).
+
+    A constructor carries its type's name but is reached only through `new`
+    or a `: base(...)` / `: this(...)` initializer, never by that name, so the
+    name-keyed call indexes leave it out.
+    """
+    metadata = node.get("metadata") or {}
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("kind") == "constructor"
+        and effective_suffix(str(node.get("source_file") or "")) == ".cs"
+    )
+
+
+def _build_csharp_type_def_index(
+    all_nodes: list[dict],
+    all_edges: list[dict] | None = None,
+) -> dict[tuple[str, str], str]:
     """Return deterministic ``(namespace, name) -> node_id`` C# type definitions."""
+    non_type_ids: set[str] = set()
+
+    if all_edges is not None:
+        for edge in all_edges:
+            rel = edge.get("relation")
+            if rel in ("case_of", "defines", "method"):
+                tgt = edge.get("_tgt") or edge.get("target")
+                if isinstance(tgt, str):
+                    non_type_ids.add(tgt)
+
     candidates: dict[tuple[str, str], list[dict]] = {}
+
     for node in all_nodes:
         if node.get("type") == "namespace":
             continue
+
         metadata = node.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = {}
+
         if metadata.get("is_nested_type"):
             continue
+
         nid = node.get("id")
         label = node.get("label")
-        if not (isinstance(nid, str) and nid and isinstance(label, str) and label):
+
+        if not (
+            isinstance(nid, str)
+            and nid
+            and isinstance(label, str)
+            and label
+        ):
+            continue
+
+        if all_edges is not None and nid in non_type_ids:
             continue
         source_file = node.get("source_file")
-        if (
-            not isinstance(source_file, str)
-            or not source_file.endswith(".cs")
-            or node.get("file_type") != "code"
-        ):
+        if not _is_cs_file(source_file) or node.get("file_type") != "code":
             continue
         if label.endswith(")") or label.startswith(".") or "." in label:
             continue
@@ -105,7 +144,7 @@ def _resolve_cross_file_csharp_imports(
         if isinstance(label, str) and label and isinstance(nid, str) and nid:
             namespace_id_by_label.setdefault(label, nid)
 
-    type_def_index = _build_csharp_type_def_index(all_nodes)
+    type_def_index = _build_csharp_type_def_index(all_nodes, all_edges)
     if not namespace_id_by_label and not type_def_index:
         return
 
@@ -153,15 +192,101 @@ _DOTNET_SOURCE_EXTS = (".cs", ".razor", ".cshtml")
 
 
 def _is_cs_file(value: object) -> bool:
-    return isinstance(value, str) and value.endswith(".cs")
+    return isinstance(value, str) and effective_suffix(value) == ".cs"
 
 
 def _is_dotnet_source_file(value: object) -> bool:
-    return isinstance(value, str) and value.endswith(_DOTNET_SOURCE_EXTS)
+    return isinstance(value, str) and effective_suffix(value) in _DOTNET_SOURCE_EXTS
 
 
 def _metadata(value: object) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _is_plain_csharp_name(text: str) -> bool:
+    return bool(text) and not any(ch in text for ch in ".()") and not any(
+        ch.isspace() for ch in text
+    )
+
+
+def bare_csharp_method_label(label: object, source_file: object) -> str | None:
+    """Return the ``.Name()`` resolver form of a C# method label, else ``None``.
+
+    Accepts both the extractor's bare ``.Name()`` and the owner-qualified
+    ``Owner.Name()`` display form the graph build assigns (#4883). Extraction
+    emits, and call resolution, interface dispatch, and the method-ghost index
+    match on, the bare form, so anything reading labels back from a persisted
+    graph normalizes through here. C# method and type names never contain a
+    dot (an explicit interface implementation is still labeled ``.Build()``),
+    so the split is unambiguous.
+    """
+    if not _is_cs_file(source_file) or not isinstance(label, str):
+        return None
+    if not label.endswith("()"):
+        return None
+    owner, dot, name = label[:-2].rpartition(".")
+    if not dot or not _is_plain_csharp_name(name):
+        return None
+    if owner and not _is_plain_csharp_name(owner):
+        return None
+    return f".{name}()"
+
+
+def bare_csharp_method_labels_in_nodes(nodes: list[dict]) -> list[dict]:
+    """Copy of *nodes* with owner-qualified C# method labels reverted to ``.Name()``.
+
+    Nodes that need no change are returned as-is; changed nodes are shallow
+    copies, so the caller's list and dicts are never mutated.
+    """
+    out: list[dict] = []
+    for node in nodes:
+        label = node.get("label")
+        bare = bare_csharp_method_label(label, node.get("source_file"))
+        out.append(node if bare is None or bare == label else {**node, "label": bare})
+    return out
+
+
+def csharp_method_label_reassignments(
+    nodes: Iterable[tuple[object, dict]],
+    method_edges: Iterable[tuple[object, object]],
+) -> dict[str, str]:
+    """Return ``{method_id: "Owner.Name()"}`` display labels for C# methods (#4883).
+
+    *nodes* are ``(id, attrs)`` pairs and *method_edges* are ``(owner_id,
+    method_id)`` pairs from ``method`` edges. A method with zero or several
+    distinct owner labels, or an owner whose label is not a plain type name,
+    is omitted and keeps its bare ``.Name()`` label. Derived from the bare form,
+    so applying it to already-qualified labels is a no-op.
+    """
+    owner_label_by_id: dict[str, str] = {}
+    bare_by_id: dict[str, str] = {}
+    for nid, attrs in nodes:
+        if not isinstance(nid, str) or not isinstance(attrs, dict):
+            continue
+        label = attrs.get("label")
+        source_file = attrs.get("source_file")
+        if not isinstance(label, str) or not _is_cs_file(source_file):
+            continue
+        if _is_plain_csharp_name(label):
+            owner_label_by_id[nid] = label
+            continue
+        bare = bare_csharp_method_label(label, source_file)
+        if bare is not None:
+            bare_by_id[nid] = bare
+
+    owner_labels_by_method: dict[str, set[str | None]] = {}
+    for owner, method in method_edges:
+        if isinstance(owner, str) and isinstance(method, str) and method in bare_by_id:
+            owner_labels_by_method.setdefault(method, set()).add(owner_label_by_id.get(owner))
+
+    out: dict[str, str] = {}
+    for method, owner_labels in owner_labels_by_method.items():
+        if len(owner_labels) != 1:
+            continue
+        owner_label = next(iter(owner_labels))
+        if owner_label is not None:
+            out[method] = f"{owner_label}{bare_by_id[method]}"
+    return out
 
 
 class CsharpNameResolver:
@@ -184,7 +309,7 @@ class CsharpNameResolver:
             for node in all_nodes
             if isinstance(node.get("id"), str) and node.get("id")
         }
-        self.type_def_index = _build_csharp_type_def_index(all_nodes)
+        self.type_def_index = _build_csharp_type_def_index(all_nodes, all_edges)
         self.known_namespaces = {
             node.get("label")
             for node in all_nodes
@@ -193,6 +318,9 @@ class CsharpNameResolver:
 
         self.namespace_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
         self.aliases_by_file: dict[str, dict[str, list[tuple[str, str, str | None]]]] = {}
+        self.static_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
+        self.nested_types_by_holder: dict[str, dict[str, str]] = {}
+        self._holder_nid_cache: dict[str, str | None] = {}
 
         for edge in all_edges:
             if edge.get("relation") != "imports":
@@ -201,7 +329,7 @@ class CsharpNameResolver:
             if not (
                 source_node
                 and isinstance(source_node.get("label"), str)
-                and source_node.get("label", "").endswith(_DOTNET_SOURCE_EXTS)
+                and _is_dotnet_source_file(source_node.get("label"))
             ):
                 continue
             source_file = source_node.get("source_file")
@@ -226,6 +354,44 @@ class CsharpNameResolver:
                     bucket = self.aliases_by_file.setdefault(source_file, {}).setdefault(alias, [])
                     if entry not in bucket:
                         bucket.append(entry)
+            elif using_kind == "static":
+                entry = (target_fqn, scope_kind, scope_id)
+                bucket = self.static_usings_by_file.setdefault(source_file, [])
+                if entry not in bucket:
+                    bucket.append(entry)
+
+        nested_candidates: dict[tuple[str, str], dict[str, dict]] = {}
+        for edge in all_edges:
+            if edge.get("relation") != "contains":
+                continue
+            target_nid = edge.get("target")
+            if not isinstance(target_nid, str) or not target_nid:
+                continue
+            target_node = self.node_by_id.get(target_nid)
+            if not (
+                target_node
+                and target_node.get("file_type") == "code"
+                and _metadata(target_node.get("metadata")).get("is_nested_type") is True
+            ):
+                continue
+            label = target_node.get("label")
+            if not isinstance(label, str) or not label:
+                continue
+            holder_nid = edge.get("source")
+            if not isinstance(holder_nid, str) or not holder_nid:
+                continue
+            nested_candidates.setdefault((holder_nid, label), {})[target_nid] = target_node
+
+        for (holder_nid, label), node_dict in nested_candidates.items():
+            canonical_nid = sorted(
+                node_dict.values(),
+                key=lambda n: (
+                    str(n.get("source_file") or ""),
+                    str(n.get("source_location") or ""),
+                    str(n.get("id") or ""),
+                ),
+            )[0]["id"]
+            self.nested_types_by_holder.setdefault(holder_nid, {})[label] = canonical_nid
 
     @staticmethod
     def _namespace(node: dict | None) -> str:
@@ -273,6 +439,34 @@ class CsharpNameResolver:
                 hits.add(hit)
         return next(iter(hits)) if len(hits) == 1 else None
 
+    def _resolve_holder_nid(self, target_fqn: str) -> str | None:
+        base_fqn = _strip_trailing_csharp_generic_args(html.unescape(target_fqn)).strip()
+        if not base_fqn:
+            return None
+        if base_fqn in self._holder_nid_cache:
+            return self._holder_nid_cache[base_fqn]
+
+        prefix, sep, name = base_fqn.rpartition(".")
+        if not sep:
+            nid = self.type_def_index.get(("", base_fqn))
+            self._holder_nid_cache[base_fqn] = nid
+            return nid
+
+        top_hit = self.type_def_index.get((prefix, name))
+        if top_hit:
+            self._holder_nid_cache[base_fqn] = top_hit
+            return top_hit
+
+        parent_nid = self._resolve_holder_nid(prefix)
+        if parent_nid:
+            nested_hit = self.nested_types_by_holder.get(parent_nid, {}).get(name)
+            if nested_hit:
+                self._holder_nid_cache[base_fqn] = nested_hit
+                return nested_hit
+
+        self._holder_nid_cache[base_fqn] = None
+        return None
+
     def resolve_type_name(
         self, label: str, source_node: dict, source_file: str
     ) -> tuple[str | None, bool]:
@@ -293,9 +487,27 @@ class CsharpNameResolver:
             hit = self.type_def_index.get((namespace, label))
             if hit and hit not in candidates:
                 candidates.append(hit)
+        for target_fqn, scope_kind, scope_id in self.static_usings_by_file.get(source_file, []):
+            if self._using_in_scope(scope_kind, scope_id, source_node):
+                holder_nid = self._resolve_holder_nid(target_fqn)
+                if holder_nid:
+                    hit = self.nested_types_by_holder.get(holder_nid, {}).get(label)
+                    if hit and hit not in candidates:
+                        candidates.append(hit)
         if len(candidates) == 1:
             return candidates[0], True
-        return None, bool(candidates)
+        if candidates:
+            return None, True
+
+        ns = self._namespace(source_node)
+        if "." in ns:
+            parts = ns.split(".")
+            for i in range(len(parts) - 1, 0, -1):
+                hit = self.type_def_index.get((".".join(parts[:i]), label))
+                if hit:
+                    return hit, True
+
+        return None, False
 
     def resolve_label(self, label: str, source_node: dict, source_file: str) -> str | None:
         resolved, _decisive = self.resolve_type_name(label, source_node, source_file)
@@ -373,37 +585,46 @@ def _resolve_csharp_type_references(
                 return alias
         return stem or None
 
+    # One canonical sourceless stub per undeclared type NAME, shared across every
+    # file that references it (#4247). An external type the corpus uses but never
+    # declares (`List`, `System.Type`, Unity's `VisualElement`) used to get a
+    # separate per-file placeholder (`a_cs_list`, `b_cs_list`, ...) because the
+    # extractor mints one provisional placeholder per file and the arbiter kept
+    # whichever one each edge already pointed at. Coalesce them all onto a single
+    # name-keyed stub so a query for the type returns one node that connects the
+    # files sharing it.
+    canonical_stub_by_label: dict[str, str] = {}
+
+    def _canonical_stub_matches(nid: object, label: str) -> bool:
+        node = node_by_id.get(nid)
+        return _is_placeholder(node) and node.get("label") == label
+
     def _dangling_stub_id(label: str, current_target: object) -> str:
-        current = node_by_id.get(current_target)
-        if _is_placeholder(current) and current.get("label") == label:
-            return str(current_target)
+        cached = canonical_stub_by_label.get(label)
+        if cached is not None:
+            return cached
 
-        for node in all_nodes:
-            nid = node.get("id")
-            if (
-                isinstance(nid, str)
-                and node.get("label") == label
-                and _is_placeholder(node)
-            ):
-                return nid
-
-        stem = _make_id(label)
-        stub_id = stem
-        if stub_id in node_by_id:
+        stub_id = _make_id(label)
+        # Never shadow a real (sourced) node or a differently-labelled node; a
+        # placeholder already keyed by this bare name is reused as the canonical.
+        if stub_id in node_by_id and not _canonical_stub_matches(stub_id, label):
             stub_id = _make_id("csharp_type_ref", label)
             suffix = 2
-            while stub_id in node_by_id:
+            while stub_id in node_by_id and not _canonical_stub_matches(stub_id, label):
                 stub_id = _make_id("csharp_type_ref", label, str(suffix))
                 suffix += 1
-        node = {
-            "id": stub_id,
-            "label": label,
-            "file_type": "code",
-            "source_file": "",
-            "source_location": "",
-        }
-        all_nodes.append(node)
-        node_by_id[stub_id] = node
+
+        if stub_id not in node_by_id:
+            node = {
+                "id": stub_id,
+                "label": label,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            }
+            all_nodes.append(node)
+            node_by_id[stub_id] = node
+        canonical_stub_by_label[label] = stub_id
         return stub_id
 
     REPOINT_RELATIONS = {"implements", "inherits", "references"}

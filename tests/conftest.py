@@ -64,6 +64,39 @@ def _sandbox_home(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     return home
 
+@pytest.fixture(autouse=True)
+def _isolate_backend_env(monkeypatch):
+    """detect_backend() probes the developer's real shell: with GOOGLE_API_KEY (or
+    any of a dozen others) exported, the backend-detection tests picked that
+    backend instead of the one the test set up (#3481). Clear every variable it
+    reads before each test; a test that wants one sets it with monkeypatch."""
+    from graphify.llm import backend_detection_env_vars
+
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_PROMPT_CACHE", raising=False)
+    for key in backend_detection_env_vars():
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _cold_stat_index(monkeypatch):
+    """Cold-start the module-global stat index before every test.
+
+    The stat index (graphify/cache.py) is a process-wide cache keyed by scan
+    root. Across the full suite thousands of roots are hashed in one process, so
+    a warm index left by an earlier test can serve a stale file hash to the next
+    test's no-change gate and make a rebuild skip re-extraction (#3989, which
+    says library callers crossing roots in one process must use a fresh process
+    per root — a real `graphify update`/extract always does). Resetting to the
+    cold init state makes each test behave like that fresh process."""
+    from graphify import cache
+
+    monkeypatch.setattr(cache, "_stat_index", {}, raising=False)
+    monkeypatch.setattr(cache, "_stat_index_root", None, raising=False)
+    monkeypatch.setattr(cache, "_stat_index_anchor", None, raising=False)
+    monkeypatch.setattr(cache, "_stat_index_path", None, raising=False)
+    monkeypatch.setattr(cache, "_stat_index_dirty", False, raising=False)
+
+
 _ANALYZE_WARNING_FILTERS = (
     "ignore:Tensorflow not installed; ParametricUMAP will be unavailable:ImportWarning:umap",
     "ignore:Please import `random` from the `scipy\\.sparse` namespace.*:"

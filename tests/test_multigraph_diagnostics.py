@@ -103,6 +103,37 @@ def test_diagnose_extraction_categorizes_same_endpoint_collapse() -> None:
     assert summary["post_build_edge_count"] == 2
 
 
+def test_diagnose_extraction_separates_external_reference_edges() -> None:
+    extraction = {
+        "nodes": [
+            {"id": "app", "label": "app", "file_type": "code", "source_file": "app.ts"},
+        ],
+        "edges": [
+            {
+                "source": "app",
+                "target": "ref_react",
+                "relation": "imports_from",
+                "confidence": "EXTRACTED",
+                "source_file": "app.ts",
+            },
+            {
+                "source": "app",
+                "target": "missing_internal",
+                "relation": "references",
+                "confidence": "INFERRED",
+                "source_file": "app.ts",
+            },
+        ],
+    }
+
+    summary = diagnose_extraction(extraction, directed=True)
+    report = format_diagnostic_report(summary)
+
+    assert summary["external_reference_edges"] == 1
+    assert summary["dangling_endpoint_edges"] == 1
+    assert "external_reference_edges: 1" in report
+
+
 def test_diagnose_extraction_accepts_node_link_links_key() -> None:
     extraction = _diagnostic_fixture()
     extraction["links"] = extraction.pop("edges")

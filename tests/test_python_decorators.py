@@ -225,3 +225,29 @@ def test_undecorated_function_emits_no_decorator_edge(tmp_path):
                "    pass\n")
     r = extract([f], cache_root=tmp_path)
     assert _deco_edges(r, _func_nid("pkg/plain.py", "plain")) == set()
+
+
+def test_property_accessor_decorators_emit_no_edge_or_stub(tmp_path):
+    # `@x.setter` / `@x.getter` / `@x.deleter` are the property-descriptor
+    # protocol, not references to corpus symbols. Pre-fix they minted a
+    # sourceless stub (`setter`/`getter`/`deleter`) on every property with a
+    # setter and a decorator edge onto it — provenance pollution, and the bare
+    # `deleter`/`getter` stub became a cross-file god node.
+    f = _write(tmp_path / "pkg" / "prop.py",
+               "class Config:\n"
+               "    @property\n"
+               "    def name(self):\n"
+               "        return self._n\n"
+               "    @name.setter\n"
+               "    def name(self, v):\n"
+               "        self._n = v\n"
+               "    @name.deleter\n"
+               "    def name(self):\n"
+               "        del self._n\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _deco_edges(r, _method_nid("pkg/prop.py", "Config", "name")) == set()
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert _make_id("setter") not in node_ids
+    assert _make_id("deleter") not in node_ids
+    # No sourceless stub was fabricated at all.
+    assert all(n.get("source_file") for n in r["nodes"])
