@@ -17,7 +17,17 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **detect** an incremental staleness check hashes a file whose stamp lands within the clock-skew window on either side of its mtime, so a same-tick rewrite that does not move mtime is still caught instead of being served stale (#5090, thanks @sunhouy).
 - Fix: **path** `graphify path A B` refuses an endpoint whose words appear nowhere in the graph (exit not-found) instead of returning a misleading route built from loosely-overlapping tokens (#5085, thanks @sunhouy).
 
-The AST cache schema is bumped to 41; warm caches re-run the affected C++ and Markdown extractions.
+- Fix: **csharp** a classic extension-method call (`x.Foo()` where `Foo` is declared `static ... Foo(this X x, ...)`) binds to the extension method's declaration through an additive pass that runs after nominal dispatch, gated to a visible namespace, a matching `this` type and a unique applicable method; an instance method of the same name wins, a non-extension static or an unimported extension gets no edge, and ambiguity fails closed (#4828, #4849, thanks @Deepjyoti-Sarmah).
+- Fix: **markdown** a bare, unqualified free-function mention in prose (`token`, no `()` and no namespace) binds to a same-named function only when its defining file (or another symbol from it) is cited within the heading's section chain, instead of matching any same-named callable in the corpus; reference-style links (`[text][label]`) resolve at the use site (#4804, #4806, thanks @madanlalit).
+- Fix: **export** the `to_json` shrink guard no longer counts semantic sources that were replaced on re-extract or pruned as deletions as "lost", so a legitimate `graphify update` is not refused; a genuine unexplained shrink is still refused (#5107, thanks @khkar).
+- Fix: **build** a node whose `file_type` or `confidence` arrives as a structured value (list/dict) from a drifting LLM pass no longer crashes the validate/build membership checks: validation surfaces it as a schema error, and the build folds it to `concept`/`INFERRED` without fabricating a score (#5088, thanks @sdivyanshu90).
+- Fix: **llm** a splittable document below the character cap whose model output truncates is promoted to a full-range slice and bisected (and retried) instead of being kept as a truncated partial result; a non-splittable or code/binary unit still fails closed (#5072, #5078, thanks @aadilrizwan).
+- Feat: **llm** a custom OpenAI-compatible provider's `extra_headers` are forwarded to the client as `default_headers`, scoped to that provider and with any `Authorization` header dropped so it cannot override the configured credential (#3680, #4783, thanks @jaimemartinez).
+- Perf: **extract** whole-graph intermediates (the parse memo on the one-shot CLI, build/cluster/export working lists) are freed as soon as they are consumed, cutting peak memory on a large corpus; graph output is byte-identical (#5063, thanks @TPAteeq).
+- Fix: **skillgen** the claw/kiro/pi subagent prompt now tells the worker to write its chunk to `CHUNK_PATH`, so a disk-dispatch chunk is no longer returned inline and lost at the merge step (#5040, thanks @connhodendatabase).
+- Fix: **deps** the pypdf floor is raised to 6.21.4 in the `pdf` and `all` extras to pick up its security fixes (#5015, thanks @yotamleo).
+
+The AST cache schema is bumped to 42; warm caches re-run the affected C++, Markdown and C# extractions.
 
 ## 0.9.104 (2026-11-07)
 
