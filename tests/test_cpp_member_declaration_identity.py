@@ -132,6 +132,23 @@ def test_same_file_pair_keeps_both_exact_syntax_records(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("definition", [
+    "long Service::Run() { return 1; }",
+    "int Service::Run() const { return 1; }",
+    "int Service::Run() noexcept { return 1; }",
+])
+def test_same_file_mismatched_signatures_keep_both_uncertain_records(tmp_path, definition):
+    result = _extract(tmp_path, {"api.cpp": "class Service { public: int Run(); };\n" + definition})
+    members = _members(result)
+    assert len(members) == 1
+    records = members[0]["_cpp_member_records"]
+    assert [(r["kind"], r["source_location"]) for r in records] == [
+        ("declaration", "L1"), ("definition", "L2"),
+    ]
+    assert records[0]["signature"] != records[1]["signature"]
+    assert "definition_file" not in members[0]
+
+
 def test_reconciled_body_binds_its_own_member_before_a_same_named_free_function(tmp_path):
     result = _extract(tmp_path, {
         "api.hpp": "class Service { public: void Run(); void Say(); };",
