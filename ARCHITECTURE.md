@@ -138,6 +138,25 @@ schema 41 retires entries without receiver chains and persistent class fields.
 Rebuild existing graphs with `graphify extract . --code-only --force` to populate
 unchanged headers before relying on changed-file-only updates.
 
+C++ template wrappers preserve member ownership, including reference-returning
+declarations and matching same-file qualified definitions. Explicit calls such
+as `worker.Tick<int>()` resolve through the existing declared-receiver rules;
+dependent, unknown and ambiguous receivers do not acquire guessed targets.
+These are method-family nodes, not overload/specialization resolution. Generic
+templated owner normalization and cross-file declaration/definition merging
+remain outside this bounded support.
+
+When conditional directives break an initializer or argument list, C++ extraction
+can recover separate, byte-preserving branch views. It does not evaluate defines,
+read includes, invoke a preprocessor or enumerate configuration combinations.
+Recovery is bounded to 128 conditional groups and 32 branch views; malformed,
+still-invalid, conflicting, unattributable or over-budget inputs retain their original parse
+errors. File-node `metadata.cpp_conditional_recovery` records original errors,
+branch ranges and coverage; guarded records carry `metadata.cpp_conditions`.
+The file range map also applies to later resolver-created edges. This is static
+branch-wise syntax coverage, not proof that all branches execute together.
+AST cache schema 43 invalidates older template and conditional recovery records.
+
 ## Adding a new language extractor
 
 1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.

@@ -3569,6 +3569,270 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
     return _CPP_EXPORT_MACRO_RE.sub(repl, source)
 
 
+_CPP_CONDITIONAL_TOKEN_RE = re.compile(
+    rb'//(?:\\\r?\n|[^\r\n])*|/\*[\s\S]*?(?:\*/|\Z)'
+    rb"|\b[0-9](?:[A-Za-z_0-9.]|'[A-Za-z_0-9])*"
+    rb'|(?:u8|u|U|L)?R"([^ ()\\\t\v\f\r\n]{0,16})\('
+    rb'|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\''
+    rb'|^[ \t\v\f]*#[ \t]*([A-Za-z_][A-Za-z_0-9]*)(?:\\\r?\n|[^\r\n])*',
+    re.MULTILINE,
+)
+_CPP_CONDITIONAL_VARIANT_LIMIT = 32
+
+
+def _cpp_conditional_tokens(source: bytes):
+    pos = 0
+    while match := _CPP_CONDITIONAL_TOKEN_RE.search(source, pos):
+        pos = match.end()
+        if match.group(1) is not None:
+            end = source.find(b")" + match.group(1) + b'"', pos)
+            pos = len(source) if end == -1 else end + len(match.group(1)) + 2
+        yield match, pos
+
+
+def _cpp_conditional_groups(source: bytes) -> tuple[list[dict], str | None]:
+    """Read conditional ranges only; never evaluate macros or open includes."""
+    groups: list[dict] = []
+    stack: list[dict] = []
+    for match, _ in _cpp_conditional_tokens(source):
+        word = match.group(2)
+        if source[max(0, match.start() - 3):match.start()].endswith((b"\\\n", b"\\\r\n")):
+            continue  # A physical line after a splice is not a directive line.
+        if word not in (b"if", b"ifdef", b"ifndef", b"elif", b"else", b"endif"):
+            continue
+        text = match.group().strip()
+        argument = re.sub(rb"/\*[\s\S]*?\*/|//[^\r\n]*", b"", text)
+        argument = re.sub(rb"^#[ \t]*[A-Za-z_]+", b"", argument).strip()
+        if ((word in (b"if", b"elif") and not argument)
+                or (word in (b"ifdef", b"ifndef")
+                    and not re.fullmatch(rb"[A-Za-z_][A-Za-z_0-9]*", argument))
+                or (word in (b"else", b"endif") and argument)):
+            return groups, "malformed conditional directive"
+        line = source.count(b"\n", 0, match.start()) + 1
+        branch = {"directive": text.decode("utf-8", errors="replace"),
+                  "directive_line": line, "start_byte": match.end(),
+                  "start_line": source.count(b"\n", 0, match.end()) + 2}
+        if word in (b"if", b"ifdef", b"ifndef"):
+            if len(groups) >= 128:
+                return groups, "conditional-group limit exceeded"
+            group = {"line": line, "start_byte": match.start(), "branches": [branch],
+                     "directives": [(match.start(), match.end())]}
+            if stack:
+                group["parent"] = groups.index(stack[-1])
+                group["parent_branch"] = len(stack[-1]["branches"]) - 1
+            groups.append(group)
+            stack.append(group)
+            continue
+        if not stack:
+            return groups, "unbalanced conditional directives"
+        group = stack[-1]
+        if group.get("has_else"):
+            if word != b"endif":
+                return groups, "conditional branch after else"
+        previous = group["branches"][-1]
+        previous.update(end_byte=match.start(), end_line=line - 1)
+        group["directives"].append((match.start(), match.end()))
+        if word in (b"elif", b"else"):
+            group["branches"].append(branch)
+            group["has_else"] = word == b"else"
+        else:
+            if not group.get("has_else"):
+                group["branches"].append({"directive": "#else (implicit)",
+                    "directive_line": line, "start_byte": match.start(),
+                    "end_byte": match.start(), "start_line": line, "end_line": line - 1,
+                    "implicit": True})
+            group["end_byte"] = match.end()
+            stack.pop()
+    return groups, "unbalanced conditional directives" if stack else None
+
+
+def _cpp_expression_conditional_groups(source: bytes, groups: list[dict]) -> set[int]:
+    """Find candidates lexically; recovered trees must later confirm the scope."""
+    code = bytearray(source)
+    for match, end in _cpp_conditional_tokens(source):
+        code[match.start():end] = re.sub(rb"[^\r\n]", b" ", source[match.start():end])
+    tokens = iter(re.finditer(rb"[A-Za-z_][A-Za-z_0-9]*|[^\s]", code))
+    token = next(tokens, None)
+    stack: list[tuple[bytes, bool]] = []
+    previous = b""
+    statement = 0
+    selected = set()
+    for index, group in enumerate(groups):
+        while token is not None and token.start() < group["start_byte"]:
+            value = token.group()
+            if value in (b"(", b"[", b"{"):
+                expression = value == b"("
+                if value == b"{":
+                    prefix = bytes(code[statement:token.start()])
+                    expression = (previous in (b"=", b"return", b"co_return")
+                        or (previous in (b",", b"{") and bool(stack) and stack[-1][1])
+                        or ((re.fullmatch(rb"[A-Za-z_][A-Za-z_0-9]*|>|\]", previous) is not None)
+                            and previous not in (b"else", b"try", b"do")
+                            and not re.search(rb"\b(?:namespace|class|struct|enum|union|extern)\b", prefix)))
+                    statement = token.end()
+                stack.append((value, expression))
+            elif value in (b")", b"]", b"}"):
+                if stack:
+                    stack.pop()
+                if value == b"}":
+                    statement = token.end()
+            elif value == b";":
+                statement = token.end()
+            previous = value
+            token = next(tokens, None)
+        if (stack and stack[-1][1]) or group.get("parent") in selected:
+            selected.add(index)
+    return selected
+
+
+def _recover_cpp_conditional_initializers(path: Path, source: bytes, original: dict) -> dict:
+    """Recover expression directives with separate, bounded syntactic branch views.
+
+    shortcut: branch-wise views do not enumerate configurations, use a compilation
+    database and a real configured frontend when configuration semantics are needed.
+    """
+    if not original.get("parse_errors"):
+        return original
+    groups, problem = _cpp_conditional_groups(source)
+    if not groups and not problem:
+        return original
+    coverage = {"schema": 1, "status": "unrecovered", "coverage": "branch-wise syntax",
+                "conditions_evaluated": False, "combinations_enumerated": False,
+                "recovered_from": original["parse_errors"]}
+
+    def annotate(result: dict) -> dict:
+        file_node = next((n for n in result.get("nodes", [])
+                          if n.get("id") == _make_id(str(path))), None)
+        if file_node is not None:
+            file_node.setdefault("metadata", {})["cpp_conditional_recovery"] = coverage
+        return result
+
+    if problem:
+        coverage["reason"] = problem
+        return annotate(original)
+    selected = _cpp_expression_conditional_groups(source, groups)
+    if not selected:
+        return original
+    coverage["groups"] = [{k: v for k, v in g.items() if k not in ("directives", "has_else")}
+                           | {"recovered": i in selected} for i, g in enumerate(groups)]
+    choices = [tuple(0 for _ in groups)]
+    for index in sorted(selected):
+        for branch in range(len(groups[index]["branches"])):
+            choice = list(choices[0])
+            choice[index] = branch
+            current = groups[index]
+            while "parent" in current:
+                parent = current["parent"]
+                choice[parent] = current["parent_branch"]
+                current = groups[parent]
+            value = tuple(choice)
+            if value not in choices:
+                choices.append(value)
+            if len(choices) > _CPP_CONDITIONAL_VARIANT_LIMIT:
+                coverage["reason"] = "branch-view limit exceeded"
+                return annotate(original)
+    coverage["variant_count"] = len(choices)
+
+    def active(index: int, choice: tuple[int, ...]) -> bool:
+        current = groups[index]
+        while "parent" in current:
+            parent = current["parent"]
+            if parent in selected and choice[parent] != current["parent_branch"]:
+                return False
+            current = groups[parent]
+        return True
+
+    coverage["views"] = [[{"group_line": groups[index]["line"], "branch": choice[index]}
+                           for index in sorted(selected) if active(index, choice)] for choice in choices]
+    from tree_sitter import Language, Parser
+
+    parser = Parser(Language(importlib.import_module("tree_sitter_cpp").language()))
+    for index in sorted(selected):
+        for start, end in groups[index]["directives"][:-1]:
+            head = source[start:end]
+            if re.search(rb"#[ \t]*(?:if|ifdef|ifndef|elif)\b", head):
+                head = re.sub(rb"(#[ \t]*)elif\b", rb"\1if", head)
+                if parser.parse(head + b"\n#endif\n").root_node.has_error:
+                    coverage["reason"] = "malformed conditional expression"
+                    return annotate(original)
+    merged: dict | None = None
+    seen: dict[str, dict[str, int]] = {key: {} for key in ("nodes", "edges", "raw_calls")}
+    node_ids: dict[str, dict] = {}
+    for view_index, choice in enumerate(choices):
+        view = bytearray(source)
+
+        def blank(start: int, end: int) -> None:
+            view[start:end] = re.sub(rb"[^\r\n]", b" ", source[start:end])
+
+        for index in sorted(selected):
+            group = groups[index]
+            for start, end in group["directives"]:
+                blank(start, end)
+            for branch_index, branch in enumerate(group["branches"]):
+                if branch_index != choice[index]:
+                    blank(branch["start_byte"], branch["end_byte"])
+        root = parser.parse(bytes(view)).root_node
+        if root.has_error:
+            coverage["reason"] = "a branch view still has parse errors"
+            return annotate(original)
+        for index in sorted(selected):
+            if not active(index, choice):
+                continue
+            start = groups[index]["start_byte"]
+            node = root.descendant_for_byte_range(start, start)
+            while node is not None and node.type not in (
+                "initializer_list", "argument_list", "compound_statement"
+            ):
+                node = node.parent
+            if node is None or node.type == "compound_statement":
+                coverage["reason"] = "a branch view falls outside initializer or argument syntax"
+                return annotate(original)
+        result = _extract_generic(path, _CPP_CONFIG, source_override=bytes(view))
+        if result.get("parse_errors") or result.get("error"):
+            coverage["reason"] = "a branch view still has parse errors"
+            return annotate(original)
+        if merged is None:
+            merged = {key: value for key, value in result.items() if key not in seen}
+            merged.update({key: [] for key in seen})
+        elif any(result.get(key) != merged.get(key)
+                 for key in result.keys() | merged.keys() if key not in seen):
+            coverage["reason"] = "branch views have incompatible resolver metadata"
+            return annotate(original)
+        for key in seen:
+            for record in result.get(key, []):
+                if key == "nodes":
+                    previous = node_ids.setdefault(record["id"], record)
+                    if previous != record:
+                        coverage["reason"] = "branch views have conflicting symbol identities"
+                        return annotate(original)
+                signature = json.dumps(record, sort_keys=True)
+                if signature not in seen[key]:
+                    merged[key].append(record)
+                seen[key][signature] = seen[key].get(signature, 0) | (1 << view_index)
+    assert merged is not None
+    coverage["status"] = "recovered"
+    # The durable file range map also covers later resolver-created call edges.
+    for key in seen:
+        for record in merged[key]:
+            location = re.match(r"L(\d+)", record.get("source_location") or "")
+            line = int(location[1]) if location else 0
+            guards = [(index, branch_index) for index, g in enumerate(groups)
+                      for branch_index, branch in enumerate(g["branches"])
+                      if branch["start_line"] <= line <= branch["end_line"]]
+            expected = sum(1 << view_index for view_index, choice in enumerate(choices)
+                           if all(choice[index] == branch for index, branch in guards if index in selected))
+            if seen[key][json.dumps(record, sort_keys=True)] != expected:
+                # A split callee/type may start before the guard choosing its name.
+                coverage["status"] = "unrecovered"
+                coverage["reason"] = "branch-spanning records lack source guard provenance"
+                return annotate(original)
+            conditions = [{"group_line": groups[index]["line"], "branch": branch}
+                          for index, branch in guards]
+            if conditions:
+                record.setdefault("metadata", {})["cpp_conditions"] = conditions
+    return annotate(merged)
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
@@ -3588,6 +3852,7 @@ def extract_cpp(path: Path) -> dict:
     result = _extract_generic(
         path, _CPP_CONFIG, source_override=source_override
     )
+    result = _recover_cpp_conditional_initializers(path, source_override, result)
     return _augment_cpp_string_tests(path, result)
 
 
