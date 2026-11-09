@@ -436,6 +436,11 @@ A started `graphify extract` also writes `graphify-out/last_run.json`, a
 machine-readable summary of the latest run. Check its `ok` field and
 `wrote_graph`/`refused_reason` fields in automation instead of scraping extraction
 logs; `ok` is false when content was missing even if a partial graph was written.
+`unverified_semantic_sources` names sources whose semantic output shrank; these
+keep `incomplete` true even with `--allow-partial`. `nodes_existing` is the
+pre-run count, and `wrote_graph` includes exclusion-only pruning. `dropped_items`
+counts removed nodes, edges and hyperedges across both scope filters, including
+dependent relationships; `dropped` lists their out-of-scope source attributions.
 
 ---
 

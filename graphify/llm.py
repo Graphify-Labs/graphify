@@ -3030,12 +3030,6 @@ def extract_corpus_parallel(
         for idx in sorted(results_by_idx):
             _merge_into(merged, results_by_idx[idx])
 
-    # Keep diagnostics stable when concurrent requests finish in a different
-    # order. This preserves reproducible run-status artifacts and API results.
-    merged["chunk_errors"] = [
-        chunk_errors_by_idx[idx] for idx in sorted(chunk_errors_by_idx)
-    ]
-
     # A failed slice leaves its parent with nodes from the other slices, so the
     # parent looks covered and the caller's final save would write it complete
     # (#4943). Name it partial so that save stamps it and the next run retries.
@@ -3047,6 +3041,12 @@ def extract_corpus_parallel(
         merged["_partial_files"] = sorted(
             set(merged.get("_partial_files", []) or []) | {str(p) for p in failed_parents}
         )
+
+    # Keep diagnostics stable when concurrent requests finish in a different
+    # order. This preserves reproducible run-status artifacts and API results.
+    merged["chunk_errors"] = [
+        chunk_errors_by_idx[idx] for idx in sorted(chunk_errors_by_idx)
+    ]
 
     # Loud failure summary — surface chunk failures at end so they're never
     # buried mid-log. Exit 0 preserved for caller compatibility; the
@@ -3092,6 +3092,8 @@ def extract_corpus_parallel(
         p = _resolve_against_root(sf)
         return p.is_file() and p not in _dispatched_resolved
 
+    _scope_buckets = ("nodes", "edges", "hyperedges")
+    _scope_items_before = sum(len(merged[k]) for k in _scope_buckets)
     dropped_ids: set = set()
     dropped_files: set[str] = set()
     kept_nodes: list[dict] = []
@@ -3139,6 +3141,13 @@ def extract_corpus_parallel(
             "excluded from the graph (#1895).",
             file=sys.stderr,
         )
+
+    # Keep diagnostics for callers that apply an additional scope filter later.
+    # out_of_scope_dropped retains its existing node-only API contract.
+    merged["out_of_scope_dropped_items"] = (
+        _scope_items_before - sum(len(merged[k]) for k in _scope_buckets)
+    )
+    merged["out_of_scope_dropped_files"] = sorted(dropped_files)
 
     covered: set[Path] = set()
     for n in merged.get("nodes", []):

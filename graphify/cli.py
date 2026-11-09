@@ -276,6 +276,7 @@ class _ExtractRunStatus:
         "chunk_errors",
         "files_with_no_nodes",
         "files_partial",
+        "unverified_semantic_sources",
         "failed_ast_files",
         "dropped",
         "walk_errors",
@@ -303,6 +304,7 @@ class _ExtractRunStatus:
             "files_dispatched": 0,
             "files_with_no_nodes": [],
             "files_partial": [],
+            "unverified_semantic_sources": [],
             "failed_ast_files": [],
             "dropped": [],
             "dropped_items": 0,
@@ -652,6 +654,10 @@ def _handle_unverified_semantic_shrink(
     """
     if not unverified_shrink:
         return None
+    # Write permission does not make this coverage anomaly a complete run.
+    _record_extract_status(
+        incomplete=True, unverified_semantic_sources=sorted(unverified_shrink),
+    )
     incomplete = False
     manifest_files = None
     cleared_semantic = None
@@ -1209,6 +1215,8 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
     _backup(graph_path.parent)
     from graphify.paths import write_json_atomic
     write_json_atomic(graph_path, data, compact=True)
+    # Record the actual write, including edge/hyperedge-only pruning (zero nodes).
+    _record_extract_status(wrote_graph=True, nodes_written=len(kept_nodes))
     return n_removed
 
 
@@ -5465,13 +5473,24 @@ def _dispatch_command(cmd: str) -> None:
                 # contribution in graph.json while its manifest entry still says
                 # unchanged — no later incremental run re-dispatches it and the
                 # loss is permanent until a full rebuild.
+                _scope_buckets = ("nodes", "edges", "hyperedges")
+                _scope_items_before = sum(len(fresh.get(k, [])) for k in _scope_buckets)
                 _dropped_files, _dropped_items = _scope_semantic_result(
                     fresh, target, uncached_paths,
                 )
+                # The corpus layer has already removed real-file misattributions.
+                # Count each removed record once, including dependent relationships.
+                _status_dropped_items = (
+                    fresh.get("out_of_scope_dropped_items", fresh.get("out_of_scope_dropped", 0))
+                    + _scope_items_before
+                    - sum(len(fresh.get(k, [])) for k in _scope_buckets)
+                )
                 _record_extract_status(
-                    dropped=sorted(_dropped_files),
-                    dropped_items=_dropped_items,
-                    incomplete=bool(_dropped_items),
+                    dropped=sorted(
+                        _dropped_files | set(fresh.get("out_of_scope_dropped_files", []))
+                    ),
+                    dropped_items=_status_dropped_items,
+                    incomplete=bool(_status_dropped_items),
                 )
                 if _dropped_files:
                     print(
@@ -5758,10 +5777,6 @@ def _dispatch_command(cmd: str) -> None:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
-                _record_extract_status(
-                    wrote_graph=False,
-                    nodes_existing=_ExtractRunStatus._existing_node_count(graph_json_path),
-                )
                 stages.total()
                 sys.exit(0)
 
