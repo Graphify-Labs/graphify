@@ -3378,24 +3378,34 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
         if node.type == "preproc_include":
             includes[str(node.start_point[0] + 1)] = node.start_byte
         if node.type not in {"alias_declaration", "type_definition", "class_specifier", "struct_specifier",
-                             "using_declaration", "namespace_definition"}:
+                             "using_declaration", "namespace_definition", "namespace_alias_definition"}:
             continue
         scope = _cpp_qualified_name(node, "", source).rstrip(":")
         parent = node.parent
         block = None
         dependent = False
+        conditional = False
         while parent is not None:
             if parent.type == "template_declaration":
                 dependent = True
+            if parent.type in {"preproc_if", "preproc_ifdef", "preproc_else", "preproc_elif"}:
+                guard = (parent.type == "preproc_ifdef" and parent.parent is not None
+                         and parent.parent.type == "translation_unit"
+                         and re.match(r"#\s*ifndef\s+([A-Za-z_]\w*)[^\n]*\n\s*#\s*define\s+\1(?:\s|$)",
+                                      _read_text(parent, source)))
+                conditional = conditional or not guard
             if block is None and parent.type in {
                 "compound_statement", "for_statement", "for_range_loop", "if_statement",
                 "switch_statement", "catch_clause", "lambda_expression",
             }:
                 block = parent
             parent = parent.parent
-        alias = node.type in {"alias_declaration", "type_definition"}
+        alias = node.type in {"alias_declaration", "type_definition", "namespace_alias_definition"}
         directive = False
         names = [(node.child_by_field_name("name"), "")]
+        if node.type == "namespace_definition" and names[0][0] is not None:
+            parts = _read_text(names[0][0], source).split("::")
+            names = [("::".join(parts[:index + 1]), "") for index in range(len(parts))]
         if node.type == "using_declaration":
             using = re.fullmatch(r"using\s+(namespace\s+)?((?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*;",
                                  _read_text(node, source))
@@ -3404,7 +3414,7 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
             directive = bool(using[1])
             names = [("*" if directive else using[2].rsplit("::", 1)[-1], using[2])]
             alias = not directive
-        if alias:
+        if alias and node.type != "namespace_alias_definition":
             type_node = node.child_by_field_name("type")
             target = _read_text(type_node, source) if type_node is not None and not dependent else ""
             if node.type == "alias_declaration":
@@ -3431,7 +3441,8 @@ def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, in
                 _read_text(name_node, source) if name_node is not None else "")
             if not name or ("::" in name and node.type != "namespace_definition"):
                 continue
-            bindings.append({"name": name, "scope": scope, "target": target, "alias": alias,
+            bindings.append({"name": name, "scope": scope, "target": "" if alias and conditional else target,
+                             "alias": alias,
                              "directive": directive, "namespace": node.type == "namespace_definition",
                              "start": node.start_byte, "end": block.end_byte if block is not None else len(source),
                              "local": block is not None, "block": block.start_byte if block is not None else 0})

@@ -141,10 +141,14 @@ raw-pointer and supported smart-pointer aliases. Lookup preserves spelling,
 lexical block/namespace/class scope and declaration order, and only traverses
 explicit includes preceding the receiver declaration. Alias targets resolve in
 their declaring scope; unsupported aliases still hide outer declarations.
+Qualified-name prefixes also block outer lookup. Namespace aliases and later
+class-scoped declarations in complete-class contexts remain unresolved.
 Direct namespace directives and qualified using declarations participate in this
-lookup. Alias templates, dependent targets, transitive using directives, arbitrary template types
-and cyclic or ambiguous aliases remain unresolved. File nodes persist lexical
-type/alias facts and include offsets; class nodes persist field declaration
+lookup. Alias templates, dependent targets, transitive using directives, arbitrary
+template types and cyclic or ambiguous aliases remain unresolved. Alias expansion
+stops after 32 steps. Conditional aliases remain unknown shadowing declarations,
+except inside a conventional top-level `#ifndef`/`#define` header guard. File nodes persist
+lexical type/alias facts and include offsets; class nodes persist field declaration
 offsets, so unchanged headers support incremental receiver resolution.
 Rebuild existing graphs with `graphify extract . --code-only --force` to populate
 unchanged headers before relying on changed-file-only updates.
