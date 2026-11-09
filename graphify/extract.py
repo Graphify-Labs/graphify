@@ -30,6 +30,7 @@ from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .go_dispatch import resolve_go_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
@@ -6237,14 +6238,8 @@ def _resolve_cpp_member_calls(
             qualified_method_nids.setdefault(label, []).append(n["id"])
 
     # Receiver chains use literal, case-sensitive identities, including namespaces.
-    qualified_types: dict[str, list[str]] = {}
-    simple_types: dict[str, list[str]] = {}
     exact_methods: dict[tuple[str, str], set[str]] = {}
-    for n in all_nodes:
-        identity = n.get("_cpp_qualified")
-        if identity and "_cpp_fields" in n and n.get("id") in contained and _is_type_like_definition(n):
-            qualified_types.setdefault(identity, []).append(n["id"])
-            simple_types.setdefault(identity.rsplit("::", 1)[-1], []).append(n["id"])
+    type_lookup = CppTypeLookup(all_nodes, all_edges)
     for rel in ("defines", "method"):
         grouped: dict[tuple[str, str], set[str]] = {}
         for e in all_edges:
@@ -6255,34 +6250,6 @@ def _resolve_cpp_member_calls(
                 grouped.setdefault((e["source"], name), set()).add(e["target"])
         exact_methods.update(grouped)
 
-    def chain_type(name: str, scope: str, operator: str) -> str | None:
-        name = re.sub(r"\b(const|volatile)\b", "", name).strip()
-        identifier = r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*"
-        if operator == "->":
-            smart = re.fullmatch(rf"std::(?:unique_ptr|shared_ptr)\s*<\s*({identifier})\s*>", name)
-            if smart:
-                name = smart[1]
-            elif name.endswith("*"):
-                name = name[:-1].strip()
-            else:
-                return None
-        elif operator != ".":
-            return None
-        if not re.fullmatch(identifier, name):
-            return None
-        absolute = name.startswith("::")
-        name = name.removeprefix("::")
-        if not absolute:
-            while scope:
-                candidates = qualified_types.get(f"{scope}::{name}", [])
-                if candidates:
-                    return candidates[0] if len(candidates) == 1 else None
-                scope = scope.rsplit("::", 1)[0] if "::" in scope else ""
-        candidates = qualified_types.get(name, [])
-        if not candidates and not absolute and "::" not in name:
-            candidates = simple_types.get(name, [])
-        return candidates[0] if len(candidates) == 1 else None
-
     def resolve_chain(rc: dict) -> str | None:
         chain = rc["cpp_receiver_chain"]
         if not chain:
@@ -6290,20 +6257,27 @@ def _resolve_cpp_member_calls(
         root_name = chain[0][0]
         owner = enclosing_type.get(rc["caller_nid"], "")
         owner_node = node_by_id.get(owner, {})
-        scope = rc.get("cpp_receiver_scope", owner_node.get("_cpp_qualified", ""))
+        scope = owner_node.get("_cpp_qualified") or rc.get("cpp_receiver_scope", "")
         if root_name == "this":
             name = owner_node.get("_cpp_qualified", "") + "*"
         elif "cpp_receiver_type" in rc:
             name = rc["cpp_receiver_type"]
         else:
             name = owner_node.get("_cpp_fields", {}).get(root_name, "")
+        source = rc.get("source_file", "")
+        position = rc.get("cpp_receiver_byte", rc.get("cpp_call_byte", 0))
+        if root_name != "this" and "cpp_receiver_type" not in rc:
+            source = owner_node.get("source_file", source)
+            position = owner_node.get("_cpp_field_positions", {}).get(root_name, position)
         type_nid = ""
         for index, (member, operator) in enumerate(chain):
             if index:
                 owner_node = node_by_id.get(type_nid, {})
                 name = owner_node.get("_cpp_fields", {}).get(member, "")
                 scope = owner_node.get("_cpp_qualified", "")
-            type_nid = chain_type(name, scope, operator)
+                source = owner_node.get("source_file", source)
+                position = owner_node.get("_cpp_field_positions", {}).get(member, 0)
+            type_nid = type_lookup.resolve(name, scope, source, position, operator)
             if type_nid is None:
                 return None
         return type_nid
@@ -6365,6 +6339,11 @@ def _resolve_cpp_member_calls(
                     )
                 continue
             type_qualified = receiver == "this" and len(rc["cpp_receiver_chain"]) == 1
+        elif rc.get("cpp_scoped_call") and (resolved_type := type_lookup.resolve(
+            receiver, rc.get("cpp_call_scope", ""), src_file, rc.get("cpp_call_byte", 0), ".",
+        )):
+            type_nid = resolved_type
+            type_qualified = True
         elif receiver == "this":
             # this->bar(): receiver is the caller's own enclosing class.
             type_nid = enclosing_type.get(caller)
@@ -6418,7 +6397,7 @@ def _resolve_cpp_member_calls(
                 continue
             type_nid = type_defs[0]
             type_qualified = False
-        if "cpp_receiver_chain" in rc:
+        if "cpp_receiver_chain" in rc or rc.get("cpp_scoped_call"):
             methods = exact_methods.get((type_nid, callee), set())
             method_nid = next(iter(methods)) if len(methods) == 1 else None
         else:
