@@ -458,10 +458,27 @@ def _handle_unverified_semantic_shrink(
     partial_semantic_files,
     failed_ast_sources,
     semantic_files,
+    cached_semantic_files=None,
+    sem_cache_mode=None,
+    sem_prompt=None,
+    cache_root=None,
 ):
     """Shared handling for the #3203 unverified-semantic-shrink guard on both the
     raw and clustered write paths (they differ only in where the flag is read
     from — ``merged`` vs ``G.graph``). Always prints the actionable notice.
+
+    The same under-produced source also has to be kept out of the semantic
+    cache (#5083): the cache is unversioned and content-hash keyed, so a
+    degraded chunk would otherwise be replayed as authoritative on every later
+    run, the shrink guard would keep refusing the write, and no LLM call would
+    ever be made again. ``save_semantic_cache`` cannot see graph.json (and must
+    not: it has no business reading the graph), so the entry is stamped
+    ``partial`` here, after the guard has measured the shrink.
+    ``cached_semantic_files`` identifies which shrinking sources were REPLAYED
+    from the cache this run (as opposed to freshly extracted), so the message
+    can call out the poisoned-entry replay instead of repeating the
+    ``--allow-partial`` advice — which would commit the degraded replay and
+    drop the prior nodes.
 
     Returns None when there is no shrink, else ``(incomplete, manifest_files,
     cleared_semantic)`` — the latter two are None unless the guard armed
@@ -485,16 +502,83 @@ def _handle_unverified_semantic_shrink(
         )
         stamped = {f for _flist in manifest_files.values() for f in _flist}
         cleared_semantic = {str(p) for p in semantic_files} - stamped
+
+    def _path_key(value) -> str:
+        p = Path(value)
+        if not p.is_absolute():
+            p = Path(target) / p
+        try:
+            return os.path.normcase(str(p.resolve()))
+        except (OSError, RuntimeError):
+            return os.path.normcase(os.path.abspath(str(p)))
+
+    cached_keys = {_path_key(p) for p in (cached_semantic_files or [])}
+    cached_sources = sorted(
+        sf for sf in unverified_shrink if _path_key(sf) in cached_keys
+    )
+    fresh_sources = sorted(
+        sf for sf in unverified_shrink if _path_key(sf) not in cached_keys
+    )
+
+    marked: list[Path] = []
+    try:
+        from graphify.cache import mark_semantic_cache_partial as _mark_partial
+        marked = _mark_partial(
+            sorted(unverified_shrink),
+            root=Path(target),
+            mode=sem_cache_mode,
+            prompt=sem_prompt,
+            cache_root=cache_root,
+        )
+    except Exception as exc:  # noqa: BLE001 — cache marking is best-effort
+        print(
+            f"[graphify extract] warning: could not mark degraded semantic "
+            f"cache entries: {exc}",
+            file=sys.stderr,
+        )
+
     details = ", ".join(
         f"'{sf}' ({prior} -> {fresh} nodes)"
         for sf, (prior, fresh) in sorted(unverified_shrink.items())
     )
     print(
         f"[graphify extract] semantic extraction is incomplete: unverified semantic "
-        f"shrink detected for {details}. The shrink guard stays armed for this write; "
-        "pass --allow-partial to overwrite a larger existing graph anyway.",
+        f"shrink detected for {details}.",
         file=sys.stderr,
     )
+    if cached_sources:
+        cached_details = ", ".join(
+            f"'{sf}' ({unverified_shrink[sf][0]} -> {unverified_shrink[sf][1]} nodes)"
+            for sf in cached_sources
+        )
+        replay_effect = (
+            "--allow-partial was passed, so the degraded replay is being written "
+            "over the existing graph and the prior nodes are dropped."
+            if cli_allow_partial
+            else "Do NOT pass --allow-partial here: it would write the degraded "
+            "replay over the larger existing graph and drop the prior nodes."
+        )
+        print(
+            f"[graphify extract] {cached_details} was replayed from the semantic "
+            "cache, not freshly extracted, so re-running with the same cache would "
+            "replay it again. " + replay_effect + " Re-run to re-extract the "
+            "marked source(s).",
+            file=sys.stderr,
+        )
+    if marked:
+        print(
+            "[graphify extract] marked "
+            f"{len(marked)} semantic cache entr{'y' if len(marked) == 1 else 'ies'} "
+            f"partial for re-extraction on the next run: "
+            f"{', '.join(str(p) for p in marked)}",
+            file=sys.stderr,
+        )
+    if fresh_sources and not cli_allow_partial:
+        print(
+            "[graphify extract] The shrink guard stays armed for this write; "
+            "pass --allow-partial to overwrite a larger existing graph anyway.",
+            file=sys.stderr,
+        )
     return incomplete, manifest_files, cleared_semantic
 
 
@@ -4834,7 +4918,8 @@ def dispatch_command(cmd: str) -> None:
             # graphify-out/ dir into a project that asked for external output.
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
-            ast_kwargs: dict = {"cache_root": out_root, "root": target}
+            # One extract() per process here, so free its parse memo when done.
+            ast_kwargs: dict = {"cache_root": out_root, "root": target, "release_parse_memo": True}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
@@ -4980,10 +5065,13 @@ def dispatch_command(cmd: str) -> None:
                         _ctx_edges.append(_ctx_edge)
                 except Exception:
                     _ctx_nodes, _ctx_edges = [], []
+                # Only the context lists are needed; free the full parse.
+                _ctx_graph = None
                 if _ctx_nodes:
                     ast_kwargs["resolution_context_nodes"] = _ctx_nodes
                 if _ctx_edges:
                     ast_kwargs["resolution_context_edges"] = _ctx_edges
+                del _ctx_nodes, _ctx_edges
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
             try:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
@@ -4998,6 +5086,9 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+            # Only extract() reads the resolution context; free it before the
+            # semantic pass and graph build.
+            del ast_kwargs
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -5018,6 +5109,11 @@ def dispatch_command(cmd: str) -> None:
         _partial_semantic_files: set[str] = set()
         sem_cache_hits = 0
         sem_cache_misses = 0
+        # Files served from the semantic cache this run (absolute paths), used
+        # by the #3203 shrink handler to tell a poisoned cached replay from a
+        # fresh under-production (#5083).
+        _cached_semantic_paths: list[str] = []
+        uncached_paths: list[str] = []
         # Deep mode uses its own namespace (cache/semantic-deep/) so deep and
         # standard results for the same content never shadow each other (#1894).
         sem_cache_mode = "deep" if deep_mode else None
@@ -5042,6 +5138,10 @@ def dispatch_command(cmd: str) -> None:
                 )
             sem_cache_hits = len(semantic_files) - len(uncached_paths)
             sem_cache_misses = len(uncached_paths)
+            _uncached_set = set(uncached_paths)
+            _cached_semantic_paths = [
+                p for p in sem_paths_str if p not in _uncached_set
+            ]
             sem_result["nodes"].extend(cached_nodes)
             sem_result["edges"].extend(cached_edges)
             sem_result["hyperedges"].extend(cached_hyperedges)
@@ -5439,6 +5539,10 @@ def dispatch_command(cmd: str) -> None:
                     partial_semantic_files=_partial_semantic_files,
                     failed_ast_sources=_failed_ast_sources,
                     semantic_files=semantic_files,
+                    cached_semantic_files=_cached_semantic_paths,
+                    sem_cache_mode=sem_cache_mode,
+                    sem_prompt=sem_prompt,
+                    cache_root=out_root,
                 )
                 if _shrink is not None and _shrink[0]:
                     _extraction_incomplete = True
@@ -5596,6 +5700,10 @@ def dispatch_command(cmd: str) -> None:
                     partial_semantic_files=_partial_semantic_files,
                     failed_ast_sources=_failed_ast_sources,
                     semantic_files=semantic_files,
+                    cached_semantic_files=_cached_semantic_paths,
+                    sem_cache_mode=sem_cache_mode,
+                    sem_prompt=sem_prompt,
+                    cache_root=out_root,
                 )
                 if _shrink is not None and _shrink[0]:
                     _extraction_incomplete = True
@@ -5614,6 +5722,11 @@ def dispatch_command(cmd: str) -> None:
         else:
             G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
         stages.mark("build")
+        # G holds its own copy of every node and edge now. Drop the raw
+        # extraction lists so cluster/analyze/export can reuse that memory.
+        ast_result = sem_result = pg_result = cargo_result = fresh = {}
+        cached_nodes = cached_edges = cached_hyperedges = []
+        merged = {"input_tokens": merged["input_tokens"], "output_tokens": merged["output_tokens"]}
         if G.number_of_nodes() == 0:
             print(
                 "[graphify extract] graph is empty — extraction produced no nodes. "

@@ -1201,9 +1201,9 @@ def _write_chunk(out_dir: Path, payload: dict) -> None:
 def test_extraction_specs_demand_complete_reads_and_report_coverage():
     """Every host's subagent prompt states the Read cap and asks for coverage.
 
-    Both spec variants must carry it: the compact prompt ships to codex/claw/
-    kiro/pi, the verbose one everywhere else, so fixing only one leaves hosts
-    silently half-reading files.
+    Every spec variant must carry it: the compact prompt ships to codex, its
+    disk-writing twin to claw/kiro/pi, the verbose one everywhere else, so
+    fixing only one leaves hosts silently half-reading files.
     """
     platforms = gen.load_platforms()
     seen_variants = set()
@@ -1217,9 +1217,33 @@ def test_extraction_specs_demand_complete_reads_and_report_coverage():
         assert "coverage" in spec, f"[{key}] the prompt never asks for a coverage report"
         # The contract must be in the schema the subagent emits, not only the prose.
         assert '"coverage":{' in spec, f"[{key}] the emitted schema carries no coverage field"
-    assert seen_variants == {"verbose", "compact"}, (
-        "this test must cover both spec variants, not just one"
+    assert seen_variants == {"verbose", "compact", "compact-disk"}, (
+        "this test must cover every spec variant, not just one"
     )
+
+
+def test_extraction_spec_writes_chunk_path_when_dispatch_passes_one():
+    """A host whose dispatch substitutes CHUNK_PATH must get a spec that writes it.
+
+    claw/kiro/pi dispatch says "have it write the result to CHUNK_PATH", but
+    they used to ship the compact spec, which never named CHUNK_PATH — so a
+    subagent following the prompt verbatim returned JSON inline and Step B3
+    found no chunk file. Codex is the inverse: its workers return JSON and the
+    orchestrator writes the file, so its spec must not ask for a write.
+    """
+    platforms = gen.load_platforms()
+    for key, platform in sorted(platforms.items()):
+        if platform.bucket != "split":
+            continue
+        core = _platform_artifacts(key)[0]
+        spec = _platform_artifacts(key)[1]["extraction-spec.md"]
+        if "CHUNK_PATH must be an **absolute** path" in core:
+            assert "and CHUNK_PATH)" in spec, f"[{key}] spec omits CHUNK_PATH from its substitutions"
+            assert spec.rstrip().endswith("CHUNK_PATH\n```"), (
+                f"[{key}] spec never tells the subagent to write its JSON to CHUNK_PATH"
+            )
+        if "return the JSON inline" in core:
+            assert "CHUNK_PATH" not in spec, f"[{key}] spec asks for a CHUNK_PATH the dispatch never passes"
 
 
 def test_core_bounds_semantic_chunks_by_lines_as_well_as_file_count():

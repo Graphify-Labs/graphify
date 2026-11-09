@@ -723,6 +723,10 @@ def _fold_confidence(obj: dict) -> None:
       model-drifted string confidences re-warns on every command forever,
       identically to the numeric gap above.
 
+    Structured JSON values (lists/objects) carry no usable confidence. They
+    fall back to ``INFERRED`` without inventing a numeric score, just like
+    an unrecognized nonnumeric string, before validation can hash them.
+
     ``confidence_score`` itself is NOT popped in either case: it is a
     legitimate companion field the edge loop sanitizes and to_json
     round-trips.
@@ -743,6 +747,8 @@ def _fold_confidence(obj: dict) -> None:
                 except ValueError:
                     pass
             obj["confidence"] = "INFERRED"
+    elif isinstance(_conf, (list, dict)):
+        obj["confidence"] = "INFERRED"
     if not obj.get("confidence") and obj.get("confidence_score") is not None:
         obj["confidence"] = "INFERRED"
 
@@ -1622,7 +1628,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if node.get("file_type") in (None, ""):
             node["file_type"] = "concept"
         ft = node.get("file_type", "")
-        if ft and ft not in {"code", "document", "paper", "image", "rationale", "concept"}:
+        if not isinstance(ft, str):
+            node["file_type"] = "concept"
+        elif ft and ft not in {"code", "document", "paper", "image", "rationale", "concept"}:
             node["file_type"] = _FILE_TYPE_SYNONYMS.get(ft, "concept")
 
     # Canonicalize hyperedge member lists (#1561): producers sometimes key the
@@ -2476,7 +2484,8 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
 
 def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
     """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
-    an incremental merge, accepting both the ``links`` and ``edges`` spellings.
+    an incremental merge, accepting both the ``links`` and ``edges`` spellings
+    and either hyperedge persistence slot (top-level or ``graph.hyperedges``).
 
     Reads the JSON directly instead of going through node_link_graph().
     The latter rebuilds an undirected nx.Graph and then enumerating
@@ -2504,6 +2513,26 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     links_key = "links" if "links" in data else "edges"
     nodes = list(data.get("nodes", []))
     edges = list(data.get(links_key, []))
+    # Hyperedge persistence is dual-slot (#2485): to_json writes BOTH a
+    # top-level `hyperedges` key and the nested `graph.hyperedges` (node_link
+    # graph attrs), but node_link_data-only writers emit just the nested slot.
+    # build_from_json already folds the nested slot onto the top-level key;
+    # this loader must do the same or an incremental merge silently drops a
+    # nested-only graph's whole hyperedge set — the data loss #5081 reported,
+    # still reachable through that writer shape.
+    #
+    # A top-level LIST wins: it is the canonical slot, so an explicit [] there
+    # must not be resurrected from a stale nested copy (the CLI's source pruner
+    # also edits only the top-level key). A missing, null, or otherwise
+    # malformed top-level value falls back to the nested list instead of
+    # dropping a set that is still readable.
+    top_level = data.get("hyperedges")
+    if isinstance(top_level, list):
+        hyperedges = top_level
+    else:
+        graph_attrs = data.get("graph")
+        nested = graph_attrs.get("hyperedges") if isinstance(graph_attrs, dict) else None
+        hyperedges = nested if isinstance(nested, list) else []
     # Backfill tier provenance on legacy items (#2334): _origin is stamped at
     # extraction time only (extract.py for AST, and the semantic path never
     # stamps), so pre-0.9.16 graphs and externally-merged fragments carry
@@ -2516,7 +2545,7 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     return (
         nodes,
         edges,
-        list(data.get("hyperedges", [])),
+        hyperedges,
         bool(data.get("directed", False)),
     )
 
@@ -3097,6 +3126,28 @@ def build_merge(
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)
 
+        # build() revalidated hyperedge members BEFORE this prune removed the
+        # deleted files' nodes, so a surviving cross-file hyperedge can still
+        # name one of them (#5081). Now that the node set is final, mirror
+        # build()'s #1916 policy: drop members that no longer resolve, and drop
+        # the hyperedge itself only when no member remains (single-member
+        # hyperedges are legal).
+        if G.graph.get("hyperedges"):
+            _pruned_hyperedges = []
+            for he in G.graph["hyperedges"]:
+                if not isinstance(he, dict):
+                    _pruned_hyperedges.append(he)
+                    continue
+                members = he.get("nodes")
+                if isinstance(members, list):
+                    live = [m for m in members if _hashable(m) and m in G]
+                    if not live:
+                        continue
+                    if live != members:
+                        he["nodes"] = live
+                _pruned_hyperedges.append(he)
+            G.graph["hyperedges"] = _pruned_hyperedges
+
         orphaned = _sweep_orphans()
         n_nodes += len(orphaned)
         # Excuse only saved nodes this prune removed (#3774). A stub minted
@@ -3241,6 +3292,24 @@ def build_merge(
 
     if unverified_semantic_shrink:
         G.graph["_unverified_semantic_shrink"] = unverified_semantic_shrink
+
+    # Saved sources whose semantic nodes this run replaced or pruned on purpose,
+    # for to_json's lost-node check: LLM ids are not stable across re-extracts.
+    # A source with an unverified shrink (#3203) stays guarded. Popped by to_json.
+    def _replaced_on_purpose(sf: str) -> bool:
+        norm = _norm_source_file(sf, _replace_root) or sf
+        if norm in unverified_semantic_shrink:
+            return False
+        return sf in new_sem_sources or norm in new_sem_sources or _prune_match(sf)
+
+    _replaced_sources = {
+        n["source_file"] for n in _disk_nodes
+        if isinstance(n, dict) and not _is_ast_tier(n)
+        and isinstance(n.get("source_file"), str) and n["source_file"]
+        and _replaced_on_purpose(n["source_file"])
+    }
+    if _replaced_sources:
+        G.graph["_replaced_sources"] = sorted(_replaced_sources)
 
     return G
 

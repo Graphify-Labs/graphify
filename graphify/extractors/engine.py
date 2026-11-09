@@ -207,10 +207,22 @@ def _csharp_method_signature(node, source: bytes, params=None) -> tuple[str, dic
     variadic = extension = False
     # A primary constructor's parameter list is an unnamed child of its type
     # declaration, so the caller hands it over; the type's own type parameters
-    # are not the constructor's.
+    # are not the constructor's (#5054).
     primary = params is not None
     if params is None:
         params = node.child_by_field_name("parameters")
+    # The method's own type parameters, so `this T` can be told apart from a
+    # method on a real class that happens to be named T (#4828).
+    type_param_nodes = [
+        p for c in node.children if c.type == "type_parameter_list"
+        for p in c.children if p.type in ("type_parameter", "identifier")
+    ]
+    type_param_names = {
+        "".join(_read_text(p, source).split()) for p in type_param_nodes
+    }
+    extended_type: str | None = None
+    extended_arity = 0
+    extended_is_type_param = False
     children = params.children if params is not None else []
     for i, c in enumerate(children):
         if c.type == "parameter":
@@ -223,6 +235,23 @@ def _csharp_method_signature(node, source: bytes, params=None) -> tuple[str, dic
             arity += 1
             if "this" in mods and arity == 1:
                 extension = True
+                # The extended type is the join key an extension call site
+                # needs; record it here, where the declaration is still at
+                # hand, instead of re-reading the parameter text downstream
+                # (#4828). `_read_csharp_type_name` already strips the
+                # namespace qualifier and the generic arguments, so this is
+                # the same simple name a receiver is stamped with.
+                ext_info = _read_csharp_type_name(type_node, source)
+                if ext_info and ext_info[0]:
+                    extended_type = ext_info[0]
+                    extended_arity = sum(
+                        1 for ch in (type_node.children if type_node is not None else [])
+                        if ch.type == "type_argument_list"
+                        for a in ch.children if a.is_named
+                    )
+                extended_is_type_param = bool(
+                    extended_type and extended_type in type_param_names
+                )
             if not any(x.type == "=" for x in c.children):
                 required += 1
         elif c.type == "params":
@@ -230,10 +259,9 @@ def _csharp_method_signature(node, source: bytes, params=None) -> tuple[str, dic
             parts.append("params " + ("".join(_read_text(type_node, source).split()) if type_node is not None else ""))
             arity += 1
             variadic = True
-    type_params = 0 if primary else sum(
-        1 for c in node.children if c.type == "type_parameter_list"
-        for _p in c.children if _p.type in ("type_parameter", "identifier")
-    )
+    # A primary constructor contributes no type parameters of its own (#5054);
+    # otherwise count the method's own type parameters (#4828).
+    type_params = 0 if primary else len(type_param_nodes)
     signature = ",".join(parts)
     if type_params:
         signature = f"`{type_params}:{signature}"
@@ -244,6 +272,16 @@ def _csharp_method_signature(node, source: bytes, params=None) -> tuple[str, dic
         meta["min_arity"] = min_arity
     if variadic:
         meta["variadic"] = True
+    if extension:
+        # Call-side facts: a member-call resolver can index declarations by
+        # `extended_type` and bind `recv.M(args)` against `[min_arity, arity]`
+        # (#4828). Persisted on the node so a merged/sharded build keeps them.
+        meta["extension"] = True
+        if extended_type:
+            meta["extended_type"] = extended_type
+            meta["extended_type_arity"] = extended_arity
+        if extended_is_type_param:
+            meta["extended_is_type_param"] = True
     return signature, meta
 
 
@@ -3287,9 +3325,66 @@ def _cpp_qualified_name(node, name: str, source: bytes) -> str:
     return "::".join([*reversed(parents), name])
 
 
-def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int]]]:
+def _cpp_declared_receiver_type(node, declarator, source: bytes) -> str:
+    """Keep qualification and pointer shape; unsupported declarations stay unknown."""
+    type_node = node.child_by_field_name("type")
+    if type_node is None or type_node.type not in {
+        "type_identifier", "qualified_identifier", "template_type",
+    }:
+        return ""
+    name = _read_text(type_node, source)
+    while declarator is not None and declarator.type not in {"identifier", "field_identifier"}:
+        if declarator.type == "pointer_declarator":
+            name += "*"
+        elif declarator.type not in {"reference_declarator", "init_declarator"}:
+            return ""
+        inner = declarator.child_by_field_name("declarator")
+        if inner is None and declarator.type == "reference_declarator":
+            inner = next((c for c in declarator.named_children if c.type != "type_qualifier"), None)
+        declarator = inner
+    return name if declarator is not None else ""
+
+
+def _cpp_receiver_chain(node, source: bytes) -> list[list[str]]:
+    """Pairs of receiver/member names and their following access operators."""
+    members, operators = [], []
+    while node is not None:
+        if node.type == "parenthesized_expression" and len(node.named_children) == 1:
+            node = node.named_children[0]
+        elif node.type == "field_expression":
+            field = node.child_by_field_name("field")
+            operator = node.child_by_field_name("operator")
+            if field is None or field.type != "field_identifier" or operator is None:
+                return []
+            members.append(_read_text(field, source))
+            operators.append(_read_text(operator, source))
+            node = node.child_by_field_name("argument")
+        elif node.type in {"identifier", "this"}:
+            members.append(_read_text(node, source))
+            return [list(pair) for pair in zip(reversed(members[1:]), reversed(operators))]
+        else:
+            return []
+    return []
+
+
+def _cpp_class_fields(node, source: bytes) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    body = node.child_by_field_name("body")
+    if body is not None:
+        for field in body.named_children:
+            if field.type != "field_declaration":
+                continue
+            for declarator in field.children_by_field_name("declarator"):
+                name = _cpp_declarator_name(declarator, source)
+                if name:
+                    value = _cpp_declared_receiver_type(field, declarator, source)
+                    fields[name] = value if fields.get(name, value) == value else ""
+    return fields
+
+
+def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int, str, str]]]:
     """Lexical lifetimes of named C++ locals/parameters, not corpus callees."""
-    ranges: dict[str, list[tuple[int, int]]] = {}
+    ranges: dict[str, list[tuple[int, int, str, str]]] = {}
     scopes = {"compound_statement", "for_statement", "for_range_loop", "if_statement",
               "switch_statement", "catch_clause", "function_definition", "lambda_expression"}
     stack = [body]
@@ -3302,15 +3397,22 @@ def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, 
         node = stack.pop()
         if node.type in {"class_specifier", "struct_specifier", "function_definition"}:
             continue
-        if node.type in {"declaration", "parameter_declaration", "optional_parameter_declaration"}:
+        if node.type in {"declaration", "parameter_declaration", "optional_parameter_declaration",
+                         "lambda_capture_initializer"}:
             scope = node.parent
             while scope is not None and scope.type not in scopes:
                 scope = scope.parent
             if scope is not None:
-                for declarator in node.children_by_field_name("declarator"):
+                declarators = node.children_by_field_name(
+                    "left" if node.type == "lambda_capture_initializer" else "declarator")
+                for declarator in declarators:
                     name = _cpp_declarator_name(declarator, source)
                     if name:
-                        ranges.setdefault(name, []).append((declarator.start_byte, scope.end_byte))
+                        ranges.setdefault(name, []).append((
+                            declarator.start_byte, scope.end_byte,
+                            _cpp_declared_receiver_type(node, declarator, source),
+                            _cpp_qualified_name(node, "", source).rstrip(":"),
+                        ))
         stack.extend(node.named_children)
     return ranges
 
@@ -3406,15 +3508,18 @@ def _swift_local_var_types(body_node, source: bytes, table: dict[str, str],
 def _csharp_receiver_type_name(type_node, source: bytes) -> str | None:
     """Resolve a C# declared type to a receiver-typable class name, or None.
 
-    A genuine C# class name is Pascal-cased; predefined primitives
-    (int/bool/string) and ``dynamic`` never own a resolvable method definition
-    here, and ``var`` (``implicit_type``) carries no name at all.
+    Predefined primitives (``int``/``bool``/``string``) and ``dynamic`` own no
+    definition *inside this corpus*, so an instance lookup on them never binds.
+    They are still returned: an extension method (``this string``) dispatches on
+    exactly that type name, and dropping the name made every such call
+    untypeable before it reached the extension pass (#4828). ``var``
+    (``implicit_type``) still carries no name at all.
     """
     info = _read_csharp_type_name(type_node, source)
     if not info:
         return None
     name = info[0]
-    return name if name and name[:1].isupper() else None
+    return name or None
 
 
 _CSHARP_LOOP_SEQUENCES = frozenset({
@@ -4245,6 +4350,8 @@ def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges
                     "source_file": str_path,
                     "source_location": f"L{line}",
                     "weight": 1.0,
+                    "_require_target_file": str(resolved_path),
+                    "_require_imported_name": sym,
                 })
     return found
 
@@ -6996,6 +7103,9 @@ def _extract_generic(
                 cpp_qualified_names[class_nid] = (
                     qualified if cpp_qualified_names.get(class_nid, qualified) == qualified else ""
                 )
+                if node.child_by_field_name("body") is not None:
+                    class_node = next(n for n in nodes if n["id"] == class_nid)
+                    class_node["_cpp_fields"] = _cpp_class_fields(node, source)
             # A nested class/object/trait is contained by its ENCLOSING type, not
             # the file (#2040). parent_class_nid is threaded down the walk for
             # every language and is always a real class-like node (never a
@@ -10212,28 +10322,29 @@ def _extract_generic(
                                 obj.child_by_field_name("name"), source)
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
+                cpp_chain = []
+                cpp_binding = None
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
-                        if any(start <= node.start_byte < end for start, end in
+                        if any(start <= node.start_byte < end for start, end, *_ in
                                cpp_local_bindings.get(caller_nid, {}).get(callee_name, ())):
                             callee_name = None
                     elif func_node.type == "field_expression":
                         # `f.bar()` / `f->bar()` / `this->bar()`: receiver is the
                         # `argument` (object) field, callee is the `field` (#1547).
-                        # Capture a simple-identifier (or `this`) receiver so the
-                        # cross-file pass can resolve it through the file's type
-                        # table; chained receivers (`a.b.method()`) are left to bail.
+                        # Preserve the full chain for class-scoped cross-file lookup.
                         is_member_call = True
                         name = func_node.child_by_field_name("field")
                         if name:
                             callee_name = _read_text(name, source)
-                        obj = func_node.child_by_field_name("argument")
-                        if obj is not None and obj.type == "identifier":
-                            member_receiver = _read_text(obj, source)
-                        elif obj is not None and obj.type == "this":
-                            member_receiver = "this"
+                        cpp_chain = _cpp_receiver_chain(func_node, source)
+                        if cpp_chain:
+                            member_receiver = cpp_chain[0][0]
+                            bindings = [b for b in cpp_local_bindings.get(caller_nid, {}).get(
+                                member_receiver, ()) if b[0] <= node.start_byte < b[1]]
+                            cpp_binding = max(bindings, key=lambda b: b[0]) if bindings else None
                     elif func_node.type == "qualified_identifier":
                         # `Foo::bar()`: the scope (`Foo`) is the receiver type named
                         # explicitly in source (EXTRACTED), the name is the callee.
@@ -10499,16 +10610,15 @@ def _extract_generic(
                 # name must not pick whichever `m` this file declares: through
                 # `Base* b`, `b->draw()` bound to the file's `Derived::draw`.
                 # Deferring sends it to _resolve_cpp_member_calls, which types x
-                # from the file's local/parameter/field table and bails when it
-                # can't. An untyped receiver and `this->m()` keep the in-file
-                # binding they had.
+                # from lexical bindings and class fields. Chains must defer even
+                # when their root has no known type; bare-name matching is unsafe.
                 _cpp_member_defer = (
                     config.ts_module == "tree_sitter_cpp"
                     and is_member_call
                     and not is_scoped_call
-                    and member_receiver is not None
-                    and member_receiver != "this"
-                    and member_receiver in type_table
+                    and func_node is not None and func_node.type == "field_expression"
+                    and (len(cpp_chain) != 1 or member_receiver in type_table
+                         or (cpp_binding is not None and bool(cpp_binding[2])))
                 )
                 if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
@@ -10724,6 +10834,11 @@ def _extract_generic(
                         # suffix sets, so a source_file suffix alone can't separate them.
                         if config.ts_module == "tree_sitter_cpp":
                             rc_entry["lang"] = "cpp"
+                            if func_node is not None and func_node.type == "field_expression":
+                                rc_entry["cpp_receiver_chain"] = cpp_chain
+                                if cpp_binding is not None:
+                                    rc_entry["cpp_receiver_type"] = cpp_binding[2]
+                                    rc_entry["cpp_receiver_scope"] = cpp_binding[3]
                         # PHP: separate a scoped class call (`Helper::m()`, source-
                         # qualified) from an instance member call (`$g->m()`), whose
                         # receiver is a variable the resolver must type through the
@@ -11111,7 +11226,7 @@ def _extract_generic(
     # every function body so the cross-file member-call pass can type a receiver
     # (#1547). File-scoped (not per-body): a later body's `Foo f;` doesn't clobber
     # an earlier binding (`var not in table`), keeping resolution conservative.
-    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int]]]] = {}
+    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int, str, str]]]] = {}
     if config.ts_module == "tree_sitter_cpp":
         # Each function's table first: a local shadows a parameter there. The
         # file table is shared by every function, so a name typed differently in

@@ -32,9 +32,11 @@ from graphify.extractors.base import _read_source_text
 # This set has to keep pace with ``detect.DOC_EXTENSIONS``: anything classified
 # as a document reaches the semantic pass, and anything the pass sees that is
 # NOT listed here is silently cut at ``_FILE_CHAR_CAP`` by ``_read_files``. The
-# two lists drifted as DOC_EXTENSIONS grew — .qmd, .skill, .html, .yaml and .yml
-# were documents that never got sliced, so a 38k-character one reached the model
-# as its first 20k with no warning and no partial marker (#2900).
+# two lists drifted as DOC_EXTENSIONS grew — .qmd, .skill and .html were
+# documents that never got sliced, so a 38k-character one reached the model as
+# its first 20k with no warning and no partial marker (#2900). .yaml/.yml are
+# intentionally NOT here: they are code, not documents (reclassified in #2214),
+# and never reach the semantic pass.
 # ``tests/test_oversized_document_slicing.py`` pins the relationship so a future
 # addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
 _SPLITTABLE_TEXT_SUFFIXES = frozenset({
@@ -248,3 +250,18 @@ def bisect_slice(fs: FileSlice) -> tuple[FileSlice, FileSlice] | None:
     left = FileSlice(fs.path, fs.start, cut, fs.index, fs.total)
     right = FileSlice(fs.path, cut, fs.end, fs.index, fs.total)
     return left, right
+
+
+def make_full_slice(path: Path) -> FileSlice | None:
+    """Create a full-range ``FileSlice`` for an eligible splittable text file (#5072).
+
+    Returns None for non-splittable files (code, binary, unreadable).
+    """
+    if not is_splittable_text(path):
+        return None
+    try:
+        text = unit_source_text(path)
+    except Exception:
+        return None
+    return FileSlice(path=path, start=0, end=len(text), index=0, total=1)
+

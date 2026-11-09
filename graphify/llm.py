@@ -22,6 +22,7 @@ from graphify.file_slice import (
     FileSlice,
     bisect_slice,
     expand_oversized_files,
+    make_full_slice,
     read_slice_text,
     unit_path,
 )
@@ -362,6 +363,34 @@ def _openai_max_tokens_kwarg(backend: str, max_tokens: int) -> dict[str, int]:
     # DeepSeek documents max_tokens and ignores max_completion_tokens.
     key = "max_tokens" if backend == "deepseek" else "max_completion_tokens"
     return {key: max_tokens}
+
+
+def _provider_extra_headers(raw: object, name: str = "") -> dict[str, str] | None:
+    """Validate a custom provider's providers.json ``extra_headers`` map (#3680).
+
+    Some OpenAI-compatible gateways need request headers beyond Authorization
+    (OpenCode Go rejects a request without ``x-opencode-session``). They are
+    passed to the OpenAI client as ``default_headers``, the header counterpart
+    of ``extra_body``. Only string-to-string entries are kept, and an
+    ``Authorization`` entry is dropped: the API key always comes from the
+    provider's ``env_key``, so the config cannot swap in a different credential.
+    Returns None when nothing usable remains.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        print(f"[graphify] WARNING: provider {name!r} extra_headers is not an object; ignoring.", file=sys.stderr)
+        return None
+    headers: dict[str, str] = {}
+    for key, value in raw.items():
+        if not (isinstance(key, str) and isinstance(value, str)):
+            print(f"[graphify] WARNING: provider {name!r} extra_headers entry {key!r} is not a string pair; ignoring it.", file=sys.stderr)
+            continue
+        if key.strip().lower() == "authorization":
+            print(f"[graphify] WARNING: provider {name!r} extra_headers cannot set Authorization; ignoring it.", file=sys.stderr)
+            continue
+        headers[key] = value
+    return headers or None
 
 
 # Model-name fragments for OpenAI-compatible "reasoning" models that reject an
@@ -1557,6 +1586,7 @@ def _call_openai_compat(
     deep_mode: bool = False,
     images: list[_ImageRef] | None = None,
     extra_body: dict | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
     ollama_seed = _resolve_ollama_seed() if backend == "ollama" else None
@@ -1582,7 +1612,8 @@ def _call_openai_compat(
     if backend == "ollama" and not os.environ.get("GRAPHIFY_MAX_RETRIES", "").strip():
         _retries = 0
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=_resolve_api_timeout(),
-                    max_retries=_retries)
+                    max_retries=_retries,
+                    **({"default_headers": extra_headers} if extra_headers else {}))
     kwargs: dict = {
         "model": model,
         "messages": [
@@ -2240,6 +2271,7 @@ def extract_files_direct(
             deep_mode=deep_mode,
             images=image_refs,
             extra_body=cfg.get("extra_body"),
+            extra_headers=_provider_extra_headers(cfg.get("extra_headers"), backend),
         )
 
     # Verify code-typed nodes against the source the model read and downgrade the
@@ -2575,10 +2607,17 @@ def _extract_with_adaptive_retry(
         }
 
     def _split_lone_slice() -> "tuple[FileSlice, FileSlice] | None":
-        # When a single-unit chunk is a slice, bisect the slice so we can retry
-        # on a smaller range rather than give up (#1369).
-        if len(chunk) == 1 and isinstance(chunk[0], FileSlice) and _depth < max_depth:
-            return bisect_slice(chunk[0])
+        # When a single-unit chunk is a slice (or an eligible splittable text file
+        # below the char cap), bisect the slice so we can retry on a smaller
+        # range rather than give up (#1369, #5072).
+        if len(chunk) == 1 and _depth < max_depth:
+            unit = chunk[0]
+            if isinstance(unit, FileSlice):
+                return bisect_slice(unit)
+            if isinstance(unit, (Path, str)):
+                fs = make_full_slice(Path(unit))
+                if fs is not None:
+                    return bisect_slice(fs)
         return None
 
     try:
@@ -3329,7 +3368,9 @@ def _call_llm(
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
-    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
+    _headers = _provider_extra_headers(cfg.get("extra_headers"), backend)
+    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries(),
+                    **({"default_headers": _headers} if _headers else {}))
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],
