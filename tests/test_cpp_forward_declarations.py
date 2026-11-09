@@ -162,6 +162,32 @@ def test_group_refresh_stays_inside_the_permitted_corpus_and_handles_deletions(t
     assert paths == [tmp_path / "forward.hpp"]
 
 
+@pytest.mark.parametrize("included", [False, True])
+def test_external_cache_anchor_keeps_distinct_source_and_include_identities(tmp_path, included):
+    source = tmp_path / "source"
+    source.mkdir()
+    forward = source / "forward.hpp"
+    definition = source / "service.hpp"
+    forward.write_text("class Service;", encoding="utf-8")
+    definition.write_text(('#include "forward.hpp"\n' if included else '')
+                          + "class Service {};", encoding="utf-8")
+    result = extract([forward, definition], cache_root=tmp_path / "cache", parallel=False)
+    owners = _classes(result)
+    assert len(owners) == (1 if included else 2)
+    if included:
+        assert owners[0]["metadata"]["cpp_declaration_sites"] == [
+            {"source_file": "../source/forward.hpp", "source_location": "L1"},
+        ]
+        assert owners[0]["_cpp_reconcile_files"] == ["../source/forward.hpp", "../source/service.hpp"]
+
+
+@pytest.mark.parametrize("source,target", [("", ""), ("", "known.hpp"), ("known.hpp", "")])
+def test_unknown_include_endpoints_never_prove_symbol_equivalence(source, target):
+    from graphify.extractors.resolution import _cpp_include_path
+
+    assert _cpp_include_path({source: {target}}, source, target) == []
+
+
 @pytest.mark.parametrize("update", ["cli", "watch"])
 @pytest.mark.parametrize("change", ["forward", "definition", "proof", "delete"])
 def test_persisted_graph_rechecks_the_group_when_a_source_or_proof_changes(tmp_path, update, change):

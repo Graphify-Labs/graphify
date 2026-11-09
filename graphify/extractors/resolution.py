@@ -3640,11 +3640,11 @@ _DECLDEF_HEADER_SUFFIXES = frozenset({".h", ".hpp", ".hh", ".hxx"})
 _DECLDEF_IMPL_SUFFIXES = frozenset({".m", ".mm", ".cpp", ".cc", ".cxx", ".c"})
 
 def _cpp_source_key(source_file: str | Path, root: Path) -> str:
-    """Canonical corpus-relative identity for persisted C++ source/proof paths."""
+    """Portable source/proof identity; the permitted corpus is checked separately."""
     if not source_file:
         return ""
     try:
-        return (root / source_file).resolve().relative_to(root.resolve()).as_posix()
+        return os.path.relpath((root / source_file).resolve(), root.resolve()).replace("\\", "/")
     except (OSError, RuntimeError, ValueError):
         return ""
 
@@ -3697,6 +3697,8 @@ def _cpp_exact_includes(resolution_nodes: list[dict], edges: list[dict], root: P
 
 
 def _cpp_include_path(includes: dict[str, set[str]], start: str, target: str) -> list[str]:
+    if not start or not target:
+        return []
     pending = [(start, [start])]
     visited = {start}
     for current, path in pending:
