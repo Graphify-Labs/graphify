@@ -148,7 +148,10 @@ def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
         if value is not None:
             _python_collect_type_refs(value, source, generic, out)
         for c in node.children:
-            if c is value or not c.is_named:
+            # `==`, not `is`: py-tree-sitter hands back a new Node object on
+            # every access, so `is` never matched and the value was walked a
+            # second time as one of its own generic arguments.
+            if c == value or not c.is_named:
                 continue
             _python_collect_type_refs(c, source, True, out)
         return
