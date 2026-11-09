@@ -94,6 +94,14 @@ def test_build_tree_default_root_keeps_hierarchy():
     assert "a.py" in names and "sub" in names
 
 
+def test_build_tree_single_file_common_root_is_directory():
+    graph = _graph({"pkg/a.py": "func_a"})
+    tree = build_tree(graph)
+    assert tree["name"] == "pkg"
+    assert [c["name"] for c in tree["children"]] == ["a.py"]
+    assert [c["name"] for c in tree["children"][0]["children"]] == ["func_a"]
+
+
 def _merged_graph(per_repo: dict[str, dict[str, str]]) -> dict:
     """Node-link graph shaped like a merge-graphs result: every node is
     repo-tagged and keeps its repo-relative source_file."""

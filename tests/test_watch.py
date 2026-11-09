@@ -1865,6 +1865,64 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
+def test_watch_non_linux_handler_accepts_events_without_watched_entry(
+    tmp_path, monkeypatch
+):
+    """#5075: macOS and Windows keep the recursive schedule, so their handler
+    must accept file events even though the manual `watched` map is empty."""
+    import threading
+
+    from graphify import watch as watch_mod
+    from watchdog import observers
+    from watchdog.events import FileCreatedEvent
+    from watchdog.observers import polling
+
+    watch_root = tmp_path / "corpus"
+    watch_root.mkdir()
+    target = watch_root / "app.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+
+    captured = {}
+    rebuild_calls: list[Path] = []
+
+    class FakeObserver:
+        def schedule(self, handler, path, *, recursive=False, event_filter=None):
+            captured["handler"] = handler
+            captured["recursive"] = recursive
+
+        def start(self):
+            pass
+
+    fake = FakeObserver()
+    monkeypatch.setattr(observers, "Observer", lambda: fake)
+    monkeypatch.setattr(polling, "PollingObserver", lambda: fake)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        watch_mod, "_rebuild_code", lambda p, **kw: rebuild_calls.append(p) or True
+    )
+    monkeypatch.setattr(watch_mod, "_notify_only", lambda p: None)
+
+    thread = threading.Thread(
+        target=watch_mod.watch,
+        args=(watch_root,),
+        kwargs={"debounce": 0.1},
+        daemon=True,
+    )
+    thread.start()
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and "handler" not in captured:
+        time.sleep(0.01)
+    assert captured.get("recursive") is True
+
+    captured["handler"].on_any_event(FileCreatedEvent(str(target)))
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not rebuild_calls:
+        time.sleep(0.05)
+    assert rebuild_calls, "the recursive handler dropped a real file event"
+
+
+@pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
 def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     """gh-928: .graphifyignore must be parsed exactly once at watch() startup,
     not per filesystem event. Otherwise busy volumes re-read the file
@@ -4938,7 +4996,7 @@ def test_watch_schedules_change_only_event_filter(tmp_path, monkeypatch):
 
     _run_watch_with_fake_observer(tmp_path, monkeypatch, FakeObserver())
 
-    assert captured["recursive"] is True
+    assert captured["recursive"] is (not sys.platform.startswith("linux"))
     assert captured["event_filter"] == _watch_event_filter()
     assert we.FileOpenedEvent not in captured["event_filter"]
     if hasattr(we, "FileClosedNoWriteEvent"):
@@ -4957,7 +5015,10 @@ def test_watch_falls_back_when_watchdog_lacks_event_filter(tmp_path, monkeypatch
 
     _run_watch_with_fake_observer(tmp_path, monkeypatch, OldObserver())
 
-    assert captured == {"recursive": True, "called": True}
+    assert captured == {
+        "recursive": not sys.platform.startswith("linux"),
+        "called": True,
+    }
 
 
 @pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
@@ -4994,7 +5055,7 @@ def test_watch_warns_when_observer_hides_event_filter_in_kwargs(
     with caplog.at_level(logging.WARNING, logger="graphify.watch"):
         _run_watch_with_fake_observer(tmp_path, monkeypatch, KwargsObserver())
 
-    assert captured == {"recursive": True}
+    assert captured == {"recursive": not sys.platform.startswith("linux")}
     assert any("event_filter" in r.getMessage() for r in caplog.records)
 
 

@@ -79,6 +79,11 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+Validation reports list/object enum values as schema errors. Graph assembly
+repairs structured `file_type` values to `concept` and structured `confidence`
+values to `INFERRED`, without fabricating a confidence score, so malformed
+semantic fields cannot abort an otherwise usable build.
+
 JS/TS calls through default imports of directly default-exported object literals reuse existing static method nodes.
 Members match the imported module path, exact label and source line. Lexically shadowed receivers, constructor calls,
 spread, computed keys, accessors, duplicate keys and dynamic aliases are not inferred. These files bypass the per-file
@@ -121,6 +126,17 @@ Go member calls, including same-file calls, resolve through declared receiver ty
 carry `INFERRED` confidence. Bare calls to package-level functions remain `EXTRACTED`;
 unknown or ambiguous receivers do not bind by method name alone. AST cache schema 37
 retires Go entries created before these receiver-binding rules.
+
+C++ member chains such as `client.actions->Execute()` use lexical local/parameter
+bindings and class-scoped field declarations, including fields in unchanged headers.
+Raw pointers and single-type-argument `std::unique_ptr<T>` / `std::shared_ptr<T>`
+receivers are supported; `.` does not unwrap a smart pointer. Resolved instance
+calls are `INFERRED` static-type relationships, not proof of runtime dispatch.
+Unknown/shadowed types, ambiguous class identities, unresolved aliases, custom
+pointer wrappers, containers, and computed receivers are not guessed. AST cache
+schema 41 retires entries without receiver chains and persistent class fields.
+Rebuild existing graphs with `graphify extract . --code-only --force` to populate
+unchanged headers before relying on changed-file-only updates.
 
 ## Adding a new language extractor
 
