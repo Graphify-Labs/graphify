@@ -6354,7 +6354,7 @@ def _resolve_cpp_member_calls(
                 # below — otherwise a typed local calling into another repo is
                 # silently dropped (#3152 regression from the chain resolver).
                 park_name = chain_park_name(rc)
-                owner = node_by_id.get(enclosing_type.get(caller), {})
+                owner = node_by_id.get(enclosing_type.get(caller, ""), {})
                 alias = park_name is not None and type_lookup.is_alias(
                     park_name, owner.get("_cpp_qualified") or rc.get("cpp_receiver_scope", ""),
                     src_file,
