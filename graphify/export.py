@@ -308,6 +308,9 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     # write it into graph.json (#4940).
     dedup_remap = take_dedup_remap(G)
     take_shrink_accounting(G)
+    # Sources build_merge replaced or pruned this run: their old semantic ids
+    # are not lost. Popped so it is never written into graph.json.
+    replaced_sources = set(G.graph.pop("_replaced_sources", None) or ())
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -361,7 +364,7 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             ]
             folded: dict[str, str] = {}
             missing = _lost_saved_semantic_nodes(
-                existing_nodes, new_node_list, set(), folded, dedup_remap=dedup_remap,
+                existing_nodes, new_node_list, replaced_sources, folded, dedup_remap=dedup_remap,
             )
             if missing:
                 import sys as _sys
