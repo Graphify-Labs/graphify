@@ -108,6 +108,15 @@ def test_same_file_completion_respects_the_definition_position(tmp_path, before)
     assert _calls(result) == ({"use.cpp"} if before else set())
 
 
+def test_same_file_duplicate_definitions_do_not_become_one_completion(tmp_path):
+    _, result = _extract(tmp_path, "struct Worker; struct Client { Worker* worker; };", """
+#include "client.hpp"
+struct Worker { void Run() {} }; struct Worker { void Run() {} };
+void Tick(Client& c) { c.worker->Run(); }
+""", worker="")
+    assert _calls(result) == set()
+
+
 def test_persisted_forward_field_facts_use_the_changed_callers_includes(tmp_path):
     paths, original = _extract(tmp_path, "struct Worker; struct Client { Worker* worker; };", """
 #include "client.hpp"
