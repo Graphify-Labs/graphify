@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from graphify.cache import cache_dir
 from graphify.extract import extract
 
 
@@ -114,6 +115,113 @@ void Run(Worker& w) { w.Tick<int>(); }
     targets = _calls(result, "Run()")
     assert [n["label"] for n in targets] == [".Tick()"]
     assert not any(n["label"] == "Other<T>::Tick()" for n in targets)
+
+
+@pytest.mark.parametrize("primary_parameters, parameters, arguments", [
+    ("class A", "class T", "T"),
+    ("class A", "typename Value", "Value"),
+    ("class A, class B", "class First, typename Second", "First, Second"),
+])
+def test_primary_template_definition_reuses_its_declared_member(
+    tmp_path, primary_parameters, parameters, arguments,
+):
+    result = _extract(tmp_path, {"box.cpp": f"""
+template<{primary_parameters}> struct Box {{
+    void Run();
+    void Next();
+}};
+template<{parameters}> void Box<{arguments}>::Run() {{ Next(); }}
+"""})
+    nodes = {n["id"]: n for n in result["nodes"]}
+    owner = next(n["id"] for n in nodes.values() if n["label"] == "Box")
+    run = [n for n in nodes.values() if "Run" in n["label"]]
+    assert [n["label"] for n in run] == [".Run()"]
+    assert any(e["source"] == owner and e["target"] == run[0]["id"]
+               and e["relation"] == "method" for e in result["edges"])
+    assert [n["label"] for n in _calls(result, ".Run()")] == [".Next()"]
+    assert all(n.get("source_file") for n in run)
+
+
+@pytest.mark.parametrize("declaration, definition", [
+    ("template<class T> struct Box { void Run(); };", "template<> void Box<int>::Run() {}"),
+    ("template<class T> struct Box { void Run(); };", "template<class T> void Box<T*>::Run() {}"),
+    ("template<class T, class U> struct Box { void Run(); };",
+     "template<class T, class U> void Box<U, T>::Run() {}"),
+    ("template<class T> struct Box { void Run(); void Run(int); };",
+     "template<class T> void Box<T>::Run() {}"),
+    ("template<class T> struct Box { void _Run(); void Run(); };",
+     "template<class T> void Box<T>::Run() {}"),
+    ("template<class T> struct Box { void Run(); void _Run(); };",
+     "template<class T> void Box<T>::Run() {}"),
+    ("template<class T> struct Box { T Run(); };", "template<class T> T Box<T>::Run() {}"),
+    ("template<class T> struct Box { void Run(); };", "template<class T> int Box<T>::Run() {}"),
+    ("template<class T> struct Box { void Run() const; };", "template<class T> void Box<T>::Run() {}"),
+    ("template<class T> struct Box { template<class U> void Run(); };",
+     "template<class T> template<class U> void Box<T>::Run() {}"),
+    ("struct Box { void Run(); };", "template<class T> void Box<T>::Run() {}"),
+    ("template<class T> struct Box { void Run(); }; struct Outer { struct Box { void Run(); }; };",
+     "template<class T> void Box<T>::Run() {}"),
+    ("namespace Left { template<class T> struct Box { void Run(); }; }",
+     "namespace Right { template<class T> void Box<T>::Run() {} }"),
+    ("template<class T = int> struct Box { void Run(); };", "template<class T> void Box<T>::Run() {}"),
+    ("template<class... T> struct Box { void Run(); };", "template<class T> void Box<T>::Run() {}"),
+    ("template<class T> struct Box { void Run(); };",
+     "template<class T> requires Ready<T> void Box<T>::Run() {}"),
+])
+def test_unproven_template_owner_keeps_its_separate_definition(tmp_path, declaration, definition):
+    result = _extract(tmp_path, {"box.cpp": declaration + "\n" + definition})
+    nodes = {n["id"]: n for n in result["nodes"]}
+    definitions = {n["id"] for n in nodes.values() if "::Run()" in n["label"]}
+    assert len(definitions) == 1
+    assert not any(e["relation"] == "method" and e["target"] in definitions
+                   for e in result["edges"])
+
+
+def test_primary_template_owner_preserves_qualifiers_namespace_and_guards(tmp_path):
+    result = _extract(tmp_path, {"box.cpp": """namespace ns {
+template<class T> struct Box { bool Run() const & noexcept; void Next(); };
+template<class T> bool Box<T>::Run() const & noexcept {
+    int values[] = {
+#if FEATURE
+Next(),
+#else
+0,
+#endif
+    };
+    return true;
+}
+}
+"""})
+    nodes = {n["id"]: n for n in result["nodes"]}
+    run = next(n for n in nodes.values() if n["label"] == ".Run()")
+    assert run["_cpp_qualified"] == "ns::Box::Run"
+    assert len([n for n in nodes.values() if "Run" in n["label"]]) == 1
+    calls = [e for e in result["edges"] if e["relation"] == "calls" and e["source"] == run["id"]]
+    assert [nodes[e["target"]]["label"] for e in calls] == [".Next()"]
+    assert calls[0]["metadata"]["cpp_conditions"] == [{"group_line": 5, "branch": 0}]
+    assert calls[0]["source_file"] == "box.cpp"
+    assert calls[0]["source_location"] == "L6"
+
+
+def test_primary_template_owner_records_are_order_and_cache_stable(tmp_path):
+    files = {
+        "box.cpp": "template<class T> struct Box { void Run(); void Next(); };\n"
+        "template<class T> void Box<T>::Run() { Next(); }",
+        "other.cpp": "void Run() {}",
+    }
+    cold = _extract(tmp_path, files)
+    warm = _extract(tmp_path, dict(reversed(list(files.items()))))
+    entries = list(cache_dir(tmp_path).glob("*.json"))
+    assert entries
+    for entry in entries:
+        entry.unlink()
+    reverse_cold = _extract(tmp_path, dict(reversed(list(files.items()))))
+
+    def records(result):
+        return {key: sorted(json.dumps(record, sort_keys=True) for record in result[key])
+                for key in ("nodes", "edges")}
+
+    assert records(cold) == records(warm) == records(reverse_cold)
 
 
 @pytest.mark.parametrize("source, caller", [
