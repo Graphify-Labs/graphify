@@ -3374,7 +3374,7 @@ def _cpp_member_record(node, declarator, name: str, source: bytes) -> dict:
                 or parent.type in {"template_declaration", "function_definition", "lambda_expression"}):
             safe = False
         parent = parent.parent
-    if not safe or function is None or function.type != "function_declarator":
+    if not safe or function is None or parameters is None or function.type != "function_declarator":
         return record
     suffix = [n for n in function.named_children
               if n.start_byte >= parameters.end_byte and n.type != "comment"]
