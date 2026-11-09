@@ -1849,6 +1849,98 @@ def save_semantic_cache(
     return saved
 
 
+def mark_semantic_cache_partial(
+    files: Iterable[str | Path],
+    root: Path = Path("."),
+    *,
+    mode: str | None = None,
+    prompt: "str | Path | None" = None,
+    prompt_file: "str | Path | None" = None,
+    cache_root: "Path | None" = None,
+) -> list[Path]:
+    """Stamp the serving semantic cache entry for each file ``partial: True``.
+
+    The semantic cache is deliberately unversioned and content-hash keyed, so a
+    degraded extraction — e.g. a document chunk that returned only its
+    file-level node — is otherwise replayed as authoritative on every later
+    run. The #3203 shrink guard keeps refusing the graph write while the cache
+    keeps suppressing the LLM call that could heal it, so the corpus is stuck
+    until an operator deletes the entry by hand (#5083).
+
+    The guard compares against graph.json, which :func:`save_semantic_cache`
+    deliberately does not read (the cache writer does not know the graph), so
+    the CLI marks the entry after the fact instead. ``load_cached`` already
+    treats ``partial`` as a miss: the next run re-dispatches the file and a
+    complete extraction overwrites the same content-hash key with a clean
+    entry, which is the self-healing path the ``_partial`` truncation flag
+    already uses.
+
+    Marks the entry the read path would actually serve — the
+    prompt-fingerprint namespace when it exists, else the pre-fingerprint flat
+    layout ``load_cached`` falls back to — so a legacy entry cannot keep
+    shadowing the marked one.
+
+    ``files`` may be absolute, or relative to ``root`` (the shape of the shrink
+    guard's canonical ``source_file`` keys). Returns the entry paths actually
+    marked. Best-effort: a missing, unreadable or already-partial entry is
+    skipped rather than failing the extraction.
+    """
+    kind = "semantic" if mode is None else f"semantic-{mode}"
+    location = cache_root if cache_root is not None else root
+    prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
+    marked: list[Path] = []
+    for value in files:
+        p = Path(value)
+        if not p.is_absolute():
+            p = Path(root) / p
+        try:
+            h = file_hash(p, root, cache_root=cache_root)
+        except (OSError, ValueError):
+            continue
+        candidates: list[Path] = []
+        if prompt_fp:
+            candidates.append(cache_dir(location, kind, prompt_fp) / f"{h}.json")
+        candidates.append(cache_dir(location, kind) / f"{h}.json")
+        entry = next(
+            (c for c in candidates if c.exists()), None
+        )
+        if entry is None:
+            continue
+        # Extended-length form for I/O only: under a deep root the entry path
+        # overruns Windows MAX_PATH. Report the logical path to callers.
+        io_entry = Path(_os_long_path(entry))
+        try:
+            payload = json.loads(io_entry.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("partial"):
+            continue
+        payload["partial"] = True
+        # Match save_cached's I/O: the temp file and the replace dest both use
+        # the extended-length form so a deep root cannot fail the write.
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(Path(_os_long_path(entry.parent))),
+            prefix=f"{entry.stem}.",
+            suffix=".tmp",
+        )
+        try:
+            os.write(fd, json.dumps(payload).encode())
+            os.close(fd)
+            _os_replace_with_fallback(tmp_path, io_entry)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            continue
+        marked.append(entry)
+    return marked
+
+
 def scope_semantic_result(
     result: dict,
     root: Path = Path("."),
