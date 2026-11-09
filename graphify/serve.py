@@ -1219,10 +1219,14 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
         hub_threshold = 50
     seed_set = set(start_nodes)
     visited: set[str] = set(start_nodes)
-    frontier = set(start_nodes)
+    # Ordered, not sets: iterating a set of node ids follows the per-process
+    # string-hash seed, so the EDGE lines (and which of them survive the token
+    # budget) changed from run to run. Seeds go in ranked order, and each
+    # level in the order it was discovered.
+    frontier = list(dict.fromkeys(start_nodes))
     edges_seen: list[tuple] = []
     for _ in range(depth):
-        next_frontier: set[str] = set()
+        next_frontier: dict[str, None] = {}
         for n in frontier:
             # Don't expand through high-degree hubs (except seeds - a hub that
             # is the starting node should still be explored).
@@ -1230,10 +1234,10 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
                 continue
             for neighbor in G.neighbors(n):
                 if neighbor not in visited:
-                    next_frontier.add(neighbor)
+                    next_frontier[neighbor] = None
                     edges_seen.append((n, neighbor))
         visited.update(next_frontier)
-        frontier = next_frontier
+        frontier = list(next_frontier)
     _complete_induced_edges(G, visited, edges_seen)
     return visited, edges_seen
 
