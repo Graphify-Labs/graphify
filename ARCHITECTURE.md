@@ -215,6 +215,8 @@ C++ template wrappers preserve member ownership, including reference-returning
 declarations and matching same-file qualified definitions. Explicit calls such
 as `worker.Tick<int>()` resolve through the existing declared-receiver rules;
 dependent, unknown and ambiguous receivers do not acquire guessed targets.
+This includes dependent `typename` locals/fields and template-template parameters;
+an inner template's own parameter names do not shadow the surrounding corpus.
 These are method-family nodes, not overload/specialization resolution. Same-file
 primary owners such as `template<class T> void Box<T>::Run()` reuse a declared
 member only with unique owner/member declarations, plain ordered type parameters,

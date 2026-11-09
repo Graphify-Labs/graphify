@@ -1874,21 +1874,23 @@ def _cpp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     A `template<typename T, class U>` binds `T`/`U` as local names, not corpus
     symbols. Walking up to every enclosing `template_declaration`'s
     `template_parameter_list` collects the names from its
-    `type_parameter_declaration`/`variadic_type_parameter_declaration` children.
+    type-parameter children, including a template-template parameter's own name.
     A non-type parameter (`int N`) is a value, not a type, and is left alone.
     """
     names: set[str] = set()
+    parameter_types = (
+        "type_parameter_declaration", "optional_type_parameter_declaration",
+        "variadic_type_parameter_declaration",
+    )
     scope = node
     while scope is not None:
         for child in scope.children:
             if child.type != "template_parameter_list":
                 continue
             for param in child.children:
-                if param.type not in (
-                    "type_parameter_declaration",
-                    "optional_type_parameter_declaration",
-                    "variadic_type_parameter_declaration",
-                ):
+                if param.type == "template_template_parameter_declaration":
+                    param = next((c for c in param.children if c.type in parameter_types), None)
+                if param is None or param.type not in parameter_types:
                     continue
                 for sub in param.children:
                     if sub.type == "type_identifier":
@@ -3776,9 +3778,9 @@ def _cpp_class_fields(node, source: bytes, positions: dict[str, int]) -> dict[st
     return fields
 
 
-def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int, str, str]]]:
+def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int, str, str, bool]]]:
     """Lexical lifetimes of named C++ locals/parameters, not corpus callees."""
-    ranges: dict[str, list[tuple[int, int, str, str]]] = {}
+    ranges: dict[str, list[tuple[int, int, str, str, bool]]] = {}
     scopes = {"compound_statement", "for_statement", "for_range_loop", "if_statement",
               "switch_statement", "catch_clause", "function_definition", "lambda_expression"}
     stack = [body]
@@ -3802,10 +3804,16 @@ def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, 
                 for declarator in declarators:
                     name = _cpp_declarator_name(declarator, source)
                     if name:
+                        type_node = node.child_by_field_name("type")
+                        dependent = type_node is not None and (
+                            type_node.type == "dependent_type" or _cpp_type_is_dependent(type_node, source)
+                        )
                         ranges.setdefault(name, []).append((
                             declarator.start_byte, scope.end_byte,
                             _cpp_declared_receiver_type(node, declarator, source),
                             _cpp_lookup_scope(node, source),
+                            _cpp_qualified_name(node, "", source).rstrip(":"),
+                            dependent,
                         ))
         stack.extend(node.named_children)
     return ranges
@@ -11071,7 +11079,9 @@ def _extract_generic(
                     and func_node is not None and func_node.type == "field_expression"
                     and (len(cpp_chain) != 1 or member_receiver == "this" or member_receiver in type_table
                          or (name is not None and name.type != "field_identifier")
-                         or (cpp_binding is not None and bool(cpp_binding[2])))
+                         or (cpp_binding is not None and (bool(cpp_binding[2]) or cpp_binding[4]))
+                         or (cpp_binding is None and member_receiver in cpp_unknown_fields.get(
+                             method_owner.get(caller_nid, ""), ())))
                 )
                 if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
@@ -11683,8 +11693,11 @@ def _extract_generic(
     # every function body so the cross-file member-call pass can type a receiver
     # (#1547). File-scoped (not per-body): a later body's `Foo f;` doesn't clobber
     # an earlier binding (`var not in table`), keeping resolution conservative.
-    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int, str, str]]]] = {}
+    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int, str, str, bool]]]] = {}
+    cpp_unknown_fields: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_cpp":
+        cpp_unknown_fields = {n["id"]: {name for name, value in n.get("_cpp_fields", {}).items() if not value}
+                              for n in nodes if "_cpp_fields" in n}
         # Each function's table first: a local shadows a parameter there. The
         # file table is shared by every function, so a name typed differently in
         # two places (`Request& r` here, `Response r` there) is ambiguous and
