@@ -108,9 +108,15 @@ def _env() -> dict[str, str]:
 
 
 def _run(source: str, proj: Path, *args: str) -> str:
+    result = _try_run(source, proj, *args)
+    assert result.returncode == 0, f"runbook block failed:\n{result.stdout}\n{result.stderr}"
+    return result.stdout
+
+
+def _try_run(source: str, proj: Path, *args: str) -> subprocess.CompletedProcess[str]:
     # The runbook tells the agent to substitute the real flag values.
     source = source.replace("IS_DIRECTED", "False").replace("IS_FORCE", "False")
-    result = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-c", source, *args],
         cwd=proj,
         env=_env(),
@@ -118,8 +124,24 @@ def _run(source: str, proj: Path, *args: str) -> str:
         text=True,
         timeout=300,
     )
-    assert result.returncode == 0, f"runbook block failed:\n{result.stdout}\n{result.stderr}"
-    return result.stdout
+
+
+def _step4_wrote_the_graph(proj: Path) -> None:
+    """Model Step 4's successful write: graph.json is replaced after the merge.
+
+    The stamp refuses when graph.json's stat equals the one the merge block
+    recorded, so a simulation must advance it. A real Step 4 does a fresh atomic
+    replace, which lands in a later clock tick than the merge block's stat.
+    """
+    out = proj / "graphify-out"
+    state = json.loads((out / ".graphify_update_extract.json").read_text(encoding="utf-8"))
+    merged = json.loads((out / ".graphify_extract.json").read_text(encoding="utf-8"))
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({
+        "nodes": merged["nodes"], "edges": [], "hyperedges": [],
+    }), encoding="utf-8")
+    bumped = int(state.get("graph_mtime_ns") or 0) + 1_000_000_000
+    os.utime(graph, ns=(bumped, bumped))
 
 
 def _queued(proj: Path, root: Path) -> list[str]:
@@ -185,8 +207,33 @@ def test_the_stamp_after_step_4_advances_the_manifest(detect, populate, merge, s
     doc.write_text(NEW_CONTENT, encoding="utf-8")
 
     _detect_and_merge(proj, detect, populate, merge)
+    _step4_wrote_the_graph(proj)
     _run(stamp, proj)
 
     after = json.loads((proj / "graphify-out" / "manifest.json").read_text(encoding="utf-8"))
     assert after[DOC]["semantic_hash"] != before[DOC]["semantic_hash"]
     assert _queued(proj, proj) == []
+
+
+@pytest.mark.parametrize("detect,populate,merge,stamp", _cases())
+def test_the_stamp_refuses_when_step_4_did_not_write_the_graph(
+        detect, populate, merge, stamp, tmp_path):
+    """A stamp that runs before/without Step 4 must not advance the manifest.
+
+    The runbook orders the stamp after Step 4, but the block no longer trusts that
+    order: it compares graph.json's stat with the one the merge block recorded and
+    exits non-zero without stamping when Step 4 never wrote it (#5097).
+    """
+    proj, doc = _seeded_project(tmp_path)
+    doc.write_text(NEW_CONTENT, encoding="utf-8")
+    manifest = proj / "graphify-out" / "manifest.json"
+
+    _detect_and_merge(proj, detect, populate, merge)
+    before = manifest.read_bytes()
+
+    result = _try_run(stamp, proj)
+
+    assert result.returncode != 0, "the stamp must refuse without a Step 4 write"
+    assert "Step 4 did not rewrite" in (result.stdout + result.stderr)
+    assert manifest.read_bytes() == before
+    assert _queued(proj, proj) == [DOC]

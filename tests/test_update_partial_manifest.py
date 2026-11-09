@@ -156,11 +156,22 @@ def _built_project(tmp_path: Path, root: str) -> Path:
     return proj
 
 
+def _step4_wrote_the_graph(proj: Path) -> None:
+    """Model Step 4's successful write so the deferred stamp's guard passes (#5097)."""
+    out = proj / "graphify-out"
+    state = json.loads((out / ".graphify_update_extract.json").read_text(encoding="utf-8"))
+    merged = json.loads((out / ".graphify_extract.json").read_text(encoding="utf-8"))
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({"nodes": merged["nodes"], "links": []}), encoding="utf-8")
+    bumped = int(state.get("graph_mtime_ns") or 0) + 1_000_000_000
+    os.utime(graph, ns=(bumped, bumped))
+
+
 def _update(proj: Path, root: str, detect: str, populate: str, merge: str, stamp: str, *,
             nodes: list[dict], partial: list[str] | None) -> None:
     """One --update through its manifest write: detection, this run's extraction (Part C's
-    output), the list B3.5 writes when it runs (None: it did not), the merge, then the
-    stamp that runs once Step 4 has written graph.json (#5097)."""
+    output), the list B3.5 writes when it runs (None: it did not), the merge, then Step 4's
+    successful write and the stamp that follows it (#5097)."""
     out = proj / "graphify-out"
     _bash(detect, proj, root)
     _bash(populate, proj, root)
@@ -170,6 +181,7 @@ def _update(proj: Path, root: str, detect: str, populate: str, merge: str, stamp
     if partial is not None:
         (out / ".graphify_partial.txt").write_text("\n".join(partial), encoding="utf-8")
     _bash(merge, proj, root)
+    _step4_wrote_the_graph(proj)
     _bash(stamp, proj, root)
 
 
