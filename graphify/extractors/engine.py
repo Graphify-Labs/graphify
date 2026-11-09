@@ -4245,6 +4245,8 @@ def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges
                     "source_file": str_path,
                     "source_location": f"L{line}",
                     "weight": 1.0,
+                    "_require_target_file": str(resolved_path),
+                    "_require_imported_name": sym,
                 })
     return found
 

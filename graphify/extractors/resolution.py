@@ -1281,6 +1281,9 @@ def _apply_symbol_resolution_facts(
         or facts.uses
         or facts.module_imports
     ):
+        for edge in edges:
+            edge.pop("_require_imported_name", None)
+            edge.pop("_require_target_file", None)
         return
 
     path_by_resolved = {_resolve_cached(path): path for path in paths}
@@ -1633,6 +1636,24 @@ def _apply_symbol_resolution_facts(
                 if not branch and not branch_cyclic:
                     candidates.add(origin)
         return candidates, cyclic
+
+    # A destructured `require` names the immediate barrel's symbol. When that
+    # target is not a node (the barrel defines nothing), follow the barrel to
+    # the file that declares the symbol, so cross-file call resolution sees
+    # import evidence instead of a dangling barrel reference.
+    for edge in edges:
+        imported_name = edge.pop("_require_imported_name", None)
+        target_file = edge.pop("_require_target_file", None)
+        if edge.get("relation") != "imports" or not imported_name or not target_file:
+            continue
+        origin_path, origin_symbol = resolve_exported_origin(
+            Path(str(target_file)), str(imported_name)
+        )
+        target_id = symbol_nodes.get((origin_path, origin_symbol))
+        if target_id is None or edge.get("target") == target_id:
+            continue
+        edge["target"] = target_id
+        edge["target_file"] = str(path_by_resolved.get(origin_path, origin_path))
 
     # The structural extractor names the immediate barrel's symbol. Resolve
     # that exact authored export site through the shared import/export facts,
