@@ -40,7 +40,7 @@ from graphify.rcfile import (
     get_language_overrides,
     set_language_overrides,
 )
-from graphify.extractors.engine import _js_import_is_type_only
+from graphify.extractors.engine import _cpp_is_header_guard, _js_import_is_type_only
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _PYTHON_BUILTIN_NAMES,
@@ -142,6 +142,9 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _load_workspace_packages,
     _match_tsconfig_alias,
     _merge_decl_def_classes,
+    _merge_cpp_forward_classes,
+    _cpp_reconciliation_paths,
+    _cpp_source_key,
     _merge_go_package_types,
     _node_disambiguation_source_key,
     _package_entry_candidates,
@@ -1173,6 +1176,12 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                 resolved = _resolve_c_include_path(raw, str_path)
                 if resolved is not None:
                     tgt_nid = _make_id(str(resolved))
+                    parent = node.parent
+                    unconditional = True
+                    while parent is not None:
+                        if parent.type.startswith("preproc_") and not _cpp_is_header_guard(parent, source):
+                            unconditional = False
+                        parent = parent.parent
                     edges.append({
                         "source": file_nid,
                         "target": tgt_nid,
@@ -1187,6 +1196,7 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                         # batch's paths keeps the raw absolute-path id no later pass
                         # ever learns to relativize (#2243).
                         "target_file": str(resolved),
+                        "_cpp_include_proof": unconditional,
                     })
                     break
             module_name = raw.split("/")[-1].split(".")[0]
@@ -11078,6 +11088,15 @@ def extract(
     elif cache_root is not None:
         root = cache_root
     root = root.resolve()
+    if resolution_context_nodes:
+        expanded = _cpp_reconciliation_paths(paths, resolution_context_nodes, root)
+        if len(expanded) != len(paths):
+            paths = expanded
+            refreshed = {_cpp_source_key(p, root) for p in paths}
+            resolution_context_nodes = [n for n in resolution_context_nodes
+                                        if _cpp_source_key(n.get("source_file", ""), root) not in refreshed]
+            resolution_context_edges = [e for e in resolution_context_edges or []
+                                        if _cpp_source_key(e.get("source_file", ""), root) not in refreshed]
     python_scan_paths = list(paths)
     for context_node in resolution_context_nodes or []:
         source_file = context_node.get("source_file")
@@ -11435,6 +11454,28 @@ def extract(
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+    # Newly introduced pairs have no persisted proof group yet. Reparse only
+    # exact-identity candidates from the caller's permitted unchanged corpus.
+    cpp_names = {n.get("_cpp_qualified") for n in all_nodes
+                 if n.get("_cpp_class_kind") in {"forward", "definition"}}
+    present = {_cpp_source_key(p, root) for p in paths}
+    candidates = {_cpp_source_key(n.get("source_file", ""), root)
+                  for n in resolution_context_nodes or []
+                  if n.get("_cpp_class_kind") in {"forward", "definition"}
+                  and n.get("_cpp_qualified") in cpp_names}
+    additions = [root / sf for sf in sorted(candidates - present - {""}) if (root / sf).is_file()]
+    if additions:
+        expanded = _cpp_reconciliation_paths(paths + additions, resolution_context_nodes or [], root)
+        refreshed = {_cpp_source_key(p, root) for p in expanded}
+        return extract(
+            expanded, cache_root=cache_root, root=root, parallel=parallel,
+            max_workers=max_workers,
+            resolution_context_nodes=[n for n in resolution_context_nodes or []
+                                      if _cpp_source_key(n.get("source_file", ""), root) not in refreshed],
+            resolution_context_edges=[e for e in resolution_context_edges or []
+                                      if _cpp_source_key(e.get("source_file", ""), root) not in refreshed],
+            release_parse_memo=release_parse_memo,
+        )
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
@@ -12160,6 +12201,14 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    _merge_cpp_forward_classes(all_nodes, all_edges, all_raw_calls, resolution_nodes,
+                               resolution_context_edges or [], root)
+    if resolution_context_nodes:
+        fresh_ids = {n["id"] for n in all_nodes}
+        resolution_nodes = all_nodes + [n for n in resolution_context_nodes
+                                        if n.get("id") not in fresh_ids]
+    else:
+        resolution_nodes = all_nodes
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue

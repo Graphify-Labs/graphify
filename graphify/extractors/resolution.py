@@ -3639,6 +3639,126 @@ _DECLDEF_HEADER_SUFFIXES = frozenset({".h", ".hpp", ".hh", ".hxx"})
 
 _DECLDEF_IMPL_SUFFIXES = frozenset({".m", ".mm", ".cpp", ".cc", ".cxx", ".c"})
 
+def _cpp_source_key(source_file: str | Path, root: Path) -> str:
+    """Canonical corpus-relative identity for persisted C++ source/proof paths."""
+    if not source_file:
+        return ""
+    try:
+        return (root / source_file).resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
+def _cpp_reconciliation_paths(
+    paths: list[Path], nodes: list[dict], root: Path,
+    available_paths: list[Path] | None = None,
+    changed_paths: list[Path] | None = None,
+) -> list[Path]:
+    """Reparse a persisted forward group when one of its source/proof files changes."""
+    groups = [set(n["_cpp_reconcile_files"]) for n in nodes if n.get("_cpp_reconcile_files")]
+    if not groups:
+        return paths
+    selected = {_cpp_source_key(p, root) for p in [*paths, *(changed_paths or [])]} - {""}
+    if not any(group & selected for group in groups):
+        return paths
+    available = available_paths if available_paths is not None else [
+        *paths, *(Path(n["source_file"]) for n in nodes if n.get("source_file")),
+    ]
+    allowed = {_cpp_source_key(p, root) for p in available} - {""}
+    changed = True
+    while changed:
+        changed = False
+        for group in groups:
+            if group & selected:
+                additions = (group & allowed) - selected
+                selected.update(additions)
+                changed = changed or bool(additions)
+    original = {_cpp_source_key(p, root) for p in paths}
+    return paths + [root / sf for sf in sorted((selected & allowed) - original)
+                    if (root / sf).is_file()]
+
+
+def _merge_cpp_forward_classes(
+    nodes: list[dict], edges: list[dict], raw_calls: list[dict],
+    resolution_nodes: list[dict], context_edges: list[dict], root: Path,
+) -> None:
+    """Fold plain class forwards only with one exactly named, include-reachable definition.
+
+    Unlike sibling-stem decl/def folding, this pass has distinct IDs to rewire.
+    Templates, nested/local/anonymous and conditional declarations stay separate;
+    guessed include-path fallback is not equivalence evidence.
+    """
+    by_id = {n["id"]: n for n in resolution_nodes}
+    includes: dict[str, set[str]] = {}
+    for edge in [*edges, *context_edges]:
+        if (edge.get("relation") != "imports" or not edge.get("_cpp_include_proof")
+                or (edge.get("metadata") or {}).get("cpp_conditions")):
+            continue
+        source = _cpp_source_key(edge.get("source_file", ""), root)
+        target_file = by_id.get(edge.get("target"), {}).get("source_file") or edge.get("target_file")
+        if source and target_file:
+            target = _cpp_source_key(target_file, root)
+            if target:
+                includes.setdefault(source, set()).add(target)
+
+    def proof(start: str, target: str) -> list[str]:
+        pending = [(start, [start])]
+        visited = {start}
+        for current, path in pending:
+            if current == target:
+                return path
+            for following in sorted(includes.get(current, ())):
+                if following not in visited:
+                    visited.add(following)
+                    pending.append((following, [*path, following]))
+        return []
+
+    groups: dict[str, list[dict]] = {}
+    for node in resolution_nodes:
+        qualified = node.get("_cpp_qualified")
+        if node.get("_callable_class") and qualified:
+            groups.setdefault(qualified, []).append(node)
+    remap = {}
+    fresh_objects = {id(n) for n in nodes}
+    for group in groups.values():
+        if any(n.get("_cpp_class_kind") not in {"forward", "definition"}
+               or (n.get("metadata") or {}).get("cpp_conditions") for n in group):
+            continue
+        definitions = [n for n in group if n["_cpp_class_kind"] == "definition"]
+        if len(definitions) != 1:
+            continue
+        keeper = definitions[0]
+        # Context is read-only; affected groups are re-extracted above.
+        if id(keeper) not in fresh_objects:
+            continue
+        definition_file = _cpp_source_key(keeper["source_file"], root)
+        sites = []
+        proof_files = {definition_file}
+        for declaration in group:
+            if declaration["_cpp_class_kind"] != "forward":
+                continue
+            declaration_file = _cpp_source_key(declaration["source_file"], root)
+            path = proof(definition_file, declaration_file) or proof(declaration_file, definition_file)
+            if not path:
+                continue
+            remap[declaration["id"]] = keeper["id"]
+            sites.append({"source_file": declaration_file,
+                          "source_location": declaration.get("source_location", "")})
+            proof_files.update(path)
+        if sites:
+            keeper.setdefault("metadata", {})["cpp_declaration_sites"] = sorted(
+                sites, key=lambda site: (site["source_file"], site["source_location"]),
+            )
+            keeper["_cpp_reconcile_files"] = sorted(proof_files)
+    if remap:
+        nodes[:] = [n for n in nodes if n["id"] not in remap]
+        for edge in edges:
+            for endpoint in ("source", "target"):
+                edge[endpoint] = remap.get(edge.get(endpoint), edge.get(endpoint))
+        for call in raw_calls:
+            call["caller_nid"] = remap.get(call.get("caller_nid"), call.get("caller_nid"))
+
+
 def _decldef_class_stem(source_file: str) -> tuple[str, str] | None:
     """Return ``(dir, base_stem)`` for a header/impl source file, else None.
 
@@ -3724,11 +3844,24 @@ def _merge_decl_def_classes(
             continue
         by_id.setdefault(nid, []).append(n)
 
+    # Actual C++ classes and their members need include/scope proof even when
+    # sibling stems collide. Let disambiguation retain them before reconciliation.
+    cpp_separate = {nid for nid, group in by_id.items()
+                    if sum("_cpp_class_kind" in n for n in group) > 1}
+    while cpp_separate:
+        children = {e.get("target") for e in all_edges if e.get("source") in cpp_separate
+                    and e.get("relation") in {"method", "defines", "contains"}}
+        if children <= cpp_separate:
+            break
+        cpp_separate.update(children)
+
     # Identify, per surviving id, which node to keep (header preferred). We can't
     # mutate all_nodes mid-scan, so collect a set of node object ids to drop.
     drop_objs: set[int] = set()
     for nid, group in by_id.items():
         if len(group) < 2:
+            continue
+        if nid in cpp_separate:
             continue
         # The distinct source files of this collision must form a clean sibling
         # header/impl set with exactly one header. Each file must parse as a

@@ -3311,6 +3311,24 @@ def _cpp_field_types(root, source: bytes, table: dict[str, str]) -> None:
         stack.extend(n.children)
 
 
+def _cpp_is_header_guard(node, source: bytes) -> bool:
+    """Recognize only a whole-file #ifndef NAME / #define NAME wrapper."""
+    if (node.type != "preproc_ifdef" or node.parent is None
+            or node.parent.type != "translation_unit" or node.children[0].type != "#ifndef"):
+        return False
+    siblings = [n for n in node.parent.named_children if n.type != "comment"]
+    contents = [n for n in node.named_children if n.type != "comment"]
+    if (siblings != [node] or len(contents) < 2 or contents[1].type != "preproc_def"
+            or any(n.type in {"preproc_else", "preproc_elif", "preproc_elifdef"} for n in contents)):
+        return False
+    name = node.child_by_field_name("name")
+    define = contents[1].child_by_field_name("name")
+    if name is None or define is None or _read_text(name, source) != _read_text(define, source):
+        return False
+    return not any(line.replace(" ", "").replace("\t", "").startswith("#undef")
+                   for line in _read_text(node, source).splitlines())
+
+
 def _cpp_qualified_name(node, name: str, source: bytes) -> str:
     """Literal enclosing namespace/type identity; anonymous scopes are unknown."""
     parents = []
@@ -7103,8 +7121,23 @@ def _extract_generic(
                 cpp_qualified_names[class_nid] = (
                     qualified if cpp_qualified_names.get(class_nid, qualified) == qualified else ""
                 )
+                class_node = next(n for n in nodes if n["id"] == class_nid)
+                safe = (t in {"class_specifier", "struct_specifier"}
+                        and name_node.type == "type_identifier" and bool(qualified)
+                        and not node.has_error and "_cpp_class_kind" not in class_node)
+                parent = node.parent
+                while parent is not None:
+                    if ((parent.type.startswith("preproc_") and not _cpp_is_header_guard(parent, source))
+                            or parent.type in {
+                        "template_declaration", "function_definition", "lambda_expression",
+                        "class_specifier", "struct_specifier", "union_specifier",
+                    }):
+                        safe = False
+                    parent = parent.parent
+                class_node["_cpp_class_kind"] = (
+                    "definition" if node.child_by_field_name("body") is not None else "forward"
+                ) if safe else "unsafe"
                 if node.child_by_field_name("body") is not None:
-                    class_node = next(n for n in nodes if n["id"] == class_nid)
                     class_node["_cpp_fields"] = _cpp_class_fields(node, source)
             # A nested class/object/trait is contained by its ENCLOSING type, not
             # the file (#2040). parent_class_nid is threaded down the walk for

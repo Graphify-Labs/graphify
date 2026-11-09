@@ -4911,7 +4911,7 @@ def dispatch_command(cmd: str) -> None:
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
-        if code_files:
+        if code_files or (incremental_mode and existing_graph_path.exists()):
             from graphify.extract import extract as _ast_extract
             # Anchor the cache at the output root, not the scanned project:
             # with --out, a <target>/graphify-out/cache/ would leak a
@@ -4965,6 +4965,13 @@ def dispatch_command(cmd: str) -> None:
                         for f in _flist
                     }
                     _ctx_live.discard(None)
+                    # A C++ forward fold is re-established from all live source/proof files.
+                    from graphify.extractors.resolution import _cpp_reconciliation_paths
+                    code_files = _cpp_reconciliation_paths(
+                        list(code_files), _ctx_graph.get("nodes", []), _ctx_root,
+                        available_paths=[Path(p) for p in files_by_type.get("code", [])],
+                        changed_paths=[Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
+                    )
                     _ctx_live.difference_update(_ctx_identity(p) for p in code_files)
                     for _node in _ctx_graph.get("nodes", []):
                         if not _node.get("id") or not _ctx_is_ast_tier(_node):
@@ -4983,6 +4990,7 @@ def dispatch_command(cmd: str) -> None:
                         # these markers cannot be reconstructed from labels.
                         for _marker in (
                             "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
+                            "_cpp_class_kind", "_cpp_fields", "_cpp_reconcile_files",
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
@@ -5000,6 +5008,7 @@ def dispatch_command(cmd: str) -> None:
                                     "ruby_method_kind",
                                     "ruby_lookup_unsafe",
                                     "python_opaque_bases",
+                                    "cpp_conditions",
                                     "ruby_reopened",
                                     "ruby_external_method_owners",
                                     # Erlang remote-call resolution keys (#3714):
@@ -5038,6 +5047,9 @@ def dispatch_command(cmd: str) -> None:
                             "relation": _edge.get("relation"),
                             "source_file": _sf,
                         }
+                        if (_edge.get("_cpp_include_proof")
+                                and not (_edge.get("metadata") or {}).get("cpp_conditions")):
+                            _ctx_edge["_cpp_include_proof"] = True
                         if _edge.get("context") == "return_type":
                             _ctx_edge["context"] = "return_type"
                         _edge_metadata = _edge.get("metadata")
@@ -5074,7 +5086,7 @@ def dispatch_command(cmd: str) -> None:
                 del _ctx_nodes, _ctx_edges
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
             try:
-                ast_result = _ast_extract(code_files, **ast_kwargs)
+                ast_result = _ast_extract(code_files, **ast_kwargs) if code_files else ast_result
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
                 # #2445: losing the whole AST pass is fatal by default. The
