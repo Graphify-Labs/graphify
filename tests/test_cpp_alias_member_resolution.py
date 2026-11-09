@@ -21,6 +21,7 @@ def _extract(tmp_path, source, header="", extra=None):
     paths = []
     for name, text in files.items():
         path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         paths.append(path)
     return paths, extract(paths, root=tmp_path, cache_root=tmp_path / "cache", parallel=False)
@@ -212,7 +213,7 @@ struct Holder { void Run() { Alias x; x.Work(); } using Alias = Bad; };
 
 
 @pytest.mark.parametrize("shadow", ["namespace Good = Other;", "using Good = Other;",
-                                     "namespace Good {}", "struct Good {};"])
+                                     "namespace Good {}", "struct Good {};", "union Good {};"])
 def test_a_qualified_prefix_blocks_fallback_to_an_outer_namespace(tmp_path, shadow):
     other = "namespace Other {}" if shadow.startswith("namespace Good =") else "struct Other {};"
     _, result = _extract(tmp_path, f"""
@@ -231,5 +232,76 @@ def test_incremental_alias_receiver_uses_persisted_header_facts(tmp_path):
                     resolution_context_nodes=[n for n in original["nodes"] if n.get("source_file") != "use.cpp"],
                     resolution_context_edges=[e for e in original["edges"] if e.get("source_file") != "use.cpp"])
     combined = {"nodes": original["nodes"] + fresh["nodes"],
-                "edges": original["edges"] + fresh["edges"]}
+                "edges": [e for e in original["edges"] if e["relation"] in {"method", "defines"}]
+                + fresh["edges"]}
     assert _calls(combined) == {("app::Worker", ".Work()", "INFERRED")}
+
+
+@pytest.mark.parametrize("source", [
+    "using Alias = Foreign; void Run(Alias& x) { x.Work(); }",
+    "void Run() { using Alias = Foreign; Alias x; x.Work(); }",
+    "void Run() { using Alias = Foreign; Alias::Work(); }",
+])
+def test_an_unknown_alias_does_not_park_an_unrelated_class_name(tmp_path, source):
+    _, result = _extract(tmp_path, source)
+    assert not any(entry.get("receiver_type") == "Alias"
+                   for node in result["nodes"]
+                   for entry in node.get("metadata", {}).get("unresolved_calls", []))
+
+
+def test_root_relative_literal_include_keeps_the_existing_import_proof(tmp_path):
+    _, result = _extract(tmp_path, "", extra={
+        "Client/Runner.cpp": '#include "Engine/Worker.hpp"\nvoid Run(Alias& x) { x.Work(); }',
+        "Engine/Worker.hpp": "struct Worker { void Work(); }; using Alias = Worker;",
+    })
+    assert _calls(result) == {("Worker", ".Work()", "INFERRED")}
+
+
+@pytest.mark.parametrize("header", [
+    "struct Worker { void Work(); };\n#ifndef FEATURE\n#define FEATURE\nusing Alias = Worker;\n#endif",
+    "#ifndef TYPES_HPP\n#define TYPES_HPP\nstruct Worker { void Work(); }; using Alias = Worker;\n#else\nint version;\n#endif",
+    "struct Worker { void Work(); };\n#ifdef FEATURE\nusing Alias = Worker;\n#endif",
+])
+def test_feature_blocks_and_partial_guards_do_not_configure_aliases(tmp_path, header):
+    _, result = _extract(tmp_path, "void Run(Alias& x) { x.Work(); }", header)
+    assert _calls(result) == set()
+
+
+def test_anonymous_nested_namespace_alias_does_not_become_a_global_alias(tmp_path):
+    _, result = _extract(tmp_path, """
+struct Worker { void Work(); };
+namespace app { namespace { using Alias = Worker; } }
+void Run(Alias& x) { x.Work(); }
+""")
+    assert _calls(result) == set()
+
+
+@pytest.mark.parametrize("target", ["std::unique_ptr<Worker&>", "std::shared_ptr<Worker&&>",
+                                     "std::unique_ptr<Ref>"])
+def test_smart_pointer_pointees_do_not_erase_reference_aliases(tmp_path, target):
+    _, result = _extract(tmp_path, f"""
+struct Worker {{ void Work(); }}; using Ref = Worker&; using Alias = {target};
+void Run(Alias& x) {{ x->Work(); }}
+""")
+    assert _calls(result) == set()
+
+
+def test_reference_aliases_still_type_an_ordinary_receiver(tmp_path):
+    _, result = _extract(tmp_path, """
+struct Worker { void Work(); }; using Alias = Worker&;
+void Run(Alias x) { x.Work(); }
+""")
+    assert _calls(result) == {("Worker", ".Work()", "INFERRED")}
+
+
+@pytest.mark.parametrize("prefix,expected", [("std", set()), ("::std", {("Wrong", ".Work()", "INFERRED")})])
+def test_a_shadowed_std_namespace_is_not_a_standard_pointer_wrapper(tmp_path, prefix, expected):
+    _, result = _extract(tmp_path, f"""
+struct Wrong {{ void Work(); }}; struct Actual {{ void Work(); }};
+namespace app {{
+namespace std {{ template<class T> struct unique_ptr {{ Actual* operator->(); }}; }}
+using Alias = {prefix}::unique_ptr<Wrong>;
+void Run(Alias& x) {{ x->Work(); }}
+}}
+""")
+    assert _calls(result) == expected

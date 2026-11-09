@@ -6,6 +6,8 @@ transitive using directives and arbitrary template specializations remain unreso
 from __future__ import annotations
 
 import re
+import posixpath
+from bisect import bisect_left
 
 
 _IDENTIFIER = r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*"
@@ -22,6 +24,8 @@ class CppTypeLookup:
         self.imports: dict[str, list[tuple[str, int]]] = {}
         self.namespaces: set[str] = set()
         self.directives: dict[str, list[tuple[str, dict]]] = {}
+        self._reachable_cache: dict[tuple[str, int], frozenset[str]] = {}
+        self._member_cache: dict[tuple[str, str, str, int], str | bool | None] = {}
         for node in self.files.values():
             source = node["source_file"]
             for binding in node["_cpp_type_bindings"]:
@@ -35,16 +39,34 @@ class CppTypeLookup:
         for node in nodes:
             if "_cpp_fields" in node and node.get("_cpp_qualified"):
                 self.types.setdefault(node["_cpp_qualified"], set()).add(node["id"])
+        files_by_source = {node["source_file"]: node for node in self.files.values()}
+        files_by_path = {posixpath.normpath(path.replace("\\", "/")): node
+                         for path, node in files_by_source.items()}
         for edge in edges:
             source = self.files.get(edge.get("source"))
             target = self.files.get(edge.get("target"))
-            if edge.get("relation") == "imports" and source and target:
+            if target is None:
+                target = files_by_source.get(self.nodes.get(edge.get("target"), {}).get("source_file"))
+            if edge.get("relation") == "imports" and source:
                 line = str(edge.get("source_location", "")).removeprefix("L")
                 position = source.get("_cpp_include_positions", {}).get(line)
-                if position is not None:
+                path = source.get("_cpp_include_paths", {}).get(line)
+                if path is not None:
+                    literal = posixpath.normpath(path.replace("\\", "/"))
+                    path = posixpath.normpath(posixpath.join(
+                        posixpath.dirname(source["source_file"].replace("\\", "/")), literal,
+                    ))
+                    target = files_by_path.get(path) or files_by_path.get(literal) or target
+                if position is not None and target:
                     self.imports.setdefault(source["source_file"], []).append((target["source_file"], position))
+        for imports in self.imports.values():
+            imports.sort(key=lambda item: item[1])
+        self.include_positions = {source: [at for _, at in imports] for source, imports in self.imports.items()}
 
-    def reachable(self, source: str, position: int) -> set[str]:
+    def reachable(self, source: str, position: int) -> frozenset[str]:
+        key = source, bisect_left(self.include_positions.get(source, []), position)
+        if key in self._reachable_cache:
+            return self._reachable_cache[key]
         visible = {source}
         pending = [(source, position)]
         while pending:
@@ -53,7 +75,8 @@ class CppTypeLookup:
                 if at < before and target not in visible:
                     visible.add(target)
                     pending.append((target, 2**63))
-        return visible
+        self._reachable_cache[key] = frozenset(visible)
+        return self._reachable_cache[key]
 
     def _binding(self, name: str, scope: str, source: str, position: int):
         visible = self.reachable(source, position)
@@ -112,18 +135,22 @@ class CppTypeLookup:
         # shortcut: cap static expansion at 32 hops; raise only with a compiler-backed resolver.
         if depth >= 32:
             return None
-        name = re.sub(r"\b(const|volatile)\b", "", name).replace("&", "").strip()
-        smart = re.fullmatch(r"std::(?:unique_ptr|shared_ptr)\s*<\s*(.+)\s*>", name)
+        name = re.sub(r"\b(const|volatile)\b", "", name).strip()
+        reference = "&" if name.endswith("&") else ""
+        name = re.sub(r"\s*&&?\s*$", "", name).strip()
+        smart = re.fullmatch(r"(?:::)?std::(?:unique_ptr|shared_ptr)\s*<\s*(.+)\s*>", name)
         if smart:
+            if not name.startswith("::") and self.shadowed_prefix("std", scope, source, position):
+                return None
             pointee = self._expand(smart[1], scope, source, position, seen, depth + 1)
-            return (pointee[0], "smart") if pointee and not pointee[1] else None
+            return (pointee[0], "smart" + reference) if pointee and not pointee[1] else None
         match = re.fullmatch(rf"({_IDENTIFIER})\s*((?:\*\s*)*)", name)
         if not match:
             return None
         binding = self._binding(match[1], scope, source, position)
-        shape = match[2].replace(" ", "")
+        shape = re.sub(r"\s+", "", match[2])
         if isinstance(binding, str):
-            return binding, shape
+            return binding, shape + reference
         if binding is None:
             return None
         file, alias = binding
@@ -133,11 +160,75 @@ class CppTypeLookup:
         target = self._expand(alias["target"], alias["scope"], file, alias["start"], seen | {key}, depth + 1)
         if target is None or (shape and target[1] == "smart"):
             return None
-        return target[0], target[1] + shape
+        return target[0], target[1] + shape + reference
 
     def resolve(self, name: str, scope: str, source: str, position: int, operator: str) -> str | None:
         target = self._expand(name, scope, source, position, set())
-        if target and ((operator == "." and not target[1]) or
-                       (operator == "->" and target[1] in {"*", "smart"})):
+        shape = target[1].rstrip("&") if target else ""
+        if target and ((operator == "." and not shape) or
+                       (operator == "->" and shape in {"*", "smart"})):
             return target[0]
         return None
+
+    def shadowed_prefix(self, prefix: str, scope: str, source: str, position: int) -> bool:
+        visible = self.reachable(source, position)
+        while scope:
+            if any(file in visible and (not b["local"] if file != source else
+                                        b["start"] <= position < b["end"] or
+                                        (not b["local"] and b["scope"] in self.types))
+                   for file, b in self.bindings.get(f"{scope}::{prefix}", [])):
+                return True
+            scope = scope.rsplit("::", 1)[0] if "::" in scope else ""
+        return False
+
+    def is_alias(self, name: str, scope: str, source: str, position: int) -> bool:
+        """An unresolved lexical alias must not become an unrelated cross-repo class."""
+        visible = self.reachable(source, position)
+        while True:
+            identity = "::".join(filter(None, (scope, name)))
+            if any(b["alias"] and file in visible and (
+                (not b["local"]) if file != source else
+                (b["start"] <= position < b["end"] or (not b["local"] and b["scope"] in self.types))
+            ) for file, b in self.bindings.get(identity, [])):
+                return True
+            if not scope:
+                return False
+            scope = scope.rsplit("::", 1)[0] if "::" in scope else ""
+
+    def member_owner(self, type_nid: str, name: str, kind: str,
+                     seen: frozenset[str] = frozenset()) -> str | bool | None:
+        """Return an owner, None for absent, or False for an unknown/ambiguous lookup."""
+        if type_nid in seen or len(seen) >= 32:
+            return False
+        key = type_nid, name, kind, 32 - len(seen)
+        if key in self._member_cache:
+            return self._member_cache[key]
+        node = self.nodes[type_nid]
+        facts = node.get("_cpp_lookup")
+        if facts is None:
+            return False
+        if name in facts["members"]:
+            if kind == "field":
+                result = type_nid if name in node.get("_cpp_fields", {}) else False
+            else:
+                result = type_nid if facts["methods"].get(name) == 1 else False
+            self._member_cache[key] = result
+            return result
+        owners = []
+        for base in facts["bases"]:
+            scope = node["_cpp_qualified"].rsplit("::", 1)[0] if "::" in node["_cpp_qualified"] else ""
+            parent = None if base["virtual"] else self.resolve(
+                base["type"], scope, node["source_file"], base["position"], ".",
+            )
+            if parent is None:
+                self._member_cache[key] = False
+                return False
+            owner = self.member_owner(parent, name, kind, seen | {type_nid})
+            if owner is False:
+                self._member_cache[key] = False
+                return False
+            if owner is not None:
+                owners.append(owner)
+        result = owners[0] if len(owners) == 1 else (False if owners else None)
+        self._member_cache[key] = result
+        return result

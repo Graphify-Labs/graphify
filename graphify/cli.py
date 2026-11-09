@@ -4983,13 +4983,15 @@ def dispatch_command(cmd: str) -> None:
                         # these markers cannot be reconstructed from labels.
                         for _marker in (
                             "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
+                            "_cpp_fields", "_cpp_lookup", "_cpp_field_positions",
+                            "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
                             "_py_fixture", "_py_return_type", "_go_fields",
                             "_go_package_path",
                         ):
-                            if _node.get(_marker):
+                            if _node.get(_marker) or (_marker.startswith("_cpp_") and isinstance(_node.get(_marker), (dict, list))):
                                 _ctx_node[_marker] = _node[_marker]
                         _metadata = _node.get("metadata")
                         if isinstance(_metadata, dict):
@@ -5038,6 +5040,8 @@ def dispatch_command(cmd: str) -> None:
                             "relation": _edge.get("relation"),
                             "source_file": _sf,
                         }
+                        if _edge.get("relation") == "imports" and isinstance(_edge.get("source_location"), str):
+                            _ctx_edge["source_location"] = _edge["source_location"]
                         if _edge.get("context") == "return_type":
                             _ctx_edge["context"] = "return_type"
                         _edge_metadata = _edge.get("metadata")
