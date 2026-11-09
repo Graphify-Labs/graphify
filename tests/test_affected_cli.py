@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import networkx as nx
+import pytest
 from networkx.readwrite import json_graph
 
 import graphify.__main__ as mainmod
@@ -392,7 +393,12 @@ def test_affected_absolute_seed_outside_root_misses_cleanly(tmp_path, monkeypatc
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(mainmod.sys, "argv",
                         ["graphify", "affected", outside_seed, "--graph", str(gp)])
-    mainmod.main()
+    # An unmatched seed now exits EXIT_NOT_FOUND instead of 0 (#4792).
+    with pytest.raises(SystemExit) as excinfo:
+        mainmod.main()
+    from graphify.cli import EXIT_NOT_FOUND
+
+    assert excinfo.value.code == EXIT_NOT_FOUND
 
     out = capsys.readouterr().out
     assert "Affected nodes for Foo" not in out          # must NOT resolve to the in-root Foo

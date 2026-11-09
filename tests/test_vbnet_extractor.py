@@ -330,3 +330,55 @@ def test_vbnet_enum_members_emit_case_of_not_contains(tmp_path):
     # A real class field is a declaration, not a case: it keeps `contains`.
     assert ("Widget", "count") in contains
     assert ("Widget", "count") not in case_of
+
+
+@_needs_vbnet
+def test_vbnet_operator_declaration_gets_a_node_and_its_calls_resolve(tmp_path):
+    """An `Operator` declaration is a member form the extractor's member loop
+    never recognized at all -- it checked only for `method_declaration` and
+    `constructor_declaration`, so a class that overloads an operator lost the
+    operator entirely: no node, no `method` edge from the class, and since its
+    body was never walked either, a call made from inside it (a common shape,
+    delegating to a named helper) vanished with no edge and no raw_call."""
+    source = tmp_path / "Vector.vb"
+    source.write_text(
+        "Public Class Vector\n"
+        "  Public Shared Operator +(a As Vector, b As Vector) As Vector\n"
+        "    Return BuildSum(a, b)\n"
+        "  End Operator\n"
+        "  Public Shared Function BuildSum(a As Vector, b As Vector) As Vector\n"
+        "    Return New Vector()\n"
+        "  End Function\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert "+()" in labels
+    assert ("Vector", "+()") in _edge_labels(result, "method")
+    assert ("+()", "BuildSum()") in _edge_labels(result, "calls")
+
+
+@_needs_vbnet
+def test_vbnet_a_class_with_no_operator_is_unaffected(tmp_path):
+    """Control: a plain class with only Sub/Function members keeps resolving
+    exactly as before the operator fix."""
+    source = tmp_path / "Plain.vb"
+    source.write_text(
+        "Public Class Plain\n"
+        "  Public Sub Run()\n"
+        "   Helper()\n"
+        "  End Sub\n"
+        "  Private Sub Helper()\n"
+        "  End Sub\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Plain", "Run()", "Helper()"} <= labels
+    assert ("Run()", "Helper()") in _edge_labels(result, "calls")

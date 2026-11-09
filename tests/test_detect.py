@@ -3657,6 +3657,49 @@ def test_detect_unclassified_empty_when_all_supported(tmp_path):
     assert res.get("unclassified", []) == []
 
 
+def test_unclassified_warning_fires_when_most_of_the_corpus_has_no_extractor(tmp_path):
+    # #2942: a repo whose business logic lives in a language graphify cannot
+    # parse (here: generic .xml) produces a graph that looks complete but
+    # represents only part of the codebase. Past the absolute-count floor
+    # and the fraction threshold, detect() must say so plainly, not just
+    # report a bare count that reads as routine lockfile/binary noise.
+    for i in range(30):
+        (tmp_path / f"doc{i}.xml").write_text("<root/>\n")
+    for i in range(10):
+        (tmp_path / f"code{i}.py").write_text("x = 1\n")
+    res = detect(tmp_path)
+    assert len(res["unclassified"]) == 30
+    warning = res.get("unclassified_warning")
+    assert warning is not None
+    assert "30 of 40" in warning
+    assert "75%" in warning
+
+
+def test_unclassified_warning_silent_under_the_absolute_floor(tmp_path):
+    # Two stray unsupported files out of many is routine, not a structural
+    # gap -- the loud warning must not fire just because SOME fraction of a
+    # tiny handful of unclassified files happens to be large.
+    (tmp_path / "odd1.xml").write_text("<root/>\n")
+    (tmp_path / "odd2.xml").write_text("<root/>\n")
+    for i in range(20):
+        (tmp_path / f"code{i}.py").write_text("x = 1\n")
+    res = detect(tmp_path)
+    assert len(res["unclassified"]) == 2
+    assert res.get("unclassified_warning") is None
+
+
+def test_unclassified_warning_silent_under_the_fraction_threshold(tmp_path):
+    # Past the absolute floor but still a small share of a large, mostly
+    # supported corpus -- still routine, must stay silent.
+    for i in range(25):
+        (tmp_path / f"odd{i}.xml").write_text("<root/>\n")
+    for i in range(400):
+        (tmp_path / f"code{i}.py").write_text("x = 1\n")
+    res = detect(tmp_path)
+    assert len(res["unclassified"]) == 25
+    assert res.get("unclassified_warning") is None
+
+
 def test_graphifyinclude_is_inert_and_not_unclassified(tmp_path, capsys):
     """#2112: .graphifyinclude support was removed (dead since #873).
 
@@ -4568,6 +4611,76 @@ def test_real_git_repo_and_worktree_are_vcs_roots(tmp_path):
     (repo / "sub").mkdir()
     assert detect_mod._find_vcs_root(repo / "sub") == repo.resolve()
     assert detect_mod._find_vcs_root(tmp_path / "wt") == (tmp_path / "wt").resolve()
+
+
+def _git_workspace_with_worktree(tmp_path):
+    """ws/ holding a repo and a linked worktree of it as siblings (#4683)."""
+    ws = tmp_path / "ws"
+    app = ws / "app"
+    (app / "src").mkdir(parents=True)
+    _git(app, "init", "-q")
+    (app / "src" / "a.py").write_text("x = 1\n")
+    _git(app, "add", ".")
+    _git(app, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    _git(app, "worktree", "add", "-q", str(ws / "app-feature"))
+    return ws, app, ws / "app-feature"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_prunes_sibling_linked_worktree(tmp_path):
+    """A linked worktree whose main checkout is also inside the scan root is a
+    second copy of the same repo — it is pruned, not indexed (#4683). The
+    workspace root has no .git (info/exclude cannot cover this) and the
+    worktree dir name is arbitrary (the name-based rules cannot either)."""
+    ws, _app, _wt = _git_workspace_with_worktree(tmp_path)
+    result = detect(ws)
+    all_files = as_posix_list(f for files in result["files"].values() for f in files)
+    assert any("app/src/a.py" in f for f in all_files), "main checkout was dropped"
+    assert not any("app-feature/" in f for f in all_files), "linked worktree indexed as a second copy"
+    assert any("app-feature" in p for p in result["pruned_noise_dirs"])
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_indexes_worktree_as_scan_root(tmp_path):
+    """Scanning the linked worktree itself still indexes it (#4683)."""
+    _ws, _app, wt = _git_workspace_with_worktree(tmp_path)
+    result = detect(wt)
+    all_files = as_posix_list(f for files in result["files"].values() for f in files)
+    assert any("src/a.py" in f for f in all_files)
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_detect_keeps_worktree_whose_main_is_outside_root(tmp_path):
+    """A worktree whose main checkout is outside the scan root is the only
+    copy in the corpus — it stays indexed (#4683)."""
+    main = tmp_path / "main"
+    (main / "src").mkdir(parents=True)
+    _git(main, "init", "-q")
+    (main / "src" / "a.py").write_text("x = 1\n")
+    _git(main, "add", ".")
+    _git(main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    only = tmp_path / "only"
+    only.mkdir()
+    _git(main, "worktree", "add", "-q", str(only / "wt"))
+    result = detect(only)
+    all_files = as_posix_list(f for files in result["files"].values() for f in files)
+    assert any("src/a.py" in f for f in all_files)
+
+
+def test_detect_keeps_submodule_gitdir_without_commondir(tmp_path):
+    """A submodule's .git file points at <super>/.git/modules/<name>, which
+    carries no commondir — it is not a linked worktree and stays indexed
+    (#4683)."""
+    ws = tmp_path / "ws"
+    sub = ws / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    gitdir = ws / "super" / ".git" / "modules" / "sub"
+    gitdir.mkdir(parents=True)
+    (sub / ".git").write_text(f"gitdir: {gitdir}\n")
+    (sub / "mod.py").write_text("x = 1\n")
+    result = detect(ws)
+    all_files = as_posix_list(f for files in result["files"].values() for f in files)
+    assert any("sub/mod.py" in f for f in all_files)
 
 
 def test_git_dir_symlink_is_followed(tmp_path):

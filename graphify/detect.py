@@ -56,6 +56,13 @@ _BINARY_MEDIA_EXTENSIONS = (IMAGE_EXTENSIONS - {'.svg'}) | VIDEO_EXTENSIONS
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
 FILE_COUNT_UPPER = 500             # files - above this, warn about token cost
+# #2942: a large *fraction* of the corpus having no supported extractor (not
+# just a small, expected sliver of e.g. lockfiles or binaries) means the
+# resulting graph looks complete but structurally represents only part of the
+# codebase. Gated on an absolute floor too, so a tiny repo with one stray
+# unsupported file does not trip this.
+UNCLASSIFIED_WARN_MIN_FILES = 20
+UNCLASSIFIED_WARN_FRACTION = 0.2
 
 # Resource caps for parsing untrusted office/PDF files (F2). A corpus is
 # attacker-controllable (graphify runs on cloned/shared folders), and .docx/.xlsx
@@ -1038,7 +1045,8 @@ def is_resolution_input(path: "Path | str") -> bool:
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
 # Platforms whose project-scope skills dir is one level below the hidden dir
-# (install.py: pi -> .pi/agent/skills, kilo -> .config/kilo/skills).
+# (install.py: kilo -> .config/kilo/skills; pi wrote .pi/agent/skills before
+# #5011 and projects installed then still carry it).
 _NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".config", "kilo")})
 
 # Single files `graphify install` writes whole into a project (#4057): the
@@ -1483,6 +1491,51 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
         return None
     exclude = git_dir / "info" / "exclude"
     return exclude if exclude.is_file() else None
+
+
+def _linked_worktree_main_root(directory: Path) -> Path | None:
+    """Return the main worktree's root for a linked-worktree dir, else None.
+
+    ``git worktree add`` gives the linked checkout a ``.git`` FILE reading
+    ``gitdir: <main>/.git/worktrees/<name>``, and writes a ``commondir`` file
+    inside that gitdir pointing back at the shared git dir ``<main>/.git`` —
+    so the main checkout's root is the common dir's parent. A submodule's
+    ``.git`` file points at ``<super>/.git/modules/<name>``, which carries no
+    ``commondir``; a bare repo's shared git dir is not named ``.git`` (it has
+    no main working tree); and a moved/deleted main checkout leaves ``cd``
+    dangling — all three fall through to None and stay scannable (#4683).
+    No git subprocess is used.
+    """
+    dot_git = directory / ".git"
+    try:
+        if not dot_git.is_file():
+            return None
+        content = dot_git.read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return None
+    if not content.startswith("gitdir:"):
+        return None
+    gd = Path(content[len("gitdir:"):].strip())
+    if not gd.is_absolute():
+        try:
+            gd = (directory / gd).resolve()
+        except (OSError, RuntimeError):
+            return None
+    try:
+        cd_raw = (gd / "commondir").read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return None
+    if not cd_raw:
+        return None
+    cd = Path(cd_raw)
+    if not cd.is_absolute():
+        try:
+            cd = (gd / cd).resolve()
+        except (OSError, RuntimeError):
+            return None
+    if cd.name != ".git" or not cd.is_dir():
+        return None
+    return cd.parent
 
 
 def _git_global_excludes(vcs_root: Path) -> Path | None:
@@ -1967,6 +2020,7 @@ def ignored_predicate(
             if line:
                 patterns.append((root, line))
                 explicit_patterns.append((root, line))
+    linked_boundaries: dict[Path, bool] = {}
     cache: dict[Path, bool] = {}
     explicit_cache: dict[Path, bool] = {}
     # root's own ignore file is the last entry of _load_graphifyignore's chain.
@@ -1987,6 +2041,13 @@ def ignored_predicate(
             if _is_noise_dir(part, parent):
                 return True
             parent = parent / part
+            if parent not in linked_boundaries:
+                main_root = _linked_worktree_main_root(parent)
+                linked_boundaries[parent] = (
+                    main_root is not None and _resolves_under_root(main_root, root)
+                )
+            if linked_boundaries[parent]:
+                return True
         # Load ignore files along this path's own lineage — detect()'s walk
         # would have loaded exactly these before reaching the file (#1206).
         ancestor = root
@@ -2207,6 +2268,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         # than vanishing silently (#2058).
                         pruned_noise.append(str(child) + os.sep)
                         continue
+                    # A linked worktree whose main checkout is also inside the
+                    # scan root is a second copy of the same repo — every file
+                    # counted twice (#4683). Neither the name-based rules (the
+                    # worktree's name is arbitrary) nor info/exclude (the scan
+                    # root need not be a repo) reach this sibling layout, but
+                    # its .git file + commondir back-pointer identify it.
+                    _wt_main = _linked_worktree_main_root(child)
+                    if _wt_main is not None and _resolves_under_root(_wt_main, root):
+                        pruned_noise.append(str(child) + os.sep)
+                        continue
                     # Directory-level pruning: ONE ignore evaluation excludes the
                     # whole subtree — os.walk never descends, so a 29k-file
                     # ignored dir costs one check, not one per contained file.
@@ -2350,12 +2421,33 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             f"Consider running on a subfolder."
         )
 
+    # #2942: a few unclassified files (lockfiles, binaries, stray config) are
+    # routine and already reported above by count. A large SHARE of the files
+    # actually seen having no supported extractor at all is a different,
+    # louder signal: the graph may look complete while structurally missing
+    # a large part of the codebase (e.g. a repo whose business logic lives in
+    # XML, or another language graphify does not parse).
+    unclassified_warning: str | None = None
+    _seen_total = total_files + len(unclassified)
+    if (
+        len(unclassified) >= UNCLASSIFIED_WARN_MIN_FILES
+        and _seen_total
+        and len(unclassified) / _seen_total >= UNCLASSIFIED_WARN_FRACTION
+    ):
+        unclassified_warning = (
+            f"{len(unclassified)} of {_seen_total} files seen "
+            f"({round(len(unclassified) / _seen_total * 100)}%) have no supported "
+            f"extractor and are missing from this graph entirely. It may look "
+            f"complete while representing only part of the codebase."
+        )
+
     return {
         "files": {k.value: v for k, v in files.items()},
         "total_files": total_files,
         "total_words": total_words,
         "needs_graph": needs_graph,
         "warning": warning,
+        "unclassified_warning": unclassified_warning,
         "skipped_sensitive": skipped_sensitive,
         "unclassified": sorted(unclassified),
         "walk_errors": walk_errors,
@@ -2965,12 +3057,20 @@ def _mtime_may_hide_a_rewrite(current_mtime: float, stored: dict) -> bool:
     if not isinstance(seen, (int, float)):
         return False
     delta = float(seen) - float(current_mtime)
-    if delta < 0:
-        return False  # file is newer than the row; the mtime check already fired
     # Derive granularity from the timestamp: a whole-second mtime means the
     # filesystem cannot separate writes inside that second.
     coarse = float(current_mtime).is_integer()
-    return delta < (_MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S)
+    window = _MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S
+    if delta < 0:
+        # The row was stamped a hair BEFORE the mtime it describes (#5036). That
+        # is not "the file is newer": the caller only gets here when the stored
+        # and current mtime are equal, and ``seen`` comes from time.time() while
+        # mtime comes from the filesystem, so either clock can come out a few
+        # hundred nanoseconds the other way. Same-tick either way, so still
+        # worth the MD5. A row stamped a full window before the mtime is from an
+        # earlier run and stays on the stat-only fastpath.
+        return -delta < window
+    return delta < window
 
 
 def classify_manifest_files(
@@ -3070,6 +3170,60 @@ def classify_manifest_files(
     return new_files, unchanged_files
 
 
+def classify_manifest_deletions(
+    manifest: dict,
+    scanned: Iterable[str],
+    *,
+    root: Path | None = None,
+) -> tuple[list[str], list[str]]:
+    """Split manifest rows that left the scan into (deleted, excluded).
+
+    A row whose file is gone from DISK is a genuine deletion (its cached nodes
+    are ghosts); a row whose file still exists but is out of the current scan was
+    EXCLUDED by a changed ignore rule and must not be reported as deleted
+    (#1908). Mirrors the watch-side excluded-vs-deleted distinction (#1795).
+
+    ``scanned`` must name every row the caller expects to see, including sources
+    that carry manifest rows without being part of the scan corpus
+    (``detect()["resolution_inputs"]``, #4740), or those rows read as excluded on
+    every run.
+    """
+    try:
+        root_res: Path | None = Path(root).resolve() if root is not None else None
+    except (OSError, RuntimeError):
+        root_res = Path(root) if root is not None else None
+
+    def _in_root(path_str: str) -> bool:
+        if root_res is None:
+            return True
+        p = Path(path_str)
+        try:
+            p.relative_to(root_res)
+            return True
+        except ValueError:
+            pass
+        try:
+            p.resolve().relative_to(root_res)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
+
+    current_files = {_nfc(f) for f in scanned}
+    deleted_files: list[str] = []
+    excluded_files: list[str] = []
+    for f in manifest:
+        if not _in_root(f):
+            continue
+        if _nfc(f) in current_files:
+            continue
+        try:
+            alive = Path(f).exists()
+        except OSError:
+            alive = False
+        (excluded_files if alive else deleted_files).append(f)
+
+    return deleted_files, excluded_files
+
 def detect_incremental(
     root: Path,
     manifest_path: str = _MANIFEST_PATH,
@@ -3140,44 +3294,20 @@ def detect_incremental(
     # nodes are ghosts); a row whose file still exists but is out of the
     # current scan was EXCLUDED (ignore rules / --exclude changed) and must
     # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
-    # distinction (#1795).
-    try:
-        root_res: Path | None = Path(root).resolve() if root is not None else None
-    except (OSError, RuntimeError):
-        root_res = Path(root) if root is not None else None
-
-    def _in_root(path_str: str) -> bool:
-        if root_res is None:
-            return True
-        p = Path(path_str)
-        try:
-            p.relative_to(root_res)
-            return True
-        except ValueError:
-            pass
-        try:
-            p.resolve().relative_to(root_res)
-            return True
-        except (ValueError, OSError, RuntimeError):
-            return False
-
-    current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
-    # Resolution inputs carry manifest rows but are deliberately kept out of
-    # detect()'s corpus. Without this they read as rows that "left the scan" and
-    # would be reported as excluded on every run (#4740).
-    current_files |= {_nfc(f) for f in full.get("resolution_inputs", [])}
-    deleted_files: list[str] = []
-    excluded_files: list[str] = []
-    for f in manifest:
-        if not _in_root(f):
-            continue
-        if _nfc(f) in current_files:
-            continue
-        try:
-            alive = Path(f).exists()
-        except OSError:
-            alive = False
-        (excluded_files if alive else deleted_files).append(f)
+    # distinction (#1795). Resolution inputs carry manifest rows while being
+    # deliberately kept out of detect()'s corpus, so they are named here too;
+    # without that they would read as rows that left the scan on every run
+    # (#4740).
+    deleted_files, excluded_files = classify_manifest_deletions(
+        manifest,
+        [
+            f
+            for flist in full["files"].values()
+            for f in flist
+        ]
+        + list(full.get("resolution_inputs", [])),
+        root=root,
+    )
 
     new_total = sum(len(v) for v in new_files.values())
     full["incremental"] = True

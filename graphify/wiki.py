@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import networkx as nx
 
-from graphify.build import edge_data
+from graphify.build import edge_datas
 from graphify.paths import stem_filename_budget, write_text_atomic_if_changed
 
 # Room _unique_slug needs for the collision suffix ("_2" … "_9999") it appends
@@ -218,12 +218,14 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
     by_relation: dict[str, list[str]] = {}
     for neighbor in sorted(G.neighbors(nid), key=lambda n: G.degree(n), reverse=True):
         nd = G.nodes[neighbor]
-        ed = edge_data(G, nid, neighbor)
-        rel = ed.get("relation", "related")
         neighbor_label = nd.get("label", neighbor)
-        conf = ed.get("confidence", "")
-        conf_str = f" `{conf}`" if conf else ""
-        by_relation.setdefault(rel, []).append(f"{_md_link(neighbor_label, resolver)}{conf_str}")
+        for ed in edge_datas(G, nid, neighbor):
+            rel = ed.get("relation", "related")
+            conf = ed.get("confidence", "")
+            conf_str = f" `{conf}`" if conf else ""
+            by_relation.setdefault(rel, []).append(
+                f"{_md_link(neighbor_label, resolver)}{conf_str}"
+            )
 
     lines += ["## Connections by Relation", ""]
     for rel, targets in sorted(by_relation.items()):
@@ -381,16 +383,22 @@ def to_wiki(
     _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
 
     def _unique_slug(base: str) -> str:
-        # Fold case in the collision check: two labels differing only by case
-        # (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
+        # Fold with casefold(), the SAME rule the orphan sweep below indexes
+        # produced filenames with - not lower(). Two labels differing only by
+        # case (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
         # filesystems (macOS/APFS, Windows/NTFS), so they must dedup against each
-        # other while still emitting the original-case filename.
+        # other while still emitting the original-case filename. lower() is not
+        # enough for Unicode: "Straße".lower() != "STRASSE".lower(), yet both
+        # casefold to "strasse", so both slugs were allocated and the sweep's
+        # folded map kept one and unlinked the other current article (#5087).
+        # Same fold on both sides keeps every produced name distinct here, so a
+        # name the sweep sees is always one it produced.
         slug = base
         n = 2
-        while slug.lower() in used_slugs:
+        while slug.casefold() in used_slugs:
             slug = f"{base}_{n}"
             n += 1
-        used_slugs.add(slug.lower())
+        used_slugs.add(slug.casefold())
         return slug
 
     # First pass: assign every article its slug before rendering any body, so the
@@ -448,8 +456,43 @@ def to_wiki(
 
     # Sweep orphans: remove only the *.md this run did not produce, so a relabelled
     # community's stale page is still cleaned up without rewriting the survivors.
+    #
+    # Compare folded names, and rename a case-only change before judging it. On a
+    # case-preserving, case-insensitive filesystem (APFS, NTFS) an existing entry
+    # keeps its old case, so `write_text_atomic_if_changed(out / "Groups.md")`
+    # rewrites the contents of `groups.md` without renaming it. The exact-name
+    # check then saw `"groups.md" not in {"Groups.md"}`, unlinked the file this run
+    # had just written, and left `index.md` pointing at `Groups.md` with nothing
+    # behind it (#4508).
+    #
+    # _unique_slug dedups on casefold(), so this map is one-to-one. sorted()
+    # keeps the survivor deterministic (not set-iteration order) if it ever is not.
+    produced_by_fold = {name.casefold(): name for name in sorted(produced)}
     for old_article in out.glob("*.md"):
-        if old_article.name not in produced:
+        # Never delete a file this run produced. The fold map is one-to-one only
+        # because _unique_slug dedups on casefold(); this exact-name check keeps
+        # that promise even if a future slug rule drifts from the fold rule again
+        # (#5087: two current Unicode labels, only one fold key, one article lost).
+        if old_article.name in produced:
+            continue
+        wanted = produced_by_fold.get(old_article.name.casefold())
+        if wanted is None:
             old_article.unlink()
+        elif old_article.name != wanted:
+            # Case-only relabel. On a case-SENSITIVE filesystem (ext4, most Linux
+            # CI and production hosts) this run already wrote the correct content
+            # to `out / wanted` as a DISTINCT file, so the lower-case `old_article`
+            # is just a stale twin: unlink it, never rename it over the fresh file
+            # (doing so would silently restore the stale body). Only on a
+            # case-INSENSITIVE filesystem (APFS, NTFS) are the two the same inode,
+            # where a two-step rename through a temporary name is needed to make
+            # the new case reach disk so the index.md link resolves.
+            target = out / wanted
+            if target.exists() and not target.samefile(old_article):
+                old_article.unlink()
+            else:
+                temp = out / f".{wanted}.case-tmp"
+                old_article.rename(temp)
+                temp.rename(target)
 
     return count

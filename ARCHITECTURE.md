@@ -55,6 +55,15 @@ Always pass `root`. Node ids and `source_file` values are derived relative to it
 
 ## Extraction output schema
 
+Terraform/HCL per-file AST results record the scope used to mint their node IDs.
+After a cache hit, extraction consumes that scope to rewrite node IDs and edge
+endpoints relative to the current scan root, including when the cache was copied
+from another checkout. Module-source topology is still resolved against the
+current permitted corpus. The scope marker is internal and is not exported in
+the graph. AST cache schema 33 retires entries without this marker; the semantic
+cache is unchanged. Existing graphs with stale absolute Terraform IDs need a full
+code rebuild: `graphify extract . --code-only --force`.
+
 Every extractor returns:
 
 ```json
@@ -70,6 +79,35 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+Validation reports list/object enum values as schema errors. Graph assembly
+repairs structured `file_type` values to `concept` and structured `confidence`
+values to `INFERRED`, without fabricating a confidence score, so malformed
+semantic fields cannot abort an otherwise usable build.
+
+JS/TS calls through default imports of directly default-exported object literals reuse existing static method nodes.
+Members match the imported module path, exact label and source line. Lexically shadowed receivers, constructor calls,
+spread, computed keys, accessors, duplicate keys and dynamic aliases are not inferred. These files bypass the per-file
+AST cache, so resolving these cross-file calls does not require an AST cache schema bump.
+
+
+## Semantic provenance during file-node folding
+
+`build_from_json()` normally folds an evidence-free semantic mention of a
+filename into its unique AST file-self node (Pass 2b, #3344); references to
+that mention are rewired to the AST node. A cross-source semantic record that
+contains its own `rationale`, source URL, author/contributor, capture time,
+or metadata is **not** a disposable mention: a label-only fold would discard
+its explanation or attribution. Such records remain separate even when their
+label matches a unique AST file node. This is intentionally conservative:
+a richly annotated mention may remain distinct until an explicit
+provenance-preserving merge is available. The saved-semantic-node shrink guard
+uses the same rule and still rejects any unexplained loss. Same-source AST/semantic twins that are evidence-free keep their
+existing exact-path merge rule (#4389/#4391), but an independently evidenced
+semantic YAML/document record is retained across a later AST extractor
+upgrade. If AST disambiguation path-qualifies a file-node label, the shrink
+guard accounts for a plain same-source fold using the exact source identity
+instead of accepting a mere basename collision.
+
 ## Edge direction in graph.json
 
 `graph.json` is written `"directed": false`, but every link is directed: **arc order is the direction** (`source` → `target`, #563). Older canonicalized files carry it in `_src`/`_tgt` markers instead, and those win where present (#2309).
@@ -84,6 +122,22 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 | `INFERRED` | Relationship is a reasonable deduction (e.g., call-graph second pass, co-occurrence in context) |
 | `AMBIGUOUS` | Relationship is uncertain; flagged for human review in GRAPH_REPORT.md |
 
+Go member calls, including same-file calls, resolve through declared receiver types and
+carry `INFERRED` confidence. Bare calls to package-level functions remain `EXTRACTED`;
+unknown or ambiguous receivers do not bind by method name alone. AST cache schema 37
+retires Go entries created before these receiver-binding rules.
+
+C++ member chains such as `client.actions->Execute()` use lexical local/parameter
+bindings and class-scoped field declarations, including fields in unchanged headers.
+Raw pointers and single-type-argument `std::unique_ptr<T>` / `std::shared_ptr<T>`
+receivers are supported; `.` does not unwrap a smart pointer. Resolved instance
+calls are `INFERRED` static-type relationships, not proof of runtime dispatch.
+Unknown/shadowed types, ambiguous class identities, unresolved aliases, custom
+pointer wrappers, containers, and computed receivers are not guessed. AST cache
+schema 41 retires entries without receiver chains and persistent class fields.
+Rebuild existing graphs with `graphify extract . --code-only --force` to populate
+unchanged headers before relying on changed-file-only updates.
+
 ## Adding a new language extractor
 
 1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.
@@ -91,6 +145,14 @@ A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-o
 3. Add the suffix to `CODE_EXTENSIONS` in `detect.py` and `_WATCHED_EXTENSIONS` in `watch.py`.
 4. Add the tree-sitter package to `pyproject.toml` dependencies.
 5. Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py`.
+
+## Search hook scope
+
+The search hook omits project hints when a structured Grep path or every literal
+target of a simple grep/rg command resolves outside the project. Mixed targets,
+implicit paths, shell composition/expansion, wrappers, unknown options and
+unmapped Windows shell drive paths retain the advisory hint. It does not execute
+shell input or change search permissions.
 
 ## Security
 
@@ -134,6 +196,15 @@ ambiguous return references emit no inferred call. Resulting call edges remain
 as resolver context. Changes to a producer's return annotation require a full
 rebuild to recompute unchanged callers' inferred relationships.
 
+Python direct module-level constructor assignments (`g = Service()`) retain the
+class for member-call resolution inside functions, including an imported alias
+or a lowercase class rebound to its instance. The constructor must be declared
+or imported before the assignment and resolve to a unique visible class by exact
+spelling. Local shadowing, other module bindings, conditional assignments and
+dynamic namespace mutation leave these calls unresolved. Qualified constructors
+and decorated classes are not inferred by this pass. Edges remain `INFERRED`;
+AST cache schema 37 retires Python entries without the instance marker.
+
 C# partial types merge across files by their path inside the namespace,
 enclosing types first and each with its arity (`` Outer`1.Inner ``), within one
 assembly. Nested halves merge only under the same enclosing chain, and `Foo` and
@@ -142,8 +213,47 @@ lack this path. The merge runs after colliding ids are salted apart by path, so
 a half whose file stem collides with another file's (`Spec.cs` and `_Spec.cs`,
 `Cfg/Helpers.cs` and `Cfg_Helpers.cs`) still merges and keeps its members.
 
+C# constructors (instance, static and a type's primary constructor) are nodes
+owned by their type through a `method` edge, labeled `.TypeName()` with
+metadata `kind: "constructor"`. The id is the one a method named after the type
+would get, `_make_id(type_id, TypeName)`; each further signature is salted like
+a method overload, a static constructor is its own `static` signature, and when
+a member spelled like the type in another case (`foo()` in `Foo`) already owns
+that id, the constructor takes a salted one, so no existing id moves. Calls in
+a constructor's body and `: base(...)`/`: this(...)` arguments are its calls.
+`new X(...)` keeps its edge to the type and also links the constructor whose
+parameter count fits, as do `: base(...)`/`: this(...)`; two fitting overloads,
+an unresolved base or an unbound type give no constructor edge. Constructors
+stay out of every name-keyed call index. AST cache schema 40 retires C# entries
+without them.
+
+C# property and indexer accessor bodies (and expression bodies) are walked
+with the member as the caller, and the member counts as owned by its type for
+unqualified, `this.`/`base.` and partial-type lookups, like a method. It is never
+a call target by name. An indexer is a `this[]` node (`defines`, context
+`field`) with id `_make_id(type_id, "this")`, salted per signature and away
+from a member spelled `This`. A user-defined operator or conversion is a
+`.operator +()` / `.operator int()` node owned through `method`, with id
+`_make_id(type_id, "operator", sha1(signature)[:6])`, since several conversions
+share one parameter list. Existing ids do not move. AST cache schema 40.
+
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
 underscore separators cannot collide with an ordinary normalized binding ID. Local
 call resolution stops if malformed scope metadata cycles.
+
+### Same-ID AST / semantic provenance during extractor upgrades (#4896)
+
+A newly supported AST extractor can mint an ID that is already owned by an
+independently evidenced semantic node in a saved graph, even when the two nodes
+refer to the same file. Watch reconciliation retains the saved semantic ID and
+its rationale/attribution, assigns the fresh AST record a deterministic
+ID-derived AST suffix, and rewrites only fresh AST edge/hyperedge
+references. This applies to full and incremental re-extractions; incrementally
+rebuilt sources are not positive evidence of semantic deletion. The shrink
+guard refuses same-ID losses of semantic provenance even when the total node
+count grows, preventing the ordinary missing-ID guard from being bypassed.
+If multiple new AST records already share that ID, all use one deterministic
+AST successor ID: this retains their preexisting AST coalescing behavior while
+ensuring they cannot overwrite independent semantic provenance.

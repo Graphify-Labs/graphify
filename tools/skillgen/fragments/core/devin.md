@@ -59,13 +59,17 @@ Use it for:
 - A research corpus (citation graph + concept graph in one)
 - Your personal /raw folder (drop everything in, let it grow, query it)
 
+**When a graph is worth building:** this applies when you are choosing a tool yourself; if the user invoked `/graphify`, follow that request as asked. AST extraction of code is fast and free, but semantic extraction of docs, papers and images runs the model over every file, which can cost minutes and tens of thousands of tokens.
+
+If a graph already exists, query it. With no graph, one targeted lookup ("where is X defined", "what calls Y" in an ordinary-sized codebase) is faster and free with a plain text search such as `grep` and `Read`: search directly instead of running the steps below, and mention that a graph can be built if the user wants one. Build one when you expect many questions against this corpus, the corpus is large or unfamiliar, the question needs links text search cannot see (doc to code, across documents), or it is structural (communities, bridges, import cycles).
+
 ## What You Must Do When Invoked
 
 If the user invoked `/graphify --help` or `/graphify -h` (with no other arguments), print the contents of the `## Usage` section above verbatim and stop. Do not run any commands, do not detect files, do not default the path to `.`. Just print the Usage block and return.
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
-Follow these steps in order. Do not skip steps.
+Follow these steps in order unless the fast path above applies.
 
 ### Step 1 - Ensure graphify is installed
 
@@ -126,12 +130,13 @@ from graphify.detect import detect
 from pathlib import Path
 from graphify.paths import out_path
 from graphify.watch import _read_build_excludes, _read_build_gitignore
-result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
+result = detect(Path(INPUT_PATH), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 print(json.dumps(result))
 " > graphify-out/.graphify_detect.json
 ```
 
-Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
+The block reads the scan root from the trusted `graphify-out/.graphify_root` that Step 1 resolved, so there is no path to substitute and a scan root containing quotes or shell metacharacters can never be re-interpreted as code (the same reason Step 1 writes it through a quoted heredoc). Do NOT cat or print the JSON - read it silently and present a clean summary instead:
 
 ```
 Corpus: X files · ~Y words
@@ -482,7 +487,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
-**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source->target), otherwise `False` (the default undirected `Graph`). Substitute it everywhere it appears, the same way you substitute `INPUT_PATH` - do not leave the literal `IS_DIRECTED` in the code.
+**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source->target), otherwise `False` (the default undirected `Graph`). Substitute it everywhere it appears - do not leave the literal `IS_DIRECTED` in the code. INPUT_PATH is not substituted - each block reads the scan root from the trusted `graphify-out/.graphify_root` that Step 1 resolved.
 
 ```bash
 mkdir -p graphify-out
@@ -497,6 +502,7 @@ from pathlib import Path
 
 extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text())
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
 
 G = build_from_json(extraction, directed=IS_DIRECTED)
 # Guard BEFORE any write: an empty extraction must not clobber a good graph.json /
@@ -521,7 +527,7 @@ wrote = to_json(G, communities, 'graphify-out/graph.json')
 if not wrote:
     print('ERROR: refused to shrink graphify-out/graph.json (fewer nodes than the existing graph). Run a full rebuild to be safe.')
     raise SystemExit(1)
-report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
+report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, INPUT_PATH, suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report)
 
 analysis = {
@@ -538,7 +544,7 @@ print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(co
 
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
-Replace INPUT_PATH with the actual path.
+INPUT_PATH is read from `graphify-out/.graphify_root`; there is no path to substitute.
 
 ### Step 5 - Label communities
 
@@ -571,7 +577,8 @@ labels = LABELS_DICT
 # Regenerate questions with real community labels (labels affect question phrasing)
 questions = suggest_questions(G, communities, labels)
 
-report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
+report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, INPUT_PATH, suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report)
 Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}))
 # Re-export so graph.json nodes carry the curated community_name (#2490).
@@ -585,7 +592,7 @@ print('Report updated with community labels')
 ```
 
 Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
-Replace INPUT_PATH with the actual path.
+INPUT_PATH is read from `graphify-out/.graphify_root`; there is no path to substitute.
 
 ### Step 6 - Generate Obsidian vault (opt-in) + HTML
 
@@ -833,16 +840,17 @@ from graphify.detect import save_manifest
 # Save manifest for --update
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text())
 extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
 # Stamp only semantic files that produced output so a failed chunk is re-queued next run, not lost (#2015).
 from graphify.cli import _stamped_manifest_files
 _corpus = detect.get('all_files') or detect['files']
-_manifest_files = _stamped_manifest_files(_corpus, extract, Path('INPUT_PATH'))
+_manifest_files = _stamped_manifest_files(_corpus, extract, Path(INPUT_PATH))
 _sem_types = ('document', 'paper', 'image')
 _dispatched = {f for t, fl in detect['files'].items() if t in _sem_types for f in fl}
 _stamped = {f for fl in _manifest_files.values() for f in fl}
 _cleared = _dispatched - _stamped
 _scan = {f for fl in _corpus.values() for f in fl}
-save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
+save_manifest(_manifest_files, root=INPUT_PATH, scan_corpus=_scan, clear_semantic=_cleared or None)
 
 # Update cumulative cost tracker
 input_tok = extract.get('input_tokens', 0)
@@ -937,7 +945,8 @@ from pathlib import Path
 
 from graphify.paths import out_path
 from graphify.watch import _read_build_excludes, _read_build_gitignore
-result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
+result = detect_incremental(Path(INPUT_PATH), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result))
@@ -1226,6 +1235,8 @@ print(output)
 ```
 
 Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above.
+
+**Bypass check (hub/bridge questions only, #4426).** If the question is about why a node bridges communities or has unusually many edges (a hub/god node), the neighbour listing above only shows code that already has an edge to it — it cannot show code that does the hub's job without ever calling it. Before finalizing the answer: pick one or two literal, distinctive things the hub does (a hard-coded constant it wraps, a specific string it returns, the exact computation in its body), then grep the corpus for that literal text in files that have no edge to the hub node in the subgraph above. Report any hits separately, labeled "Bypasses", distinct from the normal neighbour list — each is a file that reimplements the hub instead of using it. Also check whether the hub's own community label names a different node: a shared utility is often clustered into its heaviest consumer's community, so the label can read as if that consumer were the bridge. If so, say so plainly in the answer rather than letting the label stand unquestioned.
 
 After writing the answer, save it back into the graph so it improves future queries:
 

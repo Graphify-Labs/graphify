@@ -456,6 +456,50 @@ def test_query_terms_drops_question_stopwords():
     assert _query_terms("how does the frontier cache work") == ["frontier", "cache"]
 
 
+def test_query_terms_drops_get_question_filler():
+    assert _query_terms("how does payroll.approve get authorized") == [
+        "payroll", "approve", "authorized",
+    ]
+
+
+@pytest.mark.parametrize("verb", ["gets", "got", "getting"])
+def test_query_terms_drops_get_variants(verb):
+    assert _query_terms(f"payroll {verb} authorized") == ["payroll", "authorized"]
+
+
+@pytest.mark.parametrize(("question", "expected"), [
+    ("get", ["get"]),
+    ("how do I get it", ["how", "get"]),
+])
+def test_query_terms_get_only_falls_back_to_unfiltered(question, expected):
+    assert _query_terms(question) == expected
+
+
+def test_pick_seeds_get_question_ignores_framework_hub():
+    # #4684: unlike the short, low-degree leaves guarded by #1602, a framework
+    # decorator hub must not become a seed just because the question says get.
+    G = nx.DiGraph()
+    G.add_node("get", label="Get")
+    G.add_node("approve", label="approvePayroll", source_file="src/payroll.ts")
+    G.add_node("authorize", label="authorize", source_file="src/auth.ts")
+    G.add_edge("approve", "authorize")
+    for i in range(20):
+        controller = f"controller_{i}"
+        G.add_node(controller, label=f"Controller{i}")
+        G.add_edge(controller, "get", relation="imports")
+
+    terms = _query_terms("how does payroll approve get authorized")
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term,
+        term_order=qs.term_order,
+    )
+    assert "get" not in seeds
+    assert "approve" in seeds
+    # Node lookup remains unfiltered even when get is a query stopword.
+    assert _find_node(G, "Get") == ["get"]
+
+
 def test_query_terms_all_stopwords_falls_back_to_unfiltered():
     # An all-stopword query keeps its terms rather than seeding on nothing.
     assert _query_terms("how does it work") == ["how", "does", "work"]
@@ -976,6 +1020,37 @@ def test_pick_seeds_per_term_guarantee_does_not_reintroduce_generic_dupe(monkeyp
     seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
     get_seeds = [s for s in seeds if s.startswith("get")]
     assert len(get_seeds) == 1, f"per-term guarantee reintroduced a GET dupe: {seeds}"
+
+
+def test_pick_seeds_keeps_same_label_node_that_is_only_match_for_a_term():
+    """A node sharing a seeded label must still be seeded when it is the only
+    match for a query term the label doesn't contain: `alpha` matches only
+    `alpha_pre`'s source path, so the seeded `PreToolUse` twin can't cover it (#5027)."""
+    G = nx.Graph()
+    G.add_node("hooks_pre", label="PreToolUse", source_file="plugins/core/lib/core_hooks/handler/pre_tool_use.rb")
+    G.add_node("hooks_run", label=".run", source_file="plugins/core/lib/core_hooks/handler/pre_tool_use.rb")
+    G.add_node("alpha_pre", label="PreToolUse", source_file="plugins/core-alpha/lib/alpha/pre_tool_use.rb")
+    G.add_edge("hooks_pre", "hooks_run")
+    qs = _score_query(G, ["core", "alpha", "PreToolUse", "hook", "handler"], collect_per_term_seeds=True)
+    assert qs.best_seed_by_term["alpha"] == "alpha_pre"
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term, term_order=qs.term_order)
+    assert "alpha_pre" in seeds, f"only match for 'alpha' was dropped by the label cap: {seeds}"
+
+
+def test_pick_seeds_per_term_still_caps_same_label_winner_of_a_label_term():
+    """The #5027 exception is narrow: when the term is part of the shared label,
+    the seeded twin already matches it, so a different same-label winner is still
+    capped. `get2` wins `get` on the degree tie-break while the first loop seeds
+    `get0`, so this reaches the per-term cap (#1766)."""
+    G = nx.DiGraph()
+    for i in range(3):
+        G.add_node(f"get{i}", label="GET", source_file=f"r{i}.py")
+    G.add_node("x", label="x_helper", source_file="x.py")
+    G.add_edge("get2", "x")
+    qs = _score_query(G, ["get"], collect_per_term_seeds=True)
+    assert qs.best_seed_by_term["get"] == "get2"
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    assert seeds == ["get0"], f"per-term guarantee added a second GET: {seeds}"
 
 
 def test_score_nodes_scores_identical_labels_equally():
@@ -2044,3 +2119,134 @@ def test_query_graph_text_surfaces_parallel_relationships(tmp_path):
     text = _query_graph_text(G, "applySeed", token_budget=2000)
     assert "--contains " in text, text
     assert "--calls " in text, text
+
+
+# --- a tie only by case goes to the exact spelling ---------------------------
+
+def _case_pair_graph() -> nx.Graph:
+    # Go keeps `CheckHealth` and `checkHealth` apart (#2779): an exported method
+    # and its unexported helper on one type, in one file.
+    G = nx.Graph()
+    G.add_node("api_server_checkhealth", label=".CheckHealth()",
+               source_file="api/server.go", source_location="L9")
+    G.add_node("api_server_checkhealth_efb2ee", label=".checkHealth()",
+               source_file="api/server.go", source_location="L13")
+    G.add_edge("api_server_checkhealth", "api_server_checkhealth_efb2ee", relation="calls")
+    return G
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("CheckHealth", "api_server_checkhealth"),
+    ("checkHealth", "api_server_checkhealth_efb2ee"),
+    (".checkHealth()", "api_server_checkhealth_efb2ee"),
+])
+def test_a_name_spelled_exactly_wins_a_tie_that_is_only_case(query, expected):
+    from graphify.serve import _resolve_single_node
+
+    nid, err = _resolve_single_node(_case_pair_graph(), query)
+    assert err is None, err
+    assert nid == expected
+
+
+def test_a_case_tie_neither_spelling_matches_stays_ambiguous():
+    from graphify.serve import _resolve_single_node
+
+    nid, err = _resolve_single_node(_case_pair_graph(), "checkhealth")
+    assert nid is None
+    assert err.startswith("Ambiguous:"), err
+
+
+def test_an_exact_spelling_does_not_break_a_tie_between_two_files():
+    # Same spelling in two files is a real ambiguity: case cannot settle it.
+    from graphify.serve import _resolve_single_node
+
+    G = _case_pair_graph()
+    G.add_node("web_router_checkhealth", label=".CheckHealth()",
+               source_file="web/router.go", source_location="L4")
+    nid, err = _resolve_single_node(G, "CheckHealth")
+    assert nid is None
+    assert err.startswith("Ambiguous:"), err
+
+
+# --- schema/namespace-qualified labels (#5080) ---
+
+def _qualified_graph() -> nx.Graph:
+    """A SQL function behind a schema prefix, plus nodes whose whole label is one query token."""
+    G = nx.Graph()
+    for i in range(4):
+        G.add_node(f"migrations/04{i}_widget_sweep.sql::public.sweep_widget_state()",
+                   label="public.sweep_widget_state()", norm_label="public.sweep_widget_state()",
+                   source_file=f"migrations/04{i}_widget_sweep.sql", community=0)
+    G.add_node("consts_sweep", label="SWEEP", norm_label="sweep", source_file="src/consts.py", community=0)
+    G.add_node("consts_widget", label="WIDGET", norm_label="widget", source_file="src/consts.py", community=0)
+    G.add_node("types_state", label="State", norm_label="state", source_file="src/types.py", community=0)
+    for i in range(6):
+        G.add_node(f"noise_{i}", label=f"unrelated_{i}", source_file=f"src/noise{i}.py", community=1)
+    return G
+
+
+def test_qualified_label_beats_a_whole_label_token_collision():
+    """`query sweep_widget_state` must seed on `public.sweep_widget_state()` (#5080).
+
+    Every one of `SWEEP`, `WIDGET` and `State` exactly equals a query token while
+    the function only prefix/substring-matches them, so without the qualified
+    tier the three collisions take the seed slots and the function never gets
+    traversed — whereas `explain sweep_widget_state` lists it. The user does not
+    type the schema, so the qualifier cannot be part of the match.
+    """
+    G = _qualified_graph()
+    scored = _score_nodes(G, ["sweep_widget_state"])
+    target = "migrations/040_widget_sweep.sql::public.sweep_widget_state()"
+
+    assert scored[0][1] == target
+    # All four migrations define the same function, so they tie; what matters is
+    # that the collisions come after them rather than taking the seed slots.
+    assert all(nid.startswith("migrations/") for _s, nid in scored[:4])
+    assert scored[4][0] < scored[0][0], "the qualified match must strictly outrank the token collisions"
+
+    text = _query_graph_text(G, "sweep_widget_state", token_budget=4000)
+    assert "public.sweep_widget_state()" in text
+
+
+@pytest.mark.parametrize("question", ["public.sweep_widget_state", "public.sweep_widget_state()"])
+def test_typing_the_qualifier_still_works(question):
+    """Pinning the qualifier keeps resolving — and lands on the exact tier, not the qualified one."""
+    G = _qualified_graph()
+    scored = _score_nodes(G, [question])
+    assert scored[0][1].startswith("migrations/040_widget_sweep.sql::public.sweep_widget_state()")
+    assert _find_node(G, question)
+
+
+def test_qualified_tier_stays_below_an_exact_label():
+    """A label equal to the query always wins over a qualified label ending in it."""
+    G = nx.Graph()
+    G.add_node("qualified", label="public.sweep()", norm_label="public.sweep()", source_file="m.sql", community=0)
+    G.add_node("plain", label="sweep", norm_label="sweep", source_file="s.py", community=0)
+    scored = _score_nodes(G, ["sweep"])
+    assert scored[0][1] == "plain"
+
+
+def test_qualified_tier_ignores_a_partial_tail():
+    """Only a tail equal to the whole query counts; a longer tail must not."""
+    G = nx.Graph()
+    G.add_node("long", label="public.sweep_state_machine()", norm_label="public.sweep_state_machine()",
+               source_file="m.sql", community=0)
+    G.add_node("other", label="sweep", norm_label="sweep", source_file="s.py", community=0)
+    by_id = {nid: s for s, nid in _score_nodes(G, ["sweep"])}
+    assert by_id["other"] > 0
+    assert by_id["long"] < by_id["other"]
+
+
+def test_qualified_tail_split():
+    from graphify.serve import _qualified_tail
+
+    assert _qualified_tail("public.sweep_widget_state()") == (1, "sweep widget state")
+    assert _qualified_tail("Index.ClientLive") == (1, "clientlive")
+    assert _qualified_tail("fmt.Println") == (1, "println")
+    assert _qualified_tail("Widget::sweep") == (1, "sweep")
+    # Not names: file extensions, numbers, plain snake_case.
+    assert _qualified_tail("lib/foo/bar.py") == (2, "bar")
+    assert _qualified_tail("3.14") is None
+    assert _qualified_tail("HTTPClient") is None
+    assert _qualified_tail("sweep_widget_state") is None
+    assert _qualified_tail("") is None

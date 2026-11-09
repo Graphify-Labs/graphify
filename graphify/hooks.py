@@ -405,8 +405,8 @@ def _detached_launch(rebuild_body: str) -> str:
 # absolute while --git-common-dir is the relative ".git", and a raw compare would
 # false-positive on the PRIMARY checkout and wrongly skip it.
 _WORKTREE_GUARD = """\
-_GFY_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
-_GFY_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+_GFY_GITDIR=$(CDPATH= cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
+_GFY_COMMONDIR=$(CDPATH= cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
 if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then
     exit 0
 fi
@@ -776,7 +776,7 @@ def _rev_parse_path(root: Path, flag: str) -> Path | None:
     try:
         res = _sp.run(
             ["git", "-C", str(root), "rev-parse", flag],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
     except (OSError, FileNotFoundError):
         return None
@@ -838,7 +838,7 @@ def _hooks_dir(root: Path) -> Path:
     try:
         res = _sp.run(
             ["git", "-C", str(root), "rev-parse", "--git-path", "hooks"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
         if res.returncode != 0:
             # git failing here is a real signal (corrupt .git/config, tampering,
