@@ -1470,7 +1470,7 @@ class MockDataSet {{
     items.forEach(it => this.map.set(it.id, it));
   }}
   get(id) {{ return this.map.get(id); }}
-  update() {{}}
+  update(items) {{ items.forEach(item => this.map.set(item.id, {{...this.map.get(item.id), ...item}})); }}
 }}
 
 const vis = {{
@@ -1480,6 +1480,9 @@ const vis = {{
     once() {{}}
     on() {{}}
     getConnectedNodes() {{ return []; }}
+    getConnectedEdges() {{ return []; }}
+    getSelectedNodes() {{ return []; }}
+    unselectAll() {{}}
     focus() {{}}
     selectNodes() {{}}
   }}
@@ -1577,8 +1580,11 @@ const document = { body: mockElem(), listeners: {}, getElementById: id => els[id
   createElement: mockElem, addEventListener(t, f) { this.listeners[t] = f; }, querySelectorAll: () => [] };
 const window = { innerWidth: 1280, innerHeight: 800 };
 class MockDataSet { constructor(items) { this.map = new Map(items.map(it => [it.id, it])); }
-  get(id) { return this.map.get(id); } update() {} }
+  get(id) { return this.map.get(id); }
+  update(items) { items.forEach(item => this.map.set(item.id, {...this.map.get(item.id), ...item})); } }
 const vis = { DataSet: MockDataSet, Network: class { once() {} on() {} focus() {} selectNodes() {}
+  getSelectedNodes() { return []; } unselectAll() {}
+  getConnectedEdges(id) { return RAW_EDGES.map((e, i) => e.from === id || e.to === id ? i : -1).filter(i => i >= 0); }
   getConnectedNodes(id) { return RAW_NODES.map(n => n.id).filter(x => x !== id); } } };
 """ + m.group(1) + "\n" + epilogue
     proc = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", timeout=30)
@@ -1607,6 +1613,50 @@ def _parse_html_fragment(fragment: str) -> list:
 
     _P(convert_charrefs=True).feed(fragment)
     return tags
+
+
+def test_to_html_filter_controls_compose_with_communities_and_restore_nodes(tmp_path):
+    import networkx as nx
+
+    graph = nx.MultiDiGraph()
+    for nid in ("a", "b", "c", "isolated"):
+        graph.add_node(nid, label=nid, source_file=f"{nid}.cpp", file_type="code")
+    graph.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
+    graph.add_edge("a", "c", relation="imports", confidence="INFERRED")
+    out = tmp_path / "filtered.html"
+    to_html(graph, {0: ["a", "b"], 1: ["c", "isolated"]}, str(out))
+    result = _run_sidebar_harness(out.read_text(encoding="utf-8"), """
+const snapshot = () => ({
+  nodes: RAW_NODES.filter(n => !nodesDS.get(n.id).hidden).map(n => n.id).sort(),
+  edges: RAW_EDGES.filter((e,i) => !edgesDS.get(i).hidden).map(e => e.label).sort()
+});
+const initial = snapshot();
+relationFilter.value = JSON.stringify('calls');
+relationFilter.listeners.change();
+showInfo('a');
+const calls = snapshot(), info = els['info-content'].innerHTML;
+confidenceFilter.value = JSON.stringify('INFERRED');
+confidenceFilter.listeners.change();
+const empty = snapshot();
+confidenceFilter.value = '';
+confidenceFilter.listeners.change();
+toggleAllCommunities(true);
+const hidden = snapshot();
+toggleAllCommunities(false);
+const restoredCalls = snapshot();
+relationFilter.value = '';
+relationFilter.listeners.change();
+console.log(JSON.stringify({initial,calls,empty,hidden,restoredCalls,restored:snapshot(),info,
+  options: relationFilter.children.map(e => e.textContent)}));
+""")
+    assert result["initial"] == {"nodes": ["a", "b", "c", "isolated"], "edges": ["calls", "imports"]}
+    assert result["calls"] == result["restoredCalls"] == {"nodes": ["a", "b"], "edges": ["calls"]}
+    assert result["empty"] == result["hidden"] == {"nodes": [], "edges": []}
+    assert result["restored"] == result["initial"]
+    assert "Neighbors (1)" in result["info"]
+    assert 'data-nid="b"' in result["info"]
+    assert 'data-nid="c"' not in result["info"]
+    assert result["options"] == ["calls", "imports"]
 
 
 def test_to_html_legend_label_escaped_once_without_title(tmp_path):

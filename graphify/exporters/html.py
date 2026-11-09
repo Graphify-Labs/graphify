@@ -48,6 +48,9 @@ def _html_styles() -> str:
   #search-wrap { padding: 12px; border-bottom: 1px solid var(--border); }
   #search { width: 100%; background: var(--bg); border: 1px solid var(--input-border); color: var(--text); padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
   #search:focus { border-color: #4E79A7; }
+  #relationship-controls { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  #relationship-controls label { display: block; margin: 4px 0; font-size: 12px; color: var(--text-2); }
+  #relationship-controls select { width: 100%; padding: 5px; background: var(--bg); color: var(--text); border: 1px solid var(--input-border); border-radius: 4px; }
   #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid var(--border); display: none; }
   .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .search-item:hover { background: var(--border); }
@@ -112,6 +115,7 @@ function convexHull(pts) {{
 }}
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
+        if (h.nodes.some(nid => !nodesDS.get(nid) || nodesDS.get(nid).hidden)) return;
         const positions = h.nodes
             .map(nid => network.getPositions([nid])[nid])
             .filter(p => p !== undefined);
@@ -256,7 +260,10 @@ network.once('stabilizationIterationsDone', () => {{
 function showInfo(nodeId) {{
   const n = nodesDS.get(nodeId);
   if (!n) return;
-  const neighborIds = network.getConnectedNodes(nodeId);
+  const neighborIds = [...new Set(network.getConnectedEdges(nodeId)
+    .map(id => edgesDS.get(id)).filter(e => e && !e.hidden)
+    .map(e => e.from === nodeId ? e.to : e.from))]
+    .filter(id => nodesDS.get(id) && !nodesDS.get(id).hidden);
   const neighborItems = neighborIds.map(nid => {{
     const nb = nodesDS.get(nid);
     const color = nb ? nb.color.background : '#555';
@@ -375,7 +382,7 @@ searchInput.addEventListener('input', () => {{
   const q = searchInput.value.toLowerCase().trim();
   searchResults.innerHTML = '';
   if (!q) {{ searchResults.style.display = 'none'; return; }}
-  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
+  const matches = RAW_NODES.filter(n => !nodesDS.get(n.id).hidden && n.label.toLowerCase().includes(q)).slice(0, 20);
   if (!matches.length) {{ searchResults.style.display = 'none'; return; }}
   searchResults.style.display = 'block';
   matches.forEach(n => {{
@@ -400,11 +407,55 @@ document.addEventListener('click', e => {{
 }});
 
 const hiddenCommunities = new Set();
+const relationFilter = document.getElementById('relation-filter');
+const confidenceFilter = document.getElementById('confidence-filter');
+
+// Apply all filters together so changing a community never restores a hidden edge.
+function graphVisibility(rawNodes, rawEdges, hiddenCommunities, relation, confidence) {{
+  const eligible = new Set(rawNodes.filter(n => !hiddenCommunities.has(n.community)).map(n => n.id));
+  const visibleNodes = new Set();
+  const visibleEdges = new Set();
+  rawEdges.forEach((e, i) => {{
+    if (!eligible.has(e.from) || !eligible.has(e.to)) return;
+    if (relation !== null && e.label !== relation) return;
+    if (confidence !== null && e.confidence !== confidence) return;
+    visibleEdges.add(i);
+    visibleNodes.add(e.from);
+    visibleNodes.add(e.to);
+  }});
+  return {{nodes: relation === null && confidence === null ? eligible : visibleNodes, edges: visibleEdges}};
+}}
+
+function updateGraphFilters() {{
+  const visible = graphVisibility(RAW_NODES, RAW_EDGES, hiddenCommunities,
+    relationFilter.value ? JSON.parse(relationFilter.value) : null,
+    confidenceFilter.value ? JSON.parse(confidenceFilter.value) : null);
+  nodesDS.update(RAW_NODES.map(n => ({{id: n.id, hidden: !visible.nodes.has(n.id), physics: visible.nodes.has(n.id)}})));
+  edgesDS.update(RAW_EDGES.map((e, i) => ({{id: i, hidden: !visible.edges.has(i), physics: visible.edges.has(i)}})));
+  document.getElementById('visible-count').textContent = `${{visible.nodes.size}} nodes / ${{visible.edges.size}} edges visible`;
+  document.getElementById('search-results').style.display = 'none';
+  const selected = network.getSelectedNodes()[0];
+  if (visible.nodes.has(selected)) showInfo(selected);
+  else {{
+    network.unselectAll();
+    document.getElementById('info-content').textContent = 'Click a node to inspect it';
+  }}
+}}
+
+[[relationFilter, 'label'], [confidenceFilter, 'confidence']].forEach(([control, key]) => {{
+  [...new Set(RAW_EDGES.map(e => e[key]))].sort().forEach(value => {{
+    const option = document.createElement('option');
+    option.value = JSON.stringify(value);
+    option.textContent = value || '(unspecified)';
+    control.appendChild(option);
+  }});
+  control.addEventListener('change', updateGraphFilters);
+}});
 
 const selectAllCb = document.getElementById('select-all-cb');
 
 function updateSelectAllState() {{
-  const total = LEGEND.length;
+  const total = new Set(RAW_NODES.map(n => n.community)).size;
   const hidden = hiddenCommunities.size;
   selectAllCb.checked = hidden === 0;
   selectAllCb.indeterminate = hidden > 0 && hidden < total;
@@ -417,11 +468,10 @@ function toggleAllCommunities(hide) {{
   document.querySelectorAll('.legend-cb').forEach(cb => {{
     cb.checked = !hide;
   }});
-  LEGEND.forEach(c => {{
-    if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
+  RAW_NODES.forEach(n => {{
+    if (hide) hiddenCommunities.add(n.community); else hiddenCommunities.delete(n.community);
   }});
-  const updates = RAW_NODES.map(n => ({{ id: n.id, hidden: hide }}));
-  nodesDS.update(updates);
+  updateGraphFilters();
   updateSelectAllState();
 }}
 
@@ -442,10 +492,7 @@ LEGEND.forEach(c => {{
       hiddenCommunities.add(c.cid);
       item.classList.add('dimmed');
     }}
-    const updates = RAW_NODES
-      .filter(n => n.community === c.cid)
-      .map(n => ({{ id: n.id, hidden: !cb.checked }}));
-    nodesDS.update(updates);
+    updateGraphFilters();
     updateSelectAllState();
   }});
   item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
@@ -459,6 +506,7 @@ LEGEND.forEach(c => {{
   }};
   legendEl.appendChild(item);
 }});
+updateGraphFilters();
 </script>"""
 
 
@@ -691,11 +739,16 @@ def to_html(
         relation = data.get("relation", "")
         true_src = data.get("_src", u)
         true_tgt = data.get("_tgt", v)
+        evidence = [f"{relation} [{confidence}]"]
+        if data.get("source_file"):
+            evidence.append(f"{data['source_file']}:{data.get('source_location') or '?'}")
+        if isinstance(data.get("metadata"), dict) and data["metadata"]:
+            evidence.append("Metadata: " + json.dumps(data["metadata"], sort_keys=True, ensure_ascii=False))
         vis_edges.append({
             "from": true_src,
             "to": true_tgt,
             "label": relation,
-            "title": sanitize_label(f"{relation} [{confidence}]"),
+            "title": "\n".join(sanitize_label(line) for line in evidence),
             "dashes": confidence != "EXTRACTED",
             "width": 2 if confidence == "EXTRACTED" else 1,
             "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},
@@ -758,6 +811,13 @@ def to_html(
   <div id="search-wrap">
     <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
     <div id="search-results"></div>
+  </div>
+  <div id="relationship-controls">
+    <label for="relation-filter">Relationship</label>
+    <select id="relation-filter"><option value="">All relationships</option></select>
+    <label for="confidence-filter">Evidence</label>
+    <select id="confidence-filter"><option value="">All confidence levels</option></select>
+    <div id="visible-count" role="status" aria-live="polite"></div>
   </div>
   <div id="info-panel">
     <h3>Node Info</h3>
