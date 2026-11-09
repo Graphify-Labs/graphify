@@ -3905,7 +3905,7 @@ def _merge_cpp_member_declarations(
         declaration["_cpp_reconcile_files"] = sorted(set(path) | set(owner.get("_cpp_reconcile_files", [])))
     if remap:
         by_id = {n["id"]: n for n in resolution_nodes}
-        member_names: dict[str, set[str]] = {}
+        member_names: dict[str | None, set[str]] = {}
         for owner_id, member_id in owned:
             label = by_id.get(member_id, {}).get("label", "")
             if label.startswith(".") and label.endswith("()"):
@@ -4012,7 +4012,7 @@ def _merge_decl_def_classes(
 
     # Actual C++ classes and their members need include/scope proof even when
     # sibling stems collide. Let disambiguation retain them before reconciliation.
-    cpp_separate = {nid for nid, group in by_id.items()
+    cpp_separate: set[str | None] = {nid for nid, group in by_id.items()
                     if sum("_cpp_class_kind" in n for n in group) > 1}
     while cpp_separate:
         children = {e.get("target") for e in all_edges if e.get("source") in cpp_separate
