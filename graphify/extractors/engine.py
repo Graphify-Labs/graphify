@@ -3778,7 +3778,7 @@ def _cpp_class_fields(node, source: bytes, positions: dict[str, int]) -> dict[st
     return fields
 
 
-def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int, str, str, bool]]]:
+def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int, str, str, str, bool]]]:
     """Lexical lifetimes of named C++ locals/parameters, not corpus callees."""
     ranges: dict[str, list[tuple[int, int, str, str, bool]]] = {}
     scopes = {"compound_statement", "for_statement", "for_range_loop", "if_statement",
@@ -11080,7 +11080,7 @@ def _extract_generic(
                     and func_node is not None and func_node.type == "field_expression"
                     and (len(cpp_chain) != 1 or member_receiver == "this" or member_receiver in type_table
                          or (name is not None and name.type != "field_identifier")
-                         or (cpp_binding is not None and (bool(cpp_binding[2]) or cpp_binding[4]))
+                         or (cpp_binding is not None and (bool(cpp_binding[2]) or cpp_binding[5]))
                          or (cpp_binding is None and member_receiver in cpp_unknown_fields.get(
                              method_owner.get(caller_nid, ""), ())))
                 )
@@ -11694,7 +11694,7 @@ def _extract_generic(
     # every function body so the cross-file member-call pass can type a receiver
     # (#1547). File-scoped (not per-body): a later body's `Foo f;` doesn't clobber
     # an earlier binding (`var not in table`), keeping resolution conservative.
-    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int, str, str, bool]]]] = {}
+    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int, str, str, str, bool]]]] = {}
     cpp_unknown_fields: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_cpp":
         cpp_unknown_fields = {n["id"]: {name for name, value in n.get("_cpp_fields", {}).items() if not value}
