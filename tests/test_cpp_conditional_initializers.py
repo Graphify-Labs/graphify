@@ -77,6 +77,51 @@ void After() {}
     # Flattening these alternatives would produce invalid `First() Second()`.
 
 
+def test_valid_cpp_keeps_existing_call_pair_deduplication(tmp_path):
+    _, result = _extract(tmp_path, "void First() {}\nvoid Run() {\nFirst();\nFirst();\n}\n")
+    calls = [e for e in result["edges"] if e["relation"] == "calls"]
+    assert len(calls) == 1
+    assert calls[0]["source_location"] == "L3"
+
+
+@pytest.mark.parametrize("group_count", [3, 8])
+def test_repeated_conditional_calls_preserve_each_site_without_adding_symbols(tmp_path, group_count):
+    lines = ["int First() { return 1; }", "int Second() { return 2; }", "void Run() {"]
+    expected_calls = set()
+    for index in range(group_count):
+        group_line = len(lines) + 2
+        lines.extend([
+            f"int values_{index}[] = {{", f"#if FEATURE_{index}", "First()",
+            "#else", "Second()", "#endif", "};",
+        ])
+        expected_calls.update({
+            ("First()", f"L{group_line + 1}", group_line, 0),
+            ("Second()", f"L{group_line + 3}", group_line, 1),
+        })
+    lines.extend(["}", "void After() {}"])
+    path = tmp_path / "conditional.cpp"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    results = [extract.extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
+               for _ in range(2)]
+    assert results[0] == results[1]
+    for result in results:
+        assert sorted(n["label"] for n in result["nodes"]) == [
+            "After()", "First()", "Run()", "Second()", "conditional.cpp",
+        ]
+        nodes = {n["id"]: n for n in result["nodes"]}
+        assert len(nodes) == 5
+        recovery = next(n for n in nodes.values() if n["label"] == "conditional.cpp")["metadata"]["cpp_conditional_recovery"]
+        assert recovery["status"] == "recovered"
+        assert recovery["variant_count"] == group_count + 1
+        calls = [e for e in result["edges"] if e["relation"] == "calls"]
+        assert len(calls) == 2 * group_count
+        assert {nodes[e["source"]]["label"] for e in calls} == {"Run()"}
+        assert {(nodes[e["target"]]["label"], e["source_location"],
+                 e["metadata"]["cpp_conditions"][0]["group_line"],
+                 e["metadata"]["cpp_conditions"][0]["branch"]) for e in calls} == expected_calls
+        assert all(len(e["metadata"]["cpp_conditions"]) == 1 for e in calls)
+
+
 def test_nested_conditionals_cover_each_branch_with_ancestor_provenance(tmp_path):
     _, result = _extract(tmp_path, """int One(); int Two(); int Three(); void Run() {
 int values[] = {

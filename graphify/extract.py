@@ -3801,7 +3801,10 @@ def _recover_cpp_conditional_initializers(path: Path, source: bytes, original: d
             if node is None or node.type == "compound_statement":
                 coverage["reason"] = "a branch view falls outside initializer or argument syntax"
                 return annotate(original)
-        result = _extract_generic(path, _CPP_CONFIG, source_override=bytes(view))
+        # Guard validation needs every call site, not a branch-dependent first call.
+        result = _extract_generic(
+            path, _CPP_CONFIG, source_override=bytes(view), preserve_call_sites=True,
+        )
         if result.get("parse_errors") or result.get("error"):
             coverage["reason"] = "a branch view still has parse errors"
             return annotate(original)
