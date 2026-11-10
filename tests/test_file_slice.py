@@ -213,6 +213,23 @@ def test_expand_oversized_precomputed_slice_splits(tmp_path):
     assert all((s.end - s.start) <= 1000 for s in slices)
 
 
+def test_expand_multiple_oversized_precomputed_slices_no_index_collision(tmp_path):
+    text1 = ("# Part 1\n\n" + "alpha " * 100 + "\n\n") * 10
+    text2 = ("# Part 2\n\n" + "beta " * 100 + "\n\n") * 10
+    full_text = text1 + text2
+    f = _write(tmp_path / "doc.md", full_text)
+    fs1 = FileSlice(f, 0, len(text1), 0, 2)
+    fs2 = FileSlice(f, len(text1), len(full_text), 1, 2)
+    units = expand_oversized_files([fs1, fs2], max_chars=1000)
+    slices = [u for u in units if isinstance(u, FileSlice)]
+    assert len(slices) >= 4
+    # All indices must be unique and strictly sequential 0..len(slices)-1
+    indices = [s.index for s in slices]
+    assert indices == list(range(len(slices))), f"Colliding or non-sequential indices: {indices}"
+    assert all(s.total == len(slices) for s in slices)
+
+
+
 def test_is_complete_slice_coverage(tmp_path):
     doc = _write(tmp_path / "doc.md", "0123456789")
     # Complete: single slice
