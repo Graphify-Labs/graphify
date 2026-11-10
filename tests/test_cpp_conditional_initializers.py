@@ -1,4 +1,5 @@
 """Bounded static branch views recover C++ expression directives without cpp."""
+from copy import deepcopy
 import json
 import subprocess
 from pathlib import Path
@@ -192,6 +193,41 @@ def test_branch_view_limit_fails_before_trying_variants(tmp_path, monkeypatch):
     assert result.get("parse_errors")
     assert _coverage(result)["reason"] == "branch-view limit exceeded"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("source,reason,parse_count", [
+    ("""int values[] {
+#if FLAG
+[]{ struct Local {}; return 1; }(),
+#else
+[]{ struct Local {}; return 2; }(),
+#endif
+0};
+""", "branch views have conflicting symbol identities", 3),
+    ("int values[] {\n" + "#if FLAG\n1,\n#endif\n" * 129 + "0};\n",
+     "conditional-group limit exceeded", 1),
+])
+def test_rejected_recovery_preserves_the_entire_original_result(
+    tmp_path, monkeypatch, source, reason, parse_count,
+):
+    generic = extract._extract_generic
+    parsed = []
+
+    def capture(*args, **kwargs):
+        result = generic(*args, **kwargs)
+        parsed.append(deepcopy(result))
+        return result
+
+    monkeypatch.setattr(extract, "_extract_generic", capture)
+    _, result = _extract(tmp_path, source)
+    coverage = _coverage(result)
+    assert coverage["status"] == "unrecovered"
+    assert coverage["reason"] == reason
+    assert result["parse_errors"] == parsed[0]["parse_errors"]
+    assert len(parsed) == parse_count
+    expected = parsed[0]
+    expected["nodes"][0].setdefault("metadata", {})["cpp_conditional_recovery"] = coverage
+    assert result == expected
 
 
 def test_include_paths_are_never_opened_and_no_preprocessor_runs(tmp_path, monkeypatch):
