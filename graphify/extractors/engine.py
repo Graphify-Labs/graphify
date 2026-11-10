@@ -6861,7 +6861,10 @@ def _php_get_route_name(closure_node, src: bytes) -> str | None:
                     path_text = None
                     
                     for sibling in arg_list.children:
-                        if sibling is curr:
+                        # `==`, not `is`: py-tree-sitter hands back a new Node object on
+                        # every access, so `is` never matched, and a string argument after
+                        # the closure was read as the route's path or group prefix (#5135).
+                        if sibling == curr:
                             break
                             
                         target = sibling
