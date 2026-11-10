@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.106 (2026-11-10)
+
+- Fix: **install** `requires-python` is capped to `>=3.10,<3.15`, so `uv tool install graphifyy` (and pip) on a fresh machine no longer selects Python 3.15 — for which `tree-sitter` has no wheel — and then fails with a source build that needs a C compiler (`No such file or directory: 'cc'`). uv now picks a wheel-having interpreter (3.14) by default, with no `--python` flag and no compiler needed. The Ubuntu/Debian README line that asked for `python3.12` (absent on Debian 12 and Ubuntu 22.04) is replaced with the uv installer or a plain `python3`/pipx line (#5134).
+
 ## 0.9.105 (2026-11-09)
 
 - Fix: **watch** ignored directories (`node_modules`, `.git`, build output) are pruned from the Linux watch tree, so a large project no longer registers tens of thousands of wasted inotify watches and risks `ENOSPC`; the non-Linux recursive watcher is unchanged and still fires on every real change (#5074, #5091, thanks @Deepjyoti-Sarmah).

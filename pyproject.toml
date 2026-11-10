@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "LICENSE-MIT", "NOTICE"]
 keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gemini", "aider", "kiro", "pi", "devin", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 dependencies = [
     "networkx>=3.4",
     "numpy>=1.21",
