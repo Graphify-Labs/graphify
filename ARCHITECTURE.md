@@ -55,6 +55,11 @@ Always pass `root`. Node ids and `source_file` values are derived relative to it
 
 ## Extraction output schema
 
+Maven manifest ingestion parses XML namespace declarations before normalizing
+tags in the root namespace for package and dependency lookups. Default and
+prefixed declarations share the same package identity; foreign namespaces and
+managed/plugin dependency scopes do not become project dependencies.
+
 Terraform/HCL per-file AST results record the scope used to mint their node IDs.
 After a cache hit, extraction consumes that scope to rewrite node IDs and edge
 endpoints relative to the current scan root, including when the cache was copied
