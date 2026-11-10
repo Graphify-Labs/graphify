@@ -133,6 +133,9 @@ def test_changed_forward_rebuilds_only_its_group_and_preserves_incoming_edges(tm
     graph_path = tmp_path / "graph.json"
     to_json(build_from_json(result, root=tmp_path), {}, str(graph_path))
     saved = json.loads(graph_path.read_text(encoding="utf-8"))
+    caller = next(n for n in saved["nodes"] if n["label"] == "Use()")
+    method = next(n for n in saved["nodes"] if n["label"] == ".Run()")
+    owner = next(n for n in saved["nodes"] if n.get("_callable_class") and n["label"] == "Service")
     path = tmp_path / "include/forward.hpp"
     path.write_text("class Other;", encoding="utf-8")
     updated = extract(
@@ -145,7 +148,13 @@ def test_changed_forward_rebuilds_only_its_group_and_preserves_incoming_edges(tm
     merged = build_merge([updated], graph_path=graph_path, root=tmp_path)
     assert len([n for _, n in merged.nodes(data=True)
                 if n.get("label") == "Service" and n.get("_callable_class")]) == 1
-    assert any(e.get("relation") == "calls" for *_, e in merged.edges(data=True))
+    assert [(s, t, e.get("source_file"), e.get("source_location"))
+            for s, t, e in merged.edges(data=True) if e.get("relation") == "calls"] == [
+        (caller["id"], method["id"], "use.cpp", "L2"),
+    ]
+    assert merged.nodes[caller["id"]] == {k: v for k, v in caller.items() if k != "id"}
+    assert merged.edges[owner["id"], method["id"]]["relation"] == "method"
+    assert all(n.get("label") for _, n in merged.nodes(data=True))
 
 
 def test_group_refresh_stays_inside_the_permitted_corpus_and_handles_deletions(tmp_path):
