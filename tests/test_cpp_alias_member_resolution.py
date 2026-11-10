@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from graphify.extract import extract
+from graphify.extract import extract, extract_cpp
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("tree_sitter_cpp") is None,
@@ -62,6 +62,56 @@ void Run() {
 """)
     assert _calls(result) == {("First", ".Work()", "INFERRED"),
                               ("Second", ".Work()", "INFERRED")}
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["crlf", "mixed"])
+@pytest.mark.parametrize("final_newline", [False, True])
+def test_line_endings_preserve_lookup_facts_and_resolution(tmp_path, mixed, final_newline):
+    files = {
+        "types.hpp": """// café: UTF-8 bytes before every stored position
+struct Worker { void Work(); };
+struct Other { void Work(); };
+using Alias = Worker;
+struct Base { Alias item; };
+struct Derived : Base {};
+""",
+        "use.cpp": """// café: includes must not become retroactive
+void Before(Alias& x) { x.Work(); }
+#include "types.hpp"
+void Run(Derived& x) { x.item.Work(); }
+void Local() {
+    Alias outer;
+    { using Alias = Other; Alias inner; inner.Work(); }
+    outer.Work();
+}
+void Hidden() { using Alias = Missing; Alias x; x.Work(); }
+""",
+    }
+    if not final_newline:
+        files = {name: source.rstrip("\n") for name, source in files.items()}
+    paths = [tmp_path / name for name in files]
+    for path in paths:
+        path.write_bytes(files[path.name].encode("utf-8"))
+    raw = [extract_cpp(path) for path in paths]
+    cache_root = tmp_path / "cache"
+    expected = extract(paths, root=tmp_path, cache_root=cache_root, parallel=False)
+    assert _calls(expected) == {("Worker", ".Work()", "INFERRED")}
+    assert _calls(expected, "Local()") == {("Worker", ".Work()", "INFERRED"),
+                                          ("Other", ".Work()", "INFERRED")}
+    assert _calls(expected, "Before()") == _calls(expected, "Hidden()") == set()
+
+    for path in paths:
+        source = files[path.name].replace("\n", "\r\n", 2 if mixed else -1).encode("utf-8")
+        path.write_bytes(source)
+    assert [extract_cpp(path) for path in paths] == raw
+    for _ in range(2):  # Re-extraction, then the warm AST-cache path.
+        actual = extract(paths, root=tmp_path, cache_root=cache_root, parallel=False)
+        for key in ("nodes", "edges"):
+            assert sorted(json.dumps(item, sort_keys=True) for item in actual[key]) == sorted(
+                json.dumps(item, sort_keys=True) for item in expected[key])
+    for path in paths:
+        assert path.read_bytes() == files[path.name].replace(
+            "\n", "\r\n", 2 if mixed else -1).encode("utf-8")
 
 
 def test_class_alias_types_a_field(tmp_path):
