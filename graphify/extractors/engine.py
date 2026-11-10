@@ -6665,6 +6665,7 @@ def _php_get_route_name(closure_node, src: bytes) -> str | None:
 def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None,
     scan_root: Path | None = None,
+    preserve_call_sites: bool = False,
 ) -> dict:
     """Generic AST extractor driven by LanguageConfig.
 
@@ -10906,7 +10907,7 @@ def _extract_generic(
                 external_stub_target = bool(tgt_nid and not nid_to_sf.get(tgt_nid))
                 if tgt_nid and not external_stub_target:
                     pair = (caller_nid, tgt_nid)
-                    if pair not in seen_call_pairs:
+                    if preserve_call_sites or pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
                         line = node.start_point[0] + 1
                         edges.append({
