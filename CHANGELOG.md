@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **ids** two module-level declarations of the same kind in one file whose names differ only by leading/trailing underscores (`function _save(){}` and `function save(){ return _save() }`) are two nodes again instead of one, and the call between them is a real `save -> _save` edge instead of a fabricated `save -> save` self-call; the declaration that appears first keeps the plain id and the other is salted. Affects JS, TS, C, C++, PHP, Ruby, Kotlin, Swift and Lua (#2810).
+
+The AST cache schema is bumped to 44; warm caches re-run the affected extractions.
+
 ## 0.9.106 (2026-11-10)
 
 - Fix: **install** `requires-python` is capped to `>=3.10,<3.15`, so `uv tool install graphifyy` (and pip) on a fresh machine no longer selects Python 3.15 — for which `tree-sitter` has no wheel — and then fails with a source build that needs a C compiler (`No such file or directory: 'cc'`). uv now picks a wheel-having interpreter (3.14) by default, with no `--python` flag and no compiler needed. The Ubuntu/Debian README line that asked for `python3.12` (absent on Debian 12 and Ubuntu 22.04) is replaced with the uv installer or a plain `python3`/pipx line (#5134).

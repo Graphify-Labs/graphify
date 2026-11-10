@@ -94,11 +94,16 @@ def decl_salt(name: str) -> str:
 class DeclIdRegistry:
     """Assign unique ids to declarations in one file.
 
-    Ownership is keyed by the id the declaration would have used, so two
-    declarations whose names normalize alike (``Foo`` / ``_Foo``, or ``Base`` in
-    two namespaces) stay distinct. A reference lookup by name only answers when
-    exactly one declaration in the file spells that name; an ambiguous name
-    keeps the caller's existing fallback.
+    Ownership is keyed by the id the declaration would have used plus its kind.
+    The first declaration to claim an id keeps it; a later one whose names
+    normalize alike is salted apart when it is a different kind spelled
+    differently (``class Foo`` / ``function foo``, #4904) or the same kind
+    spelled differently only by leading/trailing underscores (``_save`` /
+    ``save``, #2810). A same-kind respelling that differs otherwise (``Foo`` /
+    ``FOO``) and an identical spelling (prototype + body, a reopened class) reuse
+    the id. A reference lookup by name only answers when exactly one
+    declaration in the file spells that name; an ambiguous name keeps the
+    caller's existing fallback.
     """
 
     def __init__(self, reserved_ids=()):
@@ -109,12 +114,26 @@ class DeclIdRegistry:
         self._by_name: dict[tuple[str, str], set[str]] = {}
         self._salted: set[str] = set()
         self._spelled: dict[str, str] = {}
+        self._respelled: dict[tuple[str, str, str], str] = {}
 
     def resolve(self, nid: str, name: str, kind: str, taken) -> str:
         key = (kind, nid)
         owner = self._owners.get(nid)
         if owner == key:
-            return self._assigned[key]
+            first = self._spelled.get(nid, name)
+            if name == first or name.strip("_") != first.strip("_"):
+                return self._assigned[key]
+            # Same kind, spelled apart only by underscores (`_save` then
+            # `save`): two declarations, not a re-declaration (#2810). Salted
+            # from the spelling like any other collision, memoised per spelling.
+            respelled = self._respelled.get((kind, nid, name))
+            if respelled is not None:
+                return respelled
+            candidate = self._salt(nid, name, kind, taken)
+            self._owners[candidate] = (kind, candidate)
+            self._assigned[(kind, candidate)] = candidate
+            self._respelled[(kind, nid, name)] = candidate
+            return candidate
         if nid not in taken and owner is None:
             self._owners[nid] = key
             self._assigned[key] = nid
@@ -134,14 +153,19 @@ class DeclIdRegistry:
                 and nid not in self._salted
                 and (owner[0] == kind or self._spelled.get(nid) == name)):
             return nid
+        candidate = self._salt(nid, name, kind, taken)
+        self._owners[candidate] = key
+        self._assigned[key] = candidate
+        return candidate
+
+    def _salt(self, nid: str, name: str, kind: str, taken) -> str:
+        """Mint and record a salted id for ``name``; the caller records ownership."""
         base = make_id(nid, decl_salt(name))
         candidate = base
         counter = 2
         while candidate in taken or candidate in self._owners:
             candidate = make_id(base, str(counter))
             counter += 1
-        self._owners[candidate] = key
-        self._assigned[key] = candidate
         self._salted.add(candidate)
         self._spelled[candidate] = name
         self._by_name.setdefault((kind, normalize_id(name)), set()).add(candidate)
