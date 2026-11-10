@@ -198,26 +198,29 @@ def expand_oversized_files(
     unchanged (#5106); oversized slices are further split. Unreadable files
     pass through untouched (the reader handles the error).
     """
-    out: list["Path | FileSlice"] = []
+    raw_out: list["Path | FileSlice"] = []
+    resplit_parents: set[Path] = set()
+
     for f in files:
         if isinstance(f, FileSlice):
             if not is_splittable_text(f.path):
-                out.append(f)
+                raw_out.append(f)
                 continue
             slice_len = f.end - f.start
             if slice_len <= max_chars:
-                out.append(f)
+                raw_out.append(f)
                 continue
             try:
                 full_text = unit_source_text(f.path)
                 slice_text = full_text[f.start:f.end]
-            except (OSError, Exception):
-                out.append(f)
+            except OSError:
+                raw_out.append(f)
                 continue
             ranges = slice_boundaries(slice_text, max_chars)
             total = len(ranges)
+            resplit_parents.add(f.path)
             for i, (s, e) in enumerate(ranges):
-                out.append(
+                raw_out.append(
                     FileSlice(
                         path=f.path,
                         start=f.start + s,
@@ -229,23 +232,57 @@ def expand_oversized_files(
             continue
 
         if not is_splittable_text(f):
-            out.append(f)
+            raw_out.append(f)
             continue
         try:
             # The CONVERTED text for a PDF, so the boundaries below index the
             # same string read_slice_text will later slice and the prompt will
             # carry — not the container's bytes (#2906).
             text = unit_source_text(f)
-        except (OSError, Exception):
-            out.append(f)
+        except OSError:
+            raw_out.append(f)
             continue
         if len(text) <= max_chars:
-            out.append(f)
+            raw_out.append(f)
             continue
         ranges = slice_boundaries(text, max_chars)
         total = len(ranges)
+        resplit_parents.add(f)
         for i, (s, e) in enumerate(ranges):
-            out.append(FileSlice(path=f, start=s, end=e, index=i, total=total))
+            raw_out.append(FileSlice(path=f, start=s, end=e, index=i, total=total))
+
+    if not resplit_parents:
+        return raw_out
+
+    # Re-index only files whose slices were split/expanded, so precomputed
+    # slices under the cap pass through completely untouched while re-split
+    # slices avoid index/total collisions (#5106).
+    parent_slice_counts: dict[Path, int] = {}
+    for u in raw_out:
+        if isinstance(u, FileSlice) and u.path in resplit_parents:
+            parent_slice_counts[u.path] = parent_slice_counts.get(u.path, 0) + 1
+
+    parent_slice_indices: dict[Path, int] = {}
+    out: list["Path | FileSlice"] = []
+    for u in raw_out:
+        if isinstance(u, FileSlice) and u.path in resplit_parents:
+            total = parent_slice_counts[u.path]
+            idx = parent_slice_indices.get(u.path, 0)
+            parent_slice_indices[u.path] = idx + 1
+            if u.index != idx or u.total != total:
+                out.append(
+                    FileSlice(
+                        path=u.path,
+                        start=u.start,
+                        end=u.end,
+                        index=idx,
+                        total=total,
+                    )
+                )
+            else:
+                out.append(u)
+        else:
+            out.append(u)
     return out
 
 
