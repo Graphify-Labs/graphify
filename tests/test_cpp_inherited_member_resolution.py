@@ -223,9 +223,9 @@ struct Actions { void Work(); }; struct Base { Actions actions; }; struct Derive
 def test_old_ast_cache_does_not_hide_inherited_alias_fields(tmp_path, monkeypatch):
     import graphify.cache as cache
 
-    assert cache._AST_CACHE_SCHEMA >= 45
+    assert cache._AST_CACHE_SCHEMA >= 43
     with monkeypatch.context() as old:
-        old.setattr(cache, "_AST_CACHE_SCHEMA", 43)
+        old.setattr(cache, "_AST_CACHE_SCHEMA", 42)
         paths, _ = _extract(tmp_path, "void Run(Derived& x) { x.actions.Work(); }", """
 struct Actions { void Work(); };
 struct Base { using Alias = Actions; Alias actions; }; struct Derived : Base {};
