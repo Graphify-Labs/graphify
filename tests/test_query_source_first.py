@@ -81,13 +81,14 @@ def test_disabling_doc_demotion_preserves_full_weight_for_markdown():
     scores_default = dict((n, s) for s, n in weighted_default.ranked)
     assert scores_default["doc"] < scores_default["src"]
 
-    # With demote_docs=False, doc retains full multiplier and is not demoted below src
+    # With demote_docs=False, doc retains full multiplier and is not demoted below
+    # src. The demotion is carried entirely by path_weight; _score_query takes no
+    # demote_docs of its own.
     weighted_nodemote = _score_query(
         G,
         q_terms,
         collect_per_term_seeds=True,
         path_weight=_query_path_weight(q_terms, demote_docs=False),
-        demote_docs=False,
     )
     scores_nodemote = dict((n, s) for s, n in weighted_nodemote.ranked)
     assert scores_nodemote["doc"] == scores_nodemote["src"]

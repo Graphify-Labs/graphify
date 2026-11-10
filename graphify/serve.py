@@ -702,7 +702,6 @@ def _score_query(
     *,
     collect_per_term_seeds: bool,
     path_weight=None,
-    demote_docs: bool = True,
 ) -> _QueryScores:
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
@@ -1658,7 +1657,6 @@ def _query_graph_text(
         terms,
         collect_per_term_seeds=True,
         path_weight=_query_path_weight(terms, demote_docs=demote_docs),
-        demote_docs=demote_docs,
     )
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
@@ -2867,6 +2865,11 @@ def _build_server(graph_path: str):
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
+                        },
+                        "demote_docs": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Rank source code above docs/config (default). Set false for a docs-first corpus so documents are not soft-demoted.",
                         },
                     },
                     "required": ["question"],
