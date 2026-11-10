@@ -159,6 +159,9 @@ except inside a whole-file `#ifndef`/`#define` header guard without alternatives
 an `#undef`. File nodes persist
 lexical type/alias facts and include offsets; class nodes persist field declaration
 offsets, so unchanged headers support incremental receiver resolution.
+C++ parsing normalizes CRLF to LF before collecting lookup facts and call sites,
+keeping their byte coordinates consistent across line endings without editing
+source files. Mixed LF/CRLF files use the same coordinates.
 Field spellings and aliases resolve where declared; an exact forward-declared
 type may then be completed by a unique definition visible at the member call.
 Definition facts preserve same-file declaration order. Missing, unincluded or
@@ -174,8 +177,8 @@ unknown fields, aliases, nested types and enum constants. Multiple inheritance
 resolves only one unambiguous member path; diamonds, unknown/dependent bases,
 virtual-base paths, inherited overload families and walks exceeding 32 classes
 stay unresolved. Calls retain their declared static receiver target, without
-inferring runtime virtual dispatch. AST cache schema 50 retires entries without
-the lexical type and inheritance facts.
+inferring runtime virtual dispatch. AST cache schema 51 retires entries without
+the lexical type and inheritance facts or with pre-normalization byte offsets.
 This pass covers explicit receiver calls and field chains; unqualified bare calls
 retain the existing lexical resolver. Smart-pointer recognition requires an
 unshadowed `std` prefix (or explicit `::std`); custom wrappers remain unresolved.
