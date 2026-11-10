@@ -383,16 +383,22 @@ def to_wiki(
     _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
 
     def _unique_slug(base: str) -> str:
-        # Fold case in the collision check: two labels differing only by case
-        # (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
+        # Fold with casefold(), the SAME rule the orphan sweep below indexes
+        # produced filenames with - not lower(). Two labels differing only by
+        # case (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
         # filesystems (macOS/APFS, Windows/NTFS), so they must dedup against each
-        # other while still emitting the original-case filename.
+        # other while still emitting the original-case filename. lower() is not
+        # enough for Unicode: "Straße".lower() != "STRASSE".lower(), yet both
+        # casefold to "strasse", so both slugs were allocated and the sweep's
+        # folded map kept one and unlinked the other current article (#5087).
+        # Same fold on both sides keeps every produced name distinct here, so a
+        # name the sweep sees is always one it produced.
         slug = base
         n = 2
-        while slug.lower() in used_slugs:
+        while slug.casefold() in used_slugs:
             slug = f"{base}_{n}"
             n += 1
-        used_slugs.add(slug.lower())
+        used_slugs.add(slug.casefold())
         return slug
 
     # First pass: assign every article its slug before rendering any body, so the
@@ -458,8 +464,17 @@ def to_wiki(
     # check then saw `"groups.md" not in {"Groups.md"}`, unlinked the file this run
     # had just written, and left `index.md` pointing at `Groups.md` with nothing
     # behind it (#4508).
-    produced_by_fold = {name.casefold(): name for name in produced}
+    #
+    # _unique_slug dedups on casefold(), so this map is one-to-one. sorted()
+    # keeps the survivor deterministic (not set-iteration order) if it ever is not.
+    produced_by_fold = {name.casefold(): name for name in sorted(produced)}
     for old_article in out.glob("*.md"):
+        # Never delete a file this run produced. The fold map is one-to-one only
+        # because _unique_slug dedups on casefold(); this exact-name check keeps
+        # that promise even if a future slug rule drifts from the fold rule again
+        # (#5087: two current Unicode labels, only one fold key, one article lost).
+        if old_article.name in produced:
+            continue
         wanted = produced_by_fold.get(old_article.name.casefold())
         if wanted is None:
             old_article.unlink()

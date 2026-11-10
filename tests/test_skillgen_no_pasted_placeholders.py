@@ -25,7 +25,9 @@ from tools.skillgen import gen
 
 # Values the agent pastes by hand. IS_DIRECTED is deliberately absent: it is a
 # True/False taken from the user's own --directed flag, and the corpus cannot reach it.
-PASTED_PLACEHOLDERS = ("INPUT_PATH", "LABELS_DICT", "SPEC_PATH")
+# INPUT_PATH is matched only as the old quoted literal: since #4762 the scripts bind a
+# Python variable of that name from graphify-out/.graphify_root, which is safe.
+PASTED_PLACEHOLDERS = ("'INPUT_PATH'", "LABELS_DICT", "SPEC_PATH")
 
 _BASH_SCRIPT = re.compile(r' -c "\n(.*?)\n"(?:\n|$)', re.S)
 # A PowerShell script opens on a line that is exactly @' and closes on the interpreter

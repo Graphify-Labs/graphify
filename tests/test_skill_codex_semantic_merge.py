@@ -29,7 +29,7 @@ def _run(source: str, *, cwd: Path, corpus: Path, spec: Path) -> None:
     # Step 1 saves the scan root and Step B0 the spec path; the scripts read
     # them back instead of having the values pasted in (#4309).
     out = cwd / "graphify-out"
-    out.mkdir(exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     (out / ".graphify_root").write_text(corpus.as_posix(), encoding="utf-8")
     (out / ".graphify_spec_path").write_text(spec.as_posix(), encoding="utf-8")
     subprocess.run([sys.executable, "-c", source], cwd=cwd, check=True,

@@ -201,6 +201,48 @@ _RUST_PRIMITIVE_TYPES: frozenset[str] = frozenset({
 })
 
 
+# Macros whose arguments are ordinary Rust expressions. A DSL macro (`table!`,
+# `quote!`, `html!`, nom combinators) also writes `name(...)` but means
+# something else by it, so only these are scanned for calls.
+_RUST_EXPRESSION_MACROS = frozenset({
+    "assert", "assert_eq", "assert_ne", "debug_assert", "debug_assert_eq",
+    "debug_assert_ne", "dbg", "eprint", "eprintln", "format", "format_args",
+    "panic", "print", "println", "todo", "unimplemented", "unreachable", "vec",
+    "write", "writeln", "debug", "error", "info", "trace", "warn",
+})
+
+
+def _rust_macro_arg_calls(token_tree) -> list[tuple[str, int]]:
+    """Bare `f(...)` calls written inside a macro's arguments.
+
+    Tree-sitter keeps macro arguments as a flat token tree, so `println!("{}", f(x))`
+    has no call_expression: it is an `identifier` followed by a `(` token tree.
+    A name after `.` or `::` is a method or path call and is left out, as is a
+    name followed by `!` (a nested macro, which is its own macro_invocation).
+    """
+    found: list[tuple[str, int]] = []
+    stack = [token_tree]
+    while stack:
+        tree = stack.pop()
+        children = tree.children
+        for i, child in enumerate(children):
+            if child.type == "token_tree":
+                stack.append(child)
+                continue
+            if child.type != "identifier" or i + 1 >= len(children):
+                continue
+            nxt = children[i + 1]
+            if nxt.type != "token_tree" or not nxt.children or nxt.children[0].type != "(":
+                continue
+            if i > 0 and children[i - 1].type in (".", "::", "fn", "$", "#"):
+                continue
+            name = child.text.decode("utf-8", errors="replace") if child.text else ""
+            if name:
+                found.append((name, child.start_point[0] + 1))
+    found.sort(key=lambda item: item[1])
+    return found
+
+
 def _rust_qualifier_type(path_node, source: bytes) -> str | None:
     """The type a `Type::f()` call is qualified by, or None for a module path.
 
@@ -286,6 +328,17 @@ def extract_rust(path: Path) -> dict:
     # are resolved through their own registry rather than the function/type
     # label_to_nid to avoid cross-binding.
     macro_nids_by_name: dict[str, str] = {}
+    # `mod m { .. }` blocks declared in this file, so a `m::f()` call can bind
+    # in-file; `mod m;` declares a module that lives in another file.
+    inline_mods: set[str] = set()
+    _mod_stack = [root]
+    while _mod_stack:
+        _n = _mod_stack.pop()
+        if _n.type == "mod_item" and _n.child_by_field_name("body") is not None:
+            _name = _n.child_by_field_name("name")
+            if _name is not None:
+                inline_mods.add(_read_text(_name, source))
+        _mod_stack.extend(_n.children)
 
     # (bare impl type, method name) -> the method nodes this file's `impl` blocks
     # define, so an in-file `Type::f()` / `self.f()` binds to a method of that type.
@@ -851,6 +904,7 @@ def extract_rust(path: Path) -> dict:
 
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
+    macro_arg_edges: list[dict] = []
 
     def walk_calls(
         node,
@@ -884,10 +938,48 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-            # Fall through to the generic child recursion below rather than
-            # returning, preserving the prior traversal of the invocation's
-            # subtree (its arguments are a raw token tree, so this neither adds
-            # nor drops any nested edges relative to before).
+            # A call inside the arguments is only a token pattern, not a parsed
+            # call: bind it in-file as INFERRED, or hand it to the cross-file pass.
+            args = next((c for c in node.children if c.type == "token_tree"), None)
+            invoked = macro_node.child_by_field_name("name") if (
+                macro_node is not None and macro_node.type == "scoped_identifier") else macro_node
+            if args is None or invoked is None or (
+                    _read_text(invoked, source) not in _RUST_EXPRESSION_MACROS):
+                args = None
+            for callee_name, line in _rust_macro_arg_calls(args) if args is not None else ():
+                if (
+                    callee_name[:1].isupper()
+                    or callee_name in _LANGUAGE_BUILTIN_GLOBALS
+                    or callee_name in _RUST_BUILTIN_TYPES
+                    or callee_name.lower() in _RUST_TRAIT_METHOD_BLOCKLIST
+                ):
+                    continue
+                tgt_nid = label_to_nid.get(callee_name)
+                if tgt_nid in type_nids:
+                    continue
+                if tgt_nid:
+                    if tgt_nid != caller_nid:
+                        macro_arg_edges.append({
+                            "source": caller_nid,
+                            "target": tgt_nid,
+                            "relation": "calls",
+                            "context": "macro_argument_call",
+                            "confidence": "INFERRED",
+                            "confidence_score": 0.85,
+                            "source_file": str_path,
+                            "source_location": f"L{line}",
+                            "weight": 1.0,
+                        })
+                    continue
+                raw_calls.append({
+                    "caller_nid": caller_nid,
+                    "callee": callee_name,
+                    "is_member_call": False,
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                })
+            # Fall through to the generic child recursion below; the token tree
+            # holds no call_expression, so nothing is counted twice.
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
             callee_name: str | None = None
@@ -938,6 +1030,16 @@ def extract_rust(path: Path) -> dict:
                         tgt_nid = named if named in type_nids else None
                 elif is_member_call:
                     tgt_nid = method_label_to_nid.get(callee_name)
+                elif is_scoped_call:
+                    # `m::f()` names module m. It is in this file only for
+                    # `self::f()` or an inline `mod m { .. }` declared here; any
+                    # other module lives in another file, so the bare-name match
+                    # would bind `crate::b::helper()` to this file's own helper.
+                    path_node = func_node.child_by_field_name("path") if func_node else None
+                    qual = _read_text(path_node, source) if path_node is not None else ""
+                    head = qual.split("::")[-1].strip()
+                    tgt_nid = label_to_nid.get(callee_name) if (
+                        qual == "self" or head in inline_mods) else None
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
@@ -956,7 +1058,29 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-                elif not is_scoped_call and callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
+                elif is_scoped_call:
+                    # A module-qualified call (`crate::m::f()`, `m::f()`, `super::m::f()`)
+                    # goes to the cross-file pass with its qualifier, which binds it only
+                    # when the qualifier matches the candidate's module path and exactly
+                    # one candidate survives. Bare last-segment lookup stays off (#908).
+                    qual_node = func_node.child_by_field_name("path")
+                    qualifier = _read_text(qual_node, source) if qual_node else ""
+                    # `use std::fs; fs::read()` names std's fs, never a local `fs.rs`.
+                    first_seg = qualifier.split("::", 1)[0].split("<", 1)[0].strip()
+                    roots = use_roots.get(first_seg, {"crate"})
+                    if not roots <= {"crate", "super", "self"}:
+                        qualifier = ""
+                    if qualifier:
+                        raw_calls.append({
+                            "caller_nid": caller_nid,
+                            "callee": callee_name,
+                            "is_member_call": False,
+                            "is_scoped_call": True,
+                            "scope_qualifier": qualifier,
+                            "source_file": str_path,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                        })
+                elif callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
                     rc_entry = {
                         "caller_nid": caller_nid,
                         "callee": callee_name,
@@ -974,6 +1098,13 @@ def extract_rust(path: Path) -> dict:
 
     for caller_nid, body_node, impl_type, impl_key in function_bodies:
         walk_calls(body_node, caller_nid, impl_type, impl_key)
+    # Added last: a parsed call to the same target in the same function keeps
+    # its EXTRACTED edge instead of being deduped behind the token-pattern one.
+    for edge in macro_arg_edges:
+        pair = (edge["source"], edge["target"])
+        if pair not in seen_call_pairs:
+            seen_call_pairs.add(pair)
+            edges.append(edge)
 
     for node in nodes:
         if not node["source_file"] and node["label"] in use_roots:

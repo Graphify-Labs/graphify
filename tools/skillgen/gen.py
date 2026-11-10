@@ -158,6 +158,10 @@ _SHARED_REFERENCES = {
 _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
     "compact": "references/shared/extraction-spec-compact.md",
+    # Compact prompt for hosts whose subagents write their own chunk file
+    # (the dispatch passes CHUNK_PATH). Codex keeps "compact": its workers
+    # return JSON inline and the orchestrator writes the files.
+    "compact-disk": "references/shared/extraction-spec-compact-disk.md",
 }
 # Single unified query reference + stub: superior vocab-expansion (Step 0) plus
 # CLI traversal plus inline NetworkX fallback, shipped to every platform. The
@@ -1282,27 +1286,20 @@ def _is_persisted_scan_options_fix_line(line: str) -> bool:
 def _is_labels_json_fix_line(line: str) -> bool:
     """Whether a line is part of the Step-5 labels-as-JSON fix (#4309).
 
-    v8 had the agent paste a Python dict over ``LABELS_DICT`` and the scan path over
-    ``INPUT_PATH`` inside the double-quoted ``python -c`` body, so a hostile label or
-    folder name ran as shell or Python. Step 5 now reads the names from a JSON file
-    the agent writes through a quoted heredoc, and the scan root from the file Step 1
-    wrote. These are the removed paste lines and the added file reads.
+    v8 had the agent paste a Python dict over ``LABELS_DICT`` inside the
+    double-quoted ``python -c`` body, so a hostile label ran as shell or Python.
+    Step 5 now reads the names from a JSON file the agent writes through a quoted
+    heredoc. These are the removed paste lines and the added file reads.
     """
     stripped = line.strip()
     return (
         stripped in (
             "# LABELS - replace these with the names you chose above",
             "labels = LABELS_DICT",
-            "report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)",
-            "Replace INPUT_PATH with the actual path.",
-            "from graphify.paths import read_scan_root",
             "# LABELS - the names written to graphify-out/.graphify_labels_in.json above. They are",
             "# parsed as JSON, never pasted into this script (#4309). A missing file raises.",
             "labels_file = Path('graphify-out/.graphify_labels_in.json')",
             "labels = {int(k): str(v) for k, v in json.loads(labels_file.read_text(encoding='utf-8-sig')).items()}",
-            "# Read from the file Step 1 wrote, never pasted into this script (#4309).",
-            "scan_root = str(read_scan_root())",
-            "report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, scan_root, suggested_questions=questions)",
             "cat > graphify-out/.graphify_labels_in.json <<'GRAPHIFY_LABELS_EOF'",
             '{"0": "Attention Mechanism", "1": "Training Pipeline"}',
             "GRAPHIFY_LABELS_EOF",
@@ -1314,24 +1311,31 @@ def _is_labels_json_fix_line(line: str) -> bool:
     )
 
 
-def _is_scan_root_fix_line(line: str) -> bool:
-    """Whether a line is part of the scan-root-from-file fix (#4309).
+def _is_input_path_sidecar_fix_line(line: str) -> bool:
+    """Whether a line is part of the INPUT_PATH scan-path injection fix (#4762).
 
-    v8 had the agent paste the scan path over ``INPUT_PATH`` inside the
-    double-quoted ``python -c`` bodies, so a folder name such as ``proj$(touch X)``
-    ran as shell code. The scripts now call ``read_scan_root()``, which reads the
-    root Step 1 saved. These are the removed paste lines and the added reads that
-    the manifest predicate above does not already cover.
+    The monolith runbooks substituted the agent-supplied scan path straight into
+    Python string literals (``detect(Path('INPUT_PATH'))``, ``generate(..,
+    'INPUT_PATH', ..)``, ``detect_incremental(Path('INPUT_PATH'))``,
+    ``_stamped_manifest_files(.., Path('INPUT_PATH'))``), so a scan root whose
+    NAME carried a quote or ``$()`` broke out of the literal and ran as code.
+    Each code block now reads the resolved root from the trusted
+    ``graphify-out/.graphify_root`` that Step 1 writes through a quoted heredoc,
+    and the prose no longer tells the agent to substitute a path. Both the removed
+    v8 lines and the added trusted-root lines (code and prose) match here. The
+    detect/detect_incremental and manifest lines are covered by their own existing
+    predicates; this adds the read line, the generate calls, and the prose.
     """
     stripped = line.strip()
-    return stripped in (
-        "from graphify.paths import out_path, read_scan_root",
-        "result = detect(read_scan_root(), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))",
-        "result = detect_incremental(read_scan_root(), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))",
-        "report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)",
-        "report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, str(read_scan_root()), suggested_questions=questions)",
-        "Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:",
-        "Do NOT cat or print the JSON - read it silently and present a clean summary instead:",
+    return (
+        "INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=" in stripped
+        or "result = detect(Path(INPUT_PATH), extra_excludes=" in stripped
+        or "result = detect_incremental(Path(INPUT_PATH), extra_excludes=" in stripped
+        or ", tokens, INPUT_PATH, suggested_questions=questions)" in stripped
+        or ", tokens, 'INPUT_PATH', suggested_questions=questions)" in stripped
+        or stripped.startswith("Replace INPUT_PATH with the actual path")
+        or stripped.startswith("INPUT_PATH is read from `graphify-out/.graphify_root`")
+        or "there is no path to substitute and a scan root containing quotes" in stripped
     )
 
 
@@ -1460,6 +1464,19 @@ def _is_when_to_build_guidance_line(line: str) -> bool:
     }
 
 
+def _is_hub_bypass_check_fix_line(line: str) -> bool:
+    """Whether a line is the aider/devin hub bypass check paragraph (#4426).
+
+    A hub/bridge question's neighbour listing only shows code with an edge to
+    the hub, so it cannot show code that reimplements the hub's job instead of
+    calling it. This single paragraph, inserted right before the save-result
+    step, tells the agent to grep for the hub's own literal constants/strings
+    in edge-less files and report hits as "Bypasses", and to flag when the
+    hub's community label actually names its heaviest consumer instead.
+    """
+    return line.strip().startswith("**Bypass check (hub/bridge questions only, #4426).**")
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1485,14 +1502,15 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_watch_injection_fix_line,
     _is_graph_diff_direction_fix_line,
     _is_persisted_scan_options_fix_line,
+    _is_input_path_sidecar_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
     _is_labels_json_fix_line,
-    _is_scan_root_fix_line,
     _is_skip_steps_clarification_line,
     _is_when_to_build_guidance_line,
+    _is_hub_bypass_check_fix_line,
 )
 
 
@@ -1524,7 +1542,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and the hub bypass check (#4426).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``

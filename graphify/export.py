@@ -303,8 +303,14 @@ def existing_graph_node_count(path: "str | Path"):
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
     # Drop #3774 accounting before any write. Extract pops these first; every
     # other caller of to_json (the documented build_merge persist path) does not.
-    from graphify.build import take_shrink_accounting
+    from graphify.build import take_dedup_remap, take_shrink_accounting
+    # The guard below reads it; it is removed here so node_link_data cannot
+    # write it into graph.json (#4940).
+    dedup_remap = take_dedup_remap(G)
     take_shrink_accounting(G)
+    # Sources build_merge replaced or pruned this run: their old semantic ids
+    # are not lost. Popped so it is never written into graph.json.
+    replaced_sources = set(G.graph.pop("_replaced_sources", None) or ())
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -331,7 +337,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             else:
                 try:
                     existing_data = json.loads(raw)
+                    del raw
                     existing_nodes = existing_data.get("nodes", [])
+                    # Only the node list is compared; let the links go now.
+                    del existing_data
                     if not isinstance(existing_nodes, list):
                         existing_nodes = []
                     existing_n = len(existing_nodes)
@@ -351,13 +360,15 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     )
                     return False
             new_n = G.number_of_nodes()
-            from graphify.build import _lost_saved_semantic_nodes
+            from graphify.build import _dedup_shrink_allowance, _lost_saved_semantic_nodes
             new_node_list = [
                 {"id": node_id, **{key: value for key, value in attrs.items() if key != "id"}}
                 for node_id, attrs in G.nodes(data=True)
             ]
             folded: dict[str, str] = {}
-            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set(), folded)
+            missing = _lost_saved_semantic_nodes(
+                existing_nodes, new_node_list, replaced_sources, folded, dedup_remap=dedup_remap,
+            )
             if missing:
                 import sys as _sys
                 ids = ", ".join(str(node.get("id")) for node in missing)
@@ -372,6 +383,11 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             # A twin new to this run does not offset some other node's loss.
             existing_ids = {n.get("id") for n in existing_nodes if isinstance(n, dict)}
             merged = sum(twin in existing_ids for twin in folded.values())
+            # Ids entity dedup folded into a survivor are not lost either (#4940).
+            if dedup_remap:
+                merged += _dedup_shrink_allowance(
+                    existing_ids, set(G.nodes), dedup_remap,
+                )
             if new_n < existing_n - merged:
                 import sys as _sys
                 print(
@@ -385,6 +401,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     file=_sys.stderr,
                 )
                 return False
+            # The guard passed; free its copies of both graphs before export.
+            del existing_nodes, new_node_list, existing_ids
 
     node_community = _node_community_map(communities)
     _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
@@ -458,8 +476,14 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         rest = sorted(k for k in item if k not in leading)
         return {k: item[k] for k in (*leading, *rest)}
 
-    data["nodes"] = [_canonical(n, ("id", "label")) for n in data["nodes"]]
-    data["links"] = [_canonical(link, ("source", "target", "relation")) for link in data["links"]]
+    def _canonicalize_in_place(items: list, lead: tuple[str, ...]) -> None:
+        # Replace each dict in place so the old one is freed at once, instead
+        # of holding two full copies of the node/link lists.
+        for i, item in enumerate(items):
+            items[i] = _canonical(item, lead)
+
+    _canonicalize_in_place(data["nodes"], ("id", "label"))
+    _canonicalize_in_place(data["links"], ("source", "target", "relation"))
     data["nodes"].sort(key=_json_sort_key)
     data["links"].sort(key=_json_sort_key)
     if "hyperedges" not in getattr(G, "graph", {}):
@@ -480,6 +504,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 _prev = json.loads(existing_path.read_text(encoding="utf-8"))
                 if isinstance(_prev, dict):
                     _prev_hyperedges = _prev.get("hyperedges")
+                # Only the hyperedges are read; do not hold the whole parse.
+                del _prev
         except Exception:
             _prev_hyperedges = None
         if _prev_hyperedges:

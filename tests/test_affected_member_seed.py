@@ -59,3 +59,20 @@ def test_class_level_caller_still_works():
     g.add_edge("caller", "svc", relation="references")
     hits = {h.node_id for h in affected_nodes(g, "svc", depth=2)}
     assert "caller" in hits
+
+
+def test_file_affected_reaches_nested_method_callers():
+    g = nx.DiGraph()
+    for nid, label in [
+        ("file_p", "processor.py"),
+        ("proc", "Processor"), ("proc_call", ".call()"),
+        ("runner", "Runner"), ("runner_run", ".run()"),
+    ]:
+        g.add_node(nid, label=label)
+    g.add_edge("file_p", "proc", relation="contains")
+    g.add_edge("proc", "proc_call", relation="method")
+    g.add_edge("runner", "runner_run", relation="method")
+    g.add_edge("runner_run", "proc_call", relation="calls")
+
+    hits = {h.node_id for h in affected_nodes(g, "file_p", depth=2)}
+    assert "runner_run" in hits, "caller of method inside class must be reachable from file"
