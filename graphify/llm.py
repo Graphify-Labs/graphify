@@ -22,6 +22,7 @@ from graphify.file_slice import (
     FileSlice,
     bisect_slice,
     expand_oversized_files,
+    is_complete_slice_coverage,
     make_full_slice,
     read_slice_text,
     unit_path,
@@ -2791,7 +2792,7 @@ def _extract_with_adaptive_retry(
 
 
 def extract_corpus_parallel(
-    files: list[Path],
+    files: "list[Path | FileSlice]",
     backend: str = "kimi",
     api_key: str | None = None,
     model: str | None = None,
@@ -2877,7 +2878,7 @@ def extract_corpus_parallel(
     # reconciliation below must not describe them as omitted by the model (#3616).
     failed_files: set[Path] = set()
 
-    def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
+    def _run_one(idx: int, chunk: "list[Path | FileSlice]") -> tuple[int, dict | None, Exception | None]:
         t0 = time.time()
         try:
             result = _extract_with_adaptive_retry(
@@ -2909,10 +2910,21 @@ def extract_corpus_parallel(
     # the file as the whole file. Its results wait here until the last slice
     # succeeds, then go out in one write; a slice that fails keeps it unsaved.
     slices_left: dict[Path, int] = {}
+    all_slices_by_parent: dict[Path, list[FileSlice]] = {}
+    whole_parents: set[Path] = set()
     for _chunk in chunks:
         for _unit in _chunk:
             if isinstance(_unit, FileSlice):
-                slices_left[unit_path(_unit)] = slices_left.get(unit_path(_unit), 0) + 1
+                p = unit_path(_unit)
+                slices_left[p] = slices_left.get(p, 0) + 1
+                all_slices_by_parent.setdefault(p, []).append(_unit)
+            else:
+                whole_parents.add(unit_path(_unit))
+
+    incomplete_parents: set[Path] = {
+        p for p, sl in all_slices_by_parent.items()
+        if p not in whole_parents and not is_complete_slice_coverage(p, sl)
+    }
     held_results: dict[Path, list[tuple[int, dict]]] = {}
 
     def _checkpoint_chunk(idx: int, result: dict, chunk: "list[Path | FileSlice]") -> None:
@@ -2928,6 +2940,11 @@ def extract_corpus_parallel(
                 # Chunk order, not completion order, so the entry is the same
                 # whichever slice returned first (#1632).
                 held = [r for _, r in sorted(held_results.pop(parent), key=lambda p: p[0])]
+                if parent in incomplete_parents:
+                    # Incomplete parent coverage: precomputed slices did not cover
+                    # the full file, so keep it unsaved to prevent caching as
+                    # complete (#5106).
+                    continue
                 combined: dict = {
                     bucket: [item for r in held for item in r.get(bucket, [])]
                     for bucket in ("nodes", "edges", "hyperedges")
@@ -3026,14 +3043,17 @@ def extract_corpus_parallel(
 
     # A failed slice leaves its parent with nodes from the other slices, so the
     # parent looks covered and the caller's final save would write it complete
-    # (#4943). Name it partial so that save stamps it and the next run retries.
+    # (#4943). Incomplete precomputed slice coverage similarly must not be
+    # promoted to complete (#5106). Name both partial so any downstream save
+    # stamps them and a future run retries.
     failed_parents = {
         unit_path(u) for chunk in chunks for u in chunk
         if isinstance(u, FileSlice) and unit_path(u) in failed_files
     }
-    if failed_parents:
+    partial_parents = failed_parents | incomplete_parents
+    if partial_parents:
         merged["_partial_files"] = sorted(
-            set(merged.get("_partial_files", []) or []) | {str(p) for p in failed_parents}
+            set(merged.get("_partial_files", []) or []) | {str(p) for p in partial_parents}
         )
 
     # Loud failure summary — surface chunk failures at end so they're never

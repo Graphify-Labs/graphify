@@ -1,8 +1,9 @@
-"""A sliced file is cached complete only once every slice has succeeded (#4943).
+"""A sliced file is cached complete only once every slice has succeeded (#4943, #5106).
 
 Each slice's checkpoint used to write the parent file's entry as complete, so a
 run interrupted after the first slice served the head of the file as the whole
-file, and a failed slice was hidden by the final save in the same way.
+file, and a failed slice was hidden by the final save in the same way. Similarly,
+incomplete precomputed slice inputs must not be cached as complete (#5106).
 """
 
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 
 from graphify import llm
 from graphify.cache import check_semantic_cache
+from graphify.file_slice import FileSlice
 
 
 def _big_doc(root: Path) -> Path:
@@ -129,3 +131,50 @@ def test_held_slices_are_cached_in_chunk_order_under_parallel_completion(tmp_pat
     assert len(entries) == 1
     labels = [n["label"] for n in json.loads(entries[0].read_text())["nodes"]]
     assert labels[0] == "early"
+
+
+# ── precomputed FileSlice coverage (#5106) ──────────────────────────────────
+
+def test_precomputed_fileslice_reproduction_5106_no_attribute_error(tmp_path):
+    """Calling extract_corpus_parallel with precomputed FileSlice does not crash with AttributeError."""
+    doc = tmp_path / "example.md"
+    doc.write_text("HEAD\nTAIL\n", encoding="utf-8")
+    endpoint, _ = _endpoint(fail_on=0, exc=RuntimeError())
+    result = _run(tmp_path, [FileSlice(doc, 0, 5, 0, 2)], endpoint)
+    assert result["failed_chunks"] == 0
+    assert len(result["nodes"]) == 1
+    assert str(doc) in (result.get("_partial_files") or [])
+
+
+def test_incomplete_precomputed_slice_leaves_parent_uncached(tmp_path):
+    """Incomplete slice coverage must not be checkpointed or cached as complete."""
+    doc = tmp_path / "doc.md"
+    doc.write_text("01234567890123456789", encoding="utf-8")  # 20 chars
+    endpoint, _ = _endpoint(fail_on=0, exc=RuntimeError())
+    result = _run(tmp_path, [FileSlice(doc, 0, 5, 0, 2)], endpoint)
+    assert str(doc) in (result.get("_partial_files") or [])
+    assert _uncached(tmp_path, [doc]) == ["doc.md"]
+
+
+def test_complete_precomputed_slices_cache_the_parent(tmp_path):
+    """Complete precomputed slices covering the whole parent file are cached complete."""
+    doc = tmp_path / "doc.md"
+    doc.write_text("0123456789", encoding="utf-8")  # 10 chars
+    endpoint, _ = _endpoint(fail_on=0, exc=RuntimeError())
+    slices = [FileSlice(doc, 0, 5, 0, 2), FileSlice(doc, 5, 10, 1, 2)]
+    result = _run(tmp_path, slices, endpoint)
+    assert str(doc) not in (result.get("_partial_files") or [])
+    assert _uncached(tmp_path, [doc]) == []
+
+
+def test_mixed_whole_file_and_precomputed_partial_slice(tmp_path):
+    """A whole file is cached complete while an incomplete slice parent stays uncached."""
+    note = _small_doc(tmp_path)
+    doc = tmp_path / "doc.md"
+    doc.write_text("01234567890123456789", encoding="utf-8")
+    endpoint, _ = _endpoint(fail_on=0, exc=RuntimeError())
+    result = _run(tmp_path, [note, FileSlice(doc, 0, 5, 0, 2)], endpoint)
+    assert str(note) not in (result.get("_partial_files") or [])
+    assert str(doc) in (result.get("_partial_files") or [])
+    assert _uncached(tmp_path, [note, doc]) == ["doc.md"]
+
