@@ -3720,6 +3720,12 @@ def dispatch_command(cmd: str) -> None:
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
         merged = _nx.Graph()
+        # External stubs keep their bare (unprefixed) ids so the same
+        # stdlib/third-party module unifies into one node across repos (#2873).
+        # nx.compose therefore absorbs one node per colliding external id, so
+        # the merged total is *expected* to be lower than the sum of inputs.
+        # Track the delta and report it: a silent drop reads as data loss.
+        input_node_total = sum(g.number_of_nodes() for g in graphs)
         # nx.compose merges graph attrs with dict.update, so each iteration
         # CLOBBERED the previously accumulated hyperedge list — only the last
         # input's hyperedges survived (#2484, after @oleksii-tumanov's
@@ -3797,6 +3803,9 @@ def dispatch_command(cmd: str) -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, out_data, compact=True)
+        unified = input_node_total - merged.number_of_nodes()
+        if unified > 0:
+            print(f"  unified {unified} external node(s) shared across repos")
         print(f"Merged {len(graphs)} graphs -> {merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges")
         print(f"Written to: {out_path}")
 
