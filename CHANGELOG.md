@@ -5,6 +5,21 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 ## 0.9.106 (2026-11-10)
 
 - Fix: **install** `requires-python` is capped to `>=3.10,<3.15`, so `uv tool install graphifyy` (and pip) on a fresh machine no longer selects Python 3.15 — for which `tree-sitter` has no wheel — and then fails with a source build that needs a C compiler (`No such file or directory: 'cc'`). uv now picks a wheel-having interpreter (3.14) by default, with no `--python` flag and no compiler needed. The Ubuntu/Debian README line that asked for `python3.12` (absent on Debian 12 and Ubuntu 22.04) is replaced with the uv installer or a plain `python3`/pipx line (#5134).
+- Fix: **cpp** a plain class/struct forward declaration folds into its unique exactly-qualified definition when one file reaches the other through unconditional exact quoted includes, and a parameterless member declaration folds into its proven out-of-line definition by matching return type and qualifiers; overloads, templates, conditional declarations and unproven includes stay separate (#5117, thanks @xRedLeader).
+- Fix: **cpp** a member call resolves through a scoped type alias (`using Alias = ns::Type;`) and through inherited fields/methods, and a forward-declared pointee type is completed at the use site; ambiguous, virtual or diamond-inherited receivers fail closed (#5118, thanks @xRedLeader).
+- Fix: **cpp** an out-of-line template member keeps its proven primary-template owner, and calls inside a `#if`-guarded initializer or argument list are recovered from byte-preserving branch views (bounded, fail-closed on malformed/over-budget input); dependent receivers stay unresolved (#5115, thanks @xRedLeader).
+- Fix: **python** a dotted subscript annotation (`mod.MyBox[Foo]`) counts its value once as the type instead of also as its own generic argument, so the false `generic_arg` reference no longer replaces the real `parameter_type`/`return_type` edge (#5113, thanks @rohit-jsfreaky).
+- Fix: **ts/js** a call through an ESM namespace import (`import * as ns from './m'; ns.f()`), a CommonJS whole-module require (`const m = require('./m'); m.f()`), or a TS `import = require` resolves to the real declaration; fail-closed on an unknown module, a non-exported name, or an ambiguous barrel (#5114, #5129, thanks @mohitdixit02).
+- Fix: **llm** a precomputed `FileSlice` input is preserved through `extract_corpus_parallel` instead of crashing or stamping a partial parent complete; a slice that covers only part of its file marks the parent partial for re-dispatch (#5106, #5128, thanks @aadilrizwan).
+- Fix: **query** BFS walks levels in a fixed, hash-independent order, so a query's edge lines (and which survive the token budget) no longer vary with `PYTHONHASHSEED` (#5109, #5112, thanks @rohit-jsfreaky).
+- Feat: **query** `--no-doc-demotion` (and the `demote_docs` rc key / MCP arg) disables the source-over-docs soft weight for a docs-first corpus; code corpora are unaffected by default (#5084, #5116, thanks @mohitdixit02).
+- Perf: **resolution** `_collision_aware` indexes salted sibling ids once instead of rescanning all nodes per use, cutting resolution time on large collision-heavy corpora (graph output byte-identical) (#5108, #5111, thanks @rohit-jsfreaky).
+- Fix: **manifest** a `pom.xml` using a prefixed, single-quoted or spaced `xmlns` keeps its Maven package and dependency nodes instead of losing them; a foreign namespace is not double-counted (#5126, thanks @sdivyanshu90).
+- Fix: **merge-graphs** `graphify merge-graphs` reports how many external nodes were unified across repos instead of silently absorbing them; the merge result is unchanged (#5127, thanks @igorpugatschev).
+- Fix: **diagnostics** `diagnose_extraction` no longer crashes on a malformed `nodes` container (null or scalar); the malformed extraction is still surfaced through the build error (#5125, thanks @sdivyanshu90).
+- Fix: **html** the interactive graph no longer draws a hyperedge region over members hidden by a community toggle; a region vanishes once fewer than two of its members stay visible (#5122, thanks @Yi-111-a).
+
+The AST cache schema is bumped to 43; warm caches re-run the affected Python and C++ extractions.
 
 ## 0.9.105 (2026-11-09)
 
