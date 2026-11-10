@@ -2948,6 +2948,11 @@ def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
             continue
         for declarator in child.children:
             if declarator.type == "variable_declarator":
+                val = declarator.child_by_field_name("value")
+                if val is not None and val.type == "call_expression":
+                    fn = val.child_by_field_name("function")
+                    if fn is not None and fn.type == "identifier" and _read_text(fn, source) == "require":
+                        continue
                 name = declarator.child_by_field_name("name")
                 if name is not None:
                     _js_collect_pattern_idents(name, source, names)

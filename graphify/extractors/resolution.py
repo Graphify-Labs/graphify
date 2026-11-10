@@ -1719,7 +1719,7 @@ def _apply_symbol_resolution_facts(
         )
 
     if raw_calls and any(
-        fact.imported_name == "default"
+        fact.imported_name in ("default", "*")
         and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
         for fact in facts.imports
     ):
@@ -1727,6 +1727,12 @@ def _apply_symbol_resolution_facts(
             (_resolve_cached(fact.file_path), fact.local_name): _resolve_cached(fact.target_path)
             for fact in facts.imports
             if fact.imported_name == "default"
+            and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
+        }
+        namespace_imports = {
+            (_resolve_cached(fact.file_path), fact.local_name): _resolve_cached(fact.target_path)
+            for fact in facts.imports
+            if fact.imported_name == "*"
             and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
         }
         member_nodes: dict[tuple[Path, str, str], set[str]] = {}
@@ -1744,18 +1750,38 @@ def _apply_symbol_resolution_facts(
             member_nodes.setdefault(key, set()).add(str(node["id"]))
         default_members: dict[Path, dict[str, tuple[str, str]]] = {}
         for call in raw_calls:
-            if (not call.get("is_member_call") or call.get("_js_receiver_shadowed")
-                    or call.get("_js_construct") or call.get("ts_this_field")):
+            if (not call.get("is_member_call") or call.get("_js_construct") or call.get("ts_this_field")):
                 continue
             source_path = _js_source_path(str(call.get("source_file", "")), root)
             if source_path is None:
                 continue
-            target_path = default_imports.get((source_path, str(call.get("receiver") or "")))
+            receiver = str(call.get("receiver") or "")
+            callee = str(call.get("callee") or "")
+            if not receiver or not callee:
+                continue
+            if (source_path, receiver) in namespace_imports:
+                if call.get("_js_receiver_shadowed"):
+                    continue
+                target_path = namespace_imports[(source_path, receiver)]
+                candidates, _ = exported_candidates((target_path, callee), frozenset())
+                if len(candidates) == 1:
+                    origin_path, origin_symbol = next(iter(candidates))
+                    target_id = symbol_nodes.get((origin_path, origin_symbol))
+                    if target_id is not None:
+                        add_edge(
+                            call["caller_nid"], target_id, "calls", "call",
+                            int(str(call["source_location"]).removeprefix("L")),
+                            Path(call["source_file"]), target_file=str(target_path),
+                        )
+                        continue
+            if call.get("_js_receiver_shadowed"):
+                continue
+            target_path = default_imports.get((source_path, receiver))
             if target_path is None:
                 continue
             if target_path not in default_members:
                 default_members[target_path] = _js_default_object_members(target_path)
-            member = default_members[target_path].get(str(call.get("callee") or ""))
+            member = default_members[target_path].get(callee)
             if member is None:
                 continue
             targets = member_nodes.get((target_path, *member), set())
@@ -2140,6 +2166,21 @@ def _js_default_import_name(node, source: bytes) -> str | None:
                     return _read_text(sub, source)
     return None
 
+def _js_namespace_import_name(node, source: bytes) -> str | None:
+    """Local binding of a namespace import: the `Foo` in `import * as Foo from './x'`."""
+    for child in node.children:
+        if child.type == "import_clause":
+            for sub in child.children:
+                if sub.type == "namespace_import":
+                    for nested in sub.children:
+                        if nested.type == "identifier":
+                            return _read_text(nested, source) or None
+        elif child.type == "namespace_import":
+            for sub in child.children:
+                if sub.type == "identifier":
+                    return _read_text(sub, source) or None
+    return None
+
 def _js_default_export_name(node, source: bytes) -> str | None:
     """Local name of a default export, or None for anonymous defaults.
 
@@ -2476,7 +2517,7 @@ def _js_cjs_require_bindings(declarator, source: bytes) -> list[tuple[str, str]]
     them would also resolve call-uses through the symbol pass and regress the
     EXTRACTED ``confidence_score`` path for destructured requires (#4688 / #4634).
     Whole-module bindings are recorded as default imports, matching ESM
-    ``import X from './m'``.
+    ``import X from './m'``, as well as namespace imports for member calls (#5114).
     """
     value = declarator.child_by_field_name("value")
     if value is None or value.type != "call_expression":
@@ -2490,7 +2531,7 @@ def _js_cjs_require_bindings(declarator, source: bytes) -> list[tuple[str, str]]
     local = _read_text(name_node, source)
     if not local:
         return []
-    return [(local, "default")]
+    return [(local, "*"), (local, "default")]
 
 
 def _js_cjs_default_export_local(right, source: bytes) -> str | None:
@@ -2561,6 +2602,14 @@ def _js_cjs_export_facts(node, source: bytes, path: Path) -> list[_SymbolExportF
                         out.append(
                             _SymbolExportFact(path, name, line, local_name=name)
                         )
+                elif prop.type == "method_definition":
+                    name_node = prop.child_by_field_name("name")
+                    if name_node is not None:
+                        name = _read_text(name_node, source)
+                        if name:
+                            out.append(
+                                _SymbolExportFact(path, name, line, local_name=name)
+                            )
                 elif prop.type == "pair":
                     key = prop.child_by_field_name("key")
                     val = prop.child_by_field_name("value")
@@ -2706,6 +2755,17 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         node.start_point[0] + 1,
                     )
                 )
+            namespace_local = _js_namespace_import_name(node, source)
+            if namespace_local is not None:
+                facts.imports.append(
+                    _SymbolImportFact(
+                        path,
+                        namespace_local,
+                        target_path,
+                        "*",
+                        node.start_point[0] + 1,
+                    )
+                )
             # TS `import X = require("./m")` — same default-import shape as
             # `const X = require("./m")` (#4688).
             for child in node.children:
@@ -2718,6 +2778,15 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     continue
                 local_name = _read_text(local_node, source)
                 if local_name:
+                    facts.imports.append(
+                        _SymbolImportFact(
+                            path,
+                            local_name,
+                            target_path,
+                            "*",
+                            node.start_point[0] + 1,
+                        )
+                    )
                     facts.imports.append(
                         _SymbolImportFact(
                             path,
