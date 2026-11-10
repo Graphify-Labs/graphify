@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **php** methods of one class, trait, interface or enum whose names differ only by a leading/trailing `_` (`_x()` / `x()`) are separate nodes instead of one swallowing the other: the one public name keeps its id and the others are salted, as in Python, C#, JS/TS and Solidity, so `$this->x()` and `$b->x()` reach `x()` instead of being lost and `$this->_x()` no longer looks like a self-call (#2810).
+
+The AST cache schema is bumped to 44; warm caches re-run PHP extractions.
+
 ## 0.9.106 (2026-11-10)
 
 - Fix: **install** `requires-python` is capped to `>=3.10,<3.15`, so `uv tool install graphifyy` (and pip) on a fresh machine no longer selects Python 3.15 — for which `tree-sitter` has no wheel — and then fails with a source build that needs a C compiler (`No such file or directory: 'cc'`). uv now picks a wheel-having interpreter (3.14) by default, with no `--python` flag and no compiler needed. The Ubuntu/Debian README line that asked for `python3.12` (absent on Debian 12 and Ubuntu 22.04) is replaced with the uv installer or a plain `python3`/pipx line (#5134).

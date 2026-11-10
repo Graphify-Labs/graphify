@@ -1569,6 +1569,40 @@ def _js_member_nid(class_nid: str, member_node, name: str, source: bytes,
                                   _JS_PRIVATE_MEMBER_PREFIXES)
 
 
+def _php_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                    groups_cache: dict) -> str:
+    """Node id for a PHP method, salted when a sibling differs only by ``_``.
+
+    ``make_id`` drops leading/trailing ``_``, so ``_x()`` / ``x()`` in one
+    class, trait, interface or enum body minted one id and the second
+    declaration vanished, taking its calls with it (#2810). Sibling
+    ``method_declaration`` names are grouped by the id they would get and
+    ``_underscore_salted_nid`` applies the Python/C#/JS rule: a unique public
+    name keeps the plain id, every other colliding name gets a salted one.
+    PHP method names are case-insensitive, so names are casefolded first:
+    ``Foo()`` / ``foo()`` are one method, never a collision, and the salt does
+    not depend on how a name is cased.
+    """
+    folded = name.casefold()
+    body = member_node.parent
+    if body is None or body.type not in ("declaration_list", "enum_declaration_list"):
+        return _make_id(class_nid, name)
+    key = (class_nid, body.start_byte, body.end_byte)
+    groups = groups_cache.get(key)
+    if groups is None:
+        names: dict[str, set[str]] = {}
+        for c in body.children:
+            if c.type != "method_declaration":
+                continue
+            name_node = c.child_by_field_name("name")
+            text = _read_text(name_node, source) if name_node is not None else ""
+            if text:
+                names.setdefault(_make_id(class_nid, text), set()).add(text.casefold())
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    return _underscore_salted_nid(_make_id(class_nid, name), folded, groups)
+
+
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
     """Pre-scan a Swift compilation unit and return (protocol_names, class_like_names)."""
     protocols: set[str] = set()
@@ -7129,6 +7163,8 @@ def _extract_generic(
 
     # JS/TS class body -> member collision groups, filled lazily (#4475).
     js_member_groups: dict = {}
+    # PHP class/trait/interface/enum body -> method collision groups (#2810).
+    php_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
@@ -9065,6 +9101,10 @@ def _extract_generic(
                       and t in _JS_MEMBER_METHOD_TYPES):
                     func_nid = _js_member_nid(
                         parent_class_nid, node, sanitized_name, source, js_member_groups
+                    )
+                elif config.ts_module == "tree_sitter_php" and t == "method_declaration":
+                    func_nid = _php_member_nid(
+                        parent_class_nid, node, sanitized_name, source, php_member_groups
                     )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
