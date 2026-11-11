@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import re
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -148,7 +149,10 @@ def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
         if value is not None:
             _python_collect_type_refs(value, source, generic, out)
         for c in node.children:
-            if c is value or not c.is_named:
+            # `==`, not `is`: py-tree-sitter hands back a new Node object on
+            # every access, so `is` never matched and the value was walked a
+            # second time as one of its own generic arguments.
+            if c == value or not c.is_named:
                 continue
             _python_collect_type_refs(c, source, True, out)
         return
@@ -1870,20 +1874,23 @@ def _cpp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     A `template<typename T, class U>` binds `T`/`U` as local names, not corpus
     symbols. Walking up to every enclosing `template_declaration`'s
     `template_parameter_list` collects the names from its
-    `type_parameter_declaration`/`variadic_type_parameter_declaration` children.
+    type-parameter children, including a template-template parameter's own name.
     A non-type parameter (`int N`) is a value, not a type, and is left alone.
     """
     names: set[str] = set()
+    parameter_types = (
+        "type_parameter_declaration", "optional_type_parameter_declaration",
+        "variadic_type_parameter_declaration",
+    )
     scope = node
     while scope is not None:
         for child in scope.children:
             if child.type != "template_parameter_list":
                 continue
             for param in child.children:
-                if param.type not in (
-                    "type_parameter_declaration",
-                    "variadic_type_parameter_declaration",
-                ):
+                if param.type == "template_template_parameter_declaration":
+                    param = next((c for c in param.children if c.type in parameter_types), None)
+                if param is None or param.type not in parameter_types:
                     continue
                 for sub in param.children:
                     if sub.type == "type_identifier":
@@ -2948,6 +2955,11 @@ def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
             continue
         for declarator in child.children:
             if declarator.type == "variable_declarator":
+                val = declarator.child_by_field_name("value")
+                if val is not None and val.type == "call_expression":
+                    fn = val.child_by_field_name("function")
+                    if fn is not None and fn.type == "identifier" and _read_text(fn, source) == "require":
+                        continue
                 name = declarator.child_by_field_name("name")
                 if name is not None:
                     _js_collect_pattern_idents(name, source, names)
@@ -3227,6 +3239,8 @@ def _get_cpp_func_name(node, source: bytes) -> str | None:
     for child in node.children:
         if child.type == "identifier":
             return _read_text(child, source)
+        if child.type == "function_declarator":
+            return _get_cpp_func_name(child, source)
     return None
 
 def _cpp_declarator_name(node, source: bytes) -> str | None:
@@ -3311,6 +3325,38 @@ def _cpp_field_types(root, source: bytes, table: dict[str, str]) -> None:
         stack.extend(n.children)
 
 
+def _cpp_is_header_guard(node, source: bytes) -> bool:
+    """Recognize only a whole-file #ifndef NAME / #define NAME wrapper."""
+    if (node.type != "preproc_ifdef" or node.parent is None
+            or node.parent.type != "translation_unit" or node.children[0].type != "#ifndef"):
+        return False
+    siblings = [n for n in node.parent.named_children if n.type != "comment"]
+    contents = [n for n in node.named_children if n.type != "comment"]
+    if (siblings != [node] or len(contents) < 2 or contents[1].type != "preproc_def"
+            or any(n.type in {"preproc_else", "preproc_elif", "preproc_elifdef"} for n in contents)):
+        return False
+    name = node.child_by_field_name("name")
+    define = contents[1].child_by_field_name("name")
+    if name is None or define is None or _read_text(name, source) != _read_text(define, source):
+        return False
+    return not any(line.replace(" ", "").replace("\t", "").startswith("#undef")
+                   for line in _read_text(node, source).splitlines())
+
+
+def _cpp_lookup_scope(node, source: bytes) -> str:
+    """Lexical scope keeps unnamed-namespace barriers without naming their types."""
+    parents = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type in {"namespace_definition", "class_specifier", "struct_specifier"}:
+            part = parent.child_by_field_name("name")
+            if part is None and parent.type != "namespace_definition":
+                return ""
+            parents.append(_read_text(part, source) if part is not None else "(anonymous)")
+        parent = parent.parent
+    return "::".join(reversed(parents))
+
+
 def _cpp_qualified_name(node, name: str, source: bytes) -> str:
     """Literal enclosing namespace/type identity; anonymous scopes are unknown."""
     parents = []
@@ -3325,6 +3371,169 @@ def _cpp_qualified_name(node, name: str, source: bytes) -> str:
     return "::".join([*reversed(parents), name])
 
 
+def _cpp_member_record(node, declarator, name: str, source: bytes) -> dict:
+    """Literal zero-argument member facts; unsupported syntax stays an ambiguity record."""
+    function = declarator
+    while function is not None and function.type in {"pointer_declarator", "reference_declarator"}:
+        function = function.child_by_field_name("declarator") or next(
+            (n for n in function.named_children if n.type in {
+                "function_declarator", "pointer_declarator", "reference_declarator",
+            }), None)
+    parameters = function.child_by_field_name("parameters") if function is not None else None
+    zero_args = (parameters is not None
+                 and not any(n.type != "comment" for n in parameters.named_children))
+    qualified = _cpp_qualified_name(node, name, source)
+    record: dict = {
+        "qualified": qualified,
+        "kind": "definition" if node.type == "function_definition" else "declaration",
+        "zero_args": zero_args, "signature": None,
+        "source_location": f"L{declarator.start_point[0] + 1}",
+    }
+    type_node = node.child_by_field_name("type")
+    safe = (zero_args and type_node is not None and not node.has_error
+            and name.rsplit("::", 1)[-1].isidentifier()
+            and node.child_by_field_name("default_value") is None
+            and (node.type != "function_definition" or node.child_by_field_name("body") is not None))
+    parent = node.parent
+    while parent is not None:
+        if ((parent.type.startswith("preproc_") and not _cpp_is_header_guard(parent, source))
+                or parent.type in {"template_declaration", "function_definition", "lambda_expression"}):
+            safe = False
+        parent = parent.parent
+    if not safe or function is None or parameters is None or function.type != "function_declarator":
+        return record
+    suffix = [n for n in function.named_children
+              if n.start_byte >= parameters.end_byte and n.type != "comment"]
+    prefix = [n for n in node.named_children if n.end_byte <= declarator.start_byte and n != type_node]
+    if (any(n.type not in {"type_qualifier", "ref_qualifier", "noexcept"} for n in suffix)
+            or any(n.type != "type_qualifier" and not (
+                n.type == "storage_class_specifier"
+                and _read_text(n, source) in {"static", "inline", "constexpr", "consteval"}
+            ) for n in prefix)):
+        return record
+    record["signature"] = {
+        "return_type": _read_text(type_node, source),
+        "return_qualifiers": [_read_text(n, source) for n in prefix if n.type == "type_qualifier"],
+        "return_declarator": source[declarator.start_byte:function.start_byte].decode(
+            "utf-8", errors="replace").strip(),
+        "member_qualifiers": [_read_text(n, source) for n in suffix],
+    }
+    return record
+
+
+def _cpp_plain_template_parameters(node, source: bytes) -> list[str]:
+    if node is None or node.type != "template_declaration":
+        return []
+    if len([c for c in node.named_children if c.type != "comment"]) != 2:
+        return []
+    parameters = node.child_by_field_name("parameters")
+    names = []
+    for parameter in parameters.named_children if parameters is not None else ():
+        if (parameter.type != "type_parameter_declaration"
+                or len(parameter.named_children) != 1
+                or parameter.named_children[0].type != "type_identifier"):
+            return []
+        names.append(_read_text(parameter.named_children[0], source))
+    return names if len(set(names)) == len(names) else []
+
+
+def _cpp_zero_arg_member_signature(node, source: bytes) -> tuple | None:
+    """Compare only nondependent, parameterless member declarations and definitions."""
+    type_node = node.child_by_field_name("type")
+    declarator = node.child_by_field_name("declarator")
+    if (type_node is None or type_node.type != "primitive_type"
+            or declarator is None or declarator.type != "function_declarator"
+            or any(c.type not in {"primitive_type", "function_declarator", "compound_statement", "comment"}
+                   for c in node.named_children)):
+        return None
+    name = declarator.child_by_field_name("declarator")
+    parameters = declarator.child_by_field_name("parameters")
+    if name is None or parameters is None or parameters.named_children:
+        return None
+    suffix = [c for c in declarator.named_children if c != name]
+    if any(c.type not in {"parameter_list", "type_qualifier", "ref_qualifier", "noexcept"}
+           or (c.type == "noexcept" and c.named_children) for c in suffix):
+        return None
+    return (_read_text(type_node, source), tuple("".join(_read_text(c, source).split()) for c in suffix))
+
+
+def _cpp_primary_template_function_name(node, source: bytes, classes: dict) -> str | None:
+    """Prove a same-file primary owner instead of erasing arbitrary template arguments.
+
+    shortcut: only unique parameterless primitive-returning members are matched,
+    use signature-aware template resolution for overloads or dependent signatures.
+    """
+    parameters = _cpp_plain_template_parameters(node.parent, source)
+    signature = _cpp_zero_arg_member_signature(node, source)
+    if not parameters or signature is None:
+        return None
+    declarator = node.child_by_field_name("declarator").child_by_field_name("declarator")
+    if declarator.type != "qualified_identifier":
+        return None
+    owner = declarator.child_by_field_name("scope")
+    member = declarator.child_by_field_name("name")
+    if owner is None or owner.type != "template_type" or member is None or member.type != "identifier":
+        return None
+    owner_name = owner.child_by_field_name("name")
+    arguments = owner.child_by_field_name("arguments")
+    if owner_name is None or owner_name.type != "type_identifier" or arguments is None:
+        return None
+    if ["".join(_read_text(c, source).split()) for c in arguments.named_children] != parameters:
+        return None
+    name = _read_text(owner_name, source)
+    candidates = classes.get(normalize_id(name), [])
+    if len(candidates) != 1:
+        return None
+    primary = candidates[0]
+    template = primary.parent
+    scope = node.parent.parent
+    if (scope is None or scope.type not in {"translation_unit", "declaration_list"}
+            or template is None or template.parent != scope
+            or len(_cpp_plain_template_parameters(template, source)) != len(parameters)
+            or _read_text(primary.child_by_field_name("name"), source) != name):
+        return None
+    body = primary.child_by_field_name("body")
+    if body is None:
+        return None
+    method = _read_text(member, source)
+    declarations = []
+    for child in body.named_children:
+        declaration = child
+        while declaration.type == "template_declaration":
+            declaration = declaration.named_children[-1]
+        for item in declaration.children_by_field_name("declarator"):
+            if normalize_id(_get_cpp_func_name(item, source) or "") == normalize_id(method):
+                declarations.append((child, declaration))
+    if (len(declarations) != 1 or declarations[0][0].type != "field_declaration"
+            or _get_cpp_func_name(declarations[0][1], source) != method
+            or _cpp_zero_arg_member_signature(declarations[0][1], source) != signature):
+        return None
+    return f"{name}::{method}"
+
+
+def _cpp_type_is_dependent(node, source: bytes) -> bool:
+    """Template arguments may depend on a parameter; qualified concrete names do not."""
+    parameters = _cpp_type_parameters_in_scope(node, source)
+    pending = [node]
+    while parameters and pending:
+        current = pending.pop()
+        if current.type == "qualified_identifier":
+            scope = current.child_by_field_name("scope")
+            if scope is not None:
+                pending.append(scope)
+            name = current.child_by_field_name("name")
+            if name is not None and name.type == "template_type":
+                arguments = name.child_by_field_name("arguments")
+                if arguments is not None:
+                    pending.append(arguments)
+        elif (current.type in {"type_identifier", "namespace_identifier"}
+              and _read_text(current, source) in parameters):
+            return True
+        else:
+            pending.extend(current.named_children)
+    return False
+
+
 def _cpp_declared_receiver_type(node, declarator, source: bytes) -> str:
     """Keep qualification and pointer shape; unsupported declarations stay unknown."""
     type_node = node.child_by_field_name("type")
@@ -3333,6 +3542,8 @@ def _cpp_declared_receiver_type(node, declarator, source: bytes) -> str:
     }:
         return ""
     name = _read_text(type_node, source)
+    if _cpp_type_is_dependent(type_node, source):
+        return ""
     while declarator is not None and declarator.type not in {"identifier", "field_identifier"}:
         if declarator.type == "pointer_declarator":
             name += "*"
@@ -3345,6 +3556,16 @@ def _cpp_declared_receiver_type(node, declarator, source: bytes) -> str:
     return name if declarator is not None else ""
 
 
+def _cpp_call_name(node, source: bytes) -> str | None:
+    """A template argument list changes specialization, not the member's name."""
+    # shortcut: overloads share a member family until signature-aware resolution is added.
+    while node is not None and node.type in {
+        "template_method", "template_function", "dependent_name",
+    }:
+        node = node.child_by_field_name("name") or next(iter(node.named_children), None)
+    return _read_text(node, source) if node is not None else None
+
+
 def _cpp_receiver_chain(node, source: bytes) -> list[list[str]]:
     """Pairs of receiver/member names and their following access operators."""
     members, operators = [], []
@@ -3354,9 +3575,14 @@ def _cpp_receiver_chain(node, source: bytes) -> list[list[str]]:
         elif node.type == "field_expression":
             field = node.child_by_field_name("field")
             operator = node.child_by_field_name("operator")
-            if field is None or field.type != "field_identifier" or operator is None:
+            if (field is None or operator is None
+                    or (field.type != "field_identifier" and (
+                        members or field.type not in {"template_method", "dependent_name"}))):
                 return []
-            members.append(_read_text(field, source))
+            name = _cpp_call_name(field, source)
+            if not name:
+                return []
+            members.append(name)
             operators.append(_read_text(operator, source))
             node = node.child_by_field_name("argument")
         elif node.type in {"identifier", "this"}:
@@ -3367,7 +3593,176 @@ def _cpp_receiver_chain(node, source: bytes) -> list[list[str]]:
     return []
 
 
-def _cpp_class_fields(node, source: bytes) -> dict[str, str]:
+def _cpp_resolution_facts(root, source: bytes) -> tuple[list[dict], dict[str, int], dict[str, str]]:
+    """Persist lexical type declarations; unsupported aliases still shadow outer names."""
+    bindings, includes, include_paths = [], {}, {}
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        pending.extend(reversed(node.named_children))
+        if node.type == "preproc_include":
+            parent = node.parent
+            while parent is not None and parent.type not in {
+                "namespace_definition", "class_specifier", "struct_specifier", "union_specifier",
+                "function_definition", "compound_statement",
+            }:
+                parent = parent.parent
+            if parent is not None:
+                continue
+            line = str(node.start_point[0] + 1)
+            includes[line] = node.start_byte
+            path = node.child_by_field_name("path")
+            if path is not None and path.type == "string_literal":
+                include_paths[line] = _read_text(path, source)[1:-1]
+        if node.type not in {"alias_declaration", "type_definition", "class_specifier", "struct_specifier", "union_specifier",
+                             "using_declaration", "namespace_definition", "namespace_alias_definition"}:
+            continue
+        scope = _cpp_lookup_scope(node, source)
+        parent = node.parent
+        block = None
+        dependent = False
+        conditional = False
+        while parent is not None:
+            if parent.type == "template_declaration":
+                dependent = True
+            if parent.type == "namespace_definition" and parent.child_by_field_name("name") is None:
+                dependent = True
+            if parent.type in {"preproc_if", "preproc_ifdef", "preproc_else", "preproc_elif"}:
+                guard = _cpp_is_header_guard(parent, source)
+                conditional = conditional or not guard
+            if block is None and parent.type in {
+                "compound_statement", "for_statement", "for_range_loop", "if_statement",
+                "switch_statement", "catch_clause", "lambda_expression",
+            }:
+                block = parent
+            parent = parent.parent
+        alias = node.type in {"alias_declaration", "type_definition", "namespace_alias_definition"}
+        directive = False
+        names = [(node.child_by_field_name("name"), "")]
+        if node.type == "namespace_definition" and names[0][0] is not None:
+            parts = _read_text(names[0][0], source).split("::")
+            names = [("::".join(parts[:index + 1]), "") for index in range(len(parts))]
+        if node.type == "using_declaration":
+            using = re.fullmatch(r"using\s+(namespace\s+)?((?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*;",
+                                 _read_text(node, source))
+            if using is None:
+                continue
+            directive = bool(using[1])
+            names = [("*" if directive else using[2].rsplit("::", 1)[-1], using[2])]
+            alias = not directive
+        if alias and node.type != "namespace_alias_definition":
+            type_node = node.child_by_field_name("type")
+            target = _read_text(type_node, source) if type_node is not None and not dependent else ""
+            if node.type == "alias_declaration":
+                names = [(node.child_by_field_name("name"), target)]
+            else:
+                names = []
+                for declarator in node.children_by_field_name("declarator"):
+                    current, suffix = declarator, ""
+                    while current is not None and current.type != "type_identifier":
+                        if current.type == "pointer_declarator":
+                            suffix += "*"
+                        elif current.type != "reference_declarator":
+                            current = None
+                            break
+                        current = current.child_by_field_name("declarator")
+                    name = _cpp_declarator_type_name(declarator, source)
+                    if name:
+                        original = type_node.child_by_field_name("name") if type_node is not None else None
+                        if original is not None and _read_text(original, source) == name:
+                            continue
+                        names.append((name, target + suffix if current is not None and target else ""))
+        for name_node, target in names:
+            name = name_node if isinstance(name_node, str) else (
+                _read_text(name_node, source) if name_node is not None else "")
+            if not name or ("::" in name and node.type != "namespace_definition"):
+                continue
+            bindings.append({"name": name, "scope": scope, "target": "" if alias and conditional else target,
+                             "alias": alias,
+                             "complete": node.type in {"class_specifier", "struct_specifier", "union_specifier"}
+                             and node.child_by_field_name("body") is not None,
+                             "directive": directive, "namespace": node.type == "namespace_definition",
+                             "start": node.start_byte, "end": block.end_byte if block is not None else len(source),
+                             "local": block is not None, "block": block.start_byte if block is not None else 0})
+            # An unnamed namespace implicitly exposes its declarations in its parent.
+            projected_scope = scope
+            while block is None and not directive and projected_scope.split("::")[-1] == "(anonymous)":
+                projected_scope = projected_scope.rsplit("::", 1)[0] if "::" in projected_scope else ""
+                bindings.append({**bindings[-1], "scope": projected_scope, "target": "", "alias": True,
+                                 "complete": False, "namespace": False, "implicit_anonymous": True})
+    return bindings, includes, include_paths
+
+
+def _cpp_class_lookup_facts(node, source: bytes) -> dict:
+    """Literal bases and member-name barriers, without resolving overloads or dispatch."""
+    bases, members, signatures = [], set(), {}
+    clause = next((c for c in node.named_children if c.type == "base_class_clause"), None)
+    if clause is not None:
+        virtual = False
+        for child in clause.children:
+            if child.type == "virtual":
+                virtual = True
+            elif child.type == ",":
+                virtual = False
+            elif child.is_named and child.type != "access_specifier":
+                bases.append({"type": _read_text(child, source), "position": child.start_byte,
+                              "virtual": virtual})
+    body = node.child_by_field_name("body")
+    pending = [(child, False) for child in body.named_children] if body is not None else []
+    while pending:
+        member, unsupported = pending.pop()
+        if member.type.startswith("preproc_") or member.type == "template_declaration":
+            pending.extend((child, True) for child in member.named_children)
+            continue
+        name = member.child_by_field_name("name")
+        if name is not None and member.type in {
+            "alias_declaration", "class_specifier", "struct_specifier", "union_specifier", "enum_specifier",
+        }:
+            members.add(_read_text(name, source))
+        nested_type = member.child_by_field_name("type")
+        if nested_type is not None and nested_type.type in {"class_specifier", "struct_specifier", "union_specifier", "enum_specifier"}:
+            name = nested_type.child_by_field_name("name")
+            if name is not None:
+                members.add(_read_text(name, source))
+        union = member if member.type == "union_specifier" else nested_type
+        if (union is not None and union.type == "union_specifier" and
+                union.child_by_field_name("name") is None):
+            union_body = union.child_by_field_name("body")
+            if union_body is not None:
+                pending.extend((child, True) for child in union_body.named_children)
+        enum = member if member.type == "enum_specifier" else nested_type
+        if (enum is not None and enum.type == "enum_specifier" and
+                not any(c.type in {"class", "struct"} for c in enum.children)):
+            enum_body = enum.child_by_field_name("body")
+            for enumerator in enum_body.named_children if enum_body is not None else []:
+                name = enumerator.child_by_field_name("name")
+                if name is not None:
+                    members.add(_read_text(name, source))
+        if member.type == "using_declaration":
+            match = re.search(r"([A-Za-z_]\w*)\s*;\s*$", _read_text(member, source))
+            if match:
+                members.add(match[1])
+        for declarator in member.children_by_field_name("declarator"):
+            current, function = declarator, None
+            while current is not None and current.type not in {"identifier", "field_identifier", "type_identifier"}:
+                if current.type == "function_declarator":
+                    function = current
+                inner = current.child_by_field_name("declarator")
+                if inner is None and current.type in {"parenthesized_declarator", "reference_declarator"}:
+                    inner = next((child for child in current.named_children if child.type != "type_qualifier"), None)
+                current = inner
+            if current is None:
+                continue
+            name = _read_text(current, source)
+            members.add(name)
+            if (function is not None and not unsupported and
+                    function.child_by_field_name("declarator") == current):
+                signatures.setdefault(name, set()).add(_read_text(function, source))
+    return {"bases": bases, "members": sorted(members),
+            "methods": {name: len(values) for name, values in signatures.items()}}
+
+
+def _cpp_class_fields(node, source: bytes, positions: dict[str, int]) -> dict[str, str]:
     fields: dict[str, str] = {}
     body = node.child_by_field_name("body")
     if body is not None:
@@ -3379,12 +3774,13 @@ def _cpp_class_fields(node, source: bytes) -> dict[str, str]:
                 if name:
                     value = _cpp_declared_receiver_type(field, declarator, source)
                     fields[name] = value if fields.get(name, value) == value else ""
+                    positions[name] = declarator.start_byte
     return fields
 
 
-def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int, str, str]]]:
+def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, int, str, str, str, bool]]]:
     """Lexical lifetimes of named C++ locals/parameters, not corpus callees."""
-    ranges: dict[str, list[tuple[int, int, str, str]]] = {}
+    ranges: dict[str, list[tuple[int, int, str, str, bool]]] = {}
     scopes = {"compound_statement", "for_statement", "for_range_loop", "if_statement",
               "switch_statement", "catch_clause", "function_definition", "lambda_expression"}
     stack = [body]
@@ -3408,10 +3804,16 @@ def _cpp_local_binding_ranges(body, source: bytes) -> dict[str, list[tuple[int, 
                 for declarator in declarators:
                     name = _cpp_declarator_name(declarator, source)
                     if name:
+                        type_node = node.child_by_field_name("type")
+                        dependent = type_node is not None and (
+                            type_node.type == "dependent_type" or _cpp_type_is_dependent(type_node, source)
+                        )
                         ranges.setdefault(name, []).append((
                             declarator.start_byte, scope.end_byte,
                             _cpp_declared_receiver_type(node, declarator, source),
+                            _cpp_lookup_scope(node, source),
                             _cpp_qualified_name(node, "", source).rstrip(":"),
+                            dependent,
                         ))
         stack.extend(node.named_children)
     return ranges
@@ -6525,6 +6927,7 @@ def _php_get_route_name(closure_node, src: bytes) -> str | None:
 def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None,
     scan_root: Path | None = None,
+    preserve_call_sites: bool = False,
 ) -> dict:
     """Generic AST extractor driven by LanguageConfig.
 
@@ -6559,6 +6962,9 @@ def _extract_generic(
     try:
         parser = Parser(language)
         source = _read_source_bytes(path) if source_override is None else source_override
+        if config.ts_module == "tree_sitter_cpp":
+            # Persisted lookup offsets and call sites must share line-ending-independent bytes.
+            source = source.replace(b"\r\n", b"\n")
         # In C and C++, if the .h file does not end with a newline '\n' an error
         # is throwed even if the file is valid. In order to avoid this, a new line
         # char is added only if the original file does not end with it.
@@ -6620,6 +7026,16 @@ def _extract_generic(
     # guard excludes them to avoid false edges (#2137).
     callable_class_nids: set[str] = set()
     cpp_qualified_names: dict[str, str] = {}
+    cpp_classes: dict[str, list] = {}
+    if config.ts_module == "tree_sitter_cpp":
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            if current.type in config.class_types:
+                name = current.child_by_field_name("name")
+                if name is not None:
+                    cpp_classes.setdefault(normalize_id(_read_text(name, source)), []).append(current)
+            pending.extend(current.named_children)
     # Python only: per-function set of locally-bound names (params + local
     # assignment / for / with-as / comprehension targets). The indirect-dispatch
     # guard skips any call-argument identifier in the enclosing function's set,
@@ -7103,9 +7519,27 @@ def _extract_generic(
                 cpp_qualified_names[class_nid] = (
                     qualified if cpp_qualified_names.get(class_nid, qualified) == qualified else ""
                 )
+                class_node = next(n for n in nodes if n["id"] == class_nid)
+                safe = (t in {"class_specifier", "struct_specifier"}
+                        and name_node.type == "type_identifier" and bool(qualified)
+                        and not node.has_error and "_cpp_class_kind" not in class_node)
+                parent = node.parent
+                while parent is not None:
+                    if ((parent.type.startswith("preproc_") and not _cpp_is_header_guard(parent, source))
+                            or parent.type in {
+                        "template_declaration", "function_definition", "lambda_expression",
+                        "class_specifier", "struct_specifier", "union_specifier",
+                    }):
+                        safe = False
+                    parent = parent.parent
+                class_node["_cpp_class_kind"] = (
+                    "definition" if node.child_by_field_name("body") is not None else "forward"
+                ) if safe else "unsafe"
                 if node.child_by_field_name("body") is not None:
                     class_node = next(n for n in nodes if n["id"] == class_nid)
-                    class_node["_cpp_fields"] = _cpp_class_fields(node, source)
+                    class_node["_cpp_field_positions"] = {}
+                    class_node["_cpp_fields"] = _cpp_class_fields(node, source, class_node["_cpp_field_positions"])
+                    class_node["_cpp_lookup"] = _cpp_class_lookup_facts(node, source)
             # A nested class/object/trait is contained by its ENCLOSING type, not
             # the file (#2040). parent_class_nid is threaded down the walk for
             # every language and is always a real class-like node (never a
@@ -8423,7 +8857,9 @@ def _extract_generic(
             return
 
         if (config.ts_module == "tree_sitter_cpp"
-                and t == "field_declaration"
+                and (t == "field_declaration" or (
+                    t == "declaration" and node.parent is not None
+                    and node.parent.type == "template_declaration"))
                 and parent_class_nid):
             # Skip method prototypes (field_declaration with a function_declarator
             # is a member-function declaration, not a data member).
@@ -8497,6 +8933,10 @@ def _extract_generic(
                     add_node(member_nid, f".{name}()", line)
                     add_edge(parent_class_nid, member_nid, "method", line)
                     callable_def_nids.add(member_nid)
+                    cpp_qualified_names[member_nid] = _cpp_qualified_name(node, name, source)
+                    member_node = next(n for n in nodes if n["id"] == member_nid)
+                    member_node.setdefault("_cpp_member_records", []).append(
+                        _cpp_member_record(node, decl, name, source))
                 else:
                     add_node(member_nid, name, line)
                     add_edge(parent_class_nid, member_nid, "defines", line, context="field")
@@ -8561,6 +9001,14 @@ def _extract_generic(
                         func_name = "{closure#" + str(php_closure_counts[_scope_key]) + "}"
                 else:
                     return
+            if config.ts_module == "tree_sitter_cpp" and "<" in func_name:
+                primary_name = _cpp_primary_template_function_name(node, source, cpp_classes)
+                primary_qualified = _cpp_qualified_name(node, primary_name, source) if primary_name else ""
+                if (primary_name is not None
+                        and primary_qualified
+                        and cpp_qualified_names.get(_make_id(stem, primary_name))
+                        == primary_qualified):
+                    func_name = primary_name
             sanitized_name = (
                 config.sanitize_symbol_name_fn(func_name)
                 if config.sanitize_symbol_name_fn is not None
@@ -8661,15 +9109,20 @@ def _extract_generic(
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
                     )
-                func_nid = decl_node(func_nid, sanitized_name, "fn",
-                                     f"{func_name}()", line)
+                if not (config.ts_module == "tree_sitter_cpp" and "::" in func_name
+                        and cpp_qualified_names.get(func_nid) == _cpp_qualified_name(node, func_name, source)):
+                    func_nid = decl_node(func_nid, sanitized_name, "fn",
+                                         f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
             callable_def_nids.add(func_nid)  # function / method def is callable
-            if config.ts_module == "tree_sitter_cpp" and "::" in func_name:
+            if config.ts_module == "tree_sitter_cpp" and (parent_class_nid or "::" in func_name):
                 qualified = _cpp_qualified_name(node, func_name, source)
                 cpp_qualified_names[func_nid] = (
                     qualified if cpp_qualified_names.get(func_nid, qualified) == qualified else ""
                 )
+                member_node = next(n for n in nodes if n["id"] == func_nid)
+                member_node.setdefault("_cpp_member_records", []).append(
+                    _cpp_member_record(node, declarator, func_name, source))
             if config.ts_module == "tree_sitter_python":
                 local_bound_names[func_nid] = _python_local_bound_names(node, source)
             elif config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
@@ -9430,6 +9883,12 @@ def _extract_generic(
         # an ERROR node is a parse artifact, not a scope — keep the enclosing
         # class linkage for whatever declarations were recovered inside it.
         if t == "ERROR":
+            for child in node.children:
+                walk(child, parent_class_nid=parent_class_nid)
+            return
+
+        # A C++ template wraps its declaration without introducing a class scope.
+        if config.ts_module == "tree_sitter_cpp" and t == "template_declaration":
             for child in node.children:
                 walk(child, parent_class_nid=parent_class_nid)
             return
@@ -10326,9 +10785,9 @@ def _extract_generic(
                 cpp_binding = None
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
                 if func_node:
-                    if func_node.type == "identifier":
-                        callee_name = _read_text(func_node, source)
-                        if any(start <= node.start_byte < end for start, end, *_ in
+                    if func_node.type in ("identifier", "template_function"):
+                        callee_name = _cpp_call_name(func_node, source)
+                        if callee_name and any(start <= node.start_byte < end for start, end, *_ in
                                cpp_local_bindings.get(caller_nid, {}).get(callee_name, ())):
                             callee_name = None
                     elif func_node.type == "field_expression":
@@ -10338,7 +10797,7 @@ def _extract_generic(
                         is_member_call = True
                         name = func_node.child_by_field_name("field")
                         if name:
-                            callee_name = _read_text(name, source)
+                            callee_name = _cpp_call_name(name, source)
                         cpp_chain = _cpp_receiver_chain(func_node, source)
                         if cpp_chain:
                             member_receiver = cpp_chain[0][0]
@@ -10351,10 +10810,12 @@ def _extract_generic(
                         is_member_call = True
                         name = func_node.child_by_field_name("name")
                         if name:
-                            callee_name = _read_text(name, source)
+                            callee_name = _cpp_call_name(name, source)
                         scope = func_node.child_by_field_name("scope")
                         if scope is not None:
                             member_receiver = _read_text(scope, source)
+                            if _cpp_type_is_dependent(scope, source):
+                                callee_name = None
             elif config.ts_module == "tree_sitter_java":
                 if node.type == "object_creation_expression":
                     # `new Foo(...)` — the constructed type is in the `type` field,
@@ -10617,8 +11078,11 @@ def _extract_generic(
                     and is_member_call
                     and not is_scoped_call
                     and func_node is not None and func_node.type == "field_expression"
-                    and (len(cpp_chain) != 1 or member_receiver in type_table
-                         or (cpp_binding is not None and bool(cpp_binding[2])))
+                    and (len(cpp_chain) != 1 or member_receiver == "this" or member_receiver in type_table
+                         or (name is not None and name.type != "field_identifier")
+                         or (cpp_binding is not None and (bool(cpp_binding[2]) or cpp_binding[5]))
+                         or (cpp_binding is None and member_receiver in cpp_unknown_fields.get(
+                             method_owner.get(caller_nid, ""), ())))
                 )
                 if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
@@ -10732,7 +11196,7 @@ def _extract_generic(
                 external_stub_target = bool(tgt_nid and not nid_to_sf.get(tgt_nid))
                 if tgt_nid and not external_stub_target:
                     pair = (caller_nid, tgt_nid)
-                    if pair not in seen_call_pairs:
+                    if preserve_call_sites or pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
                         line = node.start_point[0] + 1
                         edges.append({
@@ -10834,11 +11298,15 @@ def _extract_generic(
                         # suffix sets, so a source_file suffix alone can't separate them.
                         if config.ts_module == "tree_sitter_cpp":
                             rc_entry["lang"] = "cpp"
+                            rc_entry["cpp_call_byte"] = node.start_byte
+                            rc_entry["cpp_call_scope"] = _cpp_lookup_scope(node, source)
+                            rc_entry["cpp_scoped_call"] = func_node is not None and func_node.type == "qualified_identifier"
                             if func_node is not None and func_node.type == "field_expression":
                                 rc_entry["cpp_receiver_chain"] = cpp_chain
                                 if cpp_binding is not None:
                                     rc_entry["cpp_receiver_type"] = cpp_binding[2]
                                     rc_entry["cpp_receiver_scope"] = cpp_binding[3]
+                                    rc_entry["cpp_receiver_byte"] = cpp_binding[0]
                         # PHP: separate a scoped class call (`Helper::m()`, source-
                         # qualified) from an instance member call (`$g->m()`), whose
                         # receiver is a variable the resolver must type through the
@@ -11226,8 +11694,11 @@ def _extract_generic(
     # every function body so the cross-file member-call pass can type a receiver
     # (#1547). File-scoped (not per-body): a later body's `Foo f;` doesn't clobber
     # an earlier binding (`var not in table`), keeping resolution conservative.
-    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int, str, str]]]] = {}
+    cpp_local_bindings: dict[str, dict[str, list[tuple[int, int, str, str, str, bool]]]] = {}
+    cpp_unknown_fields: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_cpp":
+        cpp_unknown_fields = {n["id"]: {name for name, value in n.get("_cpp_fields", {}).items() if not value}
+                              for n in nodes if "_cpp_fields" in n}
         # Each function's table first: a local shadows a parameter there. The
         # file table is shared by every function, so a name typed differently in
         # two places (`Request& r` here, `Response r` there) is ambiguous and
@@ -11471,6 +11942,10 @@ def _extract_generic(
         _ts_receiver_type_table(root, source, type_table, ts_field_types)
         _ts_mark_public_twins(root, source, result)
         _ts_attach_class_fields(result, ts_field_types, str_path)
+    if config.ts_module == "tree_sitter_cpp":
+        file_node = next(n for n in nodes if n["id"] == file_nid)
+        (file_node["_cpp_type_bindings"], file_node["_cpp_include_positions"],
+         file_node["_cpp_include_paths"]) = _cpp_resolution_facts(root, source)
     if config.ts_module == "tree_sitter_php":
         _php_receiver_type_table(root, source, type_table)
     if config.ts_module == "tree_sitter_swift":

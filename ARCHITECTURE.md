@@ -55,6 +55,11 @@ Always pass `root`. Node ids and `source_file` values are derived relative to it
 
 ## Extraction output schema
 
+Maven manifest ingestion parses XML namespace declarations before normalizing
+tags in the root namespace for package and dependency lookups. Default and
+prefixed declarations share the same package identity; foreign namespaces and
+managed/plugin dependency scopes do not become project dependencies.
+
 Terraform/HCL per-file AST results record the scope used to mint their node IDs.
 After a cache hit, extraction consumes that scope to rewrite node IDs and edge
 endpoints relative to the current scan root, including when the cache was copied
@@ -135,8 +140,103 @@ calls are `INFERRED` static-type relationships, not proof of runtime dispatch.
 Unknown/shadowed types, ambiguous class identities, unresolved aliases, custom
 pointer wrappers, containers, and computed receivers are not guessed. AST cache
 schema 41 retires entries without receiver chains and persistent class fields.
+
+C++ receiver types also follow ordinary `using` and `typedef` aliases, including
+raw-pointer and supported smart-pointer aliases. Lookup preserves spelling,
+lexical block/namespace/class scope and declaration order, and only traverses
+explicit includes preceding the receiver declaration. Alias targets resolve in
+their declaring scope; unsupported aliases still hide outer declarations.
+Qualified-name prefixes also block outer lookup. Namespace aliases and later
+class-scoped declarations in complete-class contexts remain unresolved.
+Anonymous namespaces retain their enclosing named lexical scope through an
+internal lookup placeholder. This placeholder never becomes a class identity;
+anonymous-local types and unknown aliases still block outer lookup.
+Direct namespace directives and qualified using declarations participate in this
+lookup. Alias templates, dependent targets, transitive using directives, arbitrary
+template types and cyclic or ambiguous aliases remain unresolved. Alias expansion
+stops after 32 steps. Conditional aliases remain unknown shadowing declarations,
+except inside a whole-file `#ifndef`/`#define` header guard without alternatives or
+an `#undef`. File nodes persist
+lexical type/alias facts and include offsets; class nodes persist field declaration
+offsets, so unchanged headers support incremental receiver resolution.
+C++ parsing normalizes CRLF to LF before collecting lookup facts and call sites,
+keeping their byte coordinates consistent across line endings without editing
+source files. Mixed LF/CRLF files use the same coordinates.
+Field spellings and aliases resolve where declared; an exact forward-declared
+type may then be completed by a unique definition visible at the member call.
+Definition facts preserve same-file declaration order. Missing, unincluded or
+ambiguous definitions remain unresolved, and base types still require completeness
+at their declaring class rather than at a later call.
+Includes nested in namespace, class or function scopes do not supply global type
+visibility; their injected declarations are not modeled. Header guards and global
+linkage wrappers preserve ordinary include visibility.
+
+C++ inherited receiver fields and methods follow literal, explicitly reachable
+base types. A class declaration hides the same name in every base, including
+unknown fields, aliases, nested types and enum constants. Multiple inheritance
+resolves only one unambiguous member path; diamonds, unknown/dependent bases,
+virtual-base paths, inherited overload families and walks exceeding 32 classes
+stay unresolved. Calls retain their declared static receiver target, without
+inferring runtime virtual dispatch. AST cache schema 51 retires entries without
+the lexical type and inheritance facts or with pre-normalization byte offsets.
+This pass covers explicit receiver calls and field chains; unqualified bare calls
+retain the existing lexical resolver. Smart-pointer recognition requires an
+unshadowed `std` prefix (or explicit `::std`); custom wrappers remain unresolved.
 Rebuild existing graphs with `graphify extract . --code-only --force` to populate
 unchanged headers before relying on changed-file-only updates.
+
+C++ plain class/struct forwards fold into a unique exactly qualified definition
+only when one declaration file reaches the other through unconditional, exactly
+resolved quoted includes in the scanned corpus. The definition keeps its ID and
+source site; `metadata.cpp_declaration_sites` retains every folded forward site.
+`_cpp_reconcile_files` records the source and include-proof files so CLI/watch
+updates re-extract the live group after an edit, deletion, or exclusion. New pairs
+refresh exact-identity candidates from the permitted unchanged corpus before
+the same proof checks run. A whole-file `#ifndef NAME` / `#define NAME` guard is
+recognized structurally; feature expressions are never evaluated. Unrelated
+same-name files, multiple definitions, templates/specializations, nested/local or
+anonymous scopes, and other conditional declarations/includes stay separate.
+A common third file including both declarations
+does not establish equivalence in this pass.
+Non-template members with empty parameter lists also fold a unique declaration/body pair
+under one proven owner when literal return type, return pointer/reference shape,
+cv/ref qualifiers and noexcept spelling match, backed by the same exact include
+proof. The declaration keeps its ID and source site, and the body site remains
+in `definition_file` / `definition_location`; body calls are rewired to that ID.
+Persisted `_cpp_member_records` retain unsupported or multiple syntax records so
+overload families, normalized-name collisions, multiple bodies, conditional
+members, pure/defaulted/deleted methods and uncertain signatures do not fold.
+Parameter-bearing methods, equivalent type aliases/spellings, templates and
+general overload resolution remain outside this repair.
+AST cache schema 43 retires records without class/member facts and exact include proofs;
+rebuild existing graphs with `graphify extract . --code-only --force`.
+
+C++ template wrappers preserve member ownership, including reference-returning
+declarations and matching same-file qualified definitions. Explicit calls such
+as `worker.Tick<int>()` resolve through the existing declared-receiver rules;
+dependent, unknown and ambiguous receivers do not acquire guessed targets.
+This includes dependent `typename` locals/fields and template-template parameters;
+an inner template's own parameter names do not shadow the surrounding corpus.
+These are method-family nodes, not overload/specialization resolution. Same-file
+primary owners such as `template<class T> void Box<T>::Run()` reuse a declared
+member only with unique owner/member declarations, plain ordered type parameters,
+and matching parameterless primitive-returning signatures (including cv/ref and
+bare noexcept qualifiers). Specializations, overloads, dependent signatures,
+constrained/defaulted/variadic templates, nested or shadowed owners, and cross-file
+template declaration/definition merging remain outside this bounded normalization.
+
+When conditional directives break an initializer or argument list, C++ extraction
+can recover separate, byte-preserving branch views. It does not evaluate defines,
+read includes, invoke a preprocessor or enumerate configuration combinations.
+Recovery is bounded to 128 conditional groups and 32 branch views; malformed,
+still-invalid, conflicting, unattributable or over-budget inputs retain their original parse
+errors. File-node `metadata.cpp_conditional_recovery` records original errors,
+branch ranges and coverage; guarded records carry `metadata.cpp_conditions`.
+The file range map also applies to later resolver-created edges and parked C++
+calls; cross-repository linking carries the representative callsite's guards to
+its inferred edge while retaining the existing callee/receiver deduplication.
+This is static branch-wise syntax coverage, not proof that all branches execute together.
+AST cache schema 43 invalidates older template and conditional recovery records.
 
 ## Adding a new language extractor
 

@@ -9,6 +9,7 @@ from graphify.file_slice import (
     FileSlice,
     bisect_slice,
     expand_oversized_files,
+    is_complete_slice_coverage,
     is_splittable_text,
     make_full_slice,
     read_slice_text,
@@ -181,4 +182,88 @@ def test_make_full_slice(tmp_path):
 
     f_none = tmp_path / "nonexistent.md"
     assert make_full_slice(f_none) is None
+
+
+# ── precomputed FileSlice inputs (#5106) ────────────────────────────────────
+
+def test_is_splittable_text_accepts_fileslice(tmp_path):
+    f_md = _write(tmp_path / "doc.md", "hello")
+    f_py = _write(tmp_path / "mod.py", "x = 1")
+    assert is_splittable_text(FileSlice(f_md, 0, 5, 0, 1))
+    assert not is_splittable_text(FileSlice(f_py, 0, 5, 0, 1))
+
+
+def test_expand_preserves_precomputed_slice_under_cap(tmp_path):
+    f = _write(tmp_path / "doc.md", "hello world")
+    fs = FileSlice(f, 0, 5, 0, 2)
+    units = expand_oversized_files([fs], max_chars=100)
+    assert units == [fs]
+
+
+def test_expand_oversized_precomputed_slice_splits(tmp_path):
+    text = ("# Heading\n\n" + "content " * 100 + "\n\n") * 20
+    f = _write(tmp_path / "doc.md", text)
+    fs = FileSlice(f, 0, len(text), 0, 1)
+    units = expand_oversized_files([fs], max_chars=1000)
+    slices = [u for u in units if isinstance(u, FileSlice)]
+    assert len(slices) >= 2
+    assert all(isinstance(u, FileSlice) for u in units)
+    assert "".join(read_slice_text(s) for s in slices) == text
+    assert all(s.path == f for s in slices)
+    assert all((s.end - s.start) <= 1000 for s in slices)
+
+
+def test_expand_multiple_oversized_precomputed_slices_no_index_collision(tmp_path):
+    text1 = ("# Part 1\n\n" + "alpha " * 100 + "\n\n") * 10
+    text2 = ("# Part 2\n\n" + "beta " * 100 + "\n\n") * 10
+    full_text = text1 + text2
+    f = _write(tmp_path / "doc.md", full_text)
+    fs1 = FileSlice(f, 0, len(text1), 0, 2)
+    fs2 = FileSlice(f, len(text1), len(full_text), 1, 2)
+    units = expand_oversized_files([fs1, fs2], max_chars=1000)
+    slices = [u for u in units if isinstance(u, FileSlice)]
+    assert len(slices) >= 4
+    # All indices must be unique and strictly sequential 0..len(slices)-1
+    indices = [s.index for s in slices]
+    assert indices == list(range(len(slices))), f"Colliding or non-sequential indices: {indices}"
+    assert all(s.total == len(slices) for s in slices)
+
+
+
+def test_is_complete_slice_coverage(tmp_path):
+    doc = _write(tmp_path / "doc.md", "0123456789")
+    # Complete: single slice
+    assert is_complete_slice_coverage(doc, [FileSlice(doc, 0, 10, 0, 1)])
+    # Complete: accepts string parent path
+    assert is_complete_slice_coverage(str(doc), [FileSlice(doc, 0, 10, 0, 1)])
+    # Complete: two abutting slices
+    assert is_complete_slice_coverage(doc, [FileSlice(doc, 0, 5, 0, 2), FileSlice(doc, 5, 10, 1, 2)])
+    # Complete: out of order
+    assert is_complete_slice_coverage(doc, [FileSlice(doc, 5, 10, 1, 2), FileSlice(doc, 0, 5, 0, 2)])
+    # Complete: overlapping slices
+    assert is_complete_slice_coverage(doc, [FileSlice(doc, 0, 6, 0, 2), FileSlice(doc, 4, 10, 1, 2)])
+    # Incomplete: gap
+    assert not is_complete_slice_coverage(doc, [FileSlice(doc, 0, 4, 0, 2), FileSlice(doc, 6, 10, 1, 2)])
+    # Incomplete: missing start
+    assert not is_complete_slice_coverage(doc, [FileSlice(doc, 1, 10, 0, 1)])
+    # Incomplete: missing end
+    assert not is_complete_slice_coverage(doc, [FileSlice(doc, 0, 9, 0, 1)])
+    # Incomplete: empty slices list
+    assert not is_complete_slice_coverage(doc, [])
+    # Incomplete: slice for different file
+    other = _write(tmp_path / "other.md", "0123456789")
+    assert not is_complete_slice_coverage(doc, [FileSlice(other, 0, 10, 0, 1)])
+    # Incomplete: malformed negative start or inverted bounds
+    assert not is_complete_slice_coverage(doc, [FileSlice(doc, -1, 10, 0, 1)])
+    assert not is_complete_slice_coverage(doc, [FileSlice(doc, 5, 2, 0, 1)])
+    # Incomplete: nonexistent file
+    assert not is_complete_slice_coverage(tmp_path / "missing.md", [FileSlice(tmp_path / "missing.md", 0, 10, 0, 1)])
+
+
+def test_make_full_slice_idempotent_for_fileslice(tmp_path):
+    f = _write(tmp_path / "doc.md", "hello")
+    fs = FileSlice(f, 0, 5, 0, 1)
+    assert make_full_slice(fs) is fs
+
+
 

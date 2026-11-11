@@ -595,14 +595,19 @@ def _rebase_relative_source_files(payload: dict, source_root: Path, target_root:
         return
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
-            for key in _PORTABLE_PATH_KEYS:
-                source = item.get(key)
-                if not source or Path(source).is_absolute():
-                    continue
-                try:
-                    item[key] = (source_root / source).relative_to(target_root).as_posix()
-                except ValueError:
-                    continue
+            declarations = (item.get("metadata") or {}).get("cpp_declaration_sites", [])
+            proofs = [{"source_file": sf} for sf in item.get("_cpp_reconcile_files", [])]
+            for record in [item, *declarations, *proofs]:
+                for key in _PORTABLE_PATH_KEYS:
+                    source = record.get(key)
+                    if not source or Path(source).is_absolute():
+                        continue
+                    try:
+                        record[key] = (source_root / source).relative_to(target_root).as_posix()
+                    except ValueError:
+                        continue
+            if proofs:
+                item["_cpp_reconcile_files"] = [proof["source_file"] for proof in proofs]
 
 
 class _StoredSourcePaths:
@@ -2707,6 +2712,12 @@ def _rebuild_code(
                     watch_root=watch_root,
                     normalize_source=_nsf,
                 )
+                from graphify.extractors.resolution import _cpp_reconciliation_paths
+                extract_targets = _cpp_reconciliation_paths(
+                    extract_targets, ctx_graph.get("nodes", []), project_root,
+                    available_paths=code_files,
+                    changed_paths=[Path(p) for p in deleted_source_identities],
+                )
                 ctx_live = {
                     ctx_paths.absolute_identity(str(p), project_root) for p in code_files
                 }
@@ -2741,13 +2752,16 @@ def _rebuild_code(
                     # Rust impl identity connects alpha-renamed generic blocks.
                     for marker in (
                         "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
+                        "_cpp_class_kind", "_cpp_fields", "_cpp_reconcile_files",
+                        "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
+                        "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                         "_rust_impl_key", "_rust_declaration_count",
                         "_ts_public_twin", "_py_property", "_java_ret",
                         "_ts_fields", "_ts_static_fields",
                         "_py_fixture", "_py_return_type", "_go_fields",
                         "_go_package_path",
                     ):
-                        if node.get(marker):
+                        if node.get(marker) or (marker.startswith("_cpp_") and isinstance(node.get(marker), (dict, list))):
                             ctx_node[marker] = node[marker]
                     metadata = node.get("metadata")
                     if isinstance(metadata, dict):
@@ -2758,6 +2772,7 @@ def _rebuild_code(
                                 "ruby_method_kind",
                                 "ruby_lookup_unsafe",
                                 "python_opaque_bases",
+                                "cpp_conditions",
                                 "ruby_reopened",
                                 "ruby_external_method_owners",
                                 # Erlang remote-call resolution keys (#3714): an
@@ -2807,6 +2822,11 @@ def _rebuild_code(
                         "relation": edge.get("relation"),
                         "source_file": source_file,
                     }
+                    if (edge.get("_cpp_include_proof")
+                            and not (edge.get("metadata") or {}).get("cpp_conditions")):
+                        context_edge["_cpp_include_proof"] = True
+                    if edge.get("relation") == "imports" and isinstance(edge.get("source_location"), str):
+                        context_edge["source_location"] = edge["source_location"]
                     if edge.get("context") == "return_type":
                         context_edge["context"] = "return_type"
                     edge_metadata = edge.get("metadata")
