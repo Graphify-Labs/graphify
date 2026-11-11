@@ -57,11 +57,12 @@ def test_cta_respects_the_opt_out_env_vars(tmp_path, monkeypatch):
         assert out == "", f"{var} should suppress the CTA"
 
 
-def test_cta_shows_once_per_project(tmp_path, monkeypatch):
+def test_cta_shows_on_builds_1_5_20_then_quiet(tmp_path, monkeypatch):
     _clear_optout(monkeypatch)
     out_dir = tmp_path / "graphify-out"
-    first = _run(out_dir, monkeypatch, tty=True)
-    second = _run(out_dir, monkeypatch, tty=True)
-    assert "Graphify Cloud" in first
-    assert second == "", "the CTA must not repeat on later builds of the same project"
-    assert (out_dir / ".cloud-cta-shown").exists()
+    shown = [bool(_run(out_dir, monkeypatch, tty=True)) for _ in range(25)]
+    # 1-indexed builds: show on 1, 5, 20 only, then never again.
+    shown_builds = [i + 1 for i, s in enumerate(shown) if s]
+    assert shown_builds == [1, 5, 20], shown_builds
+    # Counter caps one past the last show build (21) so it never re-triggers.
+    assert (out_dir / ".cloud-cta-shown").read_text().strip() == "21"

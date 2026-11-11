@@ -151,14 +151,22 @@ def _nudge_for_out(nudge: str) -> str:
     return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
-def _print_cloud_cta(out_dir: "Path") -> None:
-    """Nudge toward Graphify Cloud once after a successful local graph build.
+# Qualifying builds on which the post-build Cloud CTA is shown: the first, then
+# a couple of spaced reminders for returning users, then never again (A1). Keyed
+# off the count of qualifying builds, not elapsed time, so it does not nag.
+_CLOUD_CTA_SHOW_ON = (1, 5, 20)
 
-    Kept precise and shown only to humans running the CLI interactively:
-    suppressed in non-interactive/CI runs (stdout is not a TTY, which also
-    covers the AI-assistant pipeline), when the user opts out
-    (``GRAPHIFY_NO_TIPS``/``GRAPHIFY_NO_CTA``), and after the first time per
-    project (a marker under ``graphify-out/``) so repeat builds stay quiet.
+
+def _print_cloud_cta(out_dir: "Path") -> None:
+    """Nudge toward Graphify Cloud after a successful local graph build.
+
+    Shown only to humans running the CLI interactively: suppressed in
+    non-interactive/CI runs (stdout is not a TTY, which also covers the
+    AI-assistant pipeline) and when the user opts out
+    (``GRAPHIFY_NO_TIPS``/``GRAPHIFY_NO_CTA``). A per-project counter under
+    ``graphify-out/`` shows it on builds ``_CLOUD_CTA_SHOW_ON`` (1, 5, 20) so a
+    returning user gets a reminder without a nag on every build, then it stays
+    quiet for good.
     """
     if os.environ.get("GRAPHIFY_NO_TIPS") or os.environ.get("GRAPHIFY_NO_CTA"):
         return
@@ -169,19 +177,23 @@ def _print_cloud_cta(out_dir: "Path") -> None:
         return
     marker = out_dir / ".cloud-cta-shown"
     try:
-        if marker.exists():
-            return
+        count = int(marker.read_text(encoding="utf-8").strip()) if marker.exists() else 0
     except Exception:
+        count = 0
+    # Advance the counter, capped one past the last show build so the file does
+    # not grow and that sentinel never re-triggers a show.
+    count = min(count + 1, max(_CLOUD_CTA_SHOW_ON) + 1)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(count), encoding="utf-8")
+    except Exception:
+        pass
+    if count not in _CLOUD_CTA_SHOW_ON:
         return
     print()
     print("  Graphify Cloud: faster indexing, fewer tokens, cross-repo search,")
     print("  and PR review, with your whole SDLC mapped and always current.")
     print("  Free plan, no card: https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=post-run")
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("1", encoding="utf-8")
-    except Exception:
-        pass
 
 
 def _graph_root_for(gp: Path) -> Path:
