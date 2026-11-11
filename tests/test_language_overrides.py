@@ -363,6 +363,9 @@ def test_the_pool_hands_its_workers_the_overrides(php_pair, monkeypatch):
             super().__init__(max_workers=max_workers, initializer=initializer, initargs=initargs)
 
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", RecordingPool)
+    # 25 tiny files alone would run in one process (the pool is sized by work);
+    # ask for a pool explicitly so the initializer is exercised.
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
     for i in range(25):  # past _PARALLEL_THRESHOLD
         (php_pair / f"f{i}.inc").write_text(PHP_SOURCE, encoding="utf-8")
     (php_pair / ".graphifyrc").write_text("language.inc=php\n", encoding="utf-8")
