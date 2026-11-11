@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Feature: add an explicit, optional `copilot-sdk` semantic-extraction backend using the user's existing GitHub Copilot authentication. Requests use isolated no-tool sessions, support inline images, and are never replayed after an uncertain post-dispatch failure.
+
 ## 0.9.107 (2026-11-11)
 
 - Fix: **cpp** a folded parameterless member declaration (`bar()`) records its implementation in `definition_file` as a path anchored to the same root as `source_file`, instead of a `../`-walk relative to the cache/out root. The zero-argument reconciliation added in 0.9.106 stored the internal `_cpp_source_key` proof form, which `_norm_source_file` cannot re-anchor (it only relativizes absolute paths), so an out-of-tree corpus got a mangled `definition_file`. The sibling decl/def merge already stored the raw `source_file` for this reason; both paths now agree. The include-path proof still uses the key form.

@@ -42,6 +42,19 @@ def _make_corpus(tmp_path):
     return img, svg, doc
 
 
+def _symlink_or_skip(link, target):
+    """Create a test symlink or skip when Windows denies that privilege."""
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if sys.platform == "win32" and getattr(exc, "winerror", None) in {5, 1314}:
+            pytest.skip(
+                "Windows symlink creation requires Developer Mode or the "
+                "SeCreateSymbolicLinkPrivilege privilege"
+            )
+        raise
+
+
 # ── pure helpers ──────────────────────────────────────────────────────────────
 
 def test_pdf_routed_through_pypdf_not_readtext(tmp_path, monkeypatch):
@@ -70,6 +83,15 @@ def test_non_pdf_still_read_as_plain_text(tmp_path):
     assert "# hello" in llm._file_to_text(md)
 
 
+def test_prompt_path_uses_posix_separators_for_windows_paths():
+    from pathlib import PureWindowsPath
+
+    root = PureWindowsPath("C:/repo")
+    path = root / "sub" / "diagram.png"
+
+    assert llm._prompt_path(path, root) == "sub/diagram.png"
+
+
 def test_read_files_skips_out_of_root_symlink(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
@@ -78,7 +100,7 @@ def test_read_files_skips_out_of_root_symlink(requires_symlinks, tmp_path):
     secret = outside / "secret.md"
     secret.write_text("SECRET SHOULD NOT REACH THE PROMPT")
     link = root / "secret.md"
-    link.symlink_to(secret)
+    _symlink_or_skip(link, secret)
 
     out = llm._read_files([link], root)
 
@@ -112,7 +134,7 @@ def test_build_image_refs_skips_out_of_root_symlink(requires_symlinks, tmp_path)
     secret = outside / "secret.png"
     secret.write_bytes(_PNG_BYTES)
     link = root / "secret.png"
-    link.symlink_to(secret)
+    _symlink_or_skip(link, secret)
 
     refs = llm._build_image_refs([link], root)
 
@@ -129,7 +151,7 @@ def test_build_image_refs_drops_oversized(tmp_path, monkeypatch):
 
 
 def test_path_backend_skips_byte_read_and_size_cap(tmp_path, monkeypatch):
-    # Path-based backends (claude-cli) read the file themselves, so
+    # Path-based backends such as claude-cli use the file path, so
     # _build_image_refs(read_bytes=False) loads no bytes and applies no size cap.
     big = tmp_path / "huge.png"
     big.write_bytes(b"x" * 64)
@@ -161,7 +183,15 @@ def test_claude_cli_passes_oversized_image_by_path(tmp_path, monkeypatch):
 
 
 def test_capability_flags(monkeypatch):
-    for b in ("claude", "claude-cli", "openai", "gemini", "bedrock", "kimi"):
+    for b in (
+        "claude",
+        "claude-cli",
+        "copilot-sdk",
+        "openai",
+        "gemini",
+        "bedrock",
+        "kimi",
+    ):
         assert llm._backend_supports_vision(b), b
     assert not llm._backend_supports_vision("deepseek")
     # ollama is opt-in via env (default model is text-only)
