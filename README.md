@@ -175,9 +175,10 @@ winget install astral-sh.uv
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt install python3.12 python3-pip pipx
-# or install uv:
+# uv manages its own Python, so this is the only step you need:
 curl -LsSf https://astral.sh/uv/install.sh | sh
+# or use the system Python with pipx:
+sudo apt install python3 python3-pip pipx
 ```
 
 ---

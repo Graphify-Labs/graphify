@@ -19,6 +19,8 @@ PDFs/images are read through their own extractors and have no char-offset model.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from graphify.extractors.base import _read_source_text
@@ -123,12 +125,16 @@ class FileSlice:
 Unit = "Path | FileSlice"
 
 
-def unit_path(unit: "Path | FileSlice") -> Path:
+def unit_path(unit: "Path | FileSlice | str") -> Path:
     """The on-disk path a unit belongs to (the parent file for a slice)."""
-    return unit.path if isinstance(unit, FileSlice) else unit
+    if isinstance(unit, FileSlice):
+        return unit.path
+    if isinstance(unit, Path):
+        return unit
+    return Path(unit)
 
 
-def is_splittable_text(path: Path) -> bool:
+def is_splittable_text(path: "Path | FileSlice | str") -> bool:
     """True for document types that may be sliced.
 
     Covers plain text read straight off disk and converted types (PDF) whose
@@ -137,7 +143,7 @@ def is_splittable_text(path: Path) -> bool:
     will carry; what disqualifies a type is having no text at all (an image) or
     text the reader cannot address by character offset.
     """
-    suffix = path.suffix.lower()
+    suffix = unit_path(path).suffix.lower()
     return suffix in _SPLITTABLE_TEXT_SUFFIXES or suffix in _CONVERTED_TEXT_SUFFIXES
 
 
@@ -182,18 +188,51 @@ def slice_boundaries(text: str, max_chars: int) -> list[tuple[int, int]]:
 
 
 def expand_oversized_files(
-    files: list[Path], max_chars: int
+    files: "list[Path | FileSlice]", max_chars: int
 ) -> list["Path | FileSlice"]:
     """Replace each oversized splittable-text file with a list of ``FileSlice``s.
 
     Files at or below ``max_chars`` (and all non-splittable files) pass through
     unchanged as ``Path``, so behaviour is identical for everything that already
-    fit. Unreadable files pass through untouched (the reader handles the error).
+    fit. Precomputed ``FileSlice`` inputs at or below ``max_chars`` pass through
+    unchanged (#5106); oversized slices are further split. Unreadable files
+    pass through untouched (the reader handles the error).
     """
-    out: list["Path | FileSlice"] = []
+    raw_out: list["Path | FileSlice"] = []
+    resplit_parents: set[Path] = set()
+
     for f in files:
+        if isinstance(f, FileSlice):
+            if not is_splittable_text(f.path):
+                raw_out.append(f)
+                continue
+            slice_len = f.end - f.start
+            if slice_len <= max_chars:
+                raw_out.append(f)
+                continue
+            try:
+                full_text = unit_source_text(f.path)
+                slice_text = full_text[f.start:f.end]
+            except OSError:
+                raw_out.append(f)
+                continue
+            ranges = slice_boundaries(slice_text, max_chars)
+            total = len(ranges)
+            resplit_parents.add(f.path)
+            for i, (s, e) in enumerate(ranges):
+                raw_out.append(
+                    FileSlice(
+                        path=f.path,
+                        start=f.start + s,
+                        end=f.start + e,
+                        index=i,
+                        total=total,
+                    )
+                )
+            continue
+
         if not is_splittable_text(f):
-            out.append(f)
+            raw_out.append(f)
             continue
         try:
             # The CONVERTED text for a PDF, so the boundaries below index the
@@ -201,15 +240,49 @@ def expand_oversized_files(
             # carry — not the container's bytes (#2906).
             text = unit_source_text(f)
         except OSError:
-            out.append(f)
+            raw_out.append(f)
             continue
         if len(text) <= max_chars:
-            out.append(f)
+            raw_out.append(f)
             continue
         ranges = slice_boundaries(text, max_chars)
         total = len(ranges)
+        resplit_parents.add(f)
         for i, (s, e) in enumerate(ranges):
-            out.append(FileSlice(path=f, start=s, end=e, index=i, total=total))
+            raw_out.append(FileSlice(path=f, start=s, end=e, index=i, total=total))
+
+    if not resplit_parents:
+        return raw_out
+
+    # Re-index only files whose slices were split/expanded, so precomputed
+    # slices under the cap pass through completely untouched while re-split
+    # slices avoid index/total collisions (#5106).
+    parent_slice_counts: dict[Path, int] = {}
+    for u in raw_out:
+        if isinstance(u, FileSlice) and u.path in resplit_parents:
+            parent_slice_counts[u.path] = parent_slice_counts.get(u.path, 0) + 1
+
+    parent_slice_indices: dict[Path, int] = {}
+    out: list["Path | FileSlice"] = []
+    for u in raw_out:
+        if isinstance(u, FileSlice) and u.path in resplit_parents:
+            total = parent_slice_counts[u.path]
+            idx = parent_slice_indices.get(u.path, 0)
+            parent_slice_indices[u.path] = idx + 1
+            if u.index != idx or u.total != total:
+                out.append(
+                    FileSlice(
+                        path=u.path,
+                        start=u.start,
+                        end=u.end,
+                        index=idx,
+                        total=total,
+                    )
+                )
+            else:
+                out.append(u)
+        else:
+            out.append(u)
     return out
 
 
@@ -252,16 +325,67 @@ def bisect_slice(fs: FileSlice) -> tuple[FileSlice, FileSlice] | None:
     return left, right
 
 
-def make_full_slice(path: Path) -> FileSlice | None:
+def make_full_slice(path: "Path | FileSlice") -> FileSlice | None:
     """Create a full-range ``FileSlice`` for an eligible splittable text file (#5072).
 
     Returns None for non-splittable files (code, binary, unreadable).
     """
-    if not is_splittable_text(path):
+    if isinstance(path, FileSlice):
+        return path
+    p = unit_path(path)
+    if not is_splittable_text(p):
         return None
     try:
-        text = unit_source_text(path)
+        text = unit_source_text(p)
     except Exception:
         return None
-    return FileSlice(path=path, start=0, end=len(text), index=0, total=1)
+    return FileSlice(path=p, start=0, end=len(text), index=0, total=1)
+
+
+def is_complete_slice_coverage(
+    parent: "Path | str",
+    slices: "Sequence[FileSlice]",
+) -> bool:
+    """True when the given slices cover all of parent without gaps.
+
+    Prevents incomplete precomputed slice inputs from being checkpointed or
+    cached as a complete extraction of the parent file (#5106).
+    """
+    if not slices:
+        return False
+    parent_path = unit_path(parent)
+    try:
+        total_len = len(unit_source_text(parent_path))
+    except Exception:
+        return False
+
+    def _same_path(p1: Path, p2: Path) -> bool:
+        if p1 == p2:
+            return True
+        try:
+            return os.path.normcase(str(p1.resolve())) == os.path.normcase(str(p2.resolve()))
+        except (OSError, RuntimeError):
+            return False
+
+    valid_slices = [
+        s
+        for s in slices
+        if isinstance(s, FileSlice)
+        and _same_path(unit_path(s), parent_path)
+        and 0 <= s.start <= s.end
+    ]
+    if not valid_slices:
+        return False
+
+    sorted_slices = sorted(valid_slices, key=lambda s: (s.start, s.end))
+    if sorted_slices[0].start > 0:
+        return False
+
+    current_end = 0
+    for s in sorted_slices:
+        if s.start > current_end:
+            return False
+        current_end = max(current_end, s.end)
+
+    return current_end >= total_len
 

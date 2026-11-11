@@ -30,6 +30,7 @@ from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .go_dispatch import resolve_go_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
@@ -40,7 +41,7 @@ from graphify.rcfile import (
     get_language_overrides,
     set_language_overrides,
 )
-from graphify.extractors.engine import _js_import_is_type_only
+from graphify.extractors.engine import _cpp_is_header_guard, _js_import_is_type_only
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _PYTHON_BUILTIN_NAMES,
@@ -142,6 +143,12 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _load_workspace_packages,
     _match_tsconfig_alias,
     _merge_decl_def_classes,
+    _merge_cpp_forward_classes,
+    _merge_cpp_member_declarations,
+    _cpp_reconciliation_paths,
+    _cpp_source_key,
+    _cpp_exact_includes,
+    _cpp_include_path,
     _merge_go_package_types,
     _node_disambiguation_source_key,
     _package_entry_candidates,
@@ -1173,6 +1180,12 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                 resolved = _resolve_c_include_path(raw, str_path)
                 if resolved is not None:
                     tgt_nid = _make_id(str(resolved))
+                    parent = node.parent
+                    unconditional = True
+                    while parent is not None:
+                        if parent.type.startswith("preproc_") and not _cpp_is_header_guard(parent, source):
+                            unconditional = False
+                        parent = parent.parent
                     edges.append({
                         "source": file_nid,
                         "target": tgt_nid,
@@ -1187,6 +1200,7 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                         # batch's paths keeps the raw absolute-path id no later pass
                         # ever learns to relativize (#2243).
                         "target_file": str(resolved),
+                        "_cpp_include_proof": unconditional,
                     })
                     break
             module_name = raw.split("/")[-1].split(".")[0]
@@ -3569,6 +3583,323 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
     return _CPP_EXPORT_MACRO_RE.sub(repl, source)
 
 
+_CPP_CONDITIONAL_TOKEN_RE = re.compile(
+    rb'//(?:\\\r?\n|[^\r\n])*|/\*[\s\S]*?(?:\*/|\Z)'
+    rb"|\b[0-9](?:[A-Za-z_0-9.]|'[A-Za-z_0-9])*"
+    rb'|(?:u8|u|U|L)?R"([^ ()\\\t\v\f\r\n]{0,16})\('
+    rb'|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\''
+    rb'|^[ \t\v\f]*#[ \t]*([A-Za-z_][A-Za-z_0-9]*)(?:\\\r?\n|[^\r\n])*',
+    re.MULTILINE,
+)
+_CPP_CONDITIONAL_VARIANT_LIMIT = 32
+
+
+def _cpp_conditional_tokens(source: bytes):
+    pos = 0
+    while match := _CPP_CONDITIONAL_TOKEN_RE.search(source, pos):
+        pos = match.end()
+        if match.group(1) is not None:
+            end = source.find(b")" + match.group(1) + b'"', pos)
+            pos = len(source) if end == -1 else end + len(match.group(1)) + 2
+        yield match, pos
+
+
+def _cpp_conditional_groups(source: bytes) -> tuple[list[dict], str | None]:
+    """Read conditional ranges only; never evaluate macros or open includes."""
+    groups: list[dict] = []
+    stack: list[dict] = []
+    for match, _ in _cpp_conditional_tokens(source):
+        word = match.group(2)
+        if source[max(0, match.start() - 3):match.start()].endswith((b"\\\n", b"\\\r\n")):
+            continue  # A physical line after a splice is not a directive line.
+        if word not in (b"if", b"ifdef", b"ifndef", b"elif", b"else", b"endif"):
+            continue
+        text = match.group().strip()
+        argument = re.sub(rb"/\*[\s\S]*?\*/|//[^\r\n]*", b"", text)
+        argument = re.sub(rb"^#[ \t]*[A-Za-z_]+", b"", argument).strip()
+        if ((word in (b"if", b"elif") and not argument)
+                or (word in (b"ifdef", b"ifndef")
+                    and not re.fullmatch(rb"[A-Za-z_][A-Za-z_0-9]*", argument))
+                or (word in (b"else", b"endif") and argument)):
+            return groups, "malformed conditional directive"
+        line = source.count(b"\n", 0, match.start()) + 1
+        branch = {"directive": text.decode("utf-8", errors="replace"),
+                  "directive_line": line, "start_byte": match.end(),
+                  "start_line": source.count(b"\n", 0, match.end()) + 2}
+        if word in (b"if", b"ifdef", b"ifndef"):
+            if len(groups) >= 128:
+                return groups, "conditional-group limit exceeded"
+            group = {"line": line, "start_byte": match.start(), "branches": [branch],
+                     "directives": [(match.start(), match.end())]}
+            if stack:
+                group["parent"] = groups.index(stack[-1])
+                group["parent_branch"] = len(stack[-1]["branches"]) - 1
+            groups.append(group)
+            stack.append(group)
+            continue
+        if not stack:
+            return groups, "unbalanced conditional directives"
+        group = stack[-1]
+        if group.get("has_else"):
+            if word != b"endif":
+                return groups, "conditional branch after else"
+        previous = group["branches"][-1]
+        previous.update(end_byte=match.start(), end_line=line - 1)
+        group["directives"].append((match.start(), match.end()))
+        if word in (b"elif", b"else"):
+            group["branches"].append(branch)
+            group["has_else"] = word == b"else"
+        else:
+            if not group.get("has_else"):
+                group["branches"].append({"directive": "#else (implicit)",
+                    "directive_line": line, "start_byte": match.start(),
+                    "end_byte": match.start(), "start_line": line, "end_line": line - 1,
+                    "implicit": True})
+            group["end_byte"] = match.end()
+            stack.pop()
+    return groups, "unbalanced conditional directives" if stack else None
+
+
+def _cpp_expression_conditional_groups(source: bytes, groups: list[dict]) -> set[int]:
+    """Find candidates lexically; recovered trees must later confirm the scope."""
+    code = bytearray(source)
+    for match, end in _cpp_conditional_tokens(source):
+        code[match.start():end] = re.sub(rb"[^\r\n]", b" ", source[match.start():end])
+    tokens = iter(re.finditer(rb"[A-Za-z_][A-Za-z_0-9]*|[^\s]", code))
+    token = next(tokens, None)
+    stack: list[tuple[bytes, bool]] = []
+    previous = b""
+    statement = 0
+    selected = set()
+    for index, group in enumerate(groups):
+        while token is not None and token.start() < group["start_byte"]:
+            value = token.group()
+            if value in (b"(", b"[", b"{"):
+                expression = value == b"("
+                if value == b"{":
+                    prefix = bytes(code[statement:token.start()])
+                    expression = (previous in (b"=", b"return", b"co_return")
+                        or (previous in (b",", b"{") and bool(stack) and stack[-1][1])
+                        or ((re.fullmatch(rb"[A-Za-z_][A-Za-z_0-9]*|>|\]", previous) is not None)
+                            and previous not in (b"else", b"try", b"do")
+                            and not re.search(rb"\b(?:namespace|class|struct|enum|union|extern)\b", prefix)))
+                    statement = token.end()
+                stack.append((value, expression))
+            elif value in (b")", b"]", b"}"):
+                if stack:
+                    stack.pop()
+                if value == b"}":
+                    statement = token.end()
+            elif value == b";":
+                statement = token.end()
+            previous = value
+            token = next(tokens, None)
+        if (stack and stack[-1][1]) or group.get("parent") in selected:
+            selected.add(index)
+    return selected
+
+
+def _recover_cpp_conditional_initializers(path: Path, source: bytes, original: dict) -> dict:
+    """Recover expression directives with separate, bounded syntactic branch views.
+
+    shortcut: branch-wise views do not enumerate configurations, use a compilation
+    database and a real configured frontend when configuration semantics are needed.
+    """
+    if not original.get("parse_errors"):
+        return original
+    groups, problem = _cpp_conditional_groups(source)
+    if not groups and not problem:
+        return original
+    coverage = {"schema": 1, "status": "unrecovered", "coverage": "branch-wise syntax",
+                "conditions_evaluated": False, "combinations_enumerated": False,
+                "recovered_from": original["parse_errors"]}
+
+    def annotate(result: dict) -> dict:
+        file_node = next((n for n in result.get("nodes", [])
+                          if n.get("id") == _make_id(str(path))), None)
+        if file_node is not None:
+            file_node.setdefault("metadata", {})["cpp_conditional_recovery"] = coverage
+        return result
+
+    if problem:
+        coverage["reason"] = problem
+        return annotate(original)
+    selected = _cpp_expression_conditional_groups(source, groups)
+    if not selected:
+        return original
+    coverage["groups"] = [{k: v for k, v in g.items() if k not in ("directives", "has_else")}
+                           | {"recovered": i in selected} for i, g in enumerate(groups)]
+    choices = [tuple(0 for _ in groups)]
+    for index in sorted(selected):
+        for branch in range(len(groups[index]["branches"])):
+            choice = list(choices[0])
+            choice[index] = branch
+            current = groups[index]
+            while "parent" in current:
+                parent = current["parent"]
+                choice[parent] = current["parent_branch"]
+                current = groups[parent]
+            value = tuple(choice)
+            if value not in choices:
+                choices.append(value)
+            if len(choices) > _CPP_CONDITIONAL_VARIANT_LIMIT:
+                coverage["reason"] = "branch-view limit exceeded"
+                return annotate(original)
+    coverage["variant_count"] = len(choices)
+
+    def active(index: int, choice: tuple[int, ...]) -> bool:
+        current = groups[index]
+        while "parent" in current:
+            parent = current["parent"]
+            if parent in selected and choice[parent] != current["parent_branch"]:
+                return False
+            current = groups[parent]
+        return True
+
+    coverage["views"] = [[{"group_line": groups[index]["line"], "branch": choice[index]}
+                           for index in sorted(selected) if active(index, choice)] for choice in choices]
+    from tree_sitter import Language, Parser
+
+    parser = Parser(Language(importlib.import_module("tree_sitter_cpp").language()))
+    for index in sorted(selected):
+        for start, end in groups[index]["directives"][:-1]:
+            head = source[start:end]
+            if re.search(rb"#[ \t]*(?:if|ifdef|ifndef|elif)\b", head):
+                head = re.sub(rb"(#[ \t]*)elif\b", rb"\1if", head)
+                if parser.parse(head + b"\n#endif\n").root_node.has_error:
+                    coverage["reason"] = "malformed conditional expression"
+                    return annotate(original)
+    merged: dict | None = None
+    seen: dict[str, dict[str, int]] = {key: {} for key in ("nodes", "edges", "raw_calls")}
+    node_ids: dict[str, dict] = {}
+    for view_index, choice in enumerate(choices):
+        view = bytearray(source)
+
+        def blank(start: int, end: int) -> None:
+            view[start:end] = re.sub(rb"[^\r\n]", b" ", source[start:end])
+
+        for index in sorted(selected):
+            group = groups[index]
+            for start, end in group["directives"]:
+                blank(start, end)
+            for branch_index, branch in enumerate(group["branches"]):
+                if branch_index != choice[index]:
+                    blank(branch["start_byte"], branch["end_byte"])
+        root = parser.parse(bytes(view)).root_node
+        if root.has_error:
+            coverage["reason"] = "a branch view still has parse errors"
+            return annotate(original)
+        for index in sorted(selected):
+            if not active(index, choice):
+                continue
+            start = groups[index]["start_byte"]
+            node = root.descendant_for_byte_range(start, start)
+            while node is not None and node.type not in (
+                "initializer_list", "argument_list", "compound_statement"
+            ):
+                node = node.parent
+            if node is None or node.type == "compound_statement":
+                coverage["reason"] = "a branch view falls outside initializer or argument syntax"
+                return annotate(original)
+        # Guard validation needs every call site, not a branch-dependent first call.
+        result = _extract_generic(
+            path, _CPP_CONFIG, source_override=bytes(view), preserve_call_sites=True,
+        )
+        if result.get("parse_errors") or result.get("error"):
+            coverage["reason"] = "a branch view still has parse errors"
+            return annotate(original)
+        if merged is None:
+            merged = {key: value for key, value in result.items() if key not in seen}
+            merged.update({key: [] for key in seen})
+        elif any(result.get(key) != merged.get(key)
+                 for key in result.keys() | merged.keys() if key not in seen):
+            coverage["reason"] = "branch views have incompatible resolver metadata"
+            return annotate(original)
+        for key in seen:
+            for record in result.get(key, []):
+                if key == "nodes":
+                    previous = node_ids.setdefault(record["id"], record)
+                    if previous != record:
+                        coverage["reason"] = "branch views have conflicting symbol identities"
+                        return annotate(original)
+                signature = json.dumps(record, sort_keys=True)
+                if signature not in seen[key]:
+                    merged[key].append(record)
+                seen[key][signature] = seen[key].get(signature, 0) | (1 << view_index)
+    assert merged is not None
+    coverage["status"] = "recovered"
+    # The durable file range map also covers later resolver-created call edges.
+    for key in seen:
+        for record in merged[key]:
+            location = re.match(r"L(\d+)", record.get("source_location") or "")
+            line = int(location[1]) if location else 0
+            guards = [(index, branch_index) for index, g in enumerate(groups)
+                      for branch_index, branch in enumerate(g["branches"])
+                      if branch["start_line"] <= line <= branch["end_line"]]
+            expected = sum(1 << view_index for view_index, choice in enumerate(choices)
+                           if all(choice[index] == branch for index, branch in guards if index in selected))
+            if seen[key][json.dumps(record, sort_keys=True)] != expected:
+                # A split callee/type may start before the guard choosing its name.
+                coverage["status"] = "unrecovered"
+                coverage["reason"] = "branch-spanning records lack source guard provenance"
+                return annotate(original)
+            conditions = [{"group_line": groups[index]["line"], "branch": branch}
+                          for index, branch in guards]
+            if conditions:
+                record.setdefault("metadata", {})["cpp_conditions"] = conditions
+    return annotate(merged)
+
+
+def _stamp_cpp_condition_provenance(nodes: list[dict], edges: list[dict]) -> None:
+    """Apply recovered source ranges to later resolver edges and parked callsites."""
+    ranges: dict[str, list[tuple[int, int, int, int]]] = {}
+    for node in nodes:
+        metadata = node.get("metadata")
+        coverage = metadata.get("cpp_conditional_recovery") if isinstance(metadata, dict) else None
+        if not isinstance(coverage, dict) or coverage.get("status") != "recovered":
+            continue
+        sf = node.get("source_file")
+        groups = coverage.get("groups")
+        if not isinstance(sf, str) or not sf or not isinstance(groups, list):
+            continue
+        sf = PurePath(sf).as_posix()
+        for group in groups:
+            if (not isinstance(group, dict) or type(group.get("line")) is not int
+                    or not isinstance(group.get("branches"), list)):
+                continue
+            for index, branch in enumerate(group["branches"]):
+                if (not isinstance(branch, dict)
+                        or any(type(branch.get(key)) is not int for key in ("start_line", "end_line"))):
+                    continue
+                ranges.setdefault(sf, []).append(
+                    (branch["start_line"], branch["end_line"], group["line"], index)
+                )
+    if not ranges:
+        return
+
+    def stamp(record: dict, file_key: str, line_key: str) -> None:
+        sf = PurePath(str(record.get(file_key) or "")).as_posix()
+        location = re.match(r"L(\d+)", str(record.get(line_key) or ""))
+        if sf not in ranges or location is None:
+            return
+        line = int(location[1])
+        conditions = [{"group_line": group_line, "branch": branch}
+                      for start, end, group_line, branch in ranges[sf] if start <= line <= end]
+        if conditions:
+            metadata = record.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["cpp_conditions"] = conditions
+
+    for edge in edges:
+        stamp(edge, "source_file", "source_location")
+    for node in nodes:
+        metadata = node.get("metadata")
+        if isinstance(metadata, dict):
+            for entry in metadata.get(UNRESOLVED_CALLS_KEY) or ():
+                if isinstance(entry, dict) and entry.get("lang") == "cpp":
+                    stamp(entry, "file", "line")
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
@@ -3588,6 +3919,7 @@ def extract_cpp(path: Path) -> dict:
     result = _extract_generic(
         path, _CPP_CONFIG, source_override=source_override
     )
+    result = _recover_cpp_conditional_initializers(path, source_override, result)
     return _augment_cpp_string_tests(path, result)
 
 
@@ -6237,14 +6569,8 @@ def _resolve_cpp_member_calls(
             qualified_method_nids.setdefault(label, []).append(n["id"])
 
     # Receiver chains use literal, case-sensitive identities, including namespaces.
-    qualified_types: dict[str, list[str]] = {}
-    simple_types: dict[str, list[str]] = {}
     exact_methods: dict[tuple[str, str], set[str]] = {}
-    for n in all_nodes:
-        identity = n.get("_cpp_qualified")
-        if identity and "_cpp_fields" in n and n.get("id") in contained and _is_type_like_definition(n):
-            qualified_types.setdefault(identity, []).append(n["id"])
-            simple_types.setdefault(identity.rsplit("::", 1)[-1], []).append(n["id"])
+    type_lookup = CppTypeLookup(all_nodes, all_edges)
     for rel in ("defines", "method"):
         grouped: dict[tuple[str, str], set[str]] = {}
         for e in all_edges:
@@ -6255,34 +6581,6 @@ def _resolve_cpp_member_calls(
                 grouped.setdefault((e["source"], name), set()).add(e["target"])
         exact_methods.update(grouped)
 
-    def chain_type(name: str, scope: str, operator: str) -> str | None:
-        name = re.sub(r"\b(const|volatile)\b", "", name).strip()
-        identifier = r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*"
-        if operator == "->":
-            smart = re.fullmatch(rf"std::(?:unique_ptr|shared_ptr)\s*<\s*({identifier})\s*>", name)
-            if smart:
-                name = smart[1]
-            elif name.endswith("*"):
-                name = name[:-1].strip()
-            else:
-                return None
-        elif operator != ".":
-            return None
-        if not re.fullmatch(identifier, name):
-            return None
-        absolute = name.startswith("::")
-        name = name.removeprefix("::")
-        if not absolute:
-            while scope:
-                candidates = qualified_types.get(f"{scope}::{name}", [])
-                if candidates:
-                    return candidates[0] if len(candidates) == 1 else None
-                scope = scope.rsplit("::", 1)[0] if "::" in scope else ""
-        candidates = qualified_types.get(name, [])
-        if not candidates and not absolute and "::" not in name:
-            candidates = simple_types.get(name, [])
-        return candidates[0] if len(candidates) == 1 else None
-
     def resolve_chain(rc: dict) -> str | None:
         chain = rc["cpp_receiver_chain"]
         if not chain:
@@ -6290,20 +6588,38 @@ def _resolve_cpp_member_calls(
         root_name = chain[0][0]
         owner = enclosing_type.get(rc["caller_nid"], "")
         owner_node = node_by_id.get(owner, {})
-        scope = rc.get("cpp_receiver_scope", owner_node.get("_cpp_qualified", ""))
+        scope = owner_node.get("_cpp_qualified") or rc.get("cpp_receiver_scope", "")
         if root_name == "this":
             name = owner_node.get("_cpp_qualified", "") + "*"
         elif "cpp_receiver_type" in rc:
             name = rc["cpp_receiver_type"]
         else:
+            field_owner = type_lookup.member_owner(owner, root_name, "field") if owner else None
+            if not isinstance(field_owner, str):
+                return None
+            owner_node = node_by_id[field_owner]
+            scope = owner_node.get("_cpp_qualified", "")
             name = owner_node.get("_cpp_fields", {}).get(root_name, "")
+        source = rc.get("source_file", "")
+        use_source = source
+        use_position = rc.get("cpp_call_byte", 0)
+        position = rc.get("cpp_receiver_byte", rc.get("cpp_call_byte", 0))
+        if root_name != "this" and "cpp_receiver_type" not in rc:
+            source = owner_node.get("source_file", source)
+            position = owner_node.get("_cpp_field_positions", {}).get(root_name, position)
         type_nid = ""
         for index, (member, operator) in enumerate(chain):
             if index:
-                owner_node = node_by_id.get(type_nid, {})
+                field_owner = type_lookup.member_owner(type_nid, member, "field")
+                if not isinstance(field_owner, str):
+                    return None
+                owner_node = node_by_id[field_owner]
                 name = owner_node.get("_cpp_fields", {}).get(member, "")
                 scope = owner_node.get("_cpp_qualified", "")
-            type_nid = chain_type(name, scope, operator)
+                source = owner_node.get("source_file", source)
+                position = owner_node.get("_cpp_field_positions", {}).get(member, 0)
+            type_nid = type_lookup.resolve(name, scope, source, position, operator,
+                                          use_source=use_source, use_position=use_position)
             if type_nid is None:
                 return None
         return type_nid
@@ -6359,12 +6675,33 @@ def _resolve_cpp_member_calls(
                 # below — otherwise a typed local calling into another repo is
                 # silently dropped (#3152 regression from the chain resolver).
                 park_name = chain_park_name(rc)
-                if park_name is not None and not type_def_nids.get(_key(park_name)):
+                owner = node_by_id.get(enclosing_type.get(caller, ""), {})
+                alias = park_name is not None and type_lookup.is_alias(
+                    park_name, owner.get("_cpp_qualified") or rc.get("cpp_receiver_scope", ""),
+                    src_file,
+                    rc.get("cpp_receiver_byte", rc.get("cpp_call_byte", 0)),
+                )
+                if park_name is not None and not alias and not type_def_nids.get(_key(park_name)):
                     _park_unresolved_member_call(
                         node_by_id.get(caller), callee, park_name, "cpp", rc,
                     )
                 continue
             type_qualified = receiver == "this" and len(rc["cpp_receiver_chain"]) == 1
+        elif rc.get("cpp_scoped_call"):
+            type_nid = type_lookup.resolve(
+                receiver, rc.get("cpp_call_scope", ""), src_file,
+                rc.get("cpp_call_byte", 0), ".",
+            )
+            if type_nid is None:
+                alias = type_lookup.is_alias(
+                    receiver, rc.get("cpp_call_scope", ""), src_file,
+                    rc.get("cpp_call_byte", 0),
+                )
+                if receiver[:1].isupper() and not alias and not type_def_nids.get(_key(receiver)):
+                    _park_unresolved_member_call(node_by_id.get(caller), callee, receiver, "cpp", rc)
+                continue
+            qualified_fallback_label = f"{receiver}::{callee}()"
+            type_qualified = True
         elif receiver == "this":
             # this->bar(): receiver is the caller's own enclosing class.
             type_nid = enclosing_type.get(caller)
@@ -6418,11 +6755,16 @@ def _resolve_cpp_member_calls(
                 continue
             type_nid = type_defs[0]
             type_qualified = False
-        if "cpp_receiver_chain" in rc:
+        if "cpp_receiver_chain" in rc or rc.get("cpp_scoped_call"):
             methods = exact_methods.get((type_nid, callee), set())
             method_nid = next(iter(methods)) if len(methods) == 1 else None
         else:
             method_nid = method_index.get((type_nid, _key(callee)))
+        if method_nid is None:
+            inherited_owner = type_lookup.member_owner(type_nid, callee, "method")
+            if isinstance(inherited_owner, str) and inherited_owner != type_nid:
+                methods = exact_methods.get((inherited_owner, callee), set())
+                method_nid = next(iter(methods)) if len(methods) == 1 else None
         if method_nid is None and qualified_fallback_label is not None:
             candidates = qualified_method_nids.get(qualified_fallback_label, [])
             if len(candidates) == 1:
@@ -6443,6 +6785,8 @@ def _resolve_cpp_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+        if isinstance(rc.get("metadata"), dict):
+            all_edges[-1]["metadata"] = dict(rc["metadata"])
 
 
 # C# predefined/BCL type names that are never declared in the scanned corpus.
@@ -11078,6 +11422,15 @@ def extract(
     elif cache_root is not None:
         root = cache_root
     root = root.resolve()
+    if resolution_context_nodes:
+        expanded = _cpp_reconciliation_paths(paths, resolution_context_nodes, root)
+        if len(expanded) != len(paths):
+            paths = expanded
+            refreshed = {_cpp_source_key(p, root) for p in paths}
+            resolution_context_nodes = [n for n in resolution_context_nodes
+                                        if _cpp_source_key(n.get("source_file", ""), root) not in refreshed]
+            resolution_context_edges = [e for e in resolution_context_edges or []
+                                        if _cpp_source_key(e.get("source_file", ""), root) not in refreshed]
     python_scan_paths = list(paths)
     for context_node in resolution_context_nodes or []:
         source_file = context_node.get("source_file")
@@ -11435,6 +11788,41 @@ def extract(
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+    # Newly introduced pairs have no persisted proof group yet. Reparse only
+    # exact-identity candidates from the caller's permitted unchanged corpus.
+    cpp_names = {n.get("_cpp_qualified") for n in all_nodes
+                 if n.get("_cpp_class_kind") in {"forward", "definition"}}
+    member_files: dict[str, set[str]] = {}
+    for node in all_nodes:
+        if node.get("_cpp_member_records"):
+            member_files.setdefault(node.get("_cpp_qualified", ""), set()).add(
+                _cpp_source_key(node.get("source_file", ""), root))
+    includes = _cpp_exact_includes([*all_nodes, *(resolution_context_nodes or [])],
+                                  [*all_edges, *(resolution_context_edges or [])], root) if member_files else {}
+    present = {_cpp_source_key(p, root) for p in paths}
+    candidates = {_cpp_source_key(n.get("source_file", ""), root)
+                  for n in resolution_context_nodes or []
+                  if n.get("_cpp_class_kind") in {"forward", "definition"}
+                  and n.get("_cpp_qualified") in cpp_names}
+    for node in resolution_context_nodes or []:
+        if node.get("_cpp_member_records"):
+            candidate = _cpp_source_key(node.get("source_file", ""), root)
+            if any(_cpp_include_path(includes, source, candidate) or _cpp_include_path(includes, candidate, source)
+                   for source in member_files.get(node.get("_cpp_qualified", ""), ())):
+                candidates.add(candidate)
+    additions = [root / sf for sf in sorted(candidates - present - {""}) if (root / sf).is_file()]
+    if additions:
+        expanded = _cpp_reconciliation_paths(paths + additions, resolution_context_nodes or [], root)
+        refreshed = {_cpp_source_key(p, root) for p in expanded}
+        return extract(
+            expanded, cache_root=cache_root, root=root, parallel=parallel,
+            max_workers=max_workers,
+            resolution_context_nodes=[n for n in resolution_context_nodes or []
+                                      if _cpp_source_key(n.get("source_file", ""), root) not in refreshed],
+            resolution_context_edges=[e for e in resolution_context_edges or []
+                                      if _cpp_source_key(e.get("source_file", ""), root) not in refreshed],
+            release_parse_memo=release_parse_memo,
+        )
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
@@ -12160,6 +12548,21 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    _merge_cpp_forward_classes(all_nodes, all_edges, all_raw_calls, resolution_nodes,
+                               resolution_context_edges or [], root)
+    if resolution_context_nodes:
+        fresh_ids = {n["id"] for n in all_nodes}
+        resolution_nodes = all_nodes + [n for n in resolution_context_nodes
+                                        if n.get("id") not in fresh_ids]
+    else:
+        resolution_nodes = all_nodes
+    _merge_cpp_member_declarations(all_nodes, all_edges, all_raw_calls, resolution_nodes,
+                                   resolution_context_edges or [], root)
+    if resolution_context_nodes:
+        fresh_ids = {n["id"] for n in all_nodes}
+        resolution_nodes = all_nodes + [n for n in resolution_context_nodes if n.get("id") not in fresh_ids]
+    else:
+        resolution_nodes = all_nodes
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
@@ -13004,6 +13407,8 @@ def extract(
         _df = _item.get("definition_file")
         if _df and "\\" in str(_df):
             _item["definition_file"] = PurePath(_df).as_posix()
+
+    _stamp_cpp_condition_provenance(all_nodes, all_edges)
 
     return {
         "nodes": all_nodes,
