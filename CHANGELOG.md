@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.107 (2026-11-11)
+
+- Change: **cloud** the OSS surfaces (README, CLI help/install text, the translated docs in all 31 locales, and the agent skill) now point at the free plan with no card at `app.graphify.com/signup`, instead of a "14-day trial" at `/login` (the trial is paid-plans-only and needs a card, so the old copy conflated the two). Links carry `utm_campaign=oss` UTMs tagged per surface, so a signup can be attributed to where it came from.
+- Change: **cloud** the post-build CLI nudge is contextual. It is TTY-only (never in CI or the agent pipeline), respects `GRAPHIFY_NO_TIPS`/`GRAPHIFY_NO_CTA`, and shows on builds 1, 5 and 20 then stays quiet for good. When a local graph reaches 25k nodes, the free plan's per-repo cut-off, the nudge switches to a scale-specific line (tagged `utm_content=scale`) that sells Graphify Pro and links to pricing with the 14-day trial, instead of the free signup: a repo that size no longer fits the free plan, so pointing it at the free plan would land straight on the limit.
+
 ## 0.9.106 (2026-11-10)
 
 - Fix: **install** `requires-python` is capped to `>=3.10,<3.15`, so `uv tool install graphifyy` (and pip) on a fresh machine no longer selects Python 3.15 — for which `tree-sitter` has no wheel — and then fails with a source build that needs a C compiler (`No such file or directory: 'cc'`). uv now picks a wheel-having interpreter (3.14) by default, with no `--python` flag and no compiler needed. The Ubuntu/Debian README line that asked for `python3.12` (absent on Debian 12 and Ubuntu 22.04) is replaced with the uv installer or a plain `python3`/pipx line (#5134).
