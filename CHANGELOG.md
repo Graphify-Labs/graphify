@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **query** a heuristic `--context` inferred from ordinary wording (`modules`, `template`, `return`, …) is discarded when it matches no edges, or leaves the seed nodes with no remaining edges, instead of collapsing the traversal to the seeds and reading as a confident empty answer. `--context call` also keeps `calls` edges on graphs that never set a `context` attribute (#2529).
+
 ## 0.9.106 (2026-11-10)
 
 - Fix: **install** `requires-python` is capped to `>=3.10,<3.15`, so `uv tool install graphifyy` (and pip) on a fresh machine no longer selects Python 3.15 — for which `tree-sitter` has no wheel — and then fails with a source build that needs a C compiler (`No such file or directory: 'cc'`). uv now picks a wheel-having interpreter (3.14) by default, with no `--python` flag and no compiler needed. The Ubuntu/Debian README line that asked for `python3.12` (absent on Debian 12 and Ubuntu 22.04) is replaced with the uv installer or a plain `python3`/pipx line (#5134).

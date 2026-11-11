@@ -132,6 +132,13 @@ carry `INFERRED` confidence. Bare calls to package-level functions remain `EXTRA
 unknown or ambiguous receivers do not bind by method name alone. AST cache schema 37
 retires Go entries created before these receiver-binding rules.
 
+Query context filters (`graphify query --context` / MCP `context_filter`) match an
+edge's `context` attribute, and also its `relation` when the graph has no matching
+`context` (the usual LLM-extracted shape). A filter inferred from ordinary words
+in the question (`modules`, `template`, `return`, …) is discarded when it would
+leave the seed nodes with no remaining edges, and the header records that
+discard. An explicit `--context` is never discarded.
+
 C++ member chains such as `client.actions->Execute()` use lexical local/parameter
 bindings and class-scoped field declarations, including fields in unchanged headers.
 Raw pointers and single-type-argument `std::unique_ptr<T>` / `std::shared_ptr<T>`
