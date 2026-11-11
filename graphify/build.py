@@ -1489,7 +1489,10 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
     derived, since ids never include it. Without it a fresh subfolder build reads
     as legacy: ``sub/pkg/mod.py`` wants ``sub_pkg_mod``, and the real ``pkg_mod``
     looks exactly like the old one-parent form."""
-    from graphify.extractors.base import _file_stem
+    # From graphify.ids, not graphify.extractors.base: importing anything under
+    # graphify.extractors loads every language extractor, which `query` and the
+    # MCP server would pay on each start just for this function.
+    from graphify.ids import _file_stem
     _r = str(root) if root is not None else None
     _pfx = (source_prefix.replace("\\", "/").rstrip("/") + "/") if source_prefix else None
     checked = 0
