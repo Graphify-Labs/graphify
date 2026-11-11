@@ -7716,7 +7716,12 @@ def _resolve_java_member_calls(
 
     A receiver that is itself a call (`builder().size(3).build()`), a `new T()`
     or a cast is typed step by step from the declared return types the
-    extractor put on method nodes (`_java_ret`).
+    extractor put on method nodes (`_java_ret`). A class-qualified static
+    field (`Service.INSTANCE.get()`, and `Service.INSTANCE.other().m()`) is
+    the same walk: the field's declared type on that class, including one
+    inherited from a superclass, types the next step. A local, parameter, or
+    field that shadows the class name is not that class. An instance field
+    accessed as `Type.field` is not.
     """
     def key(label: str) -> str:
         return str(label).strip().removeprefix(".").removesuffix("()")
@@ -7760,8 +7765,15 @@ def _resolve_java_member_calls(
         if edge.get("relation") in ("inherits", "implements"):
             supertypes.setdefault(edge["source"], []).append(edge["target"])
     class_fields = _bind_member_field_tables(per_file, all_nodes, lang="java")
+    static_fields = _bind_member_field_tables(per_file, all_nodes, lang="java_static")
 
-    def _inherited_field_type(class_nid, field: str, bases: dict[str, list[str]] = inherits_bases):
+    def _inherited_field_type(
+        class_nid,
+        field: str,
+        bases: dict[str, list[str]] = inherits_bases,
+        tables: dict[str, dict[str, str]] | None = None,
+    ):
+        fields = class_fields if tables is None else tables
         seen: set = set()
         queue = [class_nid]
         while queue:
@@ -7769,7 +7781,7 @@ def _resolve_java_member_calls(
             if not cls or cls in seen:
                 continue
             seen.add(cls)
-            hit = class_fields.get(cls, {}).get(field)
+            hit = fields.get(cls, {}).get(field)
             if hit:
                 return hit
             queue.extend(bases.get(cls, []))
@@ -7876,6 +7888,14 @@ def _resolve_java_member_calls(
             method_nid = _method_on_type_or_bases(owner, key(chain[1])) if owner else None
             returned = node_by_id.get(method_nid or "", {}).get("_java_ret")
             return _type_named(returned, method_nid) if returned else None
+        if kind == "field":
+            # `Type.FIELD` — the static field's declared type, then the chain
+            # continues (`Type.FIELD.other().m()`). Not an instance field.
+            owner = _chain_type(chain[2], caller, depth + 1)
+            declared = (
+                _inherited_field_type(owner, chain[1], tables=static_fields) if owner else None
+            )
+            return _type_named(declared, owner) if declared else None
         return None
 
     for result in per_file:

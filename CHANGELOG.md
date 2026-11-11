@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: **Java** a call through a class-qualified static field (`Service.INSTANCE.get()`, and a chain `Service.INSTANCE.other().m()`) resolves via that field's declared type. A local or parameter that shadows the class name is left as that binding, and an instance field accessed as `Type.field` is not treated as static (#5149).
+
+The AST cache schema is bumped to 44; warm caches re-run Java extractions.
+
 ## 0.9.106 (2026-11-10)
 
 - Fix: **install** `requires-python` is capped to `>=3.10,<3.15`, so `uv tool install graphifyy` (and pip) on a fresh machine no longer selects Python 3.15 — for which `tree-sitter` has no wheel — and then fails with a source build that needs a C compiler (`No such file or directory: 'cc'`). uv now picks a wheel-having interpreter (3.14) by default, with no `--python` flag and no compiler needed. The Ubuntu/Debian README line that asked for `python3.12` (absent on Debian 12 and Ubuntu 22.04) is replaced with the uv installer or a plain `python3`/pipx line (#5134).
