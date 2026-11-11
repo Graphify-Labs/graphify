@@ -34,6 +34,10 @@ def test_cta_prints_on_a_tty(tmp_path, monkeypatch):
     out = _run(tmp_path / "graphify-out", monkeypatch, tty=True)
     assert "Graphify Cloud" in out
     assert "app.graphify.com" in out
+    # A1: drive to the free-plan signup, not /login, and carry campaign UTMs.
+    assert "/signup" in out and "/login" not in out
+    assert "utm_source=cli" in out and "utm_campaign=oss" in out
+    assert "no card" in out
 
 
 def test_cta_suppressed_when_not_a_tty(tmp_path, monkeypatch):

@@ -176,7 +176,7 @@ def _print_cloud_cta(out_dir: "Path") -> None:
     print()
     print("  Graphify Cloud: faster indexing, fewer tokens, cross-repo search,")
     print("  and PR review, with your whole SDLC mapped and always current.")
-    print("  Connect a repo at https://app.graphify.com")
+    print("  Free plan, no card: https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss")
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("1", encoding="utf-8")
