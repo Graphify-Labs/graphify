@@ -260,3 +260,44 @@ def test_report_hub_wikilink_falls_back_to_unnamed_for_punctuation_only_label():
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert _obsidian_safe_stem("@@@") == "unnamed"
     assert "[[_COMMUNITY_unnamed|@@@]]" in report
+
+
+def test_load_report_token_cost_reads_ledger_totals(tmp_path):
+    """#5154: the report must show cost.json totals, not a hard-coded zero."""
+    from graphify.report import load_report_token_cost, generate
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "cost.json").write_text(
+        '{"runs": [], "total_input_tokens": 136750, "total_output_tokens": 4200}\n',
+        encoding="utf-8",
+    )
+    tokens = load_report_token_cost(out)
+    assert tokens == {"input": 136750, "output": 4200}
+
+    G, communities, cohesion, labels, gods, surprises, detection, _ = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "Token cost: 136,750 input · 4,200 output" in report
+
+
+def test_load_report_token_cost_missing_or_malformed_is_zero(tmp_path):
+    from graphify.report import load_report_token_cost
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    assert load_report_token_cost(out) == {"input": 0, "output": 0}
+    (out / "cost.json").write_text("{not json", encoding="utf-8")
+    assert load_report_token_cost(out) == {"input": 0, "output": 0}
+    (out / "cost.json").write_text("[]", encoding="utf-8")
+    assert load_report_token_cost(out) == {"input": 0, "output": 0}
+    (out / "cost.json").write_text(
+        '{"total_input_tokens": "136750", "total_output_tokens": 1}',
+        encoding="utf-8",
+    )
+    assert load_report_token_cost(out) == {"input": 0, "output": 0}
+
+
+def test_watch_rebuild_passes_cost_json_totals_to_the_report():
+    """#5154: graphify update used to hard-code {0, 0} at the generate() call."""
+    from pathlib import Path as _P
+    source = _P("graphify/watch.py").read_text(encoding="utf-8")
+    assert '{"input": 0, "output": 0}' not in source
+    assert "load_report_token_cost" in source
