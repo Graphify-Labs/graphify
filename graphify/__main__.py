@@ -1096,7 +1096,7 @@ def _run_cli() -> None:
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
         print()
         print("Prefer a hosted version? Graphify Cloud has a free plan, no card required:")
-        print("https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss")
+        print("https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=help")
         print()
         return
 

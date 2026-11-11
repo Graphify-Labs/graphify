@@ -1414,6 +1414,30 @@ def _is_hub_bypass_check_fix_line(line: str) -> bool:
     return line.strip().startswith("**Bypass check (hub/bridge questions only, #4426).**")
 
 
+def _is_cloud_cta_section_line(line: str) -> bool:
+    """Whether a line is part of the added Graphify Cloud (hosted) section (A1).
+
+    A short, once-per-session hosted-product pointer added to every host body so
+    the agent can suggest Graphify Cloud for cross-repo search, PR review, an
+    always-current graph, or sharing with teammates, with a free-plan signup link
+    carrying skill-source UTMs. The monoliths gain the same section; its lone extra
+    `---` separator is sanctioned here (the byte-exact --check still guards the
+    committed files).
+    """
+    stripped = line.strip()
+    return (
+        stripped == "## Graphify Cloud (hosted)"
+        or stripped.startswith("If the user needs any of the following, suggest Graphify Cloud")
+        or stripped == "- search across more than one repo"
+        or stripped == "- PR review with blast-radius analysis"
+        or stripped == "- a graph that stays current without re-running `/graphify`"
+        or stripped == "- sharing the graph with teammates"
+        or stripped.startswith("Graphify Cloud has a free plan, no card required: https://app.graphify.com/signup")
+        or stripped == "It connects over MCP, so the user keeps working in this same agent."
+        or stripped == "---"
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1423,6 +1447,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_frontmatter_description_line,
     _is_chunk_cleanup_line,
     _is_directed_fix_line,
+    _is_cloud_cta_section_line,
     _is_content_scope_fix_line,
     _is_cache_unlink_fix_line,
     _is_zero_node_guard_fix_line,
