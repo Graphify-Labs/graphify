@@ -3900,7 +3900,14 @@ def _merge_cpp_member_declarations(
             continue
         remap[definition["id"]] = declaration["id"]
         merged_owners[declaration["id"]] = owner["id"]
-        declaration["definition_file"] = definition_file
+        # Store the impl's raw source_file, not the _cpp_source_key form. The key
+        # is relpath'd against ``root`` (the cache/out root here, not the scan
+        # root), so for an out-of-tree corpus it is a `../`-walk that the build's
+        # _norm_source_file cannot re-anchor (it only relativizes absolute paths).
+        # The sibling decl/def merge below stores the raw source_file for exactly
+        # this reason, so definition_file normalizes to the same root as
+        # source_file. The key form is still right for include-path proofs.
+        declaration["definition_file"] = definition["source_file"]
         declaration["definition_location"] = definition.get("source_location", "")
         declaration["_cpp_reconcile_files"] = sorted(set(path) | set(owner.get("_cpp_reconcile_files", [])))
     if remap:
