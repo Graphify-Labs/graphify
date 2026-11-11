@@ -284,6 +284,7 @@ Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native P
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
+| `copilot` | GitHub Copilot SDK backend (Python 3.11+) | `uv tool install --python 3.12 "graphifyy[copilot]"` |
 | `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
 | `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
 | `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
@@ -449,6 +450,38 @@ Backends, API keys, hook behavior, and tuning are controlled by environment vari
 
 - **Claude API prompt caching**: `GRAPHIFY_CLAUDE_PROMPT_CACHE` controls system-prompt caching for `--backend claude`. Unset or blank keeps caching enabled; `1`, `true`, `yes`, or `on` explicitly enables it, and `0`, `false`, `no`, or `off` disables it (case-insensitive, surrounding whitespace ignored). Invalid values raise an error before sending a request. For example, run `GRAPHIFY_CLAUDE_PROMPT_CACHE=0 graphify extract . --backend claude` when an Anthropic-compatible endpoint rejects `cache_control`. Disabling sends the original plain-text system prompt. The setting applies equally to official Anthropic and custom `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` endpoints, including deep mode; it does not affect Bedrock, Claude CLI, or Graphify's local extraction cache. Enabling requests caching but cannot guarantee cache hits: the endpoint/model must support it and the prompt must meet its minimum length. Unsupported caching errors are not silently retried without caching.
 - **Claude CLI model**: `GRAPHIFY_CLAUDE_CLI_MODEL` overrides the model for the `claude-cli` backend (default: Opus). `haiku` or `sonnet` are usually enough for community naming; the semantic extraction pass benefits from a larger model.
+- **GitHub Copilot SDK**: `--backend copilot-sdk` reads `COPILOT_GH_HOST`, `GRAPHIFY_COPILOT_SDK_MODEL` (or `GRAPHIFY_COPILOT_MODEL` / `COPILOT_MODEL`), `GRAPHIFY_COPILOT_REASONING_EFFORT`, `GRAPHIFY_COPILOT_CONTEXT_TIER`, and `GRAPHIFY_COPILOT_SDK_PARALLEL`; `GRAPHIFY_API_TIMEOUT` also applies. See [GitHub Copilot SDK backend](#github-copilot-sdk-backend).
+
+---
+
+## GitHub Copilot SDK backend
+
+`--backend copilot-sdk` uses the official Python SDK with a fresh isolated client and session for each Graphify request. It supports inline image blobs and structured usage events.
+
+Install the optional SDK under Python 3.11 or newer. Install and authenticate the [official Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up/install-copilot-cli) before the first request; the Python package supplies the SDK runtime but does not add a `copilot` executable to Graphify's virtual environment.
+
+```bash
+uv tool install --python 3.12 "graphifyy[copilot]"
+copilot login --host https://example.ghe.com
+
+export COPILOT_GH_HOST=example.ghe.com
+graphify extract ./docs --backend copilot-sdk
+```
+
+```powershell
+$env:COPILOT_GH_HOST = "example.ghe.com"
+graphify extract ./docs --backend copilot-sdk
+```
+
+The SDK package requires Python 3.11 or newer. Graphify never automatically selects this backend and never falls back to another provider. A failure after dispatch is reported as an unknown outcome and is not replayed.
+
+The SDK client runs in `mode="empty"`. It reads the existing login from `COPILOT_HOME`, but uses temporary working and configuration paths. The session exposes no tools or MCP servers, rejects every permission request, disables persistence, memory, hooks, discovery, telemetry, and remote sessions, then stops under bounded cleanup. It is never auto-selected. These controls limit local agent capabilities, but the selected Copilot model still receives the source chunks and remains governed by enterprise policy and approved-use boundaries.
+
+SDK model precedence is `--model`, `GRAPHIFY_COPILOT_SDK_MODEL`, `GRAPHIFY_COPILOT_MODEL`, `COPILOT_MODEL`, then the account/runtime default. Requests are serial by default; `GRAPHIFY_COPILOT_SDK_PARALLEL=1` opts into concurrency.
+
+Graphify records SDK token fields and the per-call premium-request multiplier when the runtime supplies them. It does not mix that value with nano-AI units or convert it into a USD API-price claim. GitHub AI credits or plan allowances can still be consumed.
+
+See [`docs/copilot-sdk-backend.md`](docs/copilot-sdk-backend.md) for architecture, GitHub Enterprise setup, image handling, security controls, and troubleshooting.
 
 ---
 
@@ -456,9 +489,9 @@ Backends, API keys, hook behavior, and tuning are controlled by environment vari
 
 - **Code files**: processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key: `graphify extract` runs fully offline. On a mixed repo, add `--code-only` to index just the code and skip the docs/PDFs/images that would otherwise need an LLM.
 - **Video / audio**: transcribed locally with faster-whisper. Nothing leaves your machine.
-- **Docs, PDFs, images**: sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
+- **Docs, PDFs, images**: sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription), or the official Copilot SDK (`--backend copilot-sdk`, using its signed-in GitHub/Copilot account). The `--dedup-llm` flag uses the same backend.
 - **Data residency**: `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). When it auto-detects, it prints the exact environment variable that chose the provider, so a run is never a surprise. To choose explicitly, pass `--backend`, or set `GRAPHIFY_BACKEND=<name>`; set `GRAPHIFY_BACKEND=none` to disable all LLM backends (semantic extraction and the `claude -p` labeling fallback) and keep a code-only graph. For code with data-residency requirements, use `GRAPHIFY_BACKEND=ollama` / `--backend ollama` (fully local). Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
-- **No telemetry**, no usage tracking, no analytics.
+- **Graphify telemetry**: Graphify itself adds no telemetry, usage tracking, or analytics. External LLM providers and their CLIs retain their own service and enterprise-monitoring behavior; Graphify does not opt the Copilot SDK into telemetry, while enterprise-managed runtime settings still apply.
 - **Query logging**: every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 
 ---
