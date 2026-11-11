@@ -69,6 +69,8 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 
 ### Step 1 - Ensure graphify is installed
 
+If the scan path contains a line break (a newline or carriage return), stop and ask the user for a different path. Do not run the block below: a path line could end the here-string early and run the lines after it as shell.
+
 ```powershell
 # Detect Python with graphify — uv/pipx-aware (fixes #831)
 New-Item -ItemType Directory -Force -Path graphify-out | Out-Null
@@ -129,13 +131,15 @@ if (-not $GRAPHIFY_PYTHON) {
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_python'), [string]$GRAPHIFY_PYTHON, $Utf8NoBom)
 # Save scan root so `graphify update` (no args) knows where to look next time.
-# INPUT_PATH is captured through a single-quoted (literal) here-string, never
-# substituted directly into the command line: an unquoted bareword argument
-# substituted here would let a malicious path (a stray `;`, `|`, or `$(...)`)
-# execute as script code the moment this line runs.
+# PowerShell never expands the scan path: it is captured through a single-quoted
+# (literal) here-string, not the command line. A path with a line break is refused,
+# because a line starting with '@ would end the here-string early and run the lines
+# after it as script code.
 $InputPathRaw = @'
 INPUT_PATH
 '@
+$InputPathChecked = $InputPathRaw -replace '\n$', ''
+if ($InputPathChecked.Contains("`n") -or $InputPathChecked.Contains("`r")) { throw 'graphify: the scan path has a line break, so it was not used; give a single-line path' }
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path $InputPathRaw.Trim()).Path, $Utf8NoBom)
 ```
 
@@ -178,7 +182,7 @@ Then act on it:
 - If `total_files` is 0: stop with "No supported files found in [path]."
 - If `skipped_sensitive` is non-empty: report the count and list the skipped file names, so a wrongly-flagged source or doc is visible and can be renamed or moved (#2106).
 - If `total_words` > 2,000,000 OR `total_files` > 500: show the warning. Then compute the top 5 first-level subdirectories by file count:
-  - Read `scan_root` from the detect JSON (always an absolute path to the resolved INPUT_PATH).
+  - Read `scan_root` from the detect JSON (always an absolute path to the resolved scan root).
   - Concatenate all file lists across all types (`code`, `document`, `paper`, `image`, `video`).
   - Filter out any path that starts with `scan_root + "/graphify-out/"` to exclude converted sidecars.
   - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
@@ -263,9 +267,12 @@ Before dispatching subagents, print a timing estimate:
 
 Before dispatching any subagents, check which files already have cached extraction results:
 
-SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
+SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). The first lines of the block below write it to a file: replace the SPEC_PATH line with the real path. The heredoc marker is quoted, so the shell leaves the text alone and the path never lands inside a script (#4309). Step B3 reads the same file, so both steps use the same prompt.
 
 ```powershell
+@'
+SPEC_PATH
+'@ | Set-Content -Encoding utf8 graphify-out\.graphify_spec_path
 @'
 import json
 from graphify.cache import check_semantic_cache
@@ -278,7 +285,7 @@ detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encodin
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
 INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding="utf-8-sig").strip()
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root=INPUT_PATH, prompt_file='SPEC_PATH')
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root=INPUT_PATH, prompt_file=Path('graphify-out/.graphify_spec_path').read_text(encoding='utf-8-sig').strip())
 
 # Always (re)write the cache file: write hits, else DELETE any leftover from a prior
 # run so Part C never merges a stale .graphify_cached.json (#1392).
@@ -402,7 +409,7 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 '@ | & (Get-Content graphify-out\.graphify_python) -
 ```
 
-Save new results to cache. Pass the same SPEC_PATH as Step B0 — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
+Save new results to cache. It reads the SPEC_PATH Step B0 wrote — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
 ```powershell
 @'
 import json
@@ -416,7 +423,7 @@ uncached = [line for line in Path('graphify-out/.graphify_uncached.txt').read_te
 # (#2225). Same contract the library path uses for a truncated LLM response (#933/#1950).
 partial = [line for line in Path('graphify-out/.graphify_partial.txt').read_text(encoding="utf-8").splitlines() if line] if Path('graphify-out/.graphify_partial.txt').exists() else []
 INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding="utf-8-sig").strip()
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root=INPUT_PATH, allowed_source_files=uncached, prompt_file='SPEC_PATH', partial_source_files=partial)
+saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root=INPUT_PATH, allowed_source_files=uncached, prompt_file=Path('graphify-out/.graphify_spec_path').read_text(encoding='utf-8-sig').strip(), partial_source_files=partial)
 note = f' ({len(partial)} left partial for retry)' if partial else ''
 print(f'Cached {saved} files' + note)
 '@ | & (Get-Content graphify-out\.graphify_python) -
@@ -595,9 +602,14 @@ Substitute `IS_DIRECTED` as in Step 4 (INPUT_PATH is read from `graphify-out/.gr
 
 Read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
 
+The first lines of the block below write the names as JSON, keyed by community number. Replace the example names with yours and escape any `"` or `\` inside a name. The heredoc marker is quoted, so the shell leaves the text alone.
+
 Then regenerate the report and save the labels for the visualizer:
 
 ```powershell
+@'
+{"0": "Attention Mechanism", "1": "Training Pipeline"}
+'@ | Set-Content -Encoding utf8 graphify-out\.graphify_labels_in.json
 @'
 import sys, json
 from graphify.build import build_from_json
@@ -618,8 +630,10 @@ communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
 
-# LABELS - replace these with the names you chose above
-labels = LABELS_DICT
+# LABELS - the names written to graphify-out/.graphify_labels_in.json above. They are
+# parsed as JSON, never pasted into this script (#4309). A missing file raises.
+labels_file = Path('graphify-out/.graphify_labels_in.json')
+labels = {int(k): str(v) for k, v in json.loads(labels_file.read_text(encoding='utf-8-sig')).items()}
 
 # Regenerate questions with real community labels (labels affect question phrasing)
 questions = suggest_questions(G, communities, labels)
@@ -634,11 +648,12 @@ wrote = to_json(G, communities, 'graphify-out/graph.json', community_labels=labe
 if not wrote:
     print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
     print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
+if wrote: labels_file.unlink()  # consumed; a missing file next run is then an error, not stale labels
 print('Report updated with community labels')
 '@ | & (Get-Content graphify-out\.graphify_python) -
 ```
 
-Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
+Replace `IS_DIRECTED` with `True` or `False` as in Step 4.
 INPUT_PATH is read from `graphify-out/.graphify_root`; there is no path to substitute.
 
 ### Step 6 - Generate Obsidian vault (opt-in) + HTML

@@ -396,7 +396,7 @@ def _render_frontmatter(platform: Platform) -> str:
 # would drift), the composed body is translated deterministically:
 #
 #   * ```` ```bash ```` fences become ```` ```powershell ```` fences;
-#   * the inline ``$(cat graphify-out/.graphify_python) -c "..."`` python blocks
+#   * the inline ``"$(cat graphify-out/.graphify_python)" -c "..."`` python blocks
 #     become single-quoted here-strings piped to the interpreter's stdin
 #     (``@'...'@ | & (Get-Content graphify-out\.graphify_python) -``). A
 #     single-quoted here-string is verbatim, so the bash ``\"`` escapes are
@@ -411,9 +411,29 @@ def _render_frontmatter(platform: Platform) -> str:
 # untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
 # belt-and-braces post-check on the final body.
 
-_PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_POSIX = '"$(cat graphify-out/.graphify_python)" -c "'
 _PY_INVOKE_PS_OPEN = "@'"
 _PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
+# Values the agent supplies reach the scripts as files written through a quoted
+# heredoc (#4309): Step 5's community names and Step B0's extraction spec path. The
+# PowerShell twin is a single-quoted here-string, which is just as literal. Only
+# these exact openers are recognized; any other heredoc still raises.
+_LABELS_HEREDOC_OPEN = "cat > graphify-out/.graphify_labels_in.json <<'GRAPHIFY_LABELS_EOF'"
+_LABELS_HEREDOC_END = "GRAPHIFY_LABELS_EOF"
+_SPEC_HEREDOC_OPEN = "cat > graphify-out/.graphify_spec_path <<'GRAPHIFY_SPEC_EOF'"
+_SPEC_HEREDOC_END = "GRAPHIFY_SPEC_EOF"
+_DATA_PS_OPEN = "@'"
+# opener -> (end marker, PowerShell closer that writes the same file)
+_DATA_HEREDOCS = {
+    _LABELS_HEREDOC_OPEN: (
+        _LABELS_HEREDOC_END,
+        "'@ | Set-Content -Encoding utf8 graphify-out\\.graphify_labels_in.json",
+    ),
+    _SPEC_HEREDOC_OPEN: (
+        _SPEC_HEREDOC_END,
+        "'@ | Set-Content -Encoding utf8 graphify-out\\.graphify_spec_path",
+    ),
+}
 _MKDIR_POSIX = "mkdir -p graphify-out"
 _MKDIR_PS = "New-Item -ItemType Directory -Force -Path graphify-out | Out-Null"
 _FIND_CHUNKS_POSIX = "find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null"
@@ -462,13 +482,25 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
     """Translate the body of one ```` ```bash ```` fence to PowerShell."""
     out: list[str] = []
     in_py = False
+    in_data: tuple[str, str] | None = None  # (end marker, PowerShell closer)
     for line in lines:
-        if in_py:
+        if in_data:
+            if line == in_data[0]:
+                out.append(in_data[1])
+                in_data = None
+            elif line.lstrip().startswith("'@"):
+                raise ValueError(f"heredoc line would close the here-string: {line!r}")
+            else:
+                out.append(line)
+        elif in_py:
             if line == '"':
                 out.append(_PY_INVOKE_PS_CLOSE)
                 in_py = False
             else:
                 out.append(_unescape_bash_dq(line))
+        elif line in _DATA_HEREDOCS:
+            out.append(_DATA_PS_OPEN)
+            in_data = _DATA_HEREDOCS[line]
         elif line == _PY_INVOKE_POSIX:
             out.append(_PY_INVOKE_PS_OPEN)
             in_py = True
@@ -484,6 +516,8 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
             raise ValueError(f"cannot translate bash line to PowerShell: {line!r}")
     if in_py:
         raise ValueError("unterminated python -c body in bash fence")
+    if in_data:
+        raise ValueError(f"unterminated {in_data[0]} heredoc in bash fence")
     return out
 
 
@@ -1194,10 +1228,11 @@ def _is_step1_root_marker_fix_line(line: str) -> bool:
         stripped.startswith('"$PYTHON" -c "import os, sys; out_path = os.path.abspath(\'graphify-out/.graphify_root\')')
         or stripped in ("INPUT_PATH", "GRAPHIFY_ROOT_EOF")
         or stripped == "# Save scan root so `graphify update` (no args) knows where to look next time."
-        or stripped == "# The scan path is passed through a quoted heredoc, never substituted into the"
-        or stripped == "# command line itself: a bare `cd <path>` (or an unquoted heredoc, which"
-        or stripped == "# still expands $()/backticks in its body) would let a malicious path execute"
-        or stripped == "# as shell code the moment this line runs."
+        or stripped == "# The shell never expands the scan path: it goes through a quoted heredoc, not the"
+        or stripped == "# command line. A path with a line break is refused, because it could end the"
+        or stripped == "# heredoc early and run the lines after it as shell; the Python below also"
+        or stripped == "# rejects input of more than one line."
+        or stripped == "If the scan path contains a line break (a newline or carriage return), stop and ask the user for a different path. Do not run the block below: a path line could end the heredoc early and run the lines after it as shell."
     )
 
 
@@ -1245,6 +1280,34 @@ def _is_persisted_scan_options_fix_line(line: str) -> bool:
         "result = detect_incremental(Path('INPUT_PATH'))",
         "result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))",
         "result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))",
+    )
+
+
+def _is_labels_json_fix_line(line: str) -> bool:
+    """Whether a line is part of the Step-5 labels-as-JSON fix (#4309).
+
+    v8 had the agent paste a Python dict over ``LABELS_DICT`` inside the
+    double-quoted ``python -c`` body, so a hostile label ran as shell or Python.
+    Step 5 now reads the names from a JSON file the agent writes through a quoted
+    heredoc. These are the removed paste lines and the added file reads.
+    """
+    stripped = line.strip()
+    return (
+        stripped in (
+            "# LABELS - replace these with the names you chose above",
+            "labels = LABELS_DICT",
+            "# LABELS - the names written to graphify-out/.graphify_labels_in.json above. They are",
+            "# parsed as JSON, never pasted into this script (#4309). A missing file raises.",
+            "labels_file = Path('graphify-out/.graphify_labels_in.json')",
+            "labels = {int(k): str(v) for k, v in json.loads(labels_file.read_text(encoding='utf-8-sig')).items()}",
+            "cat > graphify-out/.graphify_labels_in.json <<'GRAPHIFY_LABELS_EOF'",
+            '{"0": "Attention Mechanism", "1": "Training Pipeline"}',
+            "GRAPHIFY_LABELS_EOF",
+            "Replace `IS_DIRECTED` with `True` or `False` as in Step 4.",
+        )
+        or stripped.startswith("Replace `LABELS_DICT` with the actual dict")
+        or stripped.startswith("if wrote: labels_file.unlink()")
+        or stripped.startswith("The first lines of the block below write the names as JSON")
     )
 
 
@@ -1444,10 +1507,24 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
+    _is_labels_json_fix_line,
     _is_skip_steps_clarification_line,
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
 )
+
+
+def _unquote_interpreter(line: str) -> str:
+    """Undo the interpreter-path quoting so the round-trip ignores it (#4309).
+
+    v8 ran ``$(cat graphify-out/.graphify_python)`` unquoted, so an interpreter
+    under ``/Users/First Last/`` split into two words. Every invocation is now
+    quoted. That touches dozens of lines, so instead of a predicate that would
+    sanction any line running the interpreter, the rendered side is unquoted
+    before the diff: a line that differs only by the quotes cancels out, and any
+    other edit on it is still flagged.
+    """
+    return line.replace('"$(cat graphify-out/.graphify_python)"', "$(cat graphify-out/.graphify_python)")
 
 
 def _is_sanctioned_monolith_diff(line: str) -> bool:
@@ -1477,7 +1554,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     if platform.roundtrip_ref is None:
         return [f"[{platform.key}] monolith is missing roundtrip_ref"]
 
-    rendered_lines = render(platform)[0].content.splitlines()
+    rendered_lines = [_unquote_interpreter(l) for l in render(platform)[0].content.splitlines()]
     # Strip trigger lines from the original — they are non-spec and their removal
     # (#1180) is a permitted diff.
     original_lines = [
