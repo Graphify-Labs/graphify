@@ -66,6 +66,17 @@ _READ_NUDGE_STALE = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
+_SEARCH_NUDGE_STALE = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            'graphify-out/graph.json exists but may be STALE (pending changes since '
+            'the last build). Prefer `graphify query "<question>"` for orientation '
+            'once the graph is current; run `graphify update` to refresh it. '
+            'Searching directly is fine.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
 # Claude Code SessionStart (matcher "compact") output: compaction dropped the
 # earlier nudges from the model's context, so restate the one fact they carried.
 # SessionStart accepts hookSpecificOutput.additionalContext.
@@ -1593,6 +1604,20 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
             if not (is_grep_tool or is_bash_search) or not out_path("graph.json").is_file():
                 return
+            # #5132: unlike Read, the search nudge never checked graph freshness
+            # at all, so an agent kept being pointed at a graph that had gone
+            # stale (e.g. after checking out a much newer commit) with no
+            # softening. needs_update applies corpus-wide, same as Read; a
+            # single-file Grep target additionally gets Read's own per-file
+            # mtime check, since that is exact where Read's isn't available
+            # (a directory target has no one mtime that proves staleness without
+            # a tree walk, which this fail-open, every-tool-call guard must not pay for).
+            search_stale = False
+            try:
+                if out_path("needs_update").exists():
+                    search_stale = True
+            except Exception:
+                pass
             if is_grep_tool:
                 path = t.get("path", ".")
                 if not isinstance(path, str):
@@ -1617,8 +1642,16 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                         and _mark_session_denied(str(d.get("session_id") or "")):
                     sys.stdout.write(_with_hint(_SEARCH_DENY, terms=_search_hint_terms(t)))
                     return
+                if not search_stale and target.is_file():
+                    try:
+                        if os.stat(str(target)).st_mtime > os.stat(str(out_path("graph.json"))).st_mtime \
+                                and not _target_matches_manifest(str(target), root):
+                            search_stale = True
+                    except OSError:
+                        pass
             if not _search_is_outside_project(t) and _nudge_allowed(d):
-                sys.stdout.write(_with_hint(_nudge_for_out(_SEARCH_NUDGE), terms=_search_hint_terms(t)))
+                nudge = _SEARCH_NUDGE_STALE if search_stale else _SEARCH_NUDGE
+                sys.stdout.write(_with_hint(_nudge_for_out(nudge), terms=_search_hint_terms(t)))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             tails = [
