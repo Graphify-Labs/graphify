@@ -3280,8 +3280,9 @@ def _rebuild_code(
             )
         questions = suggest_questions(G, communities, labels)
         from graphify.report import load_learning_for_report as _llfr
+        from graphify.report import load_report_token_cost as _lrtc
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
-                          {"input": 0, "output": 0}, report_root, suggested_questions=questions,
+                          _lrtc(out), report_root, suggested_questions=questions,
                           built_at_commit=commit, learning=_llfr(out / "graph.json"))
         report_path = out / "GRAPH_REPORT.md"
         # Split back into the tracked (curated) file and the pending
