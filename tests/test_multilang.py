@@ -1687,6 +1687,27 @@ def test_sql_cte_shadows_same_named_table_within_its_statement(tmp_path):
     assert reads[0]["source"] == nid["v2"]
     assert reads[0]["target"] == nid["levels"]  # the real, sourced table node
 
+def test_sql_unparsed_derived_table_alias_is_not_read_as_a_table(tmp_path):
+    """#5147: tree-sitter-sql 0.3.13 cannot parse `LIMIT <expr> OFFSET <expr>`
+    inside a derived table, so it returns the `( ... )` as an ERROR node and the
+    alias as a bare relation. The alias names the subquery, not a table, so it
+    must not become a reads_from target; the real table inside still resolves."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE items (val INT);\n"
+        "CREATE VIEW v AS\n"
+        "  SELECT AVG(val) FROM (SELECT val FROM items\n"
+        "  LIMIT 2 - MOD((SELECT COUNT(*) FROM items), 2)\n"
+        "  OFFSET 1) q2;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "q2" not in labels, "derived-table alias leaked into the graph as a table node"
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    reads = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "reads_from"}
+    assert (nid["v"], nid["items"]) in reads
+
 def test_sql_subquery_cte_does_not_suppress_outer_real_table(tmp_path):
     """#2577 refinement: a WITH inside a subquery is scoped to that subquery
     only. A statement-wide pre-collect would also swallow the OUTER reference
