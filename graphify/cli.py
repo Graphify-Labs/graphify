@@ -1611,7 +1611,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # single-file Grep target additionally gets Read's own per-file
             # mtime check, since that is exact where Read's isn't available
             # (a directory target has no one mtime that proves staleness without
-            # a tree walk, which this fail-open, every-tool-call guard must not pay for).
+            # a tree walk, which this fail-open, every-tool-call guard must not pay
+            # for). Gated on `indexed` (computed below) the same way the strict
+            # deny already is: an unindexed file has no graph knowledge to go
+            # stale in the first place, so it keeps the plain nudge, not this one.
             search_stale = False
             try:
                 if out_path("needs_update").exists():
@@ -1642,7 +1645,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                         and _mark_session_denied(str(d.get("session_id") or "")):
                     sys.stdout.write(_with_hint(_SEARCH_DENY, terms=_search_hint_terms(t)))
                     return
-                if not search_stale and target.is_file():
+                if not search_stale and target.is_file() and indexed:
                     try:
                         if os.stat(str(target)).st_mtime > os.stat(str(out_path("graph.json"))).st_mtime \
                                 and not _target_matches_manifest(str(target), root):
