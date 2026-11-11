@@ -11126,6 +11126,43 @@ def _spawn_cannot_reimport_main() -> bool:
     return main_file is None or not os.path.isfile(main_file)
 
 
+# Uncached source bytes that make one more extraction worker worth starting.
+# Extraction runs at roughly 0.5-1 MB/s per core, and a worker costs a process
+# start plus its own grammar loads (~0.4 s with spawn). Measured on 4 cores
+# against requests/flask/click/jsoup/caddy/vuejs-core: at 0.5 MB per worker the
+# whole run is as fast as one worker per core with spawn (worst +0.1 s) and at
+# most 0.3 s slower with fork, while 0.75-1 MB costs up to 0.8 s.
+_BYTES_PER_WORKER = 500_000
+
+
+def _default_max_workers(uncached_work: list[tuple[int, Path]]) -> int:
+    """Worker count for the extraction pool when the caller passed none.
+
+    GRAPHIFY_MAX_WORKERS (``--max-workers`` sets it too) wins, bounded by the
+    number of files, exactly as before. Otherwise start one worker per
+    ``_BYTES_PER_WORKER`` of uncached source, capped at the CPU count. A big
+    job still gets every core (the old cap of 8 cost a 32-thread box 4x,
+    #792); a small one no longer starts a process per core that each load
+    graphify and the grammars for under a second of work.
+    """
+    env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
+    if env_raw:
+        try:
+            v = int(env_raw)
+        except ValueError:
+            v = 0
+        if v > 0:
+            return min(v, len(uncached_work))
+    total_bytes = 0
+    for _, path in uncached_work:
+        try:
+            total_bytes += os.path.getsize(path)
+        except OSError:
+            pass
+    by_size = -(-total_bytes // _BYTES_PER_WORKER)  # ceil
+    return max(1, min(os.cpu_count() or 4, len(uncached_work), by_size))
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -11144,22 +11181,7 @@ def _extract_parallel(
     import concurrent.futures
 
     if max_workers is None:
-        # Honour GRAPHIFY_MAX_WORKERS env override; otherwise scale to the
-        # full CPU. The historical `, 8)` cap was a safety bound for laptops
-        # in 2023 — on a 32-thread workstation it costs a 4x slowdown
-        # (issue #792). Capping at len(uncached_work) keeps small jobs
-        # from spawning useless idle workers.
-        env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
-        env_cap = None
-        if env_raw:
-            try:
-                v = int(env_raw)
-                if v > 0:
-                    env_cap = v
-            except ValueError:
-                pass
-        cpu_cap = env_cap if env_cap is not None else (os.cpu_count() or 4)
-        max_workers = min(cpu_cap, len(uncached_work))
+        max_workers = _default_max_workers(uncached_work)
 
     # Windows ProcessPoolExecutor hard-caps at 61 workers (CPython limitation
     # tied to WaitForMultipleObjects). Clamp here so every path — auto-compute,
@@ -11343,8 +11365,9 @@ def extract(
             Anchors ids/source_file only as a fallback when `root` is unset.
         parallel: if True and there are >= _PARALLEL_THRESHOLD uncached files,
             use ProcessPoolExecutor for multi-core extraction.
-        max_workers: max subprocess count. Defaults to cpu_count (or the
-            value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
+        max_workers: max subprocess count. Defaults to GRAPHIFY_MAX_WORKERS
+            if set, else one worker per _BYTES_PER_WORKER of uncached source
+            up to cpu_count; always bounded by len(uncached_work).
         resolution_context_nodes: read-only AST nodes from files that are NOT
             being extracted this run (an incremental rebuild's unchanged
             corpus, #2406). They extend the cross-file resolution indexes —
