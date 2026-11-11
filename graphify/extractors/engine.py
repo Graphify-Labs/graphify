@@ -1569,6 +1569,43 @@ def _js_member_nid(class_nid: str, member_node, name: str, source: bytes,
                                   _JS_PRIVATE_MEMBER_PREFIXES)
 
 
+_JAVA_MEMBER_CALLABLE_TYPES = ("method_declaration", "constructor_declaration")
+
+
+def _java_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                     groups_cache: dict) -> str:
+    """Node id for a Java method or constructor, salted when a sibling collides.
+
+    ``make_id`` drops a leading ``_`` and folds case, so ``_testFoo()`` /
+    ``testFoo()``, ``getId()`` / ``getID()`` and a constructor ``HashCode()`` /
+    method ``hashCode()`` in one class body minted one id: the second
+    declaration vanished and its calls were credited to the survivor. Group
+    the methods and constructors of the enclosing body (a class, interface or
+    record body, or an enum's ``enum_body_declarations``) by the id they
+    would get, then apply ``_underscore_salted_nid``, the Python/C#/Solidity
+    rule (#3302, #4415, #5058): a unique public name keeps the plain id, every
+    other colliding name is salted. Members that collide with nothing keep
+    their old id; overloads share one name, so they are not a collision.
+    """
+    body = member_node.parent
+    if body is None:
+        return _make_id(class_nid, name)
+    key = (class_nid, body.start_byte, body.end_byte)
+    groups = groups_cache.get(key)
+    if groups is None:
+        names: dict[str, set[str]] = {}
+        for c in body.children:
+            if c.type not in _JAVA_MEMBER_CALLABLE_TYPES:
+                continue
+            name_node = c.child_by_field_name("name")
+            text = _read_text(name_node, source) if name_node is not None else ""
+            if text:
+                names.setdefault(_make_id(class_nid, text), set()).add(text)
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    return _underscore_salted_nid(_make_id(class_nid, name), name, groups)
+
+
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
     """Pre-scan a Swift compilation unit and return (protocol_names, class_like_names)."""
     protocols: set[str] = set()
@@ -7129,6 +7166,8 @@ def _extract_generic(
 
     # JS/TS class body -> member collision groups, filled lazily (#4475).
     js_member_groups: dict = {}
+    # Java class body -> method/constructor collision groups, filled lazily.
+    java_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
@@ -9065,6 +9104,11 @@ def _extract_generic(
                       and t in _JS_MEMBER_METHOD_TYPES):
                     func_nid = _js_member_nid(
                         parent_class_nid, node, sanitized_name, source, js_member_groups
+                    )
+                elif (config.ts_module == "tree_sitter_java"
+                      and t in _JAVA_MEMBER_CALLABLE_TYPES):
+                    func_nid = _java_member_nid(
+                        parent_class_nid, node, sanitized_name, source, java_member_groups
                     )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
