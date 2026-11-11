@@ -816,8 +816,21 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         if own:
             cte_names = frozenset(cte_names | own)
         if node.type in ("from", "join"):
+            prev = None
             for c in node.children:
-                if c.type == "relation":
+                # A derived table the grammar cannot parse (tree-sitter-sql
+                # 0.3.13 fails on `LIMIT <expr> OFFSET <expr>` inside it) comes
+                # back as an ERROR node holding `( ... )` followed by a bare
+                # `relation` holding only the alias. That alias names the
+                # subquery, not a table, so it must not become a reads_from
+                # target (#5147).
+                after_failed_subquery = (
+                    prev is not None and prev.type == "ERROR"
+                    and _read(prev).lstrip().startswith("(")
+                    and _read(prev).rstrip().endswith(")")
+                )
+                prev = c
+                if c.type == "relation" and not after_failed_subquery:
                     for cc in c.children:
                         if cc.type == "object_reference":
                             tbl = _read(cc)
