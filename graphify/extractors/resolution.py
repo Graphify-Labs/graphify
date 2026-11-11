@@ -2941,30 +2941,22 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             _ts_walk_class_members(node, source, path, class_nid, member_facts)
     facts.uses.extend(member_facts.uses)
 
-@functools.lru_cache(maxsize=2048)
-def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
-    import tree_sitter_python as tspython
-    from tree_sitter import Language, Parser
-    source = _read_source_bytes(Path(path_str), warn=False)
-    parser = Parser(Language(tspython.language()))
-    return source, parser.parse(source).root_node
-
-
 def _parse_python_tree(path: Path):
-    """Parse one Python file to ``(source, root_node)``, memoized (#perf).
+    """Parse one Python file to ``(source, root_node)``, or ``None`` on any error.
 
-    The Python symbol-resolution facts pass and the cross-file import pass each
-    parse the entire ``.py`` corpus, back to back, from the main process after
-    the workers return — so every file was tree-sitter-parsed (and read from
-    disk) twice for no reason. Keying the memo on ``(path, mtime_ns, size)``
-    lets the second pass reuse the first pass's tree while still re-parsing a
-    file that changed between runs (watch mode). Both passes only read the
-    tree, so sharing one parse is behaviour-preserving. Returns ``None`` on any
-    error, exactly as before — callers already treat that as "skip this file".
+    Not memoized. Each resolution pass parses a file, walks it, and drops it
+    before the next file, so only one tree is alive at a time. A shared memo
+    (#3502) pinned up to 2,048 trees plus their cached ``Node`` wrappers
+    (~775 MB on django) and still missed on every file of a corpus with more
+    than 2,048 ``.py`` files, because the second pass walks in the same order
+    as the first.
     """
     try:
-        st = path.stat()
-        return _parse_python_tree_cached(str(path), st.st_mtime_ns, st.st_size)
+        import tree_sitter_python as tspython
+        from tree_sitter import Language, Parser
+        source = _read_source_bytes(path, warn=False)
+        parser = Parser(Language(tspython.language()))
+        return source, parser.parse(source).root_node
     except Exception:
         return None
 
@@ -3537,8 +3529,7 @@ def _resolve_cross_file_imports(
         if not name_to_nid:
             continue
 
-        # Parse imports from this file (shared with the facts pass via the
-        # mtime-keyed memo, so each .py is parsed once across both passes).
+        # Parse imports from this file. The tree is dropped before the next file.
         parsed = _parse_python_tree(path)
         if parsed is None:
             continue
