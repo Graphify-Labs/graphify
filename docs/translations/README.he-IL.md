@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>צמצמו את הוצאות הטוקנים של הסוכן ב-80%.</b> Graphify Cloud הוא זיכרון תמידי שמנהל את הסוכנים שלכם, שומר על איכות קוד גבוהה, ומוכיח נכונות באמצעות אימות פורמלי. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>התחילו תקופת ניסיון חינם של 14 יום &rarr;</b></a>
+  <b>צמצמו את הוצאות הטוקנים של הסוכן ב-80%.</b> Graphify Cloud הוא זיכרון תמידי שמנהל את הסוכנים שלכם, שומר על איכות קוד גבוהה, ומוכיח נכונות באמצעות אימות פורמלי. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>התחילו בחינם, ללא כרטיס &rarr;</b></a>
 </p>
 
 הקלידו `/graphify` בעוזר קוד ה-AI שלכם והוא ממפה את כל הפרויקט (קוד, מסמכים, PDFs, תמונות, סרטונים) ל**גרף ידע** שאפשר **לתשאל במקום לבצע grep** על הקבצים.
@@ -38,7 +38,7 @@
 - **לא אינדקס וקטורי.** ללא embeddings, ללא מאגר וקטורים: גרף אמיתי שעוברים בו. שאלו שאלה, עקבו אחר הנתיב בין שני דברים, או הסבירו מושג אחד.
 
 > [!NOTE]
-> **רוצים את זה באופן תמידי?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) שומר על הגרף חי לאורך כל ה-SDLC שלכם: תמיכה במונורפו ובין מאגרים, אימות פורמלי, וסקירת קוד עם מבט על של ה-SDLC שלכם, בתוספת מחברים ל-Sentry, Jira, ועוד, כך שתקריות וכרטיסים יושבים באותו גרף כמו הקוד שלכם. **[התחילו תקופת ניסיון חינם של 14 יום ב-app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **רוצים את זה באופן תמידי?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) שומר על הגרף חי לאורך כל ה-SDLC שלכם: תמיכה במונורפו ובין מאגרים, אימות פורמלי, וסקירת קוד עם מבט על של ה-SDLC שלכם, בתוספת מחברים ל-Sentry, Jira, ועוד, כך שתקריות וכרטיסים יושבים באותו גרף כמו הקוד שלכם. **[התחילו בחינם, ללא כרטיס](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **מקומי-ראשון** | הקוד מנותח מקומית עם tree-sitter (ללא LLM, שום דבר לא עוזב את המכונה שלכם); רק המעבר הסמנטי על מסמכים/מדיה פונה לשרת עורפי, ורק אם הגדרתם אחד |
 
 > [!TIP]
-> מריצים את זה על פני מאגרים רבים או מונורפו? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) עושה זאת ברציפות ומצמצם את הוצאות הטוקנים של הסוכן ב-80%, עם קישורים בין מאגרים, סקירת קוד לכל ה-SDLC, אימות פורמלי, ומחברי Sentry/Jira. [התחילו תקופת ניסיון חינם של 14 יום &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> מריצים את זה על פני מאגרים רבים או מונורפו? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) עושה זאת ברציפות ומצמצם את הוצאות הטוקנים של הסוכן ב-80%, עם קישורים בין מאגרים, סקירת קוד לכל ה-SDLC, אימות פורמלי, ומחברי Sentry/Jira. [התחילו בחינם, ללא כרטיס &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -448,7 +448,7 @@ viz_node_limit=0
 - **מחברי SDLC**: משכו פנימה את Sentry, Jira, ועוד, כך שתקריות, כרטיסים, וקוד חיים בגרף אחד.
 - **תמידי**: מתעדכן ברציפות ברקע על פני קוד, מסמכים, ופגישות.
 
-**[התחילו תקופת ניסיון חינם של 14 יום ב-app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[התחילו בחינם, ללא כרטיס &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

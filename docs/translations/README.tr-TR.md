@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Ajan token harcamanızı %80 azaltın.</b> Graphify Cloud, ajanlarınızı yöneten, kod kalitesini yüksek tutan ve biçimsel doğrulama ile doğruluğu kanıtlayan daima açık bir bellektir. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>14 günlük ücretsiz denemeyi başlatın &rarr;</b></a>
+  <b>Ajan token harcamanızı %80 azaltın.</b> Graphify Cloud, ajanlarınızı yöneten, kod kalitesini yüksek tutan ve biçimsel doğrulama ile doğruluğu kanıtlayan daima açık bir bellektir. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Ücretsiz başlayın, kart gerekmez &rarr;</b></a>
 </p>
 
 Yapay zeka destekli kodlama asistanınıza `/graphify` yazın; tüm projenizi (kod, belgeler, PDF'ler, görseller, videolar) dosyalar arasında **grep yapmak yerine sorgulayabileceğiniz** bir **bilgi grafiğine** eşler.
@@ -38,7 +38,7 @@ Yapay zeka destekli kodlama asistanınıza `/graphify` yazın; tüm projenizi (k
 - **Vektör dizini değildir.** Gömme (embedding) yok, vektör deposu yok: gezinebileceğiniz gerçek bir grafik. Bir soru sorun, iki şey arasındaki yolu izleyin veya tek bir kavramı açıklayın.
 
 > [!NOTE]
-> **Bunun daima açık olmasını mı istiyorsunuz?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss), grafiği tüm SDLC'niz boyunca canlı tutar: monorepo ve repolar arası destek, biçimsel doğrulama ve SDLC'nize kuşbakışı bakışla kod incelemesi; ayrıca Sentry, Jira ve daha fazlası için konektörler sayesinde olaylar ve biletler kodunuzla aynı grafikte yer alır. **[app.graphify.com'da 14 günlük ücretsiz denemeyi başlatın](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Bunun daima açık olmasını mı istiyorsunuz?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss), grafiği tüm SDLC'niz boyunca canlı tutar: monorepo ve repolar arası destek, biçimsel doğrulama ve SDLC'nize kuşbakışı bakışla kod incelemesi; ayrıca Sentry, Jira ve daha fazlası için konektörler sayesinde olaylar ve biletler kodunuzla aynı grafikte yer alır. **[Ücretsiz başlayın, kart gerekmez](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Kutudan çıktığı haliyle elde ettikleriniz:
 | **Önce yerel** | Kod yerel olarak tree-sitter ile ayrıştırılır (LLM yok, hiçbir şey makinenizden çıkmaz); yalnızca belgeler/medya üzerindeki anlamsal geçiş bir arka uca çağrı yapar ve yalnızca bir tane yapılandırırsanız |
 
 > [!TIP]
-> Bunu birçok repoda veya bir monorepoda mı çalıştırıyorsunuz? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) bunu sürekli yapar ve ajan token harcamasını %80 azaltır; repolar arası bağlantılar, SDLC genelinde kod incelemesi, biçimsel doğrulama ve Sentry/Jira konektörleri ile birlikte. [14 günlük ücretsiz denemeyi başlatın &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Bunu birçok repoda veya bir monorepoda mı çalıştırıyorsunuz? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) bunu sürekli yapar ve ajan token harcamasını %80 azaltır; repolar arası bağlantılar, SDLC genelinde kod incelemesi, biçimsel doğrulama ve Sentry/Jira konektörleri ile birlikte. [Ücretsiz başlayın, kart gerekmez &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ Yaygın kurulum ve çıkarım sorunları ve bunların çözümleri: **[Sorun gid
 - **SDLC konektörleri**: Sentry, Jira ve daha fazlasını çekin; böylece olaylar, biletler ve kod tek bir grafikte yaşar.
 - **Daima açık**: kod, belgeler ve toplantılar genelinde arka planda sürekli güncellenir.
 
-**[app.graphify.com'da 14 günlük ücretsiz denemeyi başlatın &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Ücretsiz başlayın, kart gerekmez &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

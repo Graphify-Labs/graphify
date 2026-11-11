@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Cắt giảm chi phí token của agent đi 80%.</b> Graphify Cloud là bộ nhớ luôn bật, giúp quản trị các agent của bạn, giữ chất lượng code ở mức cao, và chứng minh tính đúng đắn bằng kiểm chứng hình thức. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bắt đầu dùng thử miễn phí 14 ngày &rarr;</b></a>
+  <b>Cắt giảm chi phí token của agent đi 80%.</b> Graphify Cloud là bộ nhớ luôn bật, giúp quản trị các agent của bạn, giữ chất lượng code ở mức cao, và chứng minh tính đúng đắn bằng kiểm chứng hình thức. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bắt đầu miễn phí, không cần thẻ &rarr;</b></a>
 </p>
 
 Gõ `/graphify` trong trợ lý lập trình AI của bạn và nó ánh xạ toàn bộ dự án của bạn (code, tài liệu, PDF, hình ảnh, video) thành một **đồ thị tri thức** mà bạn có thể **truy vấn thay vì grep** xuyên qua các tệp.
@@ -38,7 +38,7 @@ Gõ `/graphify` trong trợ lý lập trình AI của bạn và nó ánh xạ to
 - **Không phải chỉ mục vector.** Không embedding, không kho vector: một đồ thị thực sự mà bạn duyệt qua. Hỏi một câu hỏi, lần theo đường đi giữa hai thứ, hoặc giải thích một khái niệm.
 
 > [!NOTE]
-> **Muốn cái này luôn bật?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) giữ đồ thị luôn sống xuyên suốt toàn bộ SDLC của bạn: hỗ trợ monorepo và liên repo, kiểm chứng hình thức, và rà soát code với góc nhìn bao quát toàn cảnh SDLC của bạn, cùng các trình kết nối cho Sentry, Jira và nhiều hơn nữa để sự cố và ticket nằm trong cùng đồ thị với code của bạn. **[Bắt đầu dùng thử miễn phí 14 ngày tại app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Muốn cái này luôn bật?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) giữ đồ thị luôn sống xuyên suốt toàn bộ SDLC của bạn: hỗ trợ monorepo và liên repo, kiểm chứng hình thức, và rà soát code với góc nhìn bao quát toàn cảnh SDLC của bạn, cùng các trình kết nối cho Sentry, Jira và nhiều hơn nữa để sự cố và ticket nằm trong cùng đồ thị với code của bạn. **[Bắt đầu miễn phí, không cần thẻ](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graph.html tương tác của graphify hiển thị mã nguồn FastAPI dưới dạng đồ thị tri thức bố trí theo lực, kèm chú giải các cộng đồng được phát hiện" width="900">
@@ -121,7 +121,7 @@ Những gì bạn nhận được ngay từ đầu:
 | **Local-first** | Code được phân tích cục bộ bằng tree-sitter (không LLM, không gì rời khỏi máy của bạn); chỉ lượt xử lý ngữ nghĩa trên tài liệu/media mới gọi tới backend, và chỉ khi bạn cấu hình một backend |
 
 > [!TIP]
-> Đang chạy cái này trên nhiều repo hay một monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) làm điều đó liên tục và cắt giảm chi phí token của agent đi 80%, với liên kết liên repo, rà soát code trên toàn bộ SDLC, kiểm chứng hình thức, và các trình kết nối Sentry/Jira. [Bắt đầu dùng thử miễn phí 14 ngày &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Đang chạy cái này trên nhiều repo hay một monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) làm điều đó liên tục và cắt giảm chi phí token của agent đi 80%, với liên kết liên repo, rà soát code trên toàn bộ SDLC, kiểm chứng hình thức, và các trình kết nối Sentry/Jira. [Bắt đầu miễn phí, không cần thẻ &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -448,7 +448,7 @@ Mọi lệnh và cờ, kèm ví dụ: **[CLI reference](https://docs.graphify.co
 - **Trình kết nối SDLC**: kéo vào Sentry, Jira và nhiều hơn nữa, để sự cố, ticket, và code sống trong một đồ thị.
 - **Luôn bật**: cập nhật liên tục ở nền xuyên qua code, tài liệu, và các cuộc họp.
 
-**[Bắt đầu dùng thử miễn phí 14 ngày tại app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Bắt đầu miễn phí, không cần thẻ &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

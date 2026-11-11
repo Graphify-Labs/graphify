@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Μειώστε τη δαπάνη token των agent κατά 80%.</b> Το Graphify Cloud είναι πάντα ενεργή μνήμη που διακυβερνά τους agent σας, διατηρεί υψηλή την ποιότητα κώδικα, και αποδεικνύει την ορθότητα με τυπική επαλήθευση. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Ξεκινήστε μια δωρεάν δοκιμή 14 ημερών &rarr;</b></a>
+  <b>Μειώστε τη δαπάνη token των agent κατά 80%.</b> Το Graphify Cloud είναι πάντα ενεργή μνήμη που διακυβερνά τους agent σας, διατηρεί υψηλή την ποιότητα κώδικα, και αποδεικνύει την ορθότητα με τυπική επαλήθευση. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;</b></a>
 </p>
 
 Πληκτρολογήστε `/graphify` στον βοηθό κωδικοποίησης AI σας και αυτός χαρτογραφεί ολόκληρο το έργο σας (κώδικα, έγγραφα, PDF, εικόνες, βίντεο) σε έναν **γράφο γνώσης** τον οποίο μπορείτε να **ρωτάτε αντί να κάνετε grep** στα αρχεία.
@@ -38,7 +38,7 @@
 - **Δεν είναι διανυσματικό ευρετήριο.** Χωρίς embeddings, χωρίς διανυσματικό αποθετήριο: ένας πραγματικός γράφος που διασχίζετε. Κάντε μια ερώτηση, εντοπίστε τη διαδρομή μεταξύ δύο πραγμάτων, ή εξηγήστε μία έννοια.
 
 > [!NOTE]
-> **Το θέλετε πάντα ενεργό;** Το [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) διατηρεί τον γράφο ζωντανό σε ολόκληρο τον SDLC σας: υποστήριξη monorepo και cross-repo, τυπική επαλήθευση, και έλεγχο κώδικα με πανοραμική εικόνα του SDLC σας, συν connectors για Sentry, Jira, και άλλα ώστε τα συμβάντα και τα tickets να βρίσκονται στον ίδιο γράφο με τον κώδικά σας. **[Ξεκινήστε μια δωρεάν δοκιμή 14 ημερών στο app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Το θέλετε πάντα ενεργό;** Το [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) διατηρεί τον γράφο ζωντανό σε ολόκληρο τον SDLC σας: υποστήριξη monorepo και cross-repo, τυπική επαλήθευση, και έλεγχο κώδικα με πανοραμική εικόνα του SDLC σας, συν connectors για Sentry, Jira, και άλλα ώστε τα συμβάντα και τα tickets να βρίσκονται στον ίδιο γράφο με τον κώδικά σας. **[Ξεκινήστε δωρεάν, χωρίς κάρτα](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **Local-first** | Ο κώδικας αναλύεται τοπικά με tree-sitter (χωρίς LLM, τίποτα δεν φεύγει από το μηχάνημά σας)· μόνο το σημασιολογικό πέρασμα πάνω σε έγγραφα/μέσα καλεί ένα backend, και μόνο αν διαμορφώσετε ένα |
 
 > [!TIP]
-> Το εκτελείτε σε πολλά repos ή σε monorepo; Το [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) το κάνει συνεχώς και μειώνει τη δαπάνη token των agent κατά 80%, με συνδέσμους cross-repo, έλεγχο κώδικα σε όλο τον SDLC, τυπική επαλήθευση, και connectors Sentry/Jira. [Ξεκινήστε μια δωρεάν δοκιμή 14 ημερών &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Το εκτελείτε σε πολλά repos ή σε monorepo; Το [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) το κάνει συνεχώς και μειώνει τη δαπάνη token των agent κατά 80%, με συνδέσμους cross-repo, έλεγχο κώδικα σε όλο τον SDLC, τυπική επαλήθευση, και connectors Sentry/Jira. [Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -448,7 +448,7 @@ viz_node_limit=0
 - **Connectors SDLC**: ενσωματώστε Sentry, Jira, και άλλα, ώστε τα συμβάντα, τα tickets, και ο κώδικας να ζουν σε έναν γράφο.
 - **Πάντα ενεργό**: ενημερώνεται συνεχώς στο παρασκήνιο σε κώδικα, έγγραφα, και συσκέψεις.
 
-**[Ξεκινήστε μια δωρεάν δοκιμή 14 ημερών στο app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

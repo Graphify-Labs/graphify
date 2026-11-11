@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>將代理的 token 開銷減少 80%。</b> Graphify Cloud 是一個常駐的記憶層，它治理你的代理，維持程式碼品質，並透過形式化驗證來證明正確性。<a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>開始 14 天免費試用 &rarr;</b></a>
+  <b>將代理的 token 開銷減少 80%。</b> Graphify Cloud 是一個常駐的記憶層，它治理你的代理，維持程式碼品質，並透過形式化驗證來證明正確性。<a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>免費開始，無需信用卡 &rarr;</b></a>
 </p>
 
 在你的 AI 編碼助理中輸入 `/graphify`，它就會把你的整個專案（程式碼、文件、PDF、圖片、影片）映射成一張**知識圖譜**，你可以**用查詢取代在檔案裡 grep**。
@@ -38,7 +38,7 @@
 - **不是向量索引。** 沒有嵌入，沒有向量庫：是一張你可以真正走訪的圖。問一個問題，追蹤兩個事物之間的路徑，或是解釋某一個概念。
 
 > [!NOTE]
-> **想讓它一直在線？** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 讓圖譜在你的整個 SDLC 中保持即時：支援 monorepo 和跨儲存庫、形式化驗證，以及帶有 SDLC 全域視角的程式碼審查，還有 Sentry、Jira 等連接器，讓事故和工單與程式碼處於同一張圖中。**[在 app.graphify.com 開始 14 天免費試用](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**。
+> **想讓它一直在線？** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 讓圖譜在你的整個 SDLC 中保持即時：支援 monorepo 和跨儲存庫、形式化驗證，以及帶有 SDLC 全域視角的程式碼審查，還有 Sentry、Jira 等連接器，讓事故和工單與程式碼處於同一張圖中。**[免費開始，無需信用卡](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**。
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify 的互動式 graph.html，將 FastAPI 程式碼庫呈現為一張力導向知識圖譜，並附有偵測到的社群圖例" width="900">
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **Local-first** | 程式碼以 tree-sitter 在本地解析（無 LLM，沒有任何內容離開你的機器）；只有對文件/媒體的語意處理才會呼叫後端，而且只在你設定了後端時才會 |
 
 > [!TIP]
-> 要在很多儲存庫或一個 monorepo 上執行？[Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 會持續地做這件事，並將代理的 token 開銷減少 80%，帶有跨儲存庫連接、SDLC 全域的程式碼審查、形式化驗證，以及 Sentry/Jira 連接器。[開始 14 天免費試用 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> 要在很多儲存庫或一個 monorepo 上執行？[Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 會持續地做這件事，並將代理的 token 開銷減少 80%，帶有跨儲存庫連接、SDLC 全域的程式碼審查、形式化驗證，以及 Sentry/Jira 連接器。[免費開始，無需信用卡 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -448,7 +448,7 @@ viz_node_limit=0
 - **SDLC 連接器**：接入 Sentry、Jira 等，讓事故、工單和程式碼處於同一張圖中。
 - **常駐**：在背景持續更新，涵蓋程式碼、文件和會議。
 
-**[在 app.graphify.com 開始 14 天免費試用 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[免費開始，無需信用卡 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

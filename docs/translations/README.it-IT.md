@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Riduci dell'80% la spesa in token dei tuoi agenti.</b> Graphify Cloud è una memoria sempre attiva che governa i tuoi agenti, mantiene alta la qualità del codice e dimostra la correttezza con la verifica formale. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Inizia una prova gratuita di 14 giorni &rarr;</b></a>
+  <b>Riduci dell'80% la spesa in token dei tuoi agenti.</b> Graphify Cloud è una memoria sempre attiva che governa i tuoi agenti, mantiene alta la qualità del codice e dimostra la correttezza con la verifica formale. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Inizia gratis, senza carta &rarr;</b></a>
 </p>
 
 Digita `/graphify` nel tuo assistente di programmazione con IA e mappa l'intero progetto (codice, documenti, PDF, immagini, video) in un **grafo della conoscenza** che puoi **interrogare invece di fare grep** tra i file.
@@ -38,7 +38,7 @@ Digita `/graphify` nel tuo assistente di programmazione con IA e mappa l'intero 
 - **Non è un indice vettoriale.** Niente embedding, niente archivio di vettori: un vero grafo che percorri. Fai una domanda, traccia il percorso tra due cose o spiega un concetto.
 
 > [!NOTE]
-> **Lo vuoi sempre attivo?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) mantiene il grafo vivo lungo tutto il tuo SDLC: supporto per monorepo e multi-repository, verifica formale e revisione del codice con una visione d'insieme del tuo SDLC, più connettori per Sentry, Jira e altro, così che incidenti e ticket si trovino nello stesso grafo del tuo codice. **[Inizia una prova gratuita di 14 giorni su app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Lo vuoi sempre attivo?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) mantiene il grafo vivo lungo tutto il tuo SDLC: supporto per monorepo e multi-repository, verifica formale e revisione del codice con una visione d'insieme del tuo SDLC, più connettori per Sentry, Jira e altro, così che incidenti e ticket si trovino nello stesso grafo del tuo codice. **[Inizia gratis, senza carta](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Ciò che ottieni da subito:
 | **Local-first** | Il codice viene analizzato localmente con tree-sitter (nessun LLM, nulla lascia la tua macchina); solo la passata semantica su documenti/media chiama un backend, e solo se ne configuri uno |
 
 > [!TIP]
-> Lo esegui su molti repository o su un monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) lo fa di continuo e riduce la spesa in token degli agenti dell'80%, con collegamenti multi-repository, revisione del codice su scala SDLC, verifica formale e connettori Sentry/Jira. [Inizia una prova gratuita di 14 giorni &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Lo esegui su molti repository o su un monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) lo fa di continuo e riduce la spesa in token degli agenti dell'80%, con collegamenti multi-repository, revisione del codice su scala SDLC, verifica formale e connettori Sentry/Jira. [Inizia gratis, senza carta &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ Ogni comando e flag, con esempi: **[CLI reference](https://docs.graphify.com/ref
 - **Connettori SDLC**: integra Sentry, Jira e altro, così che incidenti, ticket e codice vivano in un unico grafo.
 - **Sempre attivo**: si aggiorna di continuo in background attraverso codice, documenti e riunioni.
 
-**[Inizia una prova gratuita di 14 giorni su app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Inizia gratis, senza carta &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

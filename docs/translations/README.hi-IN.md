@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>एजेंट टोकन खर्च को 80% तक घटाएं।</b> Graphify Cloud एक हमेशा-चालू मेमोरी है जो आपके एजेंट्स को नियंत्रित करती है, कोड की गुणवत्ता ऊंची बनाए रखती है, और औपचारिक सत्यापन के साथ शुद्धता को सिद्ध करती है। <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>14-दिन का मुफ्त ट्रायल शुरू करें &rarr;</b></a>
+  <b>एजेंट टोकन खर्च को 80% तक घटाएं।</b> Graphify Cloud एक हमेशा-चालू मेमोरी है जो आपके एजेंट्स को नियंत्रित करती है, कोड की गुणवत्ता ऊंची बनाए रखती है, और औपचारिक सत्यापन के साथ शुद्धता को सिद्ध करती है। <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>मुफ़्त में शुरू करें, कार्ड की ज़रूरत नहीं &rarr;</b></a>
 </p>
 
 अपने AI कोडिंग असिस्टेंट में `/graphify` टाइप करें और यह आपके पूरे प्रोजेक्ट (कोड, डॉक्स, PDF, इमेज, वीडियो) को एक **नॉलेज ग्राफ** में मैप कर देता है, जिसे आप फाइलों में **grep करने के बजाय query** कर सकते हैं।
@@ -38,7 +38,7 @@
 - **यह वेक्टर इंडेक्स नहीं है।** कोई embeddings नहीं, कोई वेक्टर स्टोर नहीं: एक असली ग्राफ जिसमें आप ट्रैवर्स करते हैं। कोई सवाल पूछें, दो चीज़ों के बीच का रास्ता ट्रेस करें, या किसी एक अवधारणा की व्याख्या कराएं।
 
 > [!NOTE]
-> **इसे हमेशा-चालू चाहते हैं?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) आपके पूरे SDLC में ग्राफ को लाइव रखता है: मोनोरेपो और क्रॉस-रेपो सपोर्ट, औपचारिक सत्यापन, और आपके SDLC के विहंगम दृश्य के साथ कोड रिव्यू, साथ ही Sentry, Jira और अन्य के लिए कनेक्टर्स ताकि इंसिडेंट और टिकट उसी ग्राफ में आपके कोड के साथ रहें। **[app.graphify.com पर 14-दिन का मुफ्त ट्रायल शुरू करें](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**।
+> **इसे हमेशा-चालू चाहते हैं?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) आपके पूरे SDLC में ग्राफ को लाइव रखता है: मोनोरेपो और क्रॉस-रेपो सपोर्ट, औपचारिक सत्यापन, और आपके SDLC के विहंगम दृश्य के साथ कोड रिव्यू, साथ ही Sentry, Jira और अन्य के लिए कनेक्टर्स ताकि इंसिडेंट और टिकट उसी ग्राफ में आपके कोड के साथ रहें। **[मुफ़्त में शुरू करें, कार्ड की ज़रूरत नहीं](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**।
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **Local-first** | कोड tree-sitter के साथ लोकली पार्स होता है (कोई LLM नहीं, कुछ भी आपकी मशीन से बाहर नहीं जाता); केवल डॉक्स/मीडिया पर सिमैंटिक पास किसी बैकएंड को कॉल करता है, और वह भी तभी जब आप एक कॉन्फ़िगर करें |
 
 > [!TIP]
-> इसे कई रेपो या मोनोरेपो में चला रहे हैं? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) इसे लगातार करता है और एजेंट टोकन खर्च को 80% तक घटाता है, क्रॉस-रेपो लिंक, SDLC-व्यापी कोड रिव्यू, औपचारिक सत्यापन, और Sentry/Jira कनेक्टर्स के साथ। [14-दिन का मुफ्त ट्रायल शुरू करें &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> इसे कई रेपो या मोनोरेपो में चला रहे हैं? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) इसे लगातार करता है और एजेंट टोकन खर्च को 80% तक घटाता है, क्रॉस-रेपो लिंक, SDLC-व्यापी कोड रिव्यू, औपचारिक सत्यापन, और Sentry/Jira कनेक्टर्स के साथ। [मुफ़्त में शुरू करें, कार्ड की ज़रूरत नहीं &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **SDLC कनेक्टर्स**: Sentry, Jira, और अन्य को खींच लें, ताकि इंसिडेंट, टिकट, और कोड एक ही ग्राफ में रहें।
 - **हमेशा-चालू**: कोड, डॉक्स, और मीटिंग्स में बैकग्राउंड में लगातार अपडेट होता है।
 
-**[app.graphify.com पर 14-दिन का मुफ्त ट्रायल शुरू करें &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[मुफ़्त में शुरू करें, कार्ड की ज़रूरत नहीं &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

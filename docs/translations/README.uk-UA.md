@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Скоротіть витрати токенів агентів на 80%.</b> Graphify Cloud - це завжди активна памʼять, яка керує вашими агентами, підтримує високу якість коду та доводить коректність за допомогою формальної верифікації. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Почніть безкоштовну 14-денну пробну версію &rarr;</b></a>
+  <b>Скоротіть витрати токенів агентів на 80%.</b> Graphify Cloud - це завжди активна памʼять, яка керує вашими агентами, підтримує високу якість коду та доводить коректність за допомогою формальної верифікації. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Почніть безкоштовно, без картки &rarr;</b></a>
 </p>
 
 Введіть `/graphify` у вашому AI-асистенті для кодування, і він відобразить увесь ваш проєкт (код, документацію, PDF, зображення, відео) у **граф знань**, який ви можете **запитувати замість того, щоб грепати** файли.
@@ -38,7 +38,7 @@
 - **Це не векторний індекс.** Жодних ембедингів, жодного векторного сховища: справжній граф, яким ви проходите. Поставте питання, простежте шлях між двома речами або поясніть одне поняття.
 
 > [!NOTE]
-> **Хочете, щоб це було завжди активним?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) підтримує граф живим упродовж усього вашого SDLC: підтримка монорепозиторіїв і крос-репозиторіїв, формальна верифікація та код-рев'ю з висоти пташиного польоту над вашим SDLC, а також конектори для Sentry, Jira та інших, тож інциденти й тикети перебувають у тому самому графі, що й ваш код. **[Почніть безкоштовну 14-денну пробну версію на app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Хочете, щоб це було завжди активним?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) підтримує граф живим упродовж усього вашого SDLC: підтримка монорепозиторіїв і крос-репозиторіїв, формальна верифікація та код-рев'ю з висоти пташиного польоту над вашим SDLC, а також конектори для Sentry, Jira та інших, тож інциденти й тикети перебувають у тому самому графі, що й ваш код. **[Почніть безкоштовно, без картки](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **Локальний пріоритет** | Код розбирається локально за допомогою tree-sitter (без LLM, нічого не залишає вашу машину); лише семантичний прохід над документами/медіа звертається до бекенду, і тільки якщо ви його налаштуєте |
 
 > [!TIP]
-> Запускаєте це на багатьох репозиторіях чи монорепозиторії? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) робить це безперервно та скорочує витрати токенів агентів на 80%, з крос-репозиторними звʼязками, код-рев'ю на рівні всього SDLC, формальною верифікацією та конекторами Sentry/Jira. [Почніть безкоштовну 14-денну пробну версію &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Запускаєте це на багатьох репозиторіях чи монорепозиторії? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) робить це безперервно та скорочує витрати токенів агентів на 80%, з крос-репозиторними звʼязками, код-рев'ю на рівні всього SDLC, формальною верифікацією та конекторами Sentry/Jira. [Почніть безкоштовно, без картки &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **Конектори SDLC**: підтягуйте Sentry, Jira та інше, тож інциденти, тикети та код живуть в одному графі.
 - **Завжди активний**: оновлюється безперервно у фоновому режимі по коду, документах та зустрічах.
 
-**[Почніть безкоштовну 14-денну пробну версію на app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Почніть безкоштовно, без картки &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

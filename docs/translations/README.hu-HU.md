@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Csökkentse az ügynökök tokenköltségét 80%-kal.</b> A Graphify Cloud mindig aktív memória, amely irányítja az ügynökeit, magasan tartja a kódminőséget, és formális verifikációval bizonyítja a helyességet. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Indítson ingyenes 14 napos próbaidőszakot &rarr;</b></a>
+  <b>Csökkentse az ügynökök tokenköltségét 80%-kal.</b> A Graphify Cloud mindig aktív memória, amely irányítja az ügynökeit, magasan tartja a kódminőséget, és formális verifikációval bizonyítja a helyességet. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Kezdje ingyen, kártya nélkül &rarr;</b></a>
 </p>
 
 Írja be a `/graphify` parancsot az AI-kódolási asszisztensébe, és az a teljes projektjét (kód, dokumentumok, PDF-ek, képek, videók) **tudásgráffá** alakítja, amelyet **lekérdezhet ahelyett, hogy grep-pel** keresgélne a fájlok között.
@@ -38,7 +38,7 @@
 - **Nem vektorindex.** Nincsenek beágyazások, nincs vektortár: egy valódi gráf, amelyet bejár. Tegyen fel egy kérdést, kövesse nyomon a két dolog közötti utat, vagy magyaráztasson el egy fogalmat.
 
 > [!NOTE]
-> **Szeretné ezt mindig aktívan?** A [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) a teljes SDLC-jén át élőben tartja a gráfot: monorepo- és repository-közi támogatás, formális verifikáció, valamint kódellenőrzés madártávlatból az SDLC-jéről, továbbá konnektorok a Sentryhez, Jirához és másokhoz, hogy az incidensek és jegyek ugyanabban a gráfban legyenek, mint a kódja. **[Indítson ingyenes 14 napos próbaidőszakot az app.graphify.com oldalon](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Szeretné ezt mindig aktívan?** A [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) a teljes SDLC-jén át élőben tartja a gráfot: monorepo- és repository-közi támogatás, formális verifikáció, valamint kódellenőrzés madártávlatból az SDLC-jéről, továbbá konnektorok a Sentryhez, Jirához és másokhoz, hogy az incidensek és jegyek ugyanabban a gráfban legyenek, mint a kódja. **[Kezdje ingyen, kártya nélkül](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Amit alapból kap:
 | **Local-first** | A kódot lokálisan elemzi a tree-sitter (nincs LLM, semmi sem hagyja el a gépét); csak a dokumentumokon/médián végzett szemantikai futtatás hív meg egy backendet, és csak akkor, ha beállít egyet |
 
 > [!TIP]
-> Sok repón vagy egy monorepón át futtatja ezt? A [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) folyamatosan végzi, és 80%-kal csökkenti az ügynökök tokenköltségét, repository-közi hivatkozásokkal, SDLC-szintű kódellenőrzéssel, formális verifikációval és Sentry/Jira konnektorokkal. [Indítson ingyenes 14 napos próbaidőszakot &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Sok repón vagy egy monorepón át futtatja ezt? A [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) folyamatosan végzi, és 80%-kal csökkenti az ügynökök tokenköltségét, repository-közi hivatkozásokkal, SDLC-szintű kódellenőrzéssel, formális verifikációval és Sentry/Jira konnektorokkal. [Kezdje ingyen, kártya nélkül &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ A [**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_med
 - **SDLC-konnektorok**: húzza be a Sentryt, Jirát és másokat, hogy az incidensek, jegyek és a kód egyetlen gráfban éljenek.
 - **Mindig aktív**: folyamatosan frissül a háttérben a kódon, dokumentumokon és megbeszéléseken át.
 
-**[Indítson ingyenes 14 napos próbaidőszakot az app.graphify.com oldalon &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Kezdje ingyen, kártya nélkül &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>에이전트의 토큰 지출을 80% 줄이세요.</b> Graphify Cloud 는 상시 작동하는 메모리로, 에이전트를 통제하고 코드 품질을 높게 유지하며 형식 검증으로 정확성을 증명합니다. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>14 일 무료 체험 시작 &rarr;</b></a>
+  <b>에이전트의 토큰 지출을 80% 줄이세요.</b> Graphify Cloud 는 상시 작동하는 메모리로, 에이전트를 통제하고 코드 품질을 높게 유지하며 형식 검증으로 정확성을 증명합니다. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>무료로 시작, 카드 불필요 &rarr;</b></a>
 </p>
 
 AI 코딩 어시스턴트에서 `/graphify` 를 입력하면, 프로젝트 전체(코드, 문서, PDF, 이미지, 동영상)를 **지식 그래프**로 매핑하여 파일을 grep 하는 대신 **쿼리로 조회**할 수 있습니다.
@@ -38,7 +38,7 @@ AI 코딩 어시스턴트에서 `/graphify` 를 입력하면, 프로젝트 전�
 - **벡터 인덱스가 아닙니다.** 임베딩도 벡터 저장소도 없습니다. 실제로 순회할 수 있는 그래프입니다. 질문을 하거나, 두 대상 사이의 경로를 추적하거나, 하나의 개념을 설명할 수 있습니다.
 
 > [!NOTE]
-> **이것을 상시 작동하게 하고 싶으신가요?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 는 당신의 SDLC 전체에 걸쳐 그래프를 항상 라이브로 유지합니다: 모노레포 및 레포 간 지원, 형식 검증, SDLC 를 조감하는 코드 리뷰, 그리고 Sentry, Jira 등을 위한 커넥터를 통해 인시던트와 티켓이 코드와 같은 그래프에 놓입니다. **[app.graphify.com 에서 14 일 무료 체험을 시작하세요](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **이것을 상시 작동하게 하고 싶으신가요?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 는 당신의 SDLC 전체에 걸쳐 그래프를 항상 라이브로 유지합니다: 모노레포 및 레포 간 지원, 형식 검증, SDLC 를 조감하는 코드 리뷰, 그리고 Sentry, Jira 등을 위한 커넥터를 통해 인시던트와 티켓이 코드와 같은 그래프에 놓입니다. **[무료로 시작, 카드 불필요](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify 의 인터랙티브 graph.html 이 FastAPI 코드베이스를 힘 기반으로 배치된 지식 그래프로, 검출된 커뮤니티 범례와 함께 보여준다" width="900">
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **Local-first** | 코드는 tree-sitter 로 로컬에서 파싱됩니다(LLM 없음, 무엇도 머신을 벗어나지 않음). 문서/미디어에 대한 의미 분석 패스만 백엔드를 호출하며, 그것도 당신이 설정한 경우에만 그렇습니다 |
 
 > [!TIP]
-> 여러 레포나 모노레포에 걸쳐 이것을 실행하고 계신가요? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 는 이를 지속적으로 수행하며 에이전트의 토큰 지출을 80% 줄입니다. 레포 간 링크, SDLC 전반의 코드 리뷰, 형식 검증, Sentry/Jira 커넥터를 제공합니다. [14 일 무료 체험 시작 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> 여러 레포나 모노레포에 걸쳐 이것을 실행하고 계신가요? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 는 이를 지속적으로 수행하며 에이전트의 토큰 지출을 80% 줄입니다. 레포 간 링크, SDLC 전반의 코드 리뷰, 형식 검증, Sentry/Jira 커넥터를 제공합니다. [무료로 시작, 카드 불필요 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -448,7 +448,7 @@ AI 어시스턴트 외에도, `graphify query`, `graphify path`, `graphify expla
 - **SDLC 커넥터**: Sentry, Jira 등을 끌어와, 인시던트, 티켓, 코드가 하나의 그래프에 존재하게 합니다.
 - **상시 작동**: 코드, 문서, 미팅에 걸쳐 백그라운드에서 지속적으로 업데이트합니다.
 
-**[app.graphify.com 에서 14 일 무료 체험 시작 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[무료로 시작, 카드 불필요 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

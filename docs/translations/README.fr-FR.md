@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Réduisez de 80 % les dépenses en tokens de vos agents.</b> Graphify Cloud est une mémoire toujours active qui gouverne vos agents, maintient une haute qualité de code et prouve la justesse par vérification formelle. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Commencez un essai gratuit de 14 jours &rarr;</b></a>
+  <b>Réduisez de 80 % les dépenses en tokens de vos agents.</b> Graphify Cloud est une mémoire toujours active qui gouverne vos agents, maintient une haute qualité de code et prouve la justesse par vérification formelle. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Commencez gratuitement, sans carte &rarr;</b></a>
 </p>
 
 Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemble de votre projet (code, documents, PDF, images, vidéos) dans un **graphe de connaissances** que vous pouvez **interroger au lieu de faire un grep** à travers les fichiers.
@@ -38,7 +38,7 @@ Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemb
 - **Pas un index vectoriel.** Pas d'embeddings, pas de magasin de vecteurs : un vrai graphe que vous parcourez. Posez une question, tracez le chemin entre deux choses, ou expliquez un concept.
 
 > [!NOTE]
-> **Vous voulez cela en permanence ?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) maintient le graphe à jour sur l'ensemble de votre SDLC : prise en charge des monorepos et du multi-dépôt, vérification formelle et revue de code avec une vue d'ensemble de votre SDLC, plus des connecteurs pour Sentry, Jira et davantage, afin que les incidents et les tickets se trouvent dans le même graphe que votre code. **[Commencez un essai gratuit de 14 jours sur app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Vous voulez cela en permanence ?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) maintient le graphe à jour sur l'ensemble de votre SDLC : prise en charge des monorepos et du multi-dépôt, vérification formelle et revue de code avec une vue d'ensemble de votre SDLC, plus des connecteurs pour Sentry, Jira et davantage, afin que les incidents et les tickets se trouvent dans le même graphe que votre code. **[Commencez gratuitement, sans carte](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Ce que vous obtenez d'emblée :
 | **Local-first** | Le code est analysé localement avec tree-sitter (pas de LLM, rien ne quitte votre machine) ; seule la passe sémantique sur les documents/médias appelle un backend, et seulement si vous en configurez un |
 
 > [!TIP]
-> Vous exécutez cela sur de nombreux dépôts ou un monorepo ? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) le fait en continu et réduit de 80 % les dépenses en tokens des agents, avec des liens multi-dépôt, une revue de code à l'échelle du SDLC, la vérification formelle et des connecteurs Sentry/Jira. [Commencez un essai gratuit de 14 jours &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Vous exécutez cela sur de nombreux dépôts ou un monorepo ? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) le fait en continu et réduit de 80 % les dépenses en tokens des agents, avec des liens multi-dépôt, une revue de code à l'échelle du SDLC, la vérification formelle et des connecteurs Sentry/Jira. [Commencez gratuitement, sans carte &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ Chaque commande et chaque option, avec des exemples : **[CLI reference](https://
 - **Connecteurs SDLC** : intégrez Sentry, Jira et davantage, afin que les incidents, les tickets et le code vivent dans un seul graphe.
 - **Toujours actif** : se met à jour en continu en arrière-plan sur le code, les documents et les réunions.
 
-**[Commencez un essai gratuit de 14 jours sur app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Commencez gratuitement, sans carte &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

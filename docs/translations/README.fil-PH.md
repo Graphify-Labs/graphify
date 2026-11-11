@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Bawasan ang paggastos ng token ng agent nang 80%.</b> Ang Graphify Cloud ay laging-nakabukas na memory na namamahala sa iyong mga agent, pinapanatiling mataas ang kalidad ng code, at pinapatunayan ang pagiging tama gamit ang formal verification. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Magsimula ng libreng 14-araw na pagsubok &rarr;</b></a>
+  <b>Bawasan ang paggastos ng token ng agent nang 80%.</b> Ang Graphify Cloud ay laging-nakabukas na memory na namamahala sa iyong mga agent, pinapanatiling mataas ang kalidad ng code, at pinapatunayan ang pagiging tama gamit ang formal verification. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Magsimula nang libre, walang card &rarr;</b></a>
 </p>
 
 I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong proyekto mo (code, docs, PDF, mga larawan, video) sa isang **knowledge graph** na maaari mong **i-query sa halip na mag-grep** sa mga file.
@@ -38,7 +38,7 @@ I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong pr
 - **Hindi isang vector index.** Walang embeddings, walang vector store: isang tunay na graph na tinatahak mo. Magtanong, subaybayan ang landas sa pagitan ng dalawang bagay, o ipaliwanag ang isang konsepto.
 
 > [!NOTE]
-> **Gusto mo bang laging-nakabukas ito?** Pinapanatili ng [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) na buhay ang graph sa buong SDLC mo: suporta sa monorepo at cross-repo, formal verification, at code review na may bird's-eye view ng iyong SDLC, kasama ang mga connector para sa Sentry, Jira, at iba pa upang ang mga insidente at ticket ay nasa iisang graph kasama ng iyong code. **[Magsimula ng libreng 14-araw na pagsubok sa app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Gusto mo bang laging-nakabukas ito?** Pinapanatili ng [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) na buhay ang graph sa buong SDLC mo: suporta sa monorepo at cross-repo, formal verification, at code review na may bird's-eye view ng iyong SDLC, kasama ang mga connector para sa Sentry, Jira, at iba pa upang ang mga insidente at ticket ay nasa iisang graph kasama ng iyong code. **[Magsimula nang libre, walang card](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Ang makukuha mo nang out of the box:
 | **Local-first** | Ang code ay pini-parse nang lokal gamit ang tree-sitter (walang LLM, walang umaalis sa iyong makina); tanging ang semantikong pass sa docs/media ang tumatawag ng backend, at tanging kung mag-configure ka ng isa |
 
 > [!TIP]
-> Pinapatakbo ito sa maraming repo o isang monorepo? Ginagawa ito ng [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) nang tuloy-tuloy at binabawasan ang paggastos ng token ng agent nang 80%, na may mga cross-repo na link, code review na saklaw ng buong SDLC, formal verification, at mga connector ng Sentry/Jira. [Magsimula ng libreng 14-araw na pagsubok &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Pinapatakbo ito sa maraming repo o isang monorepo? Ginagawa ito ng [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) nang tuloy-tuloy at binabawasan ang paggastos ng token ng agent nang 80%, na may mga cross-repo na link, code review na saklaw ng buong SDLC, formal verification, at mga connector ng Sentry/Jira. [Magsimula nang libre, walang card &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ Ang [**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_m
 - **Mga SDLC connector**: hilahin ang Sentry, Jira, at iba pa, upang ang mga insidente, ticket, at code ay nasa iisang graph.
 - **Laging-nakabukas**: nag-a-update nang tuloy-tuloy sa background sa code, docs, at mga pulong.
 
-**[Magsimula ng libreng 14-araw na pagsubok sa app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Magsimula nang libre, walang card &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

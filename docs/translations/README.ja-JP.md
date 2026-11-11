@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>エージェントのトークン支出を 80% 削減。</b> Graphify Cloud は常時稼働のメモリであり、エージェントを統制し、コード品質を高く保ち、形式的検証で正しさを証明します。<a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>14 日間の無料トライアルを始める &rarr;</b></a>
+  <b>エージェントのトークン支出を 80% 削減。</b> Graphify Cloud は常時稼働のメモリであり、エージェントを統制し、コード品質を高く保ち、形式的検証で正しさを証明します。<a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>無料で始める、カード不要 &rarr;</b></a>
 </p>
 
 AI コーディングアシスタントで `/graphify` と入力すると、プロジェクト全体（コード、ドキュメント、PDF、画像、動画）を**ナレッジグラフ**にマッピングし、ファイルを grep する代わりに**クエリで調べられる**ようになります。
@@ -38,7 +38,7 @@ AI コーディングアシスタントで `/graphify` と入力すると、プ�
 - **ベクトルインデックスではない。** 埋め込みもベクトルストアもありません。実際にたどれるグラフです。質問する、2 つのものの間のパスをたどる、1 つの概念を説明する、といったことができます。
 
 > [!NOTE]
-> **常時稼働にしたいですか？** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) は SDLC 全体でグラフを常にライブに保ちます。モノレポおよびリポジトリ横断のサポート、形式的検証、SDLC を俯瞰するコードレビュー、さらに Sentry、Jira などのコネクタにより、インシデントやチケットがコードと同じグラフに収まります。**[app.graphify.com で 14 日間の無料トライアルを始める](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**。
+> **常時稼働にしたいですか？** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) は SDLC 全体でグラフを常にライブに保ちます。モノレポおよびリポジトリ横断のサポート、形式的検証、SDLC を俯瞰するコードレビュー、さらに Sentry、Jira などのコネクタにより、インシデントやチケットがコードと同じグラフに収まります。**[無料で始める、カード不要](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**。
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify のインタラクティブな graph.html が、FastAPI コードベースを力学的に配置されたナレッジグラフとして、検出されたコミュニティの凡例とともに表示している" width="900">
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **Local-first** | コードは tree-sitter でローカルに解析されます（LLM なし、何もマシンの外に出ません）。ドキュメント/メディアに対する意味的なパスだけがバックエンドを呼び出し、それも設定した場合のみです |
 
 > [!TIP]
-> これを多数のリポジトリやモノレポで実行していますか？[Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) はそれを継続的に行い、エージェントのトークン支出を 80% 削減します。リポジトリ横断のリンク、SDLC 全体のコードレビュー、形式的検証、Sentry/Jira コネクタを備えています。[14 日間の無料トライアルを始める &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> これを多数のリポジトリやモノレポで実行していますか？[Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) はそれを継続的に行い、エージェントのトークン支出を 80% 削減します。リポジトリ横断のリンク、SDLC 全体のコードレビュー、形式的検証、Sentry/Jira コネクタを備えています。[無料で始める、カード不要 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -448,7 +448,7 @@ AI アシスタントに加えて、`graphify query`、`graphify path`、`graphi
 - **SDLC コネクタ**: Sentry、Jira などを取り込み、インシデント、チケット、コードが 1 つのグラフに存在するようにします。
 - **常時稼働**: コード、ドキュメント、会議にまたがり、バックグラウンドで継続的に更新します。
 
-**[app.graphify.com で 14 日間の無料トライアルを始める &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[無料で始める、カード不要 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

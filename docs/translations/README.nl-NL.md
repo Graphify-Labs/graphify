@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Verlaag het tokenverbruik van je agents met 80%.</b> Graphify Cloud is altijd-aan geheugen dat je agents aanstuurt, de codekwaliteit hoog houdt en correctheid bewijst met formele verificatie. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Start een gratis proefperiode van 14 dagen &rarr;</b></a>
+  <b>Verlaag het tokenverbruik van je agents met 80%.</b> Graphify Cloud is altijd-aan geheugen dat je agents aanstuurt, de codekwaliteit hoog houdt en correctheid bewijst met formele verificatie. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Begin gratis, geen kaart nodig &rarr;</b></a>
 </p>
 
 Typ `/graphify` in je AI-codeerassistent en die brengt je hele project (code, documentatie, PDF's, afbeeldingen, video's) in kaart als een **kennisgraaf** die je kunt **bevragen in plaats van door bestanden te grepen**.
@@ -38,7 +38,7 @@ Typ `/graphify` in je AI-codeerassistent en die brengt je hele project (code, do
 - **Geen vectorindex.** Geen embeddings, geen vectoropslag: een echte graaf die je doorloopt. Stel een vraag, traceer het pad tussen twee dingen, of laat één concept uitleggen.
 
 > [!NOTE]
-> **Wil je dit altijd-aan?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) houdt de graaf live gedurende je hele SDLC: ondersteuning voor monorepo's en repo-overstijgende verbanden, formele verificatie en code review met een vogelvluchtperspectief op je SDLC, plus connectoren voor Sentry, Jira en meer, zodat incidenten en tickets in dezelfde graaf zitten als je code. **[Start een gratis proefperiode van 14 dagen op app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Wil je dit altijd-aan?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) houdt de graaf live gedurende je hele SDLC: ondersteuning voor monorepo's en repo-overstijgende verbanden, formele verificatie en code review met een vogelvluchtperspectief op je SDLC, plus connectoren voor Sentry, Jira en meer, zodat incidenten en tickets in dezelfde graaf zitten als je code. **[Begin gratis, geen kaart nodig](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Wat je meteen uit de doos krijgt:
 | **Local-first** | Code wordt lokaal geparset met tree-sitter (geen LLM, niets verlaat je machine); alleen de semantische verwerkingsslag over documentatie/media roept een backend aan, en alleen als je er een configureert |
 
 > [!TIP]
-> Draai je dit over veel repo's of een monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) doet het continu en verlaagt het tokenverbruik van agents met 80%, met repo-overstijgende verbanden, code review over je hele SDLC, formele verificatie en connectoren voor Sentry/Jira. [Start een gratis proefperiode van 14 dagen &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Draai je dit over veel repo's of een monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) doet het continu en verlaagt het tokenverbruik van agents met 80%, met repo-overstijgende verbanden, code review over je hele SDLC, formele verificatie en connectoren voor Sentry/Jira. [Begin gratis, geen kaart nodig &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ Elk commando en elke flag, met voorbeelden: **[CLI reference](https://docs.graph
 - **SDLC-connectoren**: haal Sentry, Jira en meer binnen, zodat incidenten, tickets en code in één graaf samenkomen.
 - **Altijd-aan**: werkt continu bij op de achtergrond over code, documentatie en meetings.
 
-**[Start een gratis proefperiode van 14 dagen op app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Begin gratis, geen kaart nodig &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

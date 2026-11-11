@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>خفّض إنفاق وكلائك على الرموز بنسبة 80%.</b> Graphify Cloud ذاكرة دائمة التشغيل تحكم وكلاءك، وتحافظ على جودة عالية للكود، وتثبت الصحة عبر التحقق الصوري. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>ابدأ تجربة مجانية لمدة 14 يومًا &rarr;</b></a>
+  <b>خفّض إنفاق وكلائك على الرموز بنسبة 80%.</b> Graphify Cloud ذاكرة دائمة التشغيل تحكم وكلاءك، وتحافظ على جودة عالية للكود، وتثبت الصحة عبر التحقق الصوري. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>ابدأ مجانًا، بدون بطاقة &rarr;</b></a>
 </p>
 
 اكتب `/graphify` في مساعد البرمجة بالذكاء الاصطناعي لديك فيرسم مشروعك بالكامل (الكود والمستندات وملفات PDF والصور والفيديو) في **رسم بياني معرفي** يمكنك **الاستعلام عنه بدلًا من البحث بـ grep** عبر الملفات.
@@ -38,7 +38,7 @@
 - **ليس فهرسًا شعاعيًا.** لا تضمينات، ولا مخزن شعاعي: رسم بياني حقيقي تجتازه. اطرح سؤالًا، أو تتبّع المسار بين شيئين، أو اشرح مفهومًا واحدًا.
 
 > [!NOTE]
-> **تريد هذا دائم التشغيل؟** يُبقي [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) الرسم البياني حيًّا عبر دورة حياة تطوير البرمجيات بأكملها: دعم المستودعات الأحادية والعابرة للمستودعات، والتحقق الصوري، ومراجعة الكود بنظرة شاملة على دورة حياة التطوير، إضافة إلى موصّلات لـ Sentry وJira والمزيد لتجلس الحوادث والتذاكر في الرسم البياني ذاته مع الكود. **[ابدأ تجربة مجانية لمدة 14 يومًا على app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **تريد هذا دائم التشغيل؟** يُبقي [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) الرسم البياني حيًّا عبر دورة حياة تطوير البرمجيات بأكملها: دعم المستودعات الأحادية والعابرة للمستودعات، والتحقق الصوري، ومراجعة الكود بنظرة شاملة على دورة حياة التطوير، إضافة إلى موصّلات لـ Sentry وJira والمزيد لتجلس الحوادث والتذاكر في الرسم البياني ذاته مع الكود. **[ابدأ مجانًا، بدون بطاقة](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **Local-first** | يُحلَّل الكود محليًا بـ tree-sitter (بلا نموذج لغوي كبير، ولا شيء يغادر جهازك)؛ فقط التمريرة الدلالية على المستندات/الوسائط تستدعي خلفية، وفقط إذا هيّأت واحدة |
 
 > [!TIP]
-> تشغّل هذا عبر مستودعات كثيرة أو مستودع أحادي؟ يفعله [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) باستمرار ويخفّض إنفاق الوكلاء على الرموز بنسبة 80%، مع روابط عابرة للمستودعات، ومراجعة كود على مستوى دورة حياة التطوير، وتحقق صوري، وموصّلات Sentry/Jira. [ابدأ تجربة مجانية لمدة 14 يومًا &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> تشغّل هذا عبر مستودعات كثيرة أو مستودع أحادي؟ يفعله [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) باستمرار ويخفّض إنفاق الوكلاء على الرموز بنسبة 80%، مع روابط عابرة للمستودعات، ومراجعة كود على مستوى دورة حياة التطوير، وتحقق صوري، وموصّلات Sentry/Jira. [ابدأ مجانًا، بدون بطاقة &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **موصّلات دورة حياة التطوير**: اسحب Sentry وJira والمزيد، لتعيش الحوادث والتذاكر والكود في رسم بياني واحد.
 - **دائم التشغيل**: يُحدَّث باستمرار في الخلفية عبر الكود والمستندات والاجتماعات.
 
-**[ابدأ تجربة مجانية لمدة 14 يومًا على app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[ابدأ مجانًا، بدون بطاقة &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

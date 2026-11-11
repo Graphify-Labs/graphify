@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Zmniejsz zużycie tokenów przez agentów o 80%.</b> Graphify Cloud to zawsze aktywna pamięć, która zarządza Twoimi agentami, utrzymuje wysoką jakość kodu i potwierdza poprawność dzięki weryfikacji formalnej. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Rozpocznij darmowy 14-dniowy okres próbny &rarr;</b></a>
+  <b>Zmniejsz zużycie tokenów przez agentów o 80%.</b> Graphify Cloud to zawsze aktywna pamięć, która zarządza Twoimi agentami, utrzymuje wysoką jakość kodu i potwierdza poprawność dzięki weryfikacji formalnej. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Zacznij za darmo, bez karty &rarr;</b></a>
 </p>
 
 Wpisz `/graphify` w swoim asystencie kodowania AI, a zmapuje on cały Twój projekt (kod, dokumentację, pliki PDF, obrazy, filmy) w **graf wiedzy**, który możesz **odpytywać zamiast przeszukiwać** pliki poleceniem grep.
@@ -38,7 +38,7 @@ Wpisz `/graphify` w swoim asystencie kodowania AI, a zmapuje on cały Twój proj
 - **To nie jest indeks wektorowy.** Żadnych osadzeń, żadnego magazynu wektorów: prawdziwy graf, po którym się poruszasz. Zadaj pytanie, prześledź ścieżkę między dwiema rzeczami lub wyjaśnij jedną koncepcję.
 
 > [!NOTE]
-> **Chcesz mieć to zawsze aktywne?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) utrzymuje graf na żywo w całym cyklu życia oprogramowania: obsługa monorepo i wielu repozytoriów, weryfikacja formalna oraz przegląd kodu z lotu ptaka na cały Twój cykl SDLC, a do tego konektory dla Sentry, Jira i innych, dzięki czemu incydenty i zgłoszenia znajdują się w tym samym grafie co Twój kod. **[Rozpocznij darmowy 14-dniowy okres próbny na app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Chcesz mieć to zawsze aktywne?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) utrzymuje graf na żywo w całym cyklu życia oprogramowania: obsługa monorepo i wielu repozytoriów, weryfikacja formalna oraz przegląd kodu z lotu ptaka na cały Twój cykl SDLC, a do tego konektory dla Sentry, Jira i innych, dzięki czemu incydenty i zgłoszenia znajdują się w tym samym grafie co Twój kod. **[Zacznij za darmo, bez karty](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Co otrzymujesz od razu po instalacji:
 | **Local-first** | Kod jest parsowany lokalnie przez tree-sitter (bez LLM, nic nie opuszcza Twojej maszyny); tylko przebieg semantyczny po dokumentacji/mediach wywołuje backend, i to wyłącznie, jeśli go skonfigurujesz |
 
 > [!TIP]
-> Uruchamiasz to na wielu repozytoriach lub w monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) robi to w sposób ciągły i zmniejsza zużycie tokenów przez agentów o 80%, z połączeniami między repozytoriami, przeglądem kodu obejmującym cały cykl SDLC, weryfikacją formalną oraz konektorami Sentry/Jira. [Rozpocznij darmowy 14-dniowy okres próbny &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Uruchamiasz to na wielu repozytoriach lub w monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) robi to w sposób ciągły i zmniejsza zużycie tokenów przez agentów o 80%, z połączeniami między repozytoriami, przeglądem kodu obejmującym cały cykl SDLC, weryfikacją formalną oraz konektorami Sentry/Jira. [Zacznij za darmo, bez karty &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ Każde polecenie i flaga, z przykładami: **[CLI reference](https://docs.graphif
 - **Konektory SDLC**: pobieraj dane z Sentry, Jira i innych, dzięki czemu incydenty, zgłoszenia i kod żyją w jednym grafie.
 - **Zawsze aktywne**: aktualizuje się w sposób ciągły w tle, obejmując kod, dokumentację i spotkania.
 
-**[Rozpocznij darmowy 14-dniowy okres próbny na app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Zacznij za darmo, bez karty &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

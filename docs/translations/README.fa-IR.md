@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>هزینه توکن عامل‌ها را 80% کاهش دهید.</b> Graphify Cloud یک حافظهٔ همیشه‌روشن است که عامل‌های شما را مدیریت می‌کند، کیفیت کد را بالا نگه می‌دارد و درستی را با وارسی صوری اثبات می‌کند. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>یک دورهٔ آزمایشی رایگان 14 روزه را آغاز کنید &rarr;</b></a>
+  <b>هزینه توکن عامل‌ها را 80% کاهش دهید.</b> Graphify Cloud یک حافظهٔ همیشه‌روشن است که عامل‌های شما را مدیریت می‌کند، کیفیت کد را بالا نگه می‌دارد و درستی را با وارسی صوری اثبات می‌کند. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>رایگان شروع کنید، بدون کارت &rarr;</b></a>
 </p>
 
 در دستیار کدنویسی هوش مصنوعی خود `/graphify` را تایپ کنید تا کل پروژهٔ شما (کد، مستندات، فایل‌های PDF، تصاویر، ویدیوها) را به یک **گراف دانش** نگاشت کند که می‌توانید به‌جای grep کردن در فایل‌ها **از آن پرس‌وجو کنید**.
@@ -38,7 +38,7 @@
 - **یک نمایهٔ برداری نیست.** بدون تعبیه‌ها، بدون انبار برداری: یک گراف واقعی که آن را پیمایش می‌کنید. سؤالی بپرسید، مسیر میان دو چیز را ردیابی کنید، یا یک مفهوم را توضیح دهید.
 
 > [!NOTE]
-> **این را همیشه‌روشن می‌خواهید؟** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) گراف را در سراسر چرخهٔ عمر توسعهٔ نرم‌افزار شما زنده نگه می‌دارد: پشتیبانی از مونوریپو و چند-مخزنی، وارسی صوری، و بازبینی کد با نگاهی از بالا به کل SDLC شما، به‌علاوهٔ اتصال‌دهنده‌هایی برای Sentry و Jira و موارد دیگر، تا رخدادها و تیکت‌ها در همان گرافی قرار گیرند که کد شما در آن است. **[یک دورهٔ آزمایشی رایگان 14 روزه را در app.graphify.com آغاز کنید](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **این را همیشه‌روشن می‌خواهید؟** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) گراف را در سراسر چرخهٔ عمر توسعهٔ نرم‌افزار شما زنده نگه می‌دارد: پشتیبانی از مونوریپو و چند-مخزنی، وارسی صوری، و بازبینی کد با نگاهی از بالا به کل SDLC شما، به‌علاوهٔ اتصال‌دهنده‌هایی برای Sentry و Jira و موارد دیگر، تا رخدادها و تیکت‌ها در همان گرافی قرار گیرند که کد شما در آن است. **[رایگان شروع کنید، بدون کارت](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **محلی‌محور** | کد به‌صورت محلی با tree-sitter تجزیه می‌شود (بدون مدل زبانی، هیچ‌چیز از دستگاه شما خارج نمی‌شود)؛ تنها گذر معنایی روی مستندات/رسانه یک بک‌اند را فرا می‌خواند، و فقط اگر شما یکی را پیکربندی کنید |
 
 > [!TIP]
-> این را در مخازن بسیار یا یک مونوریپو اجرا می‌کنید؟ [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) این کار را به‌طور پیوسته انجام می‌دهد و هزینهٔ توکن عامل را 80% کاهش می‌دهد، با پیوندهای چند-مخزنی، بازبینی کد در گسترهٔ SDLC، وارسی صوری، و اتصال‌دهنده‌های Sentry/Jira. [یک دورهٔ آزمایشی رایگان 14 روزه را آغاز کنید &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> این را در مخازن بسیار یا یک مونوریپو اجرا می‌کنید؟ [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) این کار را به‌طور پیوسته انجام می‌دهد و هزینهٔ توکن عامل را 80% کاهش می‌دهد، با پیوندهای چند-مخزنی، بازبینی کد در گسترهٔ SDLC، وارسی صوری، و اتصال‌دهنده‌های Sentry/Jira. [رایگان شروع کنید، بدون کارت &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **اتصال‌دهنده‌های SDLC**: Sentry، Jira و موارد دیگر را وارد کنید، تا رخدادها، تیکت‌ها و کد در یک گراف زندگی کنند.
 - **همیشه‌روشن**: به‌طور پیوسته در پس‌زمینه در سراسر کد، مستندات و جلسات به‌روزرسانی می‌شود.
 
-**[یک دورهٔ آزمایشی رایگان 14 روزه را در app.graphify.com آغاز کنید &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[رایگان شروع کنید، بدون کارت &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

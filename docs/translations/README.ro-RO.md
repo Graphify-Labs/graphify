@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Reduceți cu 80% cheltuielile pe token-uri ale agenților.</b> Graphify Cloud este o memorie mereu activă care guvernează agenții, menține calitatea codului ridicată și dovedește corectitudinea prin verificare formală. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Începeți o perioadă de probă gratuită de 14 zile &rarr;</b></a>
+  <b>Reduceți cu 80% cheltuielile pe token-uri ale agenților.</b> Graphify Cloud este o memorie mereu activă care guvernează agenții, menține calitatea codului ridicată și dovedește corectitudinea prin verificare formală. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Începe gratuit, fără card &rarr;</b></a>
 </p>
 
 Tastați `/graphify` în asistentul AI de programare, iar acesta vă mapează întregul proiect (cod, documentație, PDF-uri, imagini, videoclipuri) într-un **graf de cunoștințe** pe care îl puteți **interoga în loc să faceți grep** prin fișiere.
@@ -38,7 +38,7 @@ Tastați `/graphify` în asistentul AI de programare, iar acesta vă mapează î
 - **Nu este un index vectorial.** Fără embeddings, fără stocare vectorială: un graf real pe care îl parcurgeți. Puneți o întrebare, trasați calea dintre două lucruri sau explicați un concept.
 
 > [!NOTE]
-> **Vreți asta mereu activă?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) menține graful viu pe tot parcursul SDLC-ului vostru: suport pentru monorepo și între repo-uri, verificare formală și revizuire de cod cu o vedere de ansamblu asupra SDLC-ului vostru, plus conectori pentru Sentry, Jira și altele, astfel încât incidentele și tichetele să stea în același graf ca și codul vostru. **[Începeți o perioadă de probă gratuită de 14 zile pe app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Vreți asta mereu activă?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) menține graful viu pe tot parcursul SDLC-ului vostru: suport pentru monorepo și între repo-uri, verificare formală și revizuire de cod cu o vedere de ansamblu asupra SDLC-ului vostru, plus conectori pentru Sentry, Jira și altele, astfel încât incidentele și tichetele să stea în același graf ca și codul vostru. **[Începe gratuit, fără card](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Ce obțineți direct din cutie:
 | **Local în primul rând** | Codul este analizat local cu tree-sitter (fără LLM, nimic nu părăsește mașina voastră); doar trecerea semantică peste documente/media apelează un backend, și doar dacă configurați unul |
 
 > [!TIP]
-> Rulați asta pe multe repo-uri sau pe un monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) o face continuu și reduce cu 80% cheltuielile pe token-uri ale agenților, cu legături între repo-uri, revizuire de cod la nivelul întregului SDLC, verificare formală și conectori Sentry/Jira. [Începeți o perioadă de probă gratuită de 14 zile &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Rulați asta pe multe repo-uri sau pe un monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) o face continuu și reduce cu 80% cheltuielile pe token-uri ale agenților, cu legături între repo-uri, revizuire de cod la nivelul întregului SDLC, verificare formală și conectori Sentry/Jira. [Începe gratuit, fără card &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ Fiecare comandă și opțiune, cu exemple: **[Referința CLI](https://docs.graph
 - **Conectori SDLC**: aduceți Sentry, Jira și altele, astfel încât incidentele, tichetele și codul să trăiască într-un singur graf.
 - **Mereu activ**: se actualizează continuu în fundal peste cod, documente și întâlniri.
 
-**[Începeți o perioadă de probă gratuită de 14 zile pe app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Începe gratuit, fără card &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

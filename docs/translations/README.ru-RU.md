@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Сократите расходы агентов на токены на 80%.</b> Graphify Cloud: это постоянно работающая память, которая управляет вашими агентами, поддерживает высокое качество кода и доказывает корректность с помощью формальной верификации. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Начните бесплатный 14-дневный пробный период &rarr;</b></a>
+  <b>Сократите расходы агентов на токены на 80%.</b> Graphify Cloud: это постоянно работающая память, которая управляет вашими агентами, поддерживает высокое качество кода и доказывает корректность с помощью формальной верификации. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Начните бесплатно, без карты &rarr;</b></a>
 </p>
 
 Введите `/graphify` в своём ИИ-ассистенте для программирования, и он отобразит весь ваш проект (код, документацию, PDF, изображения, видео) в виде **графа знаний**, который можно **запрашивать вместо того, чтобы прочёсывать** файлы с помощью grep.
@@ -38,7 +38,7 @@
 - **Это не векторный индекс.** Никаких эмбеддингов, никакого векторного хранилища: настоящий граф, по которому вы перемещаетесь. Задайте вопрос, проследите путь между двумя сущностями или объясните одну концепцию.
 
 > [!NOTE]
-> **Хотите, чтобы это работало постоянно?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) поддерживает граф в актуальном состоянии на протяжении всего вашего SDLC: поддержка монорепозиториев и межрепозиторных связей, формальная верификация и код-ревью с обзором всего вашего SDLC с высоты птичьего полёта, плюс коннекторы для Sentry, Jira и других сервисов, чтобы инциденты и тикеты находились в том же графе, что и ваш код. **[Начните бесплатный 14-дневный пробный период на app.graphify.com](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Хотите, чтобы это работало постоянно?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) поддерживает граф в актуальном состоянии на протяжении всего вашего SDLC: поддержка монорепозиториев и межрепозиторных связей, формальная верификация и код-ревью с обзором всего вашего SDLC с высоты птичьего полёта, плюс коннекторы для Sentry, Jira и других сервисов, чтобы инциденты и тикеты находились в том же графе, что и ваш код. **[Начните бесплатно, без карты](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **Локально в первую очередь** | Код разбирается локально с помощью tree-sitter (без LLM, ничего не покидает вашу машину); только семантический проход по документации/медиа обращается к бэкенду, и только если вы его настроите |
 
 > [!TIP]
-> Запускаете это по множеству репозиториев или на монорепозитории? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) делает это непрерывно и сокращает расходы агентов на токены на 80%, с межрепозиторными связями, код-ревью в масштабах всего SDLC, формальной верификацией и коннекторами Sentry/Jira. [Начните бесплатный 14-дневный пробный период &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Запускаете это по множеству репозиториев или на монорепозитории? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) делает это непрерывно и сокращает расходы агентов на токены на 80%, с межрепозиторными связями, код-ревью в масштабах всего SDLC, формальной верификацией и коннекторами Sentry/Jira. [Начните бесплатно, без карты &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **Коннекторы SDLC**: подключайте Sentry, Jira и другие, чтобы инциденты, тикеты и код жили в одном графе.
 - **Постоянно работает**: непрерывно обновляется в фоновом режиме по коду, документации и встречам.
 
-**[Начните бесплатный 14-дневный пробный период на app.graphify.com &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Начните бесплатно, без карты &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

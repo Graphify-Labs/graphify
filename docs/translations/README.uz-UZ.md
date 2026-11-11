@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Agent token sarfini 80% ga qisqartiring.</b> Graphify Cloud sizning agentlaringizni boshqaradigan, kod sifatini yuqori saqlaydigan va to'g'rilikni rasmiy verifikatsiya bilan isbotlaydigan doimiy yoniq xotiradir. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bepul 14 kunlik sinovni boshlang &rarr;</b></a>
+  <b>Agent token sarfini 80% ga qisqartiring.</b> Graphify Cloud sizning agentlaringizni boshqaradigan, kod sifatini yuqori saqlaydigan va to'g'rilikni rasmiy verifikatsiya bilan isbotlaydigan doimiy yoniq xotiradir. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bepul boshlang, karta shart emas &rarr;</b></a>
 </p>
 
 AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujjatlar, PDF-lar, rasmlar, videolar) **bilim grafiga** aylantiradi, uni fayllarni grep qilish o'rniga **so'rov qilishingiz mumkin**.
@@ -38,7 +38,7 @@ AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujj
 - **Vektor indeksi emas.** Embedding yo'q, vektor ombori yo'q: siz kezib chiqadigan haqiqiy graf. Savol bering, ikki narsa o'rtasidagi yo'lni kuzating yoki bitta tushunchani tushuntiring.
 
 > [!NOTE]
-> **Buni doimiy yoniq holda xohlaysizmi?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) grafni butun SDLC bo'ylab jonli saqlaydi: monorepo va repolararo qo'llab-quvvatlash, rasmiy verifikatsiya hamda SDLC-ga qush nigohi bilan kod ko'rib chiqish, shuningdek Sentry, Jira va boshqalar uchun konnektorlar, shunda hodisalar va chiptalar kodingiz bilan bir xil grafda joylashadi. **[app.graphify.com da bepul 14 kunlik sinovni boshlang](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
+> **Buni doimiy yoniq holda xohlaysizmi?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) grafni butun SDLC bo'ylab jonli saqlaydi: monorepo va repolararo qo'llab-quvvatlash, rasmiy verifikatsiya hamda SDLC-ga qush nigohi bilan kod ko'rib chiqish, shuningdek Sentry, Jira va boshqalar uchun konnektorlar, shunda hodisalar va chiptalar kodingiz bilan bir xil grafda joylashadi. **[Bepul boshlang, karta shart emas](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Qutidan chiqib nima olasiz:
 | **Avval lokal** | Kod lokal tarzda tree-sitter bilan tahlil qilinadi (LLM yo'q, hech narsa qurilmangizdan chiqmaydi); faqat hujjatlar/media ustidagi semantik o'tish backendga murojaat qiladi, va faqat siz uni sozlasangiz |
 
 > [!TIP]
-> Buni ko'plab repolar yoki monorepo bo'ylab ishga tushiryapsizmi? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) buni uzluksiz bajaradi va agent token sarfini 80% ga qisqartiradi, repolararo bog'lanishlar, SDLC bo'ylab kod ko'rib chiqish, rasmiy verifikatsiya va Sentry/Jira konnektorlari bilan. [Bepul 14 kunlik sinovni boshlang &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Buni ko'plab repolar yoki monorepo bo'ylab ishga tushiryapsizmi? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) buni uzluksiz bajaradi va agent token sarfini 80% ga qisqartiradi, repolararo bog'lanishlar, SDLC bo'ylab kod ko'rib chiqish, rasmiy verifikatsiya va Sentry/Jira konnektorlari bilan. [Bepul boshlang, karta shart emas &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -456,7 +456,7 @@ Har bir buyruq va bayroq, misollar bilan: **[CLI ma'lumotnomasi](https://docs.gr
 - **SDLC konnektorlari**: Sentry, Jira va boshqalarni jalb qiling, shunday qilib hodisalar, chiptalar va kod bitta grafda yashaydi.
 - **Doimiy yoniq**: kod, hujjatlar va uchrashuvlar bo'ylab fon rejimida uzluksiz yangilanadi.
 
-**[app.graphify.com da bepul 14 kunlik sinovni boshlang &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
+**[Bepul boshlang, karta shart emas &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
