@@ -292,12 +292,28 @@ def extract_powershell(path: Path) -> dict:
                             for el in child.children:
                                 if el.type == "generic_token":
                                     tokens.append(_read_text(el, source))
+                    using_kind = tokens[0].lower() if tokens else ""
                     module_tokens = [t for t in tokens
                                      if t.lower() not in ("namespace", "module", "assembly")]
                     if module_tokens:
-                        module_name = module_tokens[-1].split(".")[-1]
-                        add_edge(file_nid, _make_id(module_name), "imports_from",
-                                 node.start_point[0] + 1)
+                        raw = module_tokens[-1]
+                        if using_kind == "namespace":
+                            module_name = raw.split(".")[-1]
+                        else:
+                            # `module`/`assembly` name a file or library
+                            # (Helpers.psm1, System.Data.dll): a trailing module
+                            # or assembly extension is not a namespace separator,
+                            # so splitting on it like the namespace form returned
+                            # the extension itself instead of the name. Strip only
+                            # a known extension, so a dotted module name with no
+                            # file extension (Az.Accounts) keeps its full name
+                            # rather than losing its last segment.
+                            module_name = re.sub(
+                                r'\.(psm1|psd1|ps1|dll|exe)$', '', raw, flags=re.IGNORECASE
+                            ).split('/')[-1].split('\\')[-1]
+                        if module_name:
+                            add_edge(file_nid, _make_id(module_name), "imports_from",
+                                     node.start_point[0] + 1)
                 elif cmd_text == "import-module":
                     # Collect generic_token args; skip command_parameter flags like -Name
                     # The module name is the first generic_token (or the one after -Name)

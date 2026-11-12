@@ -620,6 +620,20 @@ def test_update_no_cluster_writes_raw_graph(tmp_path):
     assert all("community" not in node for node in data["nodes"])
 
 
+def test_extract_no_cluster_marks_parallel_links_as_multigraph(tmp_path):
+    src = tmp_path / "sample.ts"
+    src.write_text(
+        "function owner() { function child() { return 1 } return child() }\n",
+        encoding="utf-8",
+    )
+
+    r = _run(["extract", ".", "--code-only", "--no-cluster"], tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    data = json.loads((tmp_path / "graphify-out" / "graph.json").read_text())
+    assert data.get("multigraph") is True
+
+
 # Regression test for #934 - cluster-only crashes when graphify-out/ doesn't exist
 
 def test_cluster_only_creates_output_dir_when_missing(tmp_path):

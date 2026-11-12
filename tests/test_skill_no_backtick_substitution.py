@@ -174,7 +174,7 @@ def run_statements(
     (tmp_path / "graphify-out" / ".graphify_python").write_text(str(stub))
     bad_exits = []
     for stmt in stmts:
-        script = f"exec 9>>{trace}\nBASH_XTRACEFD=9\nPS4='+T '\nset -x\n{stmt}\n"
+        script = f"exec 9>>{trace} 2>&9\nBASH_XTRACEFD=9\nPS4='+T '\nset -x\n{stmt}\n"
         r = subprocess.run(
             [BASH, "-c", script], cwd=tmp_path, env={"PATH": str(bin_)},
             capture_output=True, text=True, timeout=30,

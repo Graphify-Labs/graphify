@@ -105,6 +105,61 @@ def test_native_member_candidates_exclude_matlab(language, resolver, suffix, nat
     )
 
 
+@pytest.mark.parametrize("matlab_as_context", [False, True])
+def test_java_member_call_ignores_matlab_type_candidate(tmp_path, matlab_as_context):
+    services = tmp_path / "Services.java"
+    services.write_text("class PaymentGateway { static void ping() {} }\n")
+    checkout = tmp_path / "Checkout.java"
+    checkout.write_text(
+        "class Checkout { void run() { PaymentGateway.ping(); } }\n"
+    )
+    matlab = tmp_path / "PaymentGateway.m"
+    matlab.write_text("classdef PaymentGateway\nend\n")
+
+    context_nodes = []
+    context_edges = []
+    paths = [services, checkout, matlab]
+    if matlab_as_context:
+        matlab_result = extract(
+            [matlab], root=tmp_path, cache_root=tmp_path, parallel=False
+        )
+        context_nodes = matlab_result["nodes"]
+        context_edges = matlab_result["edges"]
+        paths = [services, checkout]
+
+    result = extract(
+        paths,
+        root=tmp_path,
+        cache_root=tmp_path,
+        parallel=False,
+        resolution_context_nodes=context_nodes,
+        resolution_context_edges=context_edges,
+    )
+    nodes = result["nodes"] + context_nodes
+
+    run = next(
+        node["id"] for node in nodes
+        if node.get("label") == ".run()"
+        and str(node.get("source_file", "")).endswith("Checkout.java")
+    )
+    ping = next(
+        node["id"] for node in nodes
+        if node.get("label") == ".ping()"
+        and str(node.get("source_file", "")).endswith("Services.java")
+    )
+    assert any(
+        node.get("label") == "PaymentGateway"
+        and (node.get("metadata") or {}).get("language") == "matlab"
+        for node in nodes
+    )
+    calls = {
+        (edge.get("source"), edge.get("target"))
+        for edge in result["edges"]
+        if edge.get("relation") == "calls"
+    }
+    assert (run, ping) in calls
+
+
 @pytest.mark.parametrize("native_present", [False, True])
 def test_swift_extensions_do_not_merge_into_matlab(native_present):
     nodes = [

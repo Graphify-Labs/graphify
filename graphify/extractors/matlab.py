@@ -16,7 +16,7 @@ from graphify.extractors.base import (
 
 
 _DECLARATIONS = {"function_definition", "function_signature", "class_definition"}
-_WORKSPACE_CHANGES = {"eval", "evalin", "assignin", "load", "clear"}
+_WORKSPACE_CHANGES = {"eval", "evalc", "evalin", "assignin", "load", "clear"}
 _MATLAB_IDENTIFIER = re.compile(r"[^\W\d_]\w*", re.UNICODE)
 _MATLAB_NAME = re.compile(r"[^\W\d_]\w*(?:\.[^\W\d_]\w*)*", re.UNICODE)
 

@@ -271,6 +271,7 @@ end
     "import pkg.helper",
     "run_script arg",
     "eval('x');",
+    "evalc('x=1;');",
     "evalin('base', 'x');",
     "assignin('base', 'x', 1);",
     "load('data.mat');",
@@ -290,7 +291,7 @@ end
 
 def test_workspace_barrier_flows_to_nested_functions_only(tmp_path):
     result = extract_source(tmp_path, """function main()
- eval('x');
+ evalc('helper = [1 2];');
  function child()
   helper();
  end
@@ -302,6 +303,29 @@ function helper()
 end
 """)
     assert call_sites(result) == [("independent", "helper", "L8")]
+
+
+def test_evalc_dynamic_binding_does_not_become_graph_call(tmp_path):
+    path = tmp_path / "main.m"
+    path.write_text("""function main()
+ evalc('helper = [1 2];');
+ helper(1);
+end
+function helper(x)
+end
+""")
+    extraction = extract(
+        [path], root=tmp_path, cache_root=tmp_path / "cache", parallel=False,
+    )
+    graph = build([extraction], dedup=False, root=tmp_path)
+    file_node = next(node for node in extraction["nodes"]
+                     if node["metadata"]["kind"] == "matlab_file")
+    main = next(node["id"] for node in extraction["nodes"] if node["label"] == "main")
+    helper = next(node["id"] for node in extraction["nodes"] if node["label"] == "helper")
+
+    assert graph.edges[file_node["id"], main]["relation"] == "contains"
+    assert graph.edges[file_node["id"], helper]["relation"] == "contains"
+    assert not graph.has_edge(main, helper)
 
 
 def test_unqualified_call_argument_inside_member_call_survives_build(tmp_path):

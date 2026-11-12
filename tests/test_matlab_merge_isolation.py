@@ -209,3 +209,76 @@ def test_incremental_carry_forward_preserves_local_calls_and_source_inheritance(
         {"name": "Shared.Base", "source_location": "L1"},
     ]
     assert merged.nodes["matlab::child_file"]["metadata"]["matlab_primary_name"] == "Child"
+
+def test_incremental_default_dedup_preserves_matlab_inheritance_with_reference_stub_collision(
+    tmp_path,
+):
+    child_source, base_source = "+Shared/Child.m", "+Shared/Base.m"
+    nodes = [
+        _node("child_file", "Child.m", child_source, matlab=True, kind="file",
+              namespace="Shared", matlab_file_kind="class", matlab_primary_name="Child"),
+        _node("child", "Child", child_source, matlab=True, kind="class",
+              namespace="Shared", scope_chain=[],
+              matlab_superclasses=[{"name": "Shared.Base", "source_location": "L1"}]),
+        _node("base_file", "Base.m", base_source, matlab=True, kind="file",
+              namespace="Shared", matlab_file_kind="class", matlab_primary_name="Base"),
+        _node("base", "Base", base_source, matlab=True, kind="class",
+              namespace="Shared", scope_chain=[]),
+    ]
+    edges = [
+        _edge("child_file", "child", "contains", child_source),
+        _edge("base_file", "base", "contains", base_source),
+        _edge("child", "base", "inherits", child_source),
+    ]
+    path, _ = _persist(
+        tmp_path, "base", build([{"nodes": nodes, "edges": edges}], dedup=False),
+    )
+    guide = _node("docs_guide", "Guide.md", "docs/Guide.md", kind="file")
+    reference_stub = _node(
+        "base", "Base", "docs/Guide.md", graphify_reference_stub=True,
+    )
+    for node in (guide, reference_stub):
+        node.update(source_location=None, _origin="semantic")
+    reference = _edge("docs_guide", "base", "references", "docs/Guide.md")
+    reference.update(source_location=None, _origin="semantic")
+
+    merged = build_merge([{
+        "nodes": [guide, reference_stub],
+        "edges": [reference],
+    }], path, root=tmp_path)
+
+    assert merged.nodes["base"]["source_file"] == base_source
+    assert merged.nodes["base"]["metadata"]["language"] == "matlab"
+    assert merged.nodes["docs_guide__ref__base"]["metadata"][
+        "graphify_reference_stub"
+    ] is True
+    assert merged.edges["child", "base"]["relation"] == "inherits"
+    assert merged.edges["docs_guide", "docs_guide__ref__base"]["relation"] == "references"
+
+
+def test_incremental_default_dedup_keeps_reference_edge_after_extension_id_remap(
+    tmp_path,
+):
+    path, _ = _persist(
+        tmp_path, "base",
+        build([{
+            "nodes": [_node("x", "x", "x.py", kind="class")],
+            "edges": [],
+        }], dedup=False),
+    )
+    caller = _node("caller", "Caller", "x.html")
+    reference_stub = _node(
+        "x", "x page", "x.html", graphify_reference_stub=True,
+    )
+    for node in (caller, reference_stub):
+        node.update(source_location=None, _origin="semantic")
+    reference = _edge("caller", "x", "references", "x.html")
+    reference.update(source_location=None, _origin="semantic")
+
+    merged = build_merge([{
+        "nodes": [caller, reference_stub],
+        "edges": [reference],
+    }], path, root=tmp_path)
+
+    assert merged.nodes["x_html"]["source_file"] == "x.html"
+    assert merged.edges["caller", "x_html"]["relation"] == "references"
