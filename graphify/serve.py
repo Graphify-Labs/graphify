@@ -2563,15 +2563,38 @@ def _path_confidence_key(hop_datas: list[list[dict]]):
     return weakest[0] if weakest is not None else (-1, True, 0.0, 0)
 
 
+def _path_hub_penalty(G: nx.Graph, path_nodes: list[str]) -> int:
+    """Count of intermediate hops this path passes through a sourceless hub
+    node (#5153): a node with no `source_file`, almost always a stdlib/
+    third-party import stub that hundreds of unrelated files import. Such a
+    node carries no semantic claim about how the two endpoints relate, so a
+    route through it is a true shortest path but not a meaningful one — the
+    weakest-hop tiebreak alone cannot tell it apart from a route of plain
+    `imports`/`contains` edges between real files, since both can carry the
+    identical EXTRACTED confidence on every hop. Endpoints are never counted:
+    the caller explicitly asked about them, hub-ness or not.
+    """
+    penalty = 0
+    for nid in path_nodes[1:-1]:
+        if not G.nodes[nid].get("source_file"):
+            penalty += 1
+    return penalty
+
+
 def _weakest_shortest_path(search_graph: nx.Graph, G: nx.Graph, src_nid: str, tgt_nid: str):
     """Among all shortest paths `src_nid` -> `tgt_nid`, the most conservative one.
 
     A path is only as sure as its weakest hop, so when several routes tie on
     length the reported confidence should reflect the weakest of them, not an
-    arbitrary route networkx happens to return first (#4881). Enumeration is
-    bounded by `_MAX_SHORTEST_PATHS`. Raises `nx.NetworkXNoPath` /
-    `nx.NodeNotFound` exactly like `nx.shortest_path`, so callers keep their
-    existing error handling. Returns `(path_nodes, n_routes, capped)`.
+    arbitrary route networkx happens to return first (#4881). A route through
+    a sourceless import hub (`_path_hub_penalty`) is preferred away from
+    first, since it is "shortest" by accident of degree rather than by
+    carrying any claim about the two endpoints (#5153); the weakest-hop rule
+    then still breaks any further tie among the remaining, equally
+    hub-free routes. Enumeration is bounded by `_MAX_SHORTEST_PATHS`. Raises
+    `nx.NetworkXNoPath` / `nx.NodeNotFound` exactly like `nx.shortest_path`,
+    so callers keep their existing error handling. Returns `(path_nodes,
+    n_routes, capped)`.
     """
     paths: list[list[str]] = []
     for p in nx.all_shortest_paths(search_graph, src_nid, tgt_nid):
@@ -2581,7 +2604,10 @@ def _weakest_shortest_path(search_graph: nx.Graph, G: nx.Graph, src_nid: str, tg
     capped = len(paths) > _MAX_SHORTEST_PATHS
     if capped:
         paths = paths[:_MAX_SHORTEST_PATHS]
-    chosen = min(paths, key=lambda p: _path_confidence_key(_path_hop_datas(G, p)))
+    chosen = min(
+        paths,
+        key=lambda p: (_path_hub_penalty(G, p), _path_confidence_key(_path_hop_datas(G, p))),
+    )
     return chosen, len(paths), capped
 
 
