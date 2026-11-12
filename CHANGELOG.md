@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Fix: symbols in a capital-F Fortran file (`.F`/`.F90`/`.F95`/`.F03`/`.F08`) now report the correct `source_location` (#2092). cpp's `-P` option suppressed linemarkers, so removed directives and inactive conditional blocks shifted tree-sitter locations. cpp now runs without `-P`, and the emitted stdin linemarkers map node and edge locations back to original source lines; lowercase `.f90` and the cpp-unavailable fallback are unaffected.
+## 0.9.101 (unreleased)
 ## 0.9.107 (2026-11-11)
 
 - Fix: **cpp** a folded parameterless member declaration (`bar()`) records its implementation in `definition_file` as a path anchored to the same root as `source_file`, instead of a `../`-walk relative to the cache/out root. The zero-argument reconciliation added in 0.9.106 stored the internal `_cpp_source_key` proof form, which `_norm_source_file` cannot re-anchor (it only relativizes absolute paths), so an out-of-tree corpus got a mangled `definition_file`. The sibling decl/def merge already stored the raw `source_file` for this reason; both paths now agree. The include-path proof still uses the key form.
@@ -1300,6 +1304,7 @@ Intra-class call binding across five languages, new language-structure coverage,
 - Feat: `get_neighbors` and `get_community` (MCP) now honor a `token_budget` (default 2000) instead of rendering unbounded, so one call on a god node or large community can't flood the client's context (#2069, thanks @ojmucianski). Truncation is announced at the top of the output (matching `query`), with a line count and a narrowing hint.
 - Docs: `--code-only` is now surfaced in the `extract` usage text and README (#2071, thanks @HerenderKumar); documented as an `extract` flag rather than a `/graphify` skill flag.
 - Docs: README troubleshooting note for an older `graphifyy` in system site-packages shadowing `uv run --with graphifyy`, which silently runs the old version (#1540, thanks @HerenderKumar).
+
 
 ## 0.9.23 (2026-07-21)
 
