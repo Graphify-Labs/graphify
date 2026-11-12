@@ -16,7 +16,9 @@ def _scan_blocks():
     found = []
     for art in gen.render_all(gen.load_platforms()):
         for block in re.findall(r'```bash\n(.*?)```', art.content, re.S):
-            if "result = detect(Path('INPUT_PATH')" not in block and "result = detect_incremental(Path('INPUT_PATH')" not in block:
+            # Since #4762 the scan root is read from the trusted .graphify_root
+            # sidecar, not substituted, so the call takes the INPUT_PATH variable.
+            if "result = detect(Path(INPUT_PATH)" not in block and "result = detect_incremental(Path(INPUT_PATH)" not in block:
                 continue
             m = re.search(r' -c "\n(.*)\n"', block, re.S)
             if m:
@@ -39,15 +41,18 @@ def test_skill_scan_honors_persisted_options(tmp_path, monkeypatch, art, source)
         (corpus / name).write_text('# sample\n', encoding='utf-8')
     out = tmp_path / 'graphify-out'
     _write_build_config(out, excludes=['docs/skip.md'], gitignore=False)
+    # Since #4762 the block reads the scan root from the trusted .graphify_root
+    # sidecar instead of a substituted literal, so Step 1's write is simulated here.
+    (out / '.graphify_root').write_text(corpus.as_posix(), encoding='utf-8')
     # Match the skill's documented CWD-relative output/manifest layout, with
     # INPUT_PATH pointing to a distinct corpus rather than the output parent.
     if 'detect_incremental' in source:
         files = detect(corpus, gitignore=False, extra_excludes=['docs/skip.md'])['files']
         save_manifest(files, str(out / 'manifest.json'), root=corpus)
-    # Only exercise the scan contract, not subsequent sidecar/report steps.
+    # Only exercise the scan contract, not subsequent sidecar/report steps. Keep
+    # the preamble (imports + the .graphify_root read) and the detect call itself.
     src = source.split('result = ', 1)[0] + 'result = ' + source.split('result = ', 1)[1].split('\n', 1)[0]
     src += '\nprint(json.dumps(result))\n'
-    src = src.replace('INPUT_PATH', corpus.as_posix())
     result = subprocess.run([sys.executable, '-c', src], cwd=tmp_path, check=True, capture_output=True, text=True)
     data = json.loads(result.stdout)
     actual = {Path(f).relative_to(corpus).as_posix() for files in data['files'].values() for f in files}

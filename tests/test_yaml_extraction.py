@@ -115,6 +115,48 @@ def test_unsafe_yaml_tag_does_not_execute(tmp_path):
     assert not marker.exists(), "safe_load must not execute the python tag"
 
 
+def test_cloudformation_intrinsic_tags_do_not_fail_the_whole_file(tmp_path):
+    """#5071: SafeLoader has no constructor for CloudFormation/SAM's short-form
+    intrinsic tags (!Ref, !Equals, ...), so a template using any of them used to
+    raise ConstructorError and produce zero nodes for the whole file, even
+    though nothing about the tag itself is unsafe. The tagged value's own
+    shape (scalar/sequence/mapping) is still read; the intrinsic is not
+    evaluated."""
+    path = _write(
+        tmp_path / "template.yaml",
+        "Conditions:\n"
+        "  IsProd: !Equals [ !Ref Environment, prod ]\n"
+        "Resources:\n"
+        "  ExampleFunction:\n"
+        "    Type: AWS::Serverless::Function\n"
+        "    Properties:\n"
+        "      Events:\n"
+        "        ApiEvent:\n"
+        "          Properties:\n"
+        "            Path: /api/example\n",
+    )
+    result = extract_yaml(path)
+    assert "error" not in result
+    labels = {n["label"] for n in result["nodes"]}
+    assert {"Conditions", "IsProd", "Resources", "ExampleFunction", "Events",
+            "ApiEvent", "Path"} <= labels
+
+
+def test_cloudformation_intrinsic_tag_still_does_not_execute_python_tag(tmp_path):
+    """Control: tolerating an unrecognized !tag must not widen what a
+    !!python/... tag can do — that one still raises, same as the plain-YAML
+    case above."""
+    marker = tmp_path / "pwned"
+    path = _write(
+        tmp_path / "template.yaml",
+        "IsProd: !Equals [ !Ref Environment, prod ]\n"
+        f"danger: !!python/object/apply:os.system ['touch {marker}']\n",
+    )
+    result = extract_yaml(path)
+    assert "error" in result
+    assert not marker.exists(), "safe_load must not execute the python tag"
+
+
 def test_extract_yaml_caps_bound_output(tmp_path):
     """A config-named YAML with thousands of keys is bounded by the 500-pair cap."""
     body = "root:\n" + "".join(f"  k{i}: {i}\n" for i in range(2000))

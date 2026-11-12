@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Сократите расходы агентов на токены на 80%.</b> Graphify Cloud: это постоянно работающая память, которая управляет вашими агентами, поддерживает высокое качество кода и доказывает корректность с помощью формальной верификации. <a href="https://app.graphify.com/login"><b>Начните бесплатный 14-дневный пробный период &rarr;</b></a>
+  <b>Сократите расходы агентов на токены на 80%.</b> Graphify Cloud: это постоянно работающая память, которая управляет вашими агентами, поддерживает высокое качество кода и доказывает корректность с помощью формальной верификации. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Начните бесплатно, без карты &rarr;</b></a>
 </p>
 
 Введите `/graphify` в своём ИИ-ассистенте для программирования, и он отобразит весь ваш проект (код, документацию, PDF, изображения, видео) в виде **графа знаний**, который можно **запрашивать вместо того, чтобы прочёсывать** файлы с помощью grep.
@@ -38,7 +38,7 @@
 - **Это не векторный индекс.** Никаких эмбеддингов, никакого векторного хранилища: настоящий граф, по которому вы перемещаетесь. Задайте вопрос, проследите путь между двумя сущностями или объясните одну концепцию.
 
 > [!NOTE]
-> **Хотите, чтобы это работало постоянно?** [Graphify Cloud](https://app.graphify.com/login) поддерживает граф в актуальном состоянии на протяжении всего вашего SDLC: поддержка монорепозиториев и межрепозиторных связей, формальная верификация и код-ревью с обзором всего вашего SDLC с высоты птичьего полёта, плюс коннекторы для Sentry, Jira и других сервисов, чтобы инциденты и тикеты находились в том же графе, что и ваш код. **[Начните бесплатный 14-дневный пробный период на app.graphify.com](https://app.graphify.com/login)**.
+> **Хотите, чтобы это работало постоянно?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) поддерживает граф в актуальном состоянии на протяжении всего вашего SDLC: поддержка монорепозиториев и межрепозиторных связей, формальная верификация и код-ревью с обзором всего вашего SDLC с высоты птичьего полёта, плюс коннекторы для Sentry, Jira и других сервисов, чтобы инциденты и тикеты находились в том же графе, что и ваш код. **[Начните бесплатно, без карты](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **Локально в первую очередь** | Код разбирается локально с помощью tree-sitter (без LLM, ничего не покидает вашу машину); только семантический проход по документации/медиа обращается к бэкенду, и только если вы его настроите |
 
 > [!TIP]
-> Запускаете это по множеству репозиториев или на монорепозитории? [Graphify Cloud](https://app.graphify.com/login) делает это непрерывно и сокращает расходы агентов на токены на 80%, с межрепозиторными связями, код-ревью в масштабах всего SDLC, формальной верификацией и коннекторами Sentry/Jira. [Начните бесплатный 14-дневный пробный период &rarr;](https://app.graphify.com/login)
+> Запускаете это по множеству репозиториев или на монорепозитории? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) делает это непрерывно и сокращает расходы агентов на токены на 80%, с межрепозиторными связями, код-ревью в масштабах всего SDLC, формальной верификацией и коннекторами Sentry/Jira. [Начните бесплатно, без карты &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -447,7 +447,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login): это постоянно работающий слой, построенный поверх graphify. Вместо графа, который вы пересобираете по требованию для каждой папки, он поддерживает один живой граф на протяжении всего вашего жизненного цикла разработки ПО:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss): это постоянно работающий слой, построенный поверх graphify. Вместо графа, который вы пересобираете по требованию для каждой папки, он поддерживает один живой граф на протяжении всего вашего жизненного цикла разработки ПО:
 
 - **На 80% меньше токенов**: постоянно работающая память означает, что ваши агенты перестают заново перечитывать и заново объяснять кодовую базу в каждой сессии.
 - **Монорепозиторий и межрепозиторные связи**: один связный граф по всем сервисам и репозиториям, а не граф на каждую папку.
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **Коннекторы SDLC**: подключайте Sentry, Jira и другие, чтобы инциденты, тикеты и код жили в одном графе.
 - **Постоянно работает**: непрерывно обновляется в фоновом режиме по коду, документации и встречам.
 
-**[Начните бесплатный 14-дневный пробный период на app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Начните бесплатно, без карты &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

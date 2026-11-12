@@ -7,12 +7,23 @@ import of main to avoid a cli<->__main__ import cycle.
 """
 from __future__ import annotations
 import json
+import math
 import os
 import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+
+def _valid_price(value: float) -> float:
+    """A provider price flag must be a finite, non-negative number. A NaN, inf
+    or negative value parses as a float but flows into cost estimation (price x
+    tokens), producing NaN/inf/negative cost reports (#5031), so reject it the
+    same way a non-numeric value is rejected."""
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("price must be finite and non-negative")
+    return value
 
 
 # Hook reminders arrive inside the agent's tool-result stream, where commands
@@ -140,14 +151,38 @@ def _nudge_for_out(nudge: str) -> str:
     return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
-def _print_cloud_cta(out_dir: "Path") -> None:
-    """Nudge toward Graphify Cloud once after a successful local graph build.
+# Qualifying builds on which the post-build Cloud CTA is shown: the first, then
+# a couple of spaced reminders for returning users, then never again (A1). Keyed
+# off the count of qualifying builds, not elapsed time, so it does not nag.
+_CLOUD_CTA_SHOW_ON = (1, 5, 20)
 
-    Kept precise and shown only to humans running the CLI interactively:
-    suppressed in non-interactive/CI runs (stdout is not a TTY, which also
-    covers the AI-assistant pipeline), when the user opts out
-    (``GRAPHIFY_NO_TIPS``/``GRAPHIFY_NO_CTA``), and after the first time per
-    project (a marker under ``graphify-out/``) so repeat builds stay quiet.
+# Node count at or above which the CTA switches to a scale-specific line. This is
+# the Cloud free tier's hard cut-off of 25k nodes per repo: a graph this size no
+# longer fits the free plan, so the scale line sells Pro (large repos, kept
+# current, cross-repo search and PR review) and points at pricing, not the free
+# signup. Sending these users to the free plan would land them straight on the
+# limit. The gating cadence is unchanged (still builds 1/5/20); only the wording
+# and the utm_content tag branch on size, so analytics can tell the moments apart.
+_CLOUD_CTA_LARGE_GRAPH_NODES = 25_000
+
+
+def _print_cloud_cta(out_dir: "Path", node_count: int = 0) -> None:
+    """Nudge toward Graphify Cloud after a successful local graph build.
+
+    Shown only to humans running the CLI interactively: suppressed in
+    non-interactive/CI runs (stdout is not a TTY, which also covers the
+    AI-assistant pipeline) and when the user opts out
+    (``GRAPHIFY_NO_TIPS``/``GRAPHIFY_NO_CTA``). A per-project counter under
+    ``graphify-out/`` shows it on builds ``_CLOUD_CTA_SHOW_ON`` (1, 5, 20) so a
+    returning user gets a reminder without a nag on every build, then it stays
+    quiet for good.
+
+    ``node_count`` is the size of the graph just built. When it reaches
+    ``_CLOUD_CTA_LARGE_GRAPH_NODES`` the graph no longer fits the free plan, so
+    the message switches to a scale-specific line (``utm_content=scale``) that
+    sells Pro and links to pricing rather than the free signup: pointing these
+    users at the free plan would land them straight on its 25k limit. The show
+    cadence is the same either way, so this adds no extra nag.
     """
     if os.environ.get("GRAPHIFY_NO_TIPS") or os.environ.get("GRAPHIFY_NO_CTA"):
         return
@@ -158,19 +193,29 @@ def _print_cloud_cta(out_dir: "Path") -> None:
         return
     marker = out_dir / ".cloud-cta-shown"
     try:
-        if marker.exists():
-            return
+        count = int(marker.read_text(encoding="utf-8").strip()) if marker.exists() else 0
     except Exception:
-        return
-    print()
-    print("  Graphify Cloud: faster indexing, fewer tokens, cross-repo search,")
-    print("  and PR review, with your whole SDLC mapped and always current.")
-    print("  Connect a repo at https://app.graphify.com")
+        count = 0
+    # Advance the counter, capped one past the last show build so the file does
+    # not grow and that sentinel never re-triggers a show.
+    count = min(count + 1, max(_CLOUD_CTA_SHOW_ON) + 1)
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("1", encoding="utf-8")
+        marker.write_text(str(count), encoding="utf-8")
     except Exception:
         pass
+    if count not in _CLOUD_CTA_SHOW_ON:
+        return
+    print()
+    if node_count >= _CLOUD_CTA_LARGE_GRAPH_NODES:
+        print(f"  This graph has {node_count:,} nodes, past the free plan's 25k-per-repo limit.")
+        print("  Graphify Pro indexes large repos, keeps them current, and adds")
+        print("  cross-repo search and PR review. 14-day trial:")
+        print("  https://graphify.com/pricing?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=scale")
+    else:
+        print("  Graphify Cloud: faster indexing, fewer tokens, cross-repo search,")
+        print("  and PR review, with your whole SDLC mapped and always current.")
+        print("  Free plan, no card: https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=post-run")
 
 
 def _graph_root_for(gp: Path) -> Path:
@@ -447,10 +492,27 @@ def _handle_unverified_semantic_shrink(
     partial_semantic_files,
     failed_ast_sources,
     semantic_files,
+    cached_semantic_files=None,
+    sem_cache_mode=None,
+    sem_prompt=None,
+    cache_root=None,
 ):
     """Shared handling for the #3203 unverified-semantic-shrink guard on both the
     raw and clustered write paths (they differ only in where the flag is read
     from — ``merged`` vs ``G.graph``). Always prints the actionable notice.
+
+    The same under-produced source also has to be kept out of the semantic
+    cache (#5083): the cache is unversioned and content-hash keyed, so a
+    degraded chunk would otherwise be replayed as authoritative on every later
+    run, the shrink guard would keep refusing the write, and no LLM call would
+    ever be made again. ``save_semantic_cache`` cannot see graph.json (and must
+    not: it has no business reading the graph), so the entry is stamped
+    ``partial`` here, after the guard has measured the shrink.
+    ``cached_semantic_files`` identifies which shrinking sources were REPLAYED
+    from the cache this run (as opposed to freshly extracted), so the message
+    can call out the poisoned-entry replay instead of repeating the
+    ``--allow-partial`` advice — which would commit the degraded replay and
+    drop the prior nodes.
 
     Returns None when there is no shrink, else ``(incomplete, manifest_files,
     cleared_semantic)`` — the latter two are None unless the guard armed
@@ -474,16 +536,83 @@ def _handle_unverified_semantic_shrink(
         )
         stamped = {f for _flist in manifest_files.values() for f in _flist}
         cleared_semantic = {str(p) for p in semantic_files} - stamped
+
+    def _path_key(value) -> str:
+        p = Path(value)
+        if not p.is_absolute():
+            p = Path(target) / p
+        try:
+            return os.path.normcase(str(p.resolve()))
+        except (OSError, RuntimeError):
+            return os.path.normcase(os.path.abspath(str(p)))
+
+    cached_keys = {_path_key(p) for p in (cached_semantic_files or [])}
+    cached_sources = sorted(
+        sf for sf in unverified_shrink if _path_key(sf) in cached_keys
+    )
+    fresh_sources = sorted(
+        sf for sf in unverified_shrink if _path_key(sf) not in cached_keys
+    )
+
+    marked: list[Path] = []
+    try:
+        from graphify.cache import mark_semantic_cache_partial as _mark_partial
+        marked = _mark_partial(
+            sorted(unverified_shrink),
+            root=Path(target),
+            mode=sem_cache_mode,
+            prompt=sem_prompt,
+            cache_root=cache_root,
+        )
+    except Exception as exc:  # noqa: BLE001 — cache marking is best-effort
+        print(
+            f"[graphify extract] warning: could not mark degraded semantic "
+            f"cache entries: {exc}",
+            file=sys.stderr,
+        )
+
     details = ", ".join(
         f"'{sf}' ({prior} -> {fresh} nodes)"
         for sf, (prior, fresh) in sorted(unverified_shrink.items())
     )
     print(
         f"[graphify extract] semantic extraction is incomplete: unverified semantic "
-        f"shrink detected for {details}. The shrink guard stays armed for this write; "
-        "pass --allow-partial to overwrite a larger existing graph anyway.",
+        f"shrink detected for {details}.",
         file=sys.stderr,
     )
+    if cached_sources:
+        cached_details = ", ".join(
+            f"'{sf}' ({unverified_shrink[sf][0]} -> {unverified_shrink[sf][1]} nodes)"
+            for sf in cached_sources
+        )
+        replay_effect = (
+            "--allow-partial was passed, so the degraded replay is being written "
+            "over the existing graph and the prior nodes are dropped."
+            if cli_allow_partial
+            else "Do NOT pass --allow-partial here: it would write the degraded "
+            "replay over the larger existing graph and drop the prior nodes."
+        )
+        print(
+            f"[graphify extract] {cached_details} was replayed from the semantic "
+            "cache, not freshly extracted, so re-running with the same cache would "
+            "replay it again. " + replay_effect + " Re-run to re-extract the "
+            "marked source(s).",
+            file=sys.stderr,
+        )
+    if marked:
+        print(
+            "[graphify extract] marked "
+            f"{len(marked)} semantic cache entr{'y' if len(marked) == 1 else 'ies'} "
+            f"partial for re-extraction on the next run: "
+            f"{', '.join(str(p) for p in marked)}",
+            file=sys.stderr,
+        )
+    if fresh_sources and not cli_allow_partial:
+        print(
+            "[graphify extract] The shrink guard stays armed for this write; "
+            "pass --allow-partial to overwrite a larger existing graph anyway.",
+            file=sys.stderr,
+        )
     return incomplete, manifest_files, cleared_semantic
 
 
@@ -1873,9 +2002,35 @@ def dispatch_command(cmd: str) -> None:
                 elif a.startswith("--env-key="):
                     env_key = a.split("=", 1)[1]; i += 1
                 elif a == "--pricing-input" and i + 1 < len(args):
-                    pricing_input = float(args[i + 1]); i += 2
+                    try:
+                        pricing_input = _valid_price(float(args[i + 1]))
+                    except ValueError:
+                        print(f"Error: invalid price for --pricing-input: '{args[i + 1]}' (expected a finite, non-negative number)", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
+                elif a.startswith("--pricing-input="):
+                    val = a.split("=", 1)[1]
+                    try:
+                        pricing_input = _valid_price(float(val))
+                    except ValueError:
+                        print(f"Error: invalid price for --pricing-input: '{val}' (expected a finite, non-negative number)", file=sys.stderr)
+                        sys.exit(1)
+                    i += 1
                 elif a == "--pricing-output" and i + 1 < len(args):
-                    pricing_output = float(args[i + 1]); i += 2
+                    try:
+                        pricing_output = _valid_price(float(args[i + 1]))
+                    except ValueError:
+                        print(f"Error: invalid price for --pricing-output: '{args[i + 1]}' (expected a finite, non-negative number)", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
+                elif a.startswith("--pricing-output="):
+                    val = a.split("=", 1)[1]
+                    try:
+                        pricing_output = _valid_price(float(val))
+                    except ValueError:
+                        print(f"Error: invalid price for --pricing-output: '{val}' (expected a finite, non-negative number)", file=sys.stderr)
+                        sys.exit(1)
+                    i += 1
                 else:
                     i += 1
             if not base_url or not default_model or not env_key:
@@ -1945,7 +2100,7 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
-        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--depth N] [--graph path]"
+        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--no-doc-demotion] [--context C] [--seed X] [--budget N] [--depth N] [--graph path]"
         if len(sys.argv) < 3:
             print(_query_usage, file=sys.stderr)
             sys.exit(1)
@@ -1964,6 +2119,11 @@ def dispatch_command(cmd: str) -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        demote_docs_flag: bool | None = None
+        if "--no-doc-demotion" in sys.argv or "--no-demote-docs" in sys.argv:
+            demote_docs_flag = False
+        elif "--demote-docs" in sys.argv or "--doc-demotion" in sys.argv:
+            demote_docs_flag = True
         budget: int | None = None
         depth: int | None = None
         graph_path = _default_graph_path()
@@ -1972,7 +2132,13 @@ def dispatch_command(cmd: str) -> None:
         args = sys.argv[3:]
         i = 0
         while i < len(args):
-            if args[i] == "--budget" and i + 1 < len(args):
+            if args[i] in ("--no-doc-demotion", "--no-demote-docs"):
+                demote_docs_flag = False
+                i += 1
+            elif args[i] in ("--demote-docs", "--doc-demotion"):
+                demote_docs_flag = True
+                i += 1
+            elif args[i] == "--budget" and i + 1 < len(args):
                 try:
                     budget = int(args[i + 1])
                 except ValueError:
@@ -2053,7 +2219,10 @@ def dispatch_command(cmd: str) -> None:
             # direction of a link persisted in flipped endpoint order.
             try:
                 from graphify.build import graph_has_legacy_ids as _legacy
-                _legacy_ids = _legacy(_raw.get("nodes", []))
+                from graphify.build import legacy_id_source_prefix as _legacy_prefix
+                _legacy_ids = _legacy(
+                    _raw.get("nodes", []), source_prefix=_legacy_prefix(gp)
+                )
             except Exception:
                 _legacy_ids = False
             _rows = consumed_graph_rows(dict(_raw, links=_raw.get("links", [])))
@@ -2082,6 +2251,11 @@ def dispatch_command(cmd: str) -> None:
             project_settings = {}
         effective_budget = budget if budget is not None else project_settings.get("query_budget", 2000)
         effective_depth = depth if depth is not None else project_settings.get("query_depth", 2)
+        effective_demote_docs = (
+            demote_docs_flag
+            if demote_docs_flag is not None
+            else project_settings.get("demote_docs", project_settings.get("query_demote_docs", True))
+        )
 
         import time as _time
         _t0 = _time.perf_counter()
@@ -2096,6 +2270,7 @@ def dispatch_command(cmd: str) -> None:
             graph_path=str(gp),
             seeds=seeds or None,
             seed_root=graph_root,
+            demote_docs=effective_demote_docs,
         )
         querylog.log_query(
             kind="query",
@@ -2107,6 +2282,7 @@ def dispatch_command(cmd: str) -> None:
             token_budget=effective_budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
             seeds=seeds or None,
+            demote_docs=effective_demote_docs,
         )
         _touch_query_stamp(gp)
         print(_result)
@@ -3596,6 +3772,12 @@ def dispatch_command(cmd: str) -> None:
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
         merged = _nx.Graph()
+        # External stubs keep their bare (unprefixed) ids so the same
+        # stdlib/third-party module unifies into one node across repos (#2873).
+        # nx.compose therefore absorbs one node per colliding external id, so
+        # the merged total is *expected* to be lower than the sum of inputs.
+        # Track the delta and report it: a silent drop reads as data loss.
+        input_node_total = sum(g.number_of_nodes() for g in graphs)
         # nx.compose merges graph attrs with dict.update, so each iteration
         # CLOBBERED the previously accumulated hyperedge list — only the last
         # input's hyperedges survived (#2484, after @oleksii-tumanov's
@@ -3673,6 +3855,9 @@ def dispatch_command(cmd: str) -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, out_data, compact=True)
+        unified = input_node_total - merged.number_of_nodes()
+        if unified > 0:
+            print(f"  unified {unified} external node(s) shared across repos")
         print(f"Merged {len(graphs)} graphs -> {merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges")
         print(f"Written to: {out_path}")
 
@@ -4787,14 +4972,15 @@ def dispatch_command(cmd: str) -> None:
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
-        if code_files:
+        if code_files or (incremental_mode and existing_graph_path.exists()):
             from graphify.extract import extract as _ast_extract
             # Anchor the cache at the output root, not the scanned project:
             # with --out, a <target>/graphify-out/cache/ would leak a
             # graphify-out/ dir into a project that asked for external output.
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
-            ast_kwargs: dict = {"cache_root": out_root, "root": target}
+            # One extract() per process here, so free its parse memo when done.
+            ast_kwargs: dict = {"cache_root": out_root, "root": target, "release_parse_memo": True}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
@@ -4840,6 +5026,13 @@ def dispatch_command(cmd: str) -> None:
                         for f in _flist
                     }
                     _ctx_live.discard(None)
+                    # A C++ forward fold is re-established from all live source/proof files.
+                    from graphify.extractors.resolution import _cpp_reconciliation_paths
+                    code_files = _cpp_reconciliation_paths(
+                        list(code_files), _ctx_graph.get("nodes", []), _ctx_root,
+                        available_paths=[Path(p) for p in files_by_type.get("code", [])],
+                        changed_paths=[Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
+                    )
                     _ctx_live.difference_update(_ctx_identity(p) for p in code_files)
                     for _node in _ctx_graph.get("nodes", []):
                         if not _node.get("id") or not _ctx_is_ast_tier(_node):
@@ -4858,13 +5051,16 @@ def dispatch_command(cmd: str) -> None:
                         # these markers cannot be reconstructed from labels.
                         for _marker in (
                             "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
+                            "_cpp_class_kind", "_cpp_fields", "_cpp_reconcile_files",
+                            "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
+                            "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                             "_rust_impl_key", "_rust_declaration_count",
                             "_ts_public_twin", "_py_property", "_java_ret",
                             "_ts_fields", "_ts_static_fields",
                             "_py_fixture", "_py_return_type", "_go_fields",
                             "_go_package_path",
                         ):
-                            if _node.get(_marker):
+                            if _node.get(_marker) or (_marker.startswith("_cpp_") and isinstance(_node.get(_marker), (dict, list))):
                                 _ctx_node[_marker] = _node[_marker]
                         _metadata = _node.get("metadata")
                         if isinstance(_metadata, dict):
@@ -4875,6 +5071,7 @@ def dispatch_command(cmd: str) -> None:
                                     "ruby_method_kind",
                                     "ruby_lookup_unsafe",
                                     "python_opaque_bases",
+                                    "cpp_conditions",
                                     "ruby_reopened",
                                     "ruby_external_method_owners",
                                     # Erlang remote-call resolution keys (#3714):
@@ -4913,6 +5110,11 @@ def dispatch_command(cmd: str) -> None:
                             "relation": _edge.get("relation"),
                             "source_file": _sf,
                         }
+                        if (_edge.get("_cpp_include_proof")
+                                and not (_edge.get("metadata") or {}).get("cpp_conditions")):
+                            _ctx_edge["_cpp_include_proof"] = True
+                        if _edge.get("relation") == "imports" and isinstance(_edge.get("source_location"), str):
+                            _ctx_edge["source_location"] = _edge["source_location"]
                         if _edge.get("context") == "return_type":
                             _ctx_edge["context"] = "return_type"
                         _edge_metadata = _edge.get("metadata")
@@ -4940,13 +5142,16 @@ def dispatch_command(cmd: str) -> None:
                         _ctx_edges.append(_ctx_edge)
                 except Exception:
                     _ctx_nodes, _ctx_edges = [], []
+                # Only the context lists are needed; free the full parse.
+                _ctx_graph = None
                 if _ctx_nodes:
                     ast_kwargs["resolution_context_nodes"] = _ctx_nodes
                 if _ctx_edges:
                     ast_kwargs["resolution_context_edges"] = _ctx_edges
+                del _ctx_nodes, _ctx_edges
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
             try:
-                ast_result = _ast_extract(code_files, **ast_kwargs)
+                ast_result = _ast_extract(code_files, **ast_kwargs) if code_files else ast_result
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
                 # #2445: losing the whole AST pass is fatal by default. The
@@ -4958,6 +5163,9 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+            # Only extract() reads the resolution context; free it before the
+            # semantic pass and graph build.
+            del ast_kwargs
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -4978,6 +5186,11 @@ def dispatch_command(cmd: str) -> None:
         _partial_semantic_files: set[str] = set()
         sem_cache_hits = 0
         sem_cache_misses = 0
+        # Files served from the semantic cache this run (absolute paths), used
+        # by the #3203 shrink handler to tell a poisoned cached replay from a
+        # fresh under-production (#5083).
+        _cached_semantic_paths: list[str] = []
+        uncached_paths: list[str] = []
         # Deep mode uses its own namespace (cache/semantic-deep/) so deep and
         # standard results for the same content never shadow each other (#1894).
         sem_cache_mode = "deep" if deep_mode else None
@@ -5002,6 +5215,10 @@ def dispatch_command(cmd: str) -> None:
                 )
             sem_cache_hits = len(semantic_files) - len(uncached_paths)
             sem_cache_misses = len(uncached_paths)
+            _uncached_set = set(uncached_paths)
+            _cached_semantic_paths = [
+                p for p in sem_paths_str if p not in _uncached_set
+            ]
             sem_result["nodes"].extend(cached_nodes)
             sem_result["edges"].extend(cached_edges)
             sem_result["hyperedges"].extend(cached_hyperedges)
@@ -5399,6 +5616,10 @@ def dispatch_command(cmd: str) -> None:
                     partial_semantic_files=_partial_semantic_files,
                     failed_ast_sources=_failed_ast_sources,
                     semantic_files=semantic_files,
+                    cached_semantic_files=_cached_semantic_paths,
+                    sem_cache_mode=sem_cache_mode,
+                    sem_prompt=sem_prompt,
+                    cache_root=out_root,
                 )
                 if _shrink is not None and _shrink[0]:
                     _extraction_incomplete = True
@@ -5556,6 +5777,10 @@ def dispatch_command(cmd: str) -> None:
                     partial_semantic_files=_partial_semantic_files,
                     failed_ast_sources=_failed_ast_sources,
                     semantic_files=semantic_files,
+                    cached_semantic_files=_cached_semantic_paths,
+                    sem_cache_mode=sem_cache_mode,
+                    sem_prompt=sem_prompt,
+                    cache_root=out_root,
                 )
                 if _shrink is not None and _shrink[0]:
                     _extraction_incomplete = True
@@ -5574,6 +5799,11 @@ def dispatch_command(cmd: str) -> None:
         else:
             G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
         stages.mark("build")
+        # G holds its own copy of every node and edge now. Drop the raw
+        # extraction lists so cluster/analyze/export can reuse that memory.
+        ast_result = sem_result = pg_result = cargo_result = fresh = {}
+        cached_nodes = cached_edges = cached_hyperedges = []
+        merged = {"input_tokens": merged["input_tokens"], "output_tokens": merged["output_tokens"]}
         if G.number_of_nodes() == 0:
             print(
                 "[graphify extract] graph is empty — extraction produced no nodes. "
@@ -5753,7 +5983,7 @@ def dispatch_command(cmd: str) -> None:
             f"`graphify cluster-only {graphify_out.parent}` "
             "to generate GRAPH_REPORT.md and name communities"
         )
-        _print_cloud_cta(graphify_out)
+        _print_cloud_cta(graphify_out, G.number_of_nodes())
         stages.total()
 
     elif cmd == "cache-check":
