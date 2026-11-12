@@ -53,7 +53,6 @@ def _safe_community_name(label: str) -> str:
     return _obsidian_safe_stem(label)
 
 
-
 def load_report_token_cost(graphify_out: Path) -> dict[str, int]:
     """Return cumulative token totals from cost.json for GRAPH_REPORT.
 
