@@ -32,8 +32,13 @@ from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
 # 'SELECT AUTOCREATE PROCEDURE x FROM t;' in an error-bearing file minted a
 # phantom routine x() (delimited identifiers are span-skipped at the scan
 # site, but a bare word has no span).
+# Oracle's default DDL export (DBMS_METADATA.GET_DDL, most IDEs) writes
+# CREATE OR REPLACE [NON]EDITIONABLE PROCEDURE|FUNCTION|TRIGGER, so the
+# optional edition keyword is accepted here and in _TRIGGER_RECOVERY_RX;
+# without it such files recovered no routine at all (#5167).
 _ROUTINE_RECOVERY_RX = re.compile(
-    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?"
+    r"(?:FUNCTION|PROC(?:EDURE)?)\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"((?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
     r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
@@ -52,7 +57,7 @@ _TRIGGER_IDENT = (
     r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*"
 )
 _TRIGGER_RECOVERY_RX = re.compile(
-    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?TRIGGER\s+"
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?TRIGGER\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"(" + _TRIGGER_IDENT + r")"
     r".*?\bON\s+(" + _TRIGGER_IDENT + r")",
