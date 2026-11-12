@@ -1,3 +1,35 @@
+<p align="center">
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-logo.png" width="360" height="189" alt="Graphify"/></a>
+</p>
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/25296?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-25296" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/25296" alt="Graphify-Labs%2Fgraphify | Trendshift" width="250" height="55"/></a>
+</p>
+
+<div align="center">
+<details><summary><b>Read this in other languages</b></summary>
+
+<a href="README.md">English</a> | <a href="docs/translations/README.zh-CN.md">简体中文</a> | <a href="docs/translations/README.ja-JP.md">日本語</a> | <a href="docs/translations/README.ko-KR.md">한국어</a> | <a href="docs/translations/README.de-DE.md">Deutsch</a> | <a href="docs/translations/README.fr-FR.md">Français</a> | <a href="docs/translations/README.es-ES.md">Español</a> | <a href="docs/translations/README.hi-IN.md">हिन्दी</a> | <a href="docs/translations/README.pt-BR.md">Português</a> | <a href="docs/translations/README.ru-RU.md">Русский</a> | <a href="docs/translations/README.ar-SA.md">العربية</a> | <a href="docs/translations/README.fa-IR.md">فارسی</a> | <a href="docs/translations/README.it-IT.md">Italiano</a> | <a href="docs/translations/README.pl-PL.md">Polski</a> | <a href="docs/translations/README.nl-NL.md">Nederlands</a> | <a href="docs/translations/README.tr-TR.md">Türkçe</a> | <a href="docs/translations/README.uk-UA.md">Українська</a> | <a href="docs/translations/README.vi-VN.md">Tiếng Việt</a> | <a href="docs/translations/README.id-ID.md">Bahasa Indonesia</a> | <a href="docs/translations/README.sv-SE.md">Svenska</a> | <a href="docs/translations/README.el-GR.md">Ελληνικά</a> | <a href="docs/translations/README.ro-RO.md">Română</a> | <a href="docs/translations/README.cs-CZ.md">Čeština</a> | <a href="docs/translations/README.fi-FI.md">Suomi</a> | <a href="docs/translations/README.da-DK.md">Dansk</a> | <a href="docs/translations/README.no-NO.md">Norsk</a> | <a href="docs/translations/README.hu-HU.md">Magyar</a> | <a href="docs/translations/README.th-TH.md">ภาษาไทย</a> | <a href="docs/translations/README.uz-UZ.md">Oʻzbekcha</a> | <a href="docs/translations/README.zh-TW.md">繁體中文</a> | <a href="docs/translations/README.fil-PH.md">Filipino</a> | <a href="docs/translations/README.he-IL.md">עברית</a>
+
+</details>
+</div>
+
+<p align="center">
+  <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
+  <a href="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml"><img src="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
+  <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
+  <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
+  <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
+  <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Start free, no card required &rarr;</b></a>
+  <br/>
 **Punguza matumizi ya tokeni za ejenti kwa 80%.** Graphify Cloud ni kumbukumbu inayowaka wakati wote ambayo inasimamia ejenti zako, huweka ubora wa kodi ukiwa juu, na kuthibitisha usahihi kupitia uthibitishaji rasmi.
 
 Andika `/graphify` katika msaidizi wako wa AI wa kodi na itatoa ramani ya mradi wako wote (kodi, nyaraka, faili za PDF, picha, video) na kuiweka katika **grafu ya maarifa (knowledge graph)** ambayo unaweza **kuiuliza maswali badala ya kutafuta neno kwa neno (grepping)** kwenye faili.
