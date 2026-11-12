@@ -228,10 +228,13 @@ class _GraphContextCache:
 
         try:
             new_entry = self._load_entry(resolved_path, key)
-        finally:
+        except BaseException:
+            # Build failed: clear the in-flight marker and wake waiters so one
+            # of them retries. The old entry (if any) is left untouched.
             with self._lock:
                 self._loading.pop(loading_key, None)
                 wait_event.set()
+            raise
 
         with self._lock:
             entries[resolved_path] = new_entry
@@ -239,6 +242,12 @@ class _GraphContextCache:
                 self._entries.move_to_end(resolved_path)
                 while len(self._entries) > self._max_contexts:
                     self._entries.popitem(last=False)
+            # Clear the in-flight marker and wake waiters in the SAME lock block
+            # that stores the entry. If these ran in a separate block, a woken
+            # waiter could see neither a stored entry nor an in-flight marker in
+            # the gap and start a second full rebuild, defeating single flight.
+            self._loading.pop(loading_key, None)
+            wait_event.set()
             return new_entry["G"], new_entry["communities"]
 
 

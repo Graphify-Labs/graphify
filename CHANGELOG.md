@@ -11,6 +11,9 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **path** `graphify path` prefers a route through real files over one that detours through a sourceless import hub (an external or stdlib module stub) when both are equally short and confident; when the only route is via a hub it is still returned (#5153, thanks @ayushcodes10).
 - Fix: **report** GRAPH_REPORT.md keeps the extraction token cost from cost.json after a `graphify update`, instead of resetting it to zero on the AST-only rebuild path (#5154, thanks @kevin9327).
 - Fix: **hooks** the search nudge softens when the graph may be stale (pending changes since the last build), mirroring the read nudge, instead of always telling the agent to query the graph; a genuinely unindexed file still gets the plain nudge (#5132, thanks @ayushcodes10).
+- Fix: **serve** a graph reload no longer stalls every MCP request: the new graph is built off to the side and swapped in atomically, so concurrent requests keep being served the current graph instead of blocking for the whole rebuild, and a single in-flight reload is shared rather than rebuilt per waiter (#5177, thanks @ayushcodes10).
+- Fix: **query** a `--context` filter naming a heritage relation (`inherits`, `implements`, `extends`) now reaches heritage edges that carry no context attribute, so the walk follows a class hierarchy instead of stopping at the seed; non-heritage context-less edges are still filtered out, and the header reports when a filter matched no edges (#5178, thanks @sunhouy).
+- Fix: **sql** Oracle `[NON]EDITIONABLE` PROCEDURE/FUNCTION/TRIGGER DDL is recovered from the ERROR node instead of yielding only a file node; a table or routine literally named `editionable`, and non-routine DDL such as `EDITIONABLE VIEW`, are not mis-recovered (#5167, thanks @Yi-111-a).
 
 The AST cache schema is bumped to 45; warm caches re-run the affected C#, Java and SQL extractions.
 
