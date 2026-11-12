@@ -146,6 +146,10 @@ class _GraphContextCache:
         self._entries: OrderedDict[str, dict] = OrderedDict()
         self._pinned: dict[str, dict] = {}
         self._lock = threading.Lock()
+        # One in-flight build per (resolved_path, pinned); keyed separately
+        # from `_entries`/`_pinned` so a rebuild in progress for one path
+        # never blocks a lookup for another (#5177).
+        self._loading: dict[tuple[str, bool], threading.Event] = {}
 
     def _load_entry(self, resolved_path: str, key: tuple[int, int]) -> dict:
         """Build one entry for an already-resolved path and known file key.
@@ -177,27 +181,65 @@ class _GraphContextCache:
 
         ``pinned=True`` is reserved for the server's configured default graph;
         it remains warm without consuming a project-cache slot.
+
+        The actual rebuild (``_load_entry``, which parses graph.json and builds
+        its trigram index) runs outside ``_lock`` so a slow reload of one path
+        never blocks a request for another (#5177). While a rebuild for THIS
+        path is already in flight, a caller that still has an old entry for it
+        gets that stale entry back immediately rather than queuing behind the
+        rebuild; a caller with no entry yet (the path's first ever load) has
+        nothing stale to serve and waits for the one in-flight build instead
+        of starting a redundant second one.
         """
+        entries = self._pinned if pinned else self._entries
+        loading_key = (resolved_path, pinned)
         with self._lock:
             try:
                 stat_result = Path(resolved_path).stat()
             except FileNotFoundError:
                 raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
             key = (stat_result.st_mtime_ns, stat_result.st_size)
-            entries = self._pinned if pinned else self._entries
             entry = entries.get(resolved_path)
             if entry is not None and entry["key"] == key:
                 if not pinned:
                     self._entries.move_to_end(resolved_path)
                 return entry["G"], entry["communities"]
 
-            entry = self._load_entry(resolved_path, key)
-            entries[resolved_path] = entry
+            in_flight = self._loading.get(loading_key)
+            if entry is not None and in_flight is not None:
+                if not pinned:
+                    self._entries.move_to_end(resolved_path)
+                return entry["G"], entry["communities"]
+
+            if in_flight is not None:
+                wait_event, build_here = in_flight, False
+            else:
+                wait_event = threading.Event()
+                self._loading[loading_key] = wait_event
+                build_here = True
+
+        if not build_here:
+            wait_event.wait()
+            # The build this thread waited on may belong to a key that was
+            # already superseded by a newer write; recurse to either pick up
+            # its result or (if it failed, or was already stale on arrival)
+            # take a fresh run at loading/building it.
+            return self.load(resolved_path, pinned=pinned)
+
+        try:
+            new_entry = self._load_entry(resolved_path, key)
+        finally:
+            with self._lock:
+                self._loading.pop(loading_key, None)
+                wait_event.set()
+
+        with self._lock:
+            entries[resolved_path] = new_entry
             if not pinned:
                 self._entries.move_to_end(resolved_path)
                 while len(self._entries) > self._max_contexts:
                     self._entries.popitem(last=False)
-            return entry["G"], entry["communities"]
+            return new_entry["G"], new_entry["communities"]
 
 
 def _node_arg(arguments: dict) -> str:
