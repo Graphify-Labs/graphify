@@ -289,15 +289,18 @@ _BODY_END_RX = re.compile(
     r"^[ \t]*(?:GO(?:[ \t]+\d+)?[ \t\r]*;?[ \t\r]*$|(?:CREATE|ALTER)\b(?!\s+TABLE\s+[#@]))",
     re.IGNORECASE | re.MULTILINE,
 )
-# `(?![\w$]|\s*\.)` stops the identifier atom from backtracking to a prefix of
-# a longer name (`tempdb..#x`, `dbo.fn(`) and matching that instead.
-_BODY_TAIL = r"(?![\w$]|\s*\.)"
-_BODY_READ_RX = re.compile(r"\b(?:FROM|JOIN)\s+(" + _TRIGGER_IDENT + r")" + _BODY_TAIL, re.IGNORECASE)
+# `(?![\w$@]|\s*\.)` stops the identifier atom from backtracking to a prefix of
+# a longer name (`tempdb..#x`, `dbo.fn(`, `tbl@link`) and matching that instead.
+_BODY_TAIL = r"(?![\w$@]|\s*\.)"
+_DBLINK_SUFFIX = r"(?:@(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$.]+))"
+_BODY_TABLE_IDENT = _TRIGGER_IDENT + r"(?:" + _DBLINK_SUFFIX + r")?"
+_BODY_READ_RX = re.compile(r"\b(?:FROM|JOIN)\s+(" + _BODY_TABLE_IDENT + r")" + _BODY_TAIL, re.IGNORECASE)
 _BODY_WRITE_RX = re.compile(
     r"\b(INSERT(?:\s+INTO)?|UPDATE(?:\s+TOP\s*\([^)]*\))?|DELETE(?:\s+TOP\s*\([^)]*\))?(?:\s+FROM)?"
-    r"|MERGE(?:\s+INTO)?|INTO)\s+(" + _TRIGGER_IDENT + r")" + _BODY_TAIL,
+    r"|MERGE(?:\s+INTO)?|INTO)\s+(" + _BODY_TABLE_IDENT + r")" + _BODY_TAIL,
     re.IGNORECASE,
 )
+_BODY_COMMA_TABLE_RX = re.compile(r"\s*,\s*(" + _BODY_TABLE_IDENT + r")" + _BODY_TAIL, re.IGNORECASE)
 _BODY_ALIAS_RX = re.compile(r"\s+(?:AS\s+)?([A-Za-z_][\w$]*)", re.IGNORECASE)
 _BODY_CTE_RX = re.compile(r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([\w$]+)\s*(?:\([^()]*\))?\s+AS\s*\(", re.IGNORECASE)
 # `ON DELETE`, `FOR UPDATE`, `AFTER INSERT, UPDATE`: an event or lock clause, not a statement.
@@ -352,9 +355,25 @@ def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
         if not _usable(m.group(1)) or masked[m.end():].lstrip().startswith("("):
             continue
         reads.append((m.start(), m.group(1)))
-        am = _BODY_ALIAS_RX.match(masked, m.end())
+        curr_pos = m.end()
+        am = _BODY_ALIAS_RX.match(masked, curr_pos)
         if am and am.group(1).lower() not in non_tables:
             aliases.setdefault(am.group(1).lower(), m.group(1))
+            curr_pos = am.end()
+        if m.group(0).lstrip()[:4].upper() == "FROM":
+            while True:
+                cm = _BODY_COMMA_TABLE_RX.match(masked, curr_pos)
+                if not cm:
+                    break
+                c_tbl = cm.group(1)
+                if not _usable(c_tbl) or masked[cm.end():].lstrip().startswith("("):
+                    break
+                reads.append((cm.start(1), c_tbl))
+                curr_pos = cm.end()
+                cam = _BODY_ALIAS_RX.match(masked, curr_pos)
+                if cam and cam.group(1).lower() not in non_tables:
+                    aliases.setdefault(cam.group(1).lower(), c_tbl)
+                    curr_pos = cam.end()
 
     refs = [(pos, "reads_from", name) for pos, name in reads]
     for pos, _end, relation, name in writes:
@@ -421,6 +440,9 @@ def _clean_ident(name: str) -> str:
     Double-quoted parts keep their quotes. Labels only: node ids come from the
     text as written and are not touched.
     """
+    if "@" in name:
+        tbl, link = name.split("@", 1)
+        return f"{_clean_ident(tbl)}@{link}"
     if "[" not in name and "]" not in name:
         return name
     return ".".join(
@@ -439,6 +461,9 @@ def _norm_ident(name: str) -> str:
     `table_nids` keys and lookups — node ids and display labels keep the
     original text.
     """
+    if "@" in name:
+        tbl, link = name.split("@", 1)
+        return f"{_norm_ident(tbl)}@{_norm_ident(link)}"
     parts = []
     for part in name.split("."):
         p = part.strip()
@@ -818,11 +843,16 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         if node.type in ("from", "join"):
             for c in node.children:
                 if c.type == "relation":
+                    tbl_ref: str | None = None
+                    dblink: str | None = None
                     for cc in c.children:
                         if cc.type == "object_reference":
-                            tbl = _read(cc)
-                            if _norm_ident(tbl) in cte_names:
-                                continue
+                            tbl_ref = _read(cc)
+                        elif cc.type == "identifier" and _read(cc).startswith("@"):
+                            dblink = _read(cc)
+                    if tbl_ref:
+                        tbl = f"{tbl_ref}{dblink}" if dblink else tbl_ref
+                        if _norm_ident(tbl) not in cte_names:
                             tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                             _add_edge(caller_nid, tbl_nid, "reads_from",
                                       c.start_point[0] + 1)
