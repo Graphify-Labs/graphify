@@ -1687,6 +1687,24 @@ def test_sql_cte_shadows_same_named_table_within_its_statement(tmp_path):
     assert reads[0]["source"] == nid["v2"]
     assert reads[0]["target"] == nid["levels"]  # the real, sourced table node
 
+
+def _ts_sql_at_least(target: tuple[int, ...]) -> bool:
+    """Whether the installed tree-sitter-sql grammar is at least *target*."""
+    import importlib.metadata
+    try:
+        parts = importlib.metadata.version("tree-sitter-sql").split(".")[:3]
+        return tuple(int(x) for x in parts) >= target
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _ts_sql_at_least((0, 3, 13)),
+    reason="The spurious alias-as-table node only arises on tree-sitter-sql "
+    ">= 0.3.13, which fails to parse `LIMIT <expr> OFFSET <expr>` in a derived "
+    "table; on the pinned 0.3.11 the subquery parses and there is nothing to "
+    "guard against (#5147).",
+)
 def test_sql_unparsed_derived_table_alias_is_not_read_as_a_table(tmp_path):
     """#5147: tree-sitter-sql 0.3.13 cannot parse `LIMIT <expr> OFFSET <expr>`
     inside a derived table, so it returns the `( ... )` as an ERROR node and the
