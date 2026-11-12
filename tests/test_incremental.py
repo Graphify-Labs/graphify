@@ -74,6 +74,58 @@ def test_no_incremental_without_manifest(tmp_path):
     assert "incremental scan" not in r.stdout.lower()
 
 
+def test_warns_when_manifest_present_but_nothing_matches(tmp_path):
+    """#2654: a manifest built from a different checkout/worktree root (or
+    otherwise stale) matches none of the current corpus's paths, so an
+    ordinary-looking incremental run silently re-extracts the whole corpus.
+    Must warn loudly before that happens, not print a normal incremental
+    summary as if nothing were wrong."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for i in range(12):
+        (docs / f"page{i}.md").write_text(f"# Page {i}\ncontent {i}")
+    out = docs / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text(json.dumps({"nodes": [], "links": []}))
+    # Manifest keys point at a DIFFERENT, nonexistent root entirely,
+    # simulating one built from another checkout/worktree -- none of these
+    # paths can match this run's actual files.
+    fake_manifest = {
+        str(Path("/some/other/checkout/docs") / f"page{i}.md"): {
+            "mtime": 1.0, "ast_hash": "x", "semantic_hash": "x"
+        }
+        for i in range(12)
+    }
+    (out / "manifest.json").write_text(json.dumps(fake_manifest))
+    r = _run(["extract", str(docs)], tmp_path)
+    combined = r.stdout + r.stderr
+    assert "manifest.json tracks" in combined
+    assert "0 unchanged" in combined
+
+
+def test_no_mismatch_warning_when_prior_manifest_is_small(tmp_path):
+    """Control: fewer than 10 prior manifest entries must not trigger the
+    mismatch warning even if none of them match, to avoid noise on a small
+    or newly-initialized project."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for i in range(3):
+        (docs / f"page{i}.md").write_text(f"# Page {i}\ncontent {i}")
+    out = docs / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text(json.dumps({"nodes": [], "links": []}))
+    fake_manifest = {
+        str(Path("/some/other/checkout/docs") / f"page{i}.md"): {
+            "mtime": 1.0, "ast_hash": "x", "semantic_hash": "x"
+        }
+        for i in range(3)
+    }
+    (out / "manifest.json").write_text(json.dumps(fake_manifest))
+    r = _run(["extract", str(docs)], tmp_path)
+    combined = r.stdout + r.stderr
+    assert "manifest.json tracks" not in combined
+
+
 def test_extract_no_cluster_incremental_noop_preserves_existing_graph(tmp_path):
     """#1347: no-op incremental no-cluster extract must not overwrite graph.json."""
     project = tmp_path / "project"
