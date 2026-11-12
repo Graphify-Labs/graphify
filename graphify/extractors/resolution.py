@@ -1736,6 +1736,11 @@ def _apply_symbol_resolution_facts(
             and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
         }
         member_nodes: dict[tuple[Path, str, str], set[str]] = {}
+        # Every id this loop collects is already gated on _callable (below), so
+        # it doubles as the namespace branch's own non-callable guard (#5144):
+        # m.handler() must not resolve to an exported object literal just
+        # because exactly one symbol named "handler" exists.
+        callable_node_ids: set[str] = set()
         fresh_paths = {_resolve_cached(path) for path in paths}
         for node in nodes + [
             node for node in resolution_context_nodes or []
@@ -1743,6 +1748,7 @@ def _apply_symbol_resolution_facts(
         ]:
             if not node.get("_callable"):
                 continue
+            callable_node_ids.add(str(node["id"]))
             source_path = _js_source_path(str(node.get("source_file", "")), root)
             if source_path is None:
                 continue
@@ -1767,7 +1773,7 @@ def _apply_symbol_resolution_facts(
                 if len(candidates) == 1:
                     origin_path, origin_symbol = next(iter(candidates))
                     target_id = symbol_nodes.get((origin_path, origin_symbol))
-                    if target_id is not None:
+                    if target_id is not None and target_id in callable_node_ids:
                         add_edge(
                             call["caller_nid"], target_id, "calls", "call",
                             int(str(call["source_location"]).removeprefix("L")),
@@ -3900,7 +3906,14 @@ def _merge_cpp_member_declarations(
             continue
         remap[definition["id"]] = declaration["id"]
         merged_owners[declaration["id"]] = owner["id"]
-        declaration["definition_file"] = definition_file
+        # Store the impl's raw source_file, not the _cpp_source_key form. The key
+        # is relpath'd against ``root`` (the cache/out root here, not the scan
+        # root), so for an out-of-tree corpus it is a `../`-walk that the build's
+        # _norm_source_file cannot re-anchor (it only relativizes absolute paths).
+        # The sibling decl/def merge below stores the raw source_file for exactly
+        # this reason, so definition_file normalizes to the same root as
+        # source_file. The key form is still right for include-path proofs.
+        declaration["definition_file"] = definition["source_file"]
         declaration["definition_location"] = definition.get("source_location", "")
         declaration["_cpp_reconcile_files"] = sorted(set(path) | set(owner.get("_cpp_reconcile_files", [])))
     if remap:

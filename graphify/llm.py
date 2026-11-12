@@ -2666,7 +2666,10 @@ def _extract_with_adaptive_retry(
                 f"and cannot be split further: {exc}",
                 file=sys.stderr,
             )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+            # Mark the chunk's files partial (as the hollow give-up path does), so a
+            # parent whose other slices succeeded is not cached as complete (#5099).
+            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0,
+                    "model": model, "finish_reason": "stop", "_partial_files": _chunk_partial_files(chunk)}
         if _depth >= max_depth:
             persist_desc = "still times out" if is_timeout else "still overflows context"
             print(
@@ -2674,7 +2677,8 @@ def _extract_with_adaptive_retry(
                 f"recursion depth {_depth} (max {max_depth}) — dropping",
                 file=sys.stderr,
             )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0,
+                    "model": model, "finish_reason": "stop", "_partial_files": _chunk_partial_files(chunk)}
         print(
             f"[graphify] chunk of {len(chunk)} {reason} at depth "
             f"{_depth} ({type(exc).__name__}); splitting in half and retrying",

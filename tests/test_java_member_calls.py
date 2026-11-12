@@ -804,7 +804,7 @@ def test_local_or_parameter_named_like_a_class_is_not_a_static_receiver(tmp_path
 def test_schema_bump_retires_java_entries_cached_without_static_field_chains(
     tmp_path: Path, monkeypatch,
 ):
-    """An entry from schema 43 has no static-field receiver chain; replaying it
+    """An entry from schema 44 has no static-field receiver chain; replaying it
     would leave `Service.INSTANCE.get()` unlinked (#5149)."""
     import graphify.cache as cache_mod
     from graphify.cache import save_cached
@@ -820,7 +820,7 @@ def test_schema_bump_retires_java_entries_cached_without_static_field_chains(
         paths.append(tmp_path / name)
     current_schema = cache_mod._AST_CACHE_SCHEMA
     monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "same-version")
-    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 43)  # last schema without the chain
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 44)  # last schema without the chain
     monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
     for p in paths:
         stale = extract_java(p)
