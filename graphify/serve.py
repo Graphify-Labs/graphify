@@ -1102,7 +1102,27 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
     "modules": "import",
     "exports": "export",
     "exported": "export",
+    "inherit": "inherits",
+    "inherited": "inherits",
+    "inheritance": "inherits",
+    "subclass": "inherits",
+    "subclasses": "inherits",
+    "superclass": "inherits",
+    "implements": "implements",
+    "implemented": "implements",
+    "interface": "implements",
+    "interfaces": "implements",
+    "extends": "extends",
 }
+
+# Heritage relations, which a context filter matches by relation name as well as
+# by context. They are the one structural family the extractors disagree on:
+# TypeScript tags them `context="type"`, while C#, Java and Python emit them
+# with no context at all, so a filter that only read `context` could never
+# reach inheritance in those languages (#5178). `type` deliberately stays out
+# of this set — it means the TypeScript context and nothing more, or a
+# TypeScript graph would start losing edges from its other contexts.
+_HERITAGE_RELATIONS = frozenset({"inherits", "implements", "extends"})
 
 
 def _normalize_context_filters(filters: list[str] | None) -> list[str]:
@@ -1147,15 +1167,22 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
+    relations = filters & _HERITAGE_RELATIONS
+
+    def keep(data: dict) -> bool:
+        if data.get("context") in filters:
+            return True
+        return data.get("relation") in relations
+
     H = G.__class__()
     H.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for u, v, key, data in G.edges(keys=True, data=True):
-            if data.get("context") in filters:
+            if keep(data):
                 H.add_edge(u, v, key=key, **data)
     else:
         for u, v, data in G.edges(data=True):
-            if data.get("context") in filters:
+            if keep(data):
                 H.add_edge(u, v, **data)
     return H
 
@@ -1714,7 +1741,12 @@ def _render_query(
         header_parts.insert(0, f"Graph: {_display_graph_path(graph_path)} "
                                f"({G.number_of_nodes()} nodes)")
     if resolved_filters:
-        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
+        # A filter that selects nothing used to answer with the seed alone and
+        # no hint, which reads as "these symbols are unrelated" (#5178).
+        label = f"Context: {', '.join(resolved_filters)} ({filter_source}"
+        if not traversal_graph.number_of_edges():
+            label += ", matched 0 edges"
+        header_parts.append(label + ")")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
     # Pass the seeds so the queried symbol renders first and survives truncation
