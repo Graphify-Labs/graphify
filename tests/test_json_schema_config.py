@@ -117,7 +117,9 @@ def _is_skipped(result):
 def test_schema_with_defs_is_skipped_not_walked(tmp_path):
     r = extract_json(_write(tmp_path, "events-v1.json", SCHEMA_WITH_DEFS))
     assert _is_skipped(r), r
-    assert r["nodes"] == []
+    assert len(r["nodes"]) == 1
+    assert r["nodes"][0]["label"] == "events-v1.json"
+    assert r["nodes"][0]["status"] == "skipped"
     assert r["edges"] == []
 
 
@@ -125,7 +127,9 @@ def test_schema_with_legacy_definitions_is_skipped(tmp_path):
     # draft-07 schemas spell the same thing `definitions`.
     r = extract_json(_write(tmp_path, "legacy.json", SCHEMA_WITH_LEGACY_DEFS))
     assert _is_skipped(r), r
-    assert r["nodes"] == []
+    assert len(r["nodes"]) == 1
+    assert r["nodes"][0]["label"] == "legacy.json"
+    assert r["nodes"][0]["status"] == "skipped"
 
 
 def test_schema_with_defs_in_subdirectory_is_skipped(tmp_path):
@@ -138,7 +142,9 @@ def test_schema_with_defs_in_subdirectory_is_skipped(tmp_path):
 def test_root_level_ref_alone_is_skipped(tmp_path):
     r = extract_json(_write(tmp_path, "ref.json", SCHEMA_REF_ONLY))
     assert _is_skipped(r), r
-    assert r["nodes"] == []
+    assert len(r["nodes"]) == 1
+    assert r["nodes"][0]["label"] == "ref.json"
+    assert r["nodes"][0]["status"] == "skipped"
 
 
 def test_schema_produces_no_keyword_nodes(tmp_path):
