@@ -6814,6 +6814,27 @@ _CSHARP_WELL_KNOWN_TYPES = frozenset({
     "ulong", "ushort", "void",
 })
 
+# A C# keyword type and its System type are one type: `bool` is `Boolean`, so a
+# `bool` receiver matches `this Boolean` and a `Boolean` receiver `this bool`.
+_CSHARP_KEYWORD_TYPE_ALIASES = {
+    "bool": "Boolean", "byte": "Byte", "sbyte": "SByte", "char": "Char",
+    "decimal": "Decimal", "double": "Double", "float": "Single", "int": "Int32",
+    "uint": "UInt32", "nint": "IntPtr", "nuint": "UIntPtr", "long": "Int64",
+    "ulong": "UInt64", "short": "Int16", "ushort": "UInt16",
+    "object": "Object", "string": "String",
+}
+_CSHARP_SYSTEM_TYPE_KEYWORDS = {v: k for k, v in _CSHARP_KEYWORD_TYPE_ALIASES.items()}
+
+# Keyword value types own no `Value` member, so `x.Value` on one can only be
+# `Nullable<T>.Value` (`char? c; c.Value`), whose type is T itself.
+_CSHARP_KEYWORD_VALUE_TYPES = frozenset(_CSHARP_KEYWORD_TYPE_ALIASES) - {"object", "string"}
+
+
+def _csharp_keyword_type(name: str) -> str:
+    """The C# keyword spelling of a built-in type name, else ``name`` unchanged."""
+    bare = name[len("System."):] if name.startswith("System.") else name
+    return _CSHARP_SYSTEM_TYPE_KEYWORDS.get(bare, bare if bare in _CSHARP_KEYWORD_TYPE_ALIASES else name)
+
 
 def _csharp_overload_index(nodes: list[dict], edges: list[dict]) -> dict:
     """Method nodes by id and their owning type, for C# methods with an arity."""
@@ -7167,15 +7188,25 @@ def _resolve_csharp_member_calls(
             if not type_nid:
                 continue
             type_qualified = False
-        else:
-            type_name = rc.get("receiver_type")
-            if not type_name:
-                continue
+        elif rc.get("receiver_type"):
+            type_name = rc["receiver_type"]
             type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
             if not type_nid:  # ambiguous or absent -> bail (god-node guard)
                 _park_if_absent(type_name, caller_node, rc)
                 continue
             type_qualified = False
+        elif rc.get("receiver_undeclared"):
+            # `_Pair.Make()` / `pair.Create()`: no local, parameter, field or
+            # property of that name is in scope, so the receiver names a type
+            # like `Type.M()` above, only not Pascal-cased. Bind only when it
+            # resolves to exactly one declared type; never park it, since an
+            # undeclared lowercase name is as likely a namespace or alias.
+            type_nid = _resolve_type_name_nid(receiver, caller_node, src_file)
+            if not type_nid:
+                continue
+            type_qualified = True
+        else:
+            continue
         method_nid = _method_on_type_or_bases(type_nid, _key(callee))
         if not method_nid:
             continue  # receiver typed, but the type has no such method — skip
@@ -7251,6 +7282,11 @@ def _resolve_csharp_extension_calls(
     does; anything named like an ordinary member does not). A capitalized
     untyped receiver is a type name (``Convert.ToInt32(x)``), never a value an
     extension can apply to, so it is skipped.
+
+    A keyword type and its System type are one type (``bool`` receiver,
+    ``this Boolean``), unless the corpus declares a type of that name. And
+    ``x.Value`` on a keyword value type can only be ``Nullable<T>.Value``
+    (``char? c; c.Value.IsWs()``), so its type is T.
     """
     def _key(label: str) -> str:
         # Case and `_` are part of a C# name (#4415); drop only the `.M()` decoration.
@@ -7367,6 +7403,19 @@ def _resolve_csharp_extension_calls(
             return hits[0], True
         return None, bool(hits)
 
+    def _same_type(extended: str, recv_name: str) -> bool:
+        """Whether an extension's ``this`` type names the receiver's type.
+
+        ``bool`` and ``Boolean`` are one type, unless the corpus declares a
+        type of either name (then it is that type, not System's).
+        """
+        if _key(extended) == _key(recv_name):
+            return True
+        if type_def_nids.get(_key(extended)) or type_def_nids.get(_key(recv_name)):
+            return False
+        kw = _csharp_keyword_type(extended)
+        return kw in _CSHARP_KEYWORD_TYPE_ALIASES and kw == _csharp_keyword_type(recv_name)
+
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for result in per_file:
         for rc in result.get("raw_calls") or []:
@@ -7387,6 +7436,12 @@ def _resolve_csharp_extension_calls(
                 continue
 
             recv_name = rc.get("receiver_type")
+            if (not recv_name and len(chain) == 2 and chain[1] == "Value"
+                    and _csharp_keyword_type(chain[0]) in _CSHARP_KEYWORD_VALUE_TYPES
+                    and not type_def_nids.get(_key(chain[0]))):
+                # `char? c; c.Value.IsWs()`: a keyword value type has no `Value`
+                # member, so this is Nullable<T>.Value, typed T.
+                chain = chain[:1]
             if not recv_name and chain:
                 if len(chain) > 1:
                     # `x.F.M()` needs F's declared type, not x's: fail closed
@@ -7447,7 +7502,7 @@ def _resolve_csharp_extension_calls(
             else:
                 exact = [
                     d for d in candidates
-                    if not d["is_type_param"] and _key(d["extended"]) == _key(recv_name)
+                    if not d["is_type_param"] and _same_type(d["extended"], recv_name)
                 ]
                 inherited = []
                 if not roc:

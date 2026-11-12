@@ -4166,7 +4166,7 @@ def _csharp_method_receiver_types(
     method_node,
     source: bytes,
     field_types: dict[str, str],
-) -> tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str]]:
+) -> tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str | None]]:
     """Build the SCOPED receiver bindings visible to one C# method (#2299, #2472).
 
     The C# twin of ``_java_method_receiver_types``, but positional: instead of
@@ -4356,10 +4356,11 @@ def _csharp_method_receiver_types(
         )
         bind(name, None if shadowed else field_types.get(field + suffix + "{}"), loop)
 
-    base = {
-        name: type_name
+    # A poisoned field stays in the base scope as None: it types nothing, but
+    # the name is still declared, so it is never read as a type name.
+    base: dict[str, str | None] = {
+        name: None if name in field_poisoned else type_name
         for name, type_name in field_types.items()
-        if name not in field_poisoned
     }
     for name in field_poisoned:
         bindings.pop(name, None)
@@ -4367,7 +4368,7 @@ def _csharp_method_receiver_types(
 
 
 def _csharp_scoped_receiver_type(
-    table: tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str]] | None,
+    table: tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str | None]] | None,
     name: str | None,
     call_byte: int,
 ) -> str | list | None:
@@ -4396,6 +4397,26 @@ def _csharp_scoped_receiver_type(
     if len(inner) == 1:
         return inner[0][2]
     return None
+
+
+def _csharp_receiver_is_declared(
+    table: tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str | None]] | None,
+    name: str,
+    call_byte: int,
+) -> bool:
+    """Whether ``name`` is a local, parameter, field or property at ``call_byte``.
+
+    Typed or not: an untyped binding (``var x = F()``, ``x => ...``) is still a
+    value, so ``x.M()`` on it must never be read as a static call on a type
+    that happens to be named ``x``.
+    """
+    if not table:
+        return False
+    bindings, base = table
+    if name in base:
+        return True
+    return any(start <= call_byte < end for start, end, _ in bindings.get(name, ()))
+
 
 def _ts_receiver_type_table(
     root, source: bytes, table: dict[str, str],
@@ -8267,10 +8288,11 @@ def _extract_generic(
                         pname = param.child_by_field_name("name")
                         p_line = param.start_point[0] + 1
                         # Receiver binding mirrors the field_declaration rule:
-                        # Pascal-case only (a primitive owns no resolvable
-                        # method) and never a bare type parameter (`T item`).
+                        # any declared type name (`_Pair`, `pair` are valid
+                        # classes; a primitive simply finds no definition), but
+                        # never a bare type parameter (`T item`).
                         recv = _csharp_receiver_type_name(ptype, source)
-                        if (pname is not None and recv and recv[:1].isupper()
+                        if (pname is not None and recv
                                 and recv not in csharp_type_params):
                             csharp_field_types.setdefault(class_nid, {})[
                                 _read_text(pname, source)
@@ -8541,8 +8563,9 @@ def _extract_generic(
                     return
                 # Record the field's declared type for the method-scoped
                 # receiver tables (#2299) — the C# twin of java_field_types.
-                # Pascal-case only: primitives never own a resolvable method.
-                if type_name[:1].isupper():
+                # Any declared type name, as for properties: `_Pair` and `pair`
+                # are valid classes, and a primitive simply finds no definition.
+                if type_name:
                     fields = csharp_field_types.setdefault(parent_class_nid, {})
                     elem_type = _csharp_element_type_name(type_node, source)
                     loop_elems = _csharp_loop_element_types(type_node, source)
@@ -11439,6 +11462,13 @@ def _extract_generic(
                                     rc_entry["receiver_call"] = [recv, method, targs]
                             elif receiver_type:
                                 rc_entry["receiver_type"] = receiver_type
+                            elif member_receiver and not _csharp_receiver_is_declared(
+                                receiver_types if isinstance(receiver_types, tuple)
+                                else None, member_receiver, node.start_byte,
+                            ):
+                                # Not a value in scope: `_Pair.Make()` and
+                                # `pair.Create()` name a type, whatever its case.
+                                rc_entry["receiver_undeclared"] = True
                         if config.ts_module == "tree_sitter_java":
                             rc_entry["lang"] = "java"
                             receiver_type = (receiver_types or {}).get(member_receiver or "")
