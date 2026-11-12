@@ -144,3 +144,15 @@ def test_is_absolute_any_platform_is_host_independent():
     from graphify.paths import is_absolute_any_platform
     assert is_absolute_any_platform("/home/ci/x.md")
     assert is_absolute_any_platform("C:/Users/u/x.md")
+
+
+def test_nfc_normalizes_decomposed_unicode():
+    """macOS (HFS+/APFS) reports filenames in NFD; nfc() must fold them to
+    NFC so they compare equal to the NFC form seen in manifests and user
+    input (#2210, #2221/#2224)."""
+    from graphify.paths import nfc
+    decomposed = "cafe\u0301"  # "café" spelled as e + combining acute (NFD)
+    composed = "café"          # the same string already in NFC
+    assert decomposed != composed
+    assert nfc(decomposed) == composed
+    assert nfc(composed) == composed
