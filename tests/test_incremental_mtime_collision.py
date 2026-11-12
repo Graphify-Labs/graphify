@@ -66,6 +66,58 @@ def test_same_size_rewrite_in_one_tick_is_requeued(corpus):
     assert queued[0].endswith("f1.md")
 
 
+def test_a_row_stamped_just_before_the_mtime_still_hashes(corpus):
+    """`seen` from time.time() can land a few hundred ns BEFORE the mtime (#5036).
+
+    Both clocks describe the same write, so the old `seen - mtime < 0 -> trust
+    stat` shortcut skipped the hash on a row that could still hide a rewrite.
+    The delta is only meaningful as a magnitude: anything inside the tick is
+    unprovable in either direction.
+    """
+    import json
+
+    src, manifest = corpus
+    det.save_manifest(det.detect(src)["files"], manifest, root=src, kind="semantic")
+    rows = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    for row in rows.values():
+        row["seen"] = row["mtime"] - 0.000001  # ~1 us before the stamp
+    Path(manifest).write_text(json.dumps(rows), encoding="utf-8")
+
+    target = src / "f1.md"
+    stat_before = target.stat()
+    target.write_text("# Doc 2\n\nA substantially longer body than before.\n", encoding="utf-8")
+    os.utime(target, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+
+    assert target.stat().st_mtime_ns == stat_before.st_mtime_ns
+    queued = _queued(det.detect_incremental(src, manifest, kind="semantic"))
+    assert len(queued) == 1 and queued[0].endswith("f1.md")
+
+
+def test_a_row_stamped_well_before_the_mtime_keeps_the_fastpath(corpus, monkeypatch):
+    """Control for the fix: a window-old row is from an earlier run, not a tick."""
+    import json
+
+    src, manifest = corpus
+    det.save_manifest(det.detect(src)["files"], manifest, root=src, kind="semantic")
+    rows = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    for row in rows.values():
+        row["seen"] = row["mtime"] - 3600  # an hour before; a later write moved mtime
+    Path(manifest).write_text(json.dumps(rows), encoding="utf-8")
+
+    calls = {"n": 0}
+    real = det._md5_file
+
+    def counting(p):
+        calls["n"] += 1
+        return real(p)
+
+    monkeypatch.setattr(det, "_md5_file", counting)
+    result = det.detect_incremental(src, manifest, kind="semantic")
+
+    assert _queued(result) == []
+    assert calls["n"] == 0, "a row from an earlier run must not be re-hashed"
+
+
 def test_a_settled_corpus_costs_no_content_hashes(corpus, monkeypatch):
     """The fastpath must survive: an untouched corpus does zero MD5 work."""
     src, manifest = corpus

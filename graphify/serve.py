@@ -71,7 +71,8 @@ def _read_graph(graph_path: str) -> nx.Graph:
         data = {**data, "multigraph": True}
     try:
         from graphify.build import graph_has_legacy_ids as _legacy
-        if _legacy(data.get("nodes", [])):
+        from graphify.build import legacy_id_source_prefix as _legacy_prefix
+        if _legacy(data.get("nodes", []), source_prefix=_legacy_prefix(safe)):
             print(
                 "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
                 "rebuild with `graphify extract --force` for path-qualified IDs.",
@@ -350,6 +351,87 @@ _SOURCE_MATCH_BONUS = 0.5
 _RATIONALE_MATCH_BONUS = 0.75
 _ATTRIBUTE_MATCH_BONUS = 0.75
 
+# A label may carry a leading qualifier that the query never repeats: a SQL
+# function is `public.sweep_widget_state()`, a namespaced symbol is
+# `fmt.Println`. The full-query tier below only fires on equal/prefix, so the
+# qualifier alone defeats it and the per-token tiers take over — where an
+# unrelated node whose *whole* label is one of the query's tokens outranks the
+# intended one (#5080). Keep the bonus below the exact tier (the query is not
+# the label) but well above the per-token exact tier it has to beat, and scale
+# it by how small the qualifier is so `public.f()` (one token) is trusted more
+# than `a.b.c.d.f()`.
+_QUALIFIED_MATCH_BONUS = 500.0
+_QUALIFIED_MAX_TOKENS = 4
+# Separators that start a new segment of a qualified name.
+_QUALIFIER_SEPARATORS = r"\.{1,}|::|/|\\|:|@"
+# `sweep_widget_state()` and `sweep widget state` are the same name; strip these
+# before comparing. `_search_tokens` already drops them from the inside.
+_NAME_EDGES = "()[]{}"
+
+_CAMEL_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+# Only a separator or a lower->upper transition below the first character can
+# leave a qualifier behind; plain `snake_case_name` cannot, so reject it early.
+_QUALIFIER_MAYBE_RE = re.compile(r"[.::/\\:@]|[a-z0-9][A-Z]")
+# File-extension segments (`.py`, `.md`) are not qualifiers: the tail of
+# `lib/foo/bar.py` is `bar`, not `py`. Numbers are not names either (`3.14`).
+_FILE_SUFFIX_RE = re.compile(r"^(?:py|pyi|js|jsx|ts|tsx|mjs|cjs|go|rs|java|kt|kts|c|h|cc|cpp|hpp|cs|rb|php|swift|scala|lua|sh|bash|sql|md|rst|txt|ya?ml|toml|json|ini|cfg|html?|css|scss|vue|svelte|ex|exs|erl|hs|ml|clj|dart|proto|graphql)$")
+
+
+def _is_name_segment(segment: str) -> bool:
+    """True if `segment` names something rather than being an extension or a number."""
+    return bool(segment) and not segment.isdigit() and not _FILE_SUFFIX_RE.match(segment)
+
+
+def _qualified_tail(norm_label: str) -> tuple[int, str] | None:
+    """Split a label into `(qualifier_token_count, tail_key)`, or `None` if unqualified.
+
+    `public.sweep_widget_state()` -> `(1, "sweep widget state")`: the tail is the
+    part a query would actually name. Segments are split on punctuation, so
+    `fmt.Println` -> `(1, "println")` and `App\\Http\\handle` -> `(2, "handle")`.
+    The CamelCase fallback below only fires on a cased label (an inner lower->upper
+    transition); the scorer's callers pass the already-lowercased `norm_label`, so
+    in practice only the separator path runs — the fallback is defensive.
+    """
+    label = (norm_label or "").strip()
+    # Cheap reject first: without a separator and without an inner capital there
+    # is nothing to split. This is the common case on a whole-graph pass, and it
+    # keeps the regex work off every plain identifier.
+    if not _QUALIFIER_MAYBE_RE.search(label):
+        return None
+    parts = [p for p in re.split(_QUALIFIER_SEPARATORS, label) if p]
+    # Drop trailing non-name segments (`lib/foo/bar.py` -> `lib`, `foo`, `bar`).
+    while parts and not _is_name_segment(parts[-1]):
+        parts.pop()
+    if not parts:
+        return None
+    tail = parts[-1]
+    if len(parts) > 1:
+        head_tokens = len(_search_tokens(" ".join(parts[:-1])))
+        if head_tokens:
+            return head_tokens, _name_key(tail)
+    # No separator: only a CamelCase qualifier can still leave one. Require at
+    # least two words and an inner capital, so all-lower snake_case names are
+    # left alone (they are already matched as one token run).
+    words = _CAMEL_WORD_RE.findall(tail)
+    if len(words) < 2 or not any(w[:1].isupper() for w in words[1:]):
+        return None
+    head_tokens = len(_search_tokens(" ".join(words[:-1])))
+    if not head_tokens:
+        return None
+    return head_tokens, _name_key(words[-1])
+
+
+def _name_key(text: str) -> str:
+    """Token-joined form of an already-normalized name, for comparing two names.
+
+    `norm_label` has been lowercased and had its diacritics stripped already, so
+    splitting on non-alphanumerics is all `_search_tokens` would add here — and
+    skipping the per-call Unicode normalization matters, this runs on the whole
+    graph.
+    """
+    stripped = str(text or "").strip(_NAME_EDGES + " ").lower()
+    return " ".join(re.findall(r"[^\W_]+", stripped))
+
 
 def _flatten_attr_text(val, parts: list[str]) -> None:
     if isinstance(val, dict):
@@ -578,13 +660,13 @@ _QUERY_DOC_SUFFIXES = (".md", ".rst", ".txt", ".yml", ".yaml", ".toml", ".cfg", 
 _QUERY_DOC_DIRS = frozenset({"doc", "docs", "example", "examples"})
 
 
-def _query_path_weight(terms: list[str]):
+def _query_path_weight(terms: list[str], demote_docs: bool = True):
     """Score multiplier per node for `query`: tests, docs, config files and nodes
     without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the question itself
     asks about tests (or docs); everything else counts 1.0."""
     words = {tok for t in terms for tok in _search_tokens(t)}
     keep_tests = bool(words & _QUERY_TEST_WORDS)
-    keep_docs = bool(words & _QUERY_DOC_WORDS)
+    keep_docs = (not demote_docs) or bool(words & _QUERY_DOC_WORDS)
 
     def weight(data: dict) -> float:
         path = str(data.get("source_file") or "").replace("\\", "/")
@@ -615,7 +697,11 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
 
 
 def _score_query(
-    G: nx.Graph, terms: list[str], *, collect_per_term_seeds: bool, path_weight=None
+    G: nx.Graph,
+    terms: list[str],
+    *,
+    collect_per_term_seeds: bool,
+    path_weight=None,
 ) -> _QueryScores:
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
@@ -711,6 +797,17 @@ def _score_query(
                 or label_tokens.startswith(joined)
             ):
                 score += _PREFIX_MATCH_BONUS * 10 * joined_w
+            else:
+                # Qualified name: the label is `<qualifier>.<rest>` (or a
+                # CamelCase variant) and the query names the rest. Ranking
+                # below the exact tier — the label is not what was typed — but
+                # above what the per-token tiers can add up to for a node whose
+                # whole label is one query token (#5080).
+                qualified = _qualified_tail(norm_label)
+                if qualified is not None and qualified[0] <= _QUALIFIED_MAX_TOKENS:
+                    qualifier_tokens, tail_key = qualified
+                    if tail_key and tail_key == joined:
+                        score += _QUALIFIED_MATCH_BONUS * joined_w / qualifier_tokens
         # Term coverage (#1602): scale the per-term exact/prefix tiers by the
         # squared fraction of query terms the node's LABEL matches, so a lone
         # generic word that happens to equal a short label (query term "home"
@@ -863,7 +960,9 @@ def _pick_seeds(
     incidental collision cannot starve out the others. The per-token winners
     in `best_seed_by_term` are precomputed by `_score_query` (during the same
     traversal that produced `scored`) so this function no longer rescores the
-    graph per term — see #1445 and the `_score_query` docstring.
+    graph per term — see #1445 and the `_score_query` docstring. The #1766
+    label cap yields to this guarantee only when the term is absent from the
+    shared label, since a seeded same-label node then can't cover it (#5027).
 
     Coverage scaling in _score_nodes (#1602) now dampens a lone collision's
     exact tier on multi-term queries, which brings label-matching relevant
@@ -913,7 +1012,7 @@ def _pick_seeds(
         # traversal, so `_pick_seeds` no longer rescoring the graph per term.
         # The per-label dedup cap also gates these additions, so the guarantee
         # cannot reintroduce a second copy of an already-seeded generic label
-        # (#1766).
+        # (#1766), unless the term is not in that label (#5027, see below).
         # With `term_order` (from `_score_query`), the guaranteed seeds follow the strength of each term's best
         # match, strongest first, so the seeds the renderer prints first are the strongest; without it, the
         # legacy sorted-term order.
@@ -923,8 +1022,13 @@ def _pick_seeds(
             best_nid = best_seed_by_term[term]
             # Honor the same per-label cap so the per-term guarantee can't
             # reintroduce a second copy of an already-seeded generic label.
+            # The cap applies only when `term` is in the label: then the
+            # seeded twin matches `term` through that same label. Otherwise
+            # this node won `term` via its path/rationale/attributes, the
+            # twin may not match it at all, and dropping it would leave the
+            # term with no seed (#5027).
             key = _seed_label_key(best_nid)
-            if best_nid not in seeds and key not in seen_labels:
+            if best_nid not in seeds and (key not in seen_labels or term not in key):
                 seen_labels.add(key)
                 seeds.append(best_nid)
     return seeds
@@ -1119,10 +1223,14 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
         hub_threshold = 50
     seed_set = set(start_nodes)
     visited: set[str] = set(start_nodes)
-    frontier = set(start_nodes)
+    # Ordered, not sets: iterating a set of node ids follows the per-process
+    # string-hash seed, so the EDGE lines (and which of them survive the token
+    # budget) changed from run to run. Seeds go in ranked order, and each
+    # level in the order it was discovered.
+    frontier = list(dict.fromkeys(start_nodes))
     edges_seen: list[tuple] = []
     for _ in range(depth):
-        next_frontier: set[str] = set()
+        next_frontier: dict[str, None] = {}
         for n in frontier:
             # Don't expand through high-degree hubs (except seeds - a hub that
             # is the starting node should still be explored).
@@ -1130,10 +1238,10 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
                 continue
             for neighbor in G.neighbors(n):
                 if neighbor not in visited:
-                    next_frontier.add(neighbor)
+                    next_frontier[neighbor] = None
                     edges_seen.append((n, neighbor))
         visited.update(next_frontier)
-        frontier = next_frontier
+        frontier = list(next_frontier)
     _complete_induced_edges(G, visited, edges_seen)
     return visited, edges_seen
 
@@ -1497,6 +1605,7 @@ def _query_graph_text(
     graph_path: str | None = None,
     seeds: list[str] | None = None,
     seed_root: Path | None = None,
+    demote_docs: bool = True,
 ) -> str:
     # Explicit start nodes: an external ranker -- embeddings, a learned
     # retriever, grep -- can choose where the traversal begins instead of the
@@ -1543,7 +1652,12 @@ def _query_graph_text(
     # — one combined + one per query token — re-walking the whole graph each
     # time; on a 100k-node, three-term benchmark ~71% of scoring time was
     # spent in those redundant per-term passes.
-    qs = _score_query(G, terms, collect_per_term_seeds=True, path_weight=_query_path_weight(terms))
+    qs = _score_query(
+        G,
+        terms,
+        collect_per_term_seeds=True,
+        path_weight=_query_path_weight(terms, demote_docs=demote_docs),
+    )
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
     # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
@@ -2248,6 +2362,11 @@ def _resolve_path_endpoint(
     symbols of one file were split by graph order behind a score-tie warning,
     and `path::symbol` cannot separate them — only the node id can.
 
+    A name made of words the graph doesn't know is a miss, not the top of a
+    weak ranking (#5079): `explain` already answers "No node matching" for it,
+    and routing from the closest-sounding label instead prints a path through
+    a symbol nobody asked about.
+
     Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
     score fallback picked the node; ``(None, [], message)`` when ambiguous; and
     ``(None, [], None)`` when nothing matches.
@@ -2277,10 +2396,49 @@ def _resolve_path_endpoint(
     no_member = _no_member_match_message(G, query)
     if no_member:
         return None, [], no_member
-    scored = _score_nodes(G, [t.lower() for t in query.split()])
+    terms = [t.lower() for t in query.split()]
+    scored = _score_nodes(G, terms)
     if not scored:
         return None, [], None
+    if not _query_uses_known_words(G, terms):
+        return None, [], None
     return _pick_scored_endpoint(G, scored, query), scored, None
+
+
+def _query_uses_known_words(G: nx.Graph, terms: list[str]) -> bool:
+    """Whether every word of the query occurs in some node's name.
+
+    Scoring ranks by token overlap, so a made-up name still finds candidates:
+    `zzqqxx_no_such_symbol_9137` matches `no_such_symbol_helper()` on `no`,
+    `symbol` and `helper`, and the route through that symbol prints as if it
+    were the one asked for (#5079). The scored fallback is only honest when
+    the query is at least partly in the graph's vocabulary, so each token has
+    to occur somewhere — then the query shares a word with what it routes
+    through (`Rejection judge` -> `Rejection Summary`, its tokens once said
+    whole). A token that appears nowhere (`zzqqxx`, `9137`) means the name the
+    caller asked for isn't in the graph, which is what `explain` reports too.
+
+    Looser than `explain`'s resolution on purpose: there any substring hit is
+    a "near miss" worth refusing with suggestions, but `path` answers with a
+    route rather than a name, and a caller still typing (`draft-generator` for
+    `draft-generator.ts`) needs the score fallback's ranking.
+
+    One pass per token, each stopping at the first node that carries it; the
+    vocabulary is `_search_tokens` pieces of labels and ids, the same split the
+    scorer uses.
+    """
+    tokens = list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t)))
+    if not tokens:
+        return False
+    # A query is usually rejected on its first unknown word (~a fifth of a score
+    # pass on a 60k-node graph), and nothing is memoised on a shared graph.
+    for token in tokens:
+        for nid, d in G.nodes(data=True):
+            if token in _search_tokens(nid) or token in _search_tokens(d.get("label") or ""):
+                break
+        else:
+            return False
+    return True
 
 
 def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
@@ -2708,6 +2866,11 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "demote_docs": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Rank source code above docs/config (default). Set false for a docs-first corpus so documents are not soft-demoted.",
+                        },
                     },
                     "required": ["question"],
                 },
@@ -2856,6 +3019,9 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        demote_docs = arguments.get("demote_docs", True)
+        if isinstance(demote_docs, str):
+            demote_docs = demote_docs.lower() not in ("false", "0", "no")
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -2865,6 +3031,7 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            demote_docs=demote_docs,
         )
         querylog.log_query(
             kind="mcp_query",

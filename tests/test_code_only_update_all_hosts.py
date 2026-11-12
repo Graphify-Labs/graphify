@@ -162,7 +162,12 @@ def _env() -> dict[str, str]:
 
 
 def _run(block: str, proj: Path, *, python_on_stdin: bool = False) -> subprocess.CompletedProcess[str]:
-    block = block.replace("INPUT_PATH", proj.as_posix()).replace("IS_DIRECTED", "False")
+    # Since #4762 the block reads the scan root from the trusted .graphify_root
+    # sidecar instead of a substituted literal; write it as Step 1 would.
+    out = proj / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / ".graphify_root").write_text(proj.as_posix(), encoding="utf-8")
+    block = block.replace("IS_DIRECTED", "False")
     if python_on_stdin:
         here_string = re.search(r"@'\n(.*?)\n'@", block, re.S)
         assert here_string, "no PowerShell here-string in the block"

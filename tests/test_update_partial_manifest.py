@@ -108,7 +108,12 @@ def _env() -> dict[str, str]:
 
 
 def _bash(block: str, proj: Path, root: str) -> str:
-    block = block.replace("INPUT_PATH", root).replace("IS_DIRECTED", "False")
+    # Since #4762 the block reads the scan root from the trusted .graphify_root
+    # sidecar instead of a substituted literal; write it as Step 1 would.
+    out = proj / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / ".graphify_root").write_text(root, encoding="utf-8")
+    block = block.replace("IS_DIRECTED", "False")
     # -e: a block that runs more commands after its Python (Step 9's cleanup) must not hide a
     # Python failure behind their exit status.
     result = subprocess.run(["bash", "-e", "-c", block], cwd=proj, env=_env(),

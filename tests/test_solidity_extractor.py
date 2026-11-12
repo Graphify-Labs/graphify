@@ -544,6 +544,467 @@ def test_solidity_library_call_fails_closed_when_ambiguous_or_not_a_type(tmp_pat
     assert _function_calls(result) == {("ok()", "h()", "A.sol")}
 
 
+_ROLES = (
+    "pragma solidity ^0.8.20;\n"
+    "contract Roles {\n"
+    "    event RoleGranted(bytes32 role, address account);\n"
+    "    function hasRole(bytes32 role, address account) public view returns (bool) { return false; }\n"
+    "    function grantRole(bytes32 role, address account) public { _grantRole(role, account); }\n"
+    "    function _grantRole(bytes32 role, address account) internal returns (bool) {\n"
+    "        if (hasRole(role, account)) return false;\n"
+    "        emit RoleGranted(role, account);\n"
+    "        return true;\n"
+    "    }\n"
+    "}\n"
+)
+
+
+_IERC20 = (
+    "pragma solidity ^0.8.20;\n"
+    "interface IERC20 {\n"
+    "    function transfer(address to, uint256 value) external returns (bool);\n"
+    "    function balanceOf(address who) external view returns (uint256);\n"
+    "}\n"
+)
+# Implements IERC20: a call on an IERC20 value must not be guessed to land here.
+_TOKEN = (
+    "pragma solidity ^0.8.20;\n"
+    'import {IERC20} from "./IERC20.sol";\n'
+    "contract Token is IERC20 {\n"
+    "    function transfer(address to, uint256 value) external returns (bool) { return true; }\n"
+    "    function balanceOf(address who) external view returns (uint256) { return 0; }\n"
+    "}\n"
+)
+
+
+def _calls_by_line(result: dict) -> set[tuple[str, str, str, str]]:
+    """(caller, caller line, target, target line) for every `calls` edge."""
+    nodes = {node["id"]: node for node in result["nodes"]}
+    return {
+        (nodes[e["source"]]["label"], nodes[e["source"]]["source_location"],
+         nodes[e["target"]]["label"], nodes[e["target"]]["source_location"])
+        for e in result["edges"]
+        if e["relation"] == "calls" and e["source"] in nodes and e["target"] in nodes
+    }
+
+
+@_needs_solidity
+def test_solidity_underscore_member_gets_its_own_node_and_calls(tmp_path):
+    # make_id drops the leading `_`, so `_grantRole(bytes32,address)` and
+    # `grantRole(bytes32,address)` shared one id: `_grantRole` vanished and
+    # its calls were credited to `grantRole` (OpenZeppelin: 38 functions).
+    source = tmp_path / "Roles.sol"
+    source.write_text(_ROLES, encoding="utf-8")
+
+    result = extract([source], cache_root=tmp_path)
+
+    functions = {n["label"]: n for n in result["nodes"] if n["metadata"]["kind"] == "function"}
+    assert {"grantRole()", "_grantRole()", "hasRole()"} <= set(functions)
+    assert functions["grantRole()"]["id"] != functions["_grantRole()"]["id"]
+    assert _calls_by_line(result) == {
+        ("grantRole()", "L5", "_grantRole()", "L6"),
+        ("_grantRole()", "L6", "hasRole()", "L4"),
+        ("_grantRole()", "L6", "RoleGranted", "L3"),
+    }
+
+
+@_needs_solidity
+def test_solidity_underscore_salt_changes_only_the_clashing_id(tmp_path):
+    # Only the `_` spelling is salted, as C# does (#4415): the public name and
+    # every member that clashes with nothing keep the id they had.
+    source = tmp_path / "Roles.sol"
+    source.write_text(_ROLES, encoding="utf-8")
+
+    result = extract([source], cache_root=tmp_path)
+
+    ids = {n["label"]: n["id"] for n in result["nodes"]}
+    contract = ids["Roles"]
+    assert ids["grantRole()"] == f"{contract}_function_grantrole_2_bytes32_address"
+    assert ids["hasRole()"] == f"{contract}_function_hasrole_2_bytes32_address"
+    assert ids["RoleGranted"] == f"{contract}_event_rolegranted_rolegranted"
+    assert ids["_grantRole()"].startswith(f"{contract}_function_grantrole_2_bytes32_address_")
+
+
+@_needs_solidity
+def test_solidity_underscore_free_function_and_inherited_call_land_right(tmp_path):
+    (tmp_path / "Base.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "function _scale(uint256 x) pure returns (uint256) { return x * 2; }\n"
+        "function scale(uint256 x) pure returns (uint256) { return _scale(x); }\n"
+        "abstract contract Base {\n"
+        "    function mint(address to) public { _mint(to); }\n"
+        "    function _mint(address to) internal {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Token.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {Base} from "./Base.sol";\n'
+        "contract Token is Base {\n"
+        "    function airdrop(address to) external { _mint(to); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+    assert _calls_by_line(result) == {
+        ("scale()", "L3", "_scale()", "L2"),
+        ("mint()", "L5", "_mint()", "L6"),
+        ("airdrop()", "L4", "_mint()", "L6"),
+    }
+
+
+def _typed_receiver_corpus(tmp_path: Path, vault: str) -> dict:
+    (tmp_path / "IERC20.sol").write_text(_IERC20, encoding="utf-8")
+    (tmp_path / "Token.sol").write_text(_TOKEN, encoding="utf-8")
+    (tmp_path / "Vault.sol").write_text(vault, encoding="utf-8")
+    return extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+
+_SAFE_CAST = (
+    "pragma solidity ^0.8.20;\n"
+    "library SafeCast {\n"
+    "    function toUint48(uint256 value) internal pure returns (uint48) { return uint48(value); }\n"
+    "    function toUint48(int256 value) internal pure returns (uint48) { return uint48(uint256(value)); }\n"
+    "}\n"
+)
+_SETS = (
+    "pragma solidity ^0.8.20;\n"
+    "library EnumerableSet {\n"
+    "    struct AddressSet { address[] values; }\n"
+    "    struct UintSet { uint256[] values; }\n"
+    "    function add(AddressSet storage set, address value) internal returns (bool) { return true; }\n"
+    "    function add(UintSet storage set, uint256 value) internal returns (bool) { return true; }\n"
+    "}\n"
+)
+
+
+def _using_corpus(tmp_path: Path, files: dict[str, str]) -> dict:
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    return extract(sorted(tmp_path.glob("*.sol")), cache_root=tmp_path)
+
+
+@_needs_solidity
+def test_solidity_call_on_a_typed_state_variable_binds_the_interface_method(tmp_path):
+    # `token.transfer()` was parked as a qualified call on the type `token`,
+    # which names no type, so no call on a typed value got an edge
+    # (OpenZeppelin: 0 of 74 compiler-resolved calls).
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {IERC20} from "./IERC20.sol";\n'
+        "contract Vault {\n"
+        "    IERC20 public token;\n"
+        "    function pay(address to, uint256 v) external { token.transfer(to, v); }\n"
+        "}\n"
+    ))
+
+    # The interface's own declaration, not Token's implementation.
+    assert _function_calls(result) == {("pay()", "transfer()", "IERC20.sol")}
+
+
+@_needs_solidity
+def test_solidity_call_on_a_typed_parameter_local_or_return_variable_binds(tmp_path):
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {IERC20} from "./IERC20.sol";\n'
+        "contract Vault {\n"
+        "    function viaParam(IERC20 t, address to) external { t.transfer(to, 1); }\n"
+        "    function viaLocal(address a) external view returns (uint256) {\n"
+        "        IERC20 local = IERC20(a);\n"
+        "        return local.balanceOf(a);\n"
+        "    }\n"
+        "    function viaReturn(address a) external returns (IERC20 out) {\n"
+        "        out = IERC20(a);\n"
+        "        out.transfer(a, 2);\n"
+        "    }\n"
+        "}\n"
+    ))
+
+    assert _function_calls(result) == {
+        ("viaParam()", "transfer()", "IERC20.sol"),
+        ("viaLocal()", "balanceOf()", "IERC20.sol"),
+        ("viaReturn()", "transfer()", "IERC20.sol"),
+    }
+
+
+@_needs_solidity
+def test_solidity_call_on_a_type_conversion_binds_through_the_base_contract(tmp_path):
+    # `IERC20(a).transfer()` and `Ownable(x).owner()`, with `owner` declared
+    # in Ownable's base: walked through the type's linearization.
+    (tmp_path / "Base.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "abstract contract OwnableBase { function owner() public view returns (address) { return address(0); } }\n"
+        "abstract contract Ownable is OwnableBase {}\n",
+        encoding="utf-8",
+    )
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {IERC20} from "./IERC20.sol";\n'
+        'import {Ownable} from "./Base.sol";\n'
+        "contract Vault {\n"
+        "    function pay(address a) external { IERC20(a).transfer(a, 1); }\n"
+        "    function ownerOf(address x) external view returns (address) { return Ownable(x).owner(); }\n"
+        "}\n"
+    ))
+
+    assert _function_calls(result) == {
+        ("pay()", "transfer()", "IERC20.sol"),
+        ("ownerOf()", "owner()", "Base.sol"),
+    }
+
+
+@_needs_solidity
+def test_solidity_using_for_binds_a_library_call_on_a_typed_value(tmp_path):
+    # `x.toUint48()` calls `SafeCast.toUint48(x)`, but it was parked as a
+    # qualified call on a type named `x`, so no `using` call got an edge
+    # (OpenZeppelin: 0 of 228 compiler-resolved calls). The overload is the
+    # one whose first parameter takes the receiver's type.
+    result = _using_corpus(tmp_path, {
+        "SafeCast.sol": _SAFE_CAST,
+        "Vault.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {SafeCast} from "./SafeCast.sol";\n'
+            "contract Vault {\n"
+            "    using SafeCast for uint256;\n"
+            "    uint48 public at;\n"
+            "    function touch(uint x) external { at = x.toUint48(); }\n"
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {("touch()", "toUint48()", "SafeCast.sol")}
+    toUint48 = [n for n in result["nodes"] if n["label"] == "toUint48()"]
+    target = next(e["target"] for e in result["edges"] if e["relation"] == "calls")
+    assert next(n for n in toUint48 if n["id"] == target)["metadata"]["first_param_type"] == "uint256"
+
+
+@_needs_solidity
+def test_solidity_using_for_binds_on_a_library_struct_through_a_mapping_and_a_base(tmp_path):
+    # `using EnumerableSet for EnumerableSet.AddressSet; _set.add(a)`: the
+    # struct is `AddressSet` inside the library and `EnumerableSet.AddressSet`
+    # outside it; the receiver may be a mapping element or a base contract's
+    # state variable.
+    result = _using_corpus(tmp_path, {
+        "EnumerableSet.sol": _SETS,
+        "Base.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {EnumerableSet} from "./EnumerableSet.sol";\n'
+            "abstract contract Base { EnumerableSet.AddressSet internal _inherited; }\n"
+        ),
+        "Roles.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {EnumerableSet} from "./EnumerableSet.sol";\n'
+            'import {Base} from "./Base.sol";\n'
+            "contract Roles is Base {\n"
+            "    using EnumerableSet for EnumerableSet.AddressSet;\n"
+            "    EnumerableSet.AddressSet private _set;\n"
+            "    mapping(bytes32 => EnumerableSet.AddressSet) private _members;\n"
+            "    function direct(address a) external { _set.add(a); }\n"
+            "    function element(bytes32 r, address a) external { _members[r].add(a); }\n"
+            "    function inherited(address a) external { _inherited.add(a); }\n"
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {
+        ("direct()", "add()", "EnumerableSet.sol"),
+        ("element()", "add()", "EnumerableSet.sol"),
+        ("inherited()", "add()", "EnumerableSet.sol"),
+    }
+    lines = {
+        next(n for n in result["nodes"] if n["id"] == e["target"])["source_location"]
+        for e in result["edges"] if e["relation"] == "calls"
+    }
+    assert lines == {"L5"}  # add(AddressSet, ..), not add(UintSet, ..)
+
+
+@_needs_solidity
+def test_solidity_using_for_star_and_file_level_directives_bind(tmp_path):
+    # `using A for *` attaches every function whose first parameter takes the
+    # receiver; a file-level directive applies to every contract and free
+    # function of the file. A value type declared in a library reads as
+    # `Time.Delay` on both sides.
+    result = _using_corpus(tmp_path, {
+        "SafeCast.sol": _SAFE_CAST,
+        "Time.sol": (
+            "pragma solidity ^0.8.20;\n"
+            "library Time {\n"
+            "    type Delay is uint112;\n"
+            "    function get(Delay self) internal pure returns (uint32) { return 0; }\n"
+            "}\n"
+        ),
+        "Vault.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {SafeCast} from "./SafeCast.sol";\n'
+            'import {Time} from "./Time.sol";\n'
+            "using SafeCast for uint256;\n"
+            "function free(uint256 x) pure returns (uint48) { return x.toUint48(); }\n"
+            "contract Vault {\n"
+            "    using Time for *;\n"
+            "    Time.Delay private _delay;\n"
+            "    function cast(uint256 x) external pure returns (uint48) { return x.toUint48(); }\n"
+            "    function delay() external view returns (uint32) { return _delay.get(); }\n"
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {
+        ("free()", "toUint48()", "SafeCast.sol"),
+        ("cast()", "toUint48()", "SafeCast.sol"),
+        ("delay()", "get()", "Time.sol"),
+    }
+
+
+@_needs_solidity
+def test_solidity_typed_receiver_through_a_reexport_a_base_state_variable_or_a_getter(tmp_path):
+    # OpenZeppelin imports IERC20 through ERC20.sol (`import {IERC20} from
+    # "../ERC20.sol"`), tests call `hevm.prank()` on a base contract's
+    # variable, and `token().clock()` calls on a function's result.
+    (tmp_path / "Base.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import {IERC20} from "./IERC20.sol";\n'
+        "abstract contract Base {\n"
+        "    IERC20 internal constant hevm = IERC20(address(1));\n"
+        "    function token() public view returns (IERC20) { return hevm; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {Base, IERC20} from "./Base.sol";\n'
+        "contract Vault is Base {\n"
+        "    function viaBase(address a) external { hevm.transfer(a, 1); }\n"
+        "    function viaResult(address a) external view returns (uint256) { return token().balanceOf(a); }\n"
+        "    function viaReexport(address a) external { IERC20(a).transfer(a, 3); }\n"
+        "}\n"
+    ))
+
+    assert _function_calls(result) == {
+        ("viaBase()", "transfer()", "IERC20.sol"),
+        ("viaResult()", "token()", "Base.sol"),  # the inherited call itself
+        ("viaResult()", "balanceOf()", "IERC20.sol"),
+        ("viaReexport()", "transfer()", "IERC20.sol"),
+    }
+
+
+@_needs_solidity
+def test_solidity_using_function_set_and_global_directive_bind(tmp_path):
+    # `using {add} for Price global;` on the type's declaration applies in
+    # every file that uses Price; `using {L.twice, half} for uint256;`
+    # attaches a library function and a free function.
+    result = _using_corpus(tmp_path, {
+        "Price.sol": (
+            "pragma solidity ^0.8.20;\n"
+            "type Price is uint128;\n"
+            "using {add, eq as ==} for Price global;\n"
+            "function add(Price a, Price b) pure returns (Price) { return a; }\n"
+            "function eq(Price a, Price b) pure returns (bool) { return true; }\n"
+        ),
+        "Math.sol": (
+            "pragma solidity ^0.8.20;\n"
+            "library L { function twice(uint256 x) internal pure returns (uint256) { return 2 * x; } }\n"
+            "function half(uint256 x) pure returns (uint256) { return x / 2; }\n"
+        ),
+        "Shop.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {Price} from "./Price.sol";\n'
+            'import {L, half} from "./Math.sol";\n'
+            "contract Shop {\n"
+            "    using {L.twice, half} for uint256;\n"
+            "    function total(Price a, Price b) external pure returns (Price) { return a.add(b); }\n"
+            "    function scale(uint256 x) external pure returns (uint256) { return x.twice().half() + x.half(); }\n"
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {
+        ("total()", "add()", "Price.sol"),
+        ("scale()", "twice()", "Math.sol"),
+        ("scale()", "half()", "Math.sol"),  # x.half(); x.twice().half() is chained, untyped
+    }
+
+
+@_needs_solidity
+def test_solidity_typed_receiver_fails_closed_when_ambiguous_or_untyped(tmp_path):
+    (tmp_path / "Over.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "interface IOver {\n"
+        "    function f(uint256 a) external;\n"
+        "    function f(bytes32 a) external;\n"
+        "    function g(uint256 a) external;\n"
+        "}\n"
+        "contract Getter { uint256 public total; }\n"
+        "contract GetterChild is Getter {}\n",
+        encoding="utf-8",
+    )
+    # A second, unrelated IERC20 makes the name ambiguous in Mixed.sol only.
+    (tmp_path / "Other.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        "interface IERC20 { function transfer(address to, uint256 value) external returns (bool); }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Mixed.sol").write_text(
+        "pragma solidity ^0.8.20;\n"
+        'import "./IERC20.sol";\n'
+        'import "./Other.sol";\n'
+        "contract Mixed { function m(IERC20 t) external { t.transfer(address(0), 1); } }\n",
+        encoding="utf-8",
+    )
+    result = _typed_receiver_corpus(tmp_path, (
+        "pragma solidity ^0.8.20;\n"
+        'import {IOver, GetterChild} from "./Over.sol";\n'
+        "contract Vault {\n"
+        "    function run(IOver o, GetterChild c, uint256 x) external {\n"
+        "        o.f(x);\n"  # two overloads of the same arity
+        "        o.g(x, x);\n"  # no g with two parameters
+        "        c.total();\n"  # a public state variable's getter, not a function
+        "        unknown.g(x);\n"  # not declared anywhere: no type
+        "        x.g(x);\n"  # uint256 has no member g
+        "    }\n"
+        "    function ok(IOver o) external { o.g(1); }\n"
+        "}\n"
+    ))
+
+    assert _function_calls(result) == {("ok()", "g()", "Over.sol")}
+
+
+@_needs_solidity
+def test_solidity_using_for_fails_closed_when_unknown_ambiguous_or_out_of_scope(tmp_path):
+    result = _using_corpus(tmp_path, {
+        "SafeCast.sol": _SAFE_CAST,
+        "Dup.sol": (
+            "pragma solidity ^0.8.20;\n"
+            "library Dup { function toUint48(uint256 value) internal pure returns (uint48) { return 0; } }\n"
+        ),
+        "Vault.sol": (
+            "pragma solidity ^0.8.20;\n"
+            'import {SafeCast} from "./SafeCast.sol";\n'
+            'import {Dup} from "./Dup.sol";\n'
+            "contract Other {\n"
+            "    using SafeCast for uint256;\n"  # not inherited by Vault (0.7+)
+            "}\n"
+            "contract Vault is Other {\n"
+            "    using SafeCast for int256;\n"
+            "    function run(uint256 x, int256 i, uint64 small) external {\n"
+            "        x.toUint48();\n"  # only Other attaches SafeCast to uint256
+            "        small.toUint48();\n"  # uint64 is no uint256: no exact match
+            "        unknown.toUint48();\n"  # no declared type
+            "    }\n"
+            "    function ok(int256 i) external pure returns (uint48) { return i.toUint48(); }\n"
+            "}\n"
+            "contract Both {\n"
+            "    using SafeCast for uint256;\n"
+            "    using Dup for uint256;\n"
+            "    function two(uint256 x) external pure { x.toUint48(); }\n"  # two libraries fit
+            "}\n"
+        ),
+    })
+
+    assert _function_calls(result) == {("ok()", "toUint48()", "SafeCast.sol")}
+
+
 @_needs_solidity
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)

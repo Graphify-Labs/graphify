@@ -158,6 +158,10 @@ _SHARED_REFERENCES = {
 _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
     "compact": "references/shared/extraction-spec-compact.md",
+    # Compact prompt for hosts whose subagents write their own chunk file
+    # (the dispatch passes CHUNK_PATH). Codex keeps "compact": its workers
+    # return JSON inline and the orchestrator writes the files.
+    "compact-disk": "references/shared/extraction-spec-compact-disk.md",
 }
 # Single unified query reference + stub: superior vocab-expansion (Step 0) plus
 # CLI traversal plus inline NetworkX fallback, shipped to every platform. The
@@ -1244,6 +1248,34 @@ def _is_persisted_scan_options_fix_line(line: str) -> bool:
     )
 
 
+def _is_input_path_sidecar_fix_line(line: str) -> bool:
+    """Whether a line is part of the INPUT_PATH scan-path injection fix (#4762).
+
+    The monolith runbooks substituted the agent-supplied scan path straight into
+    Python string literals (``detect(Path('INPUT_PATH'))``, ``generate(..,
+    'INPUT_PATH', ..)``, ``detect_incremental(Path('INPUT_PATH'))``,
+    ``_stamped_manifest_files(.., Path('INPUT_PATH'))``), so a scan root whose
+    NAME carried a quote or ``$()`` broke out of the literal and ran as code.
+    Each code block now reads the resolved root from the trusted
+    ``graphify-out/.graphify_root`` that Step 1 writes through a quoted heredoc,
+    and the prose no longer tells the agent to substitute a path. Both the removed
+    v8 lines and the added trusted-root lines (code and prose) match here. The
+    detect/detect_incremental and manifest lines are covered by their own existing
+    predicates; this adds the read line, the generate calls, and the prose.
+    """
+    stripped = line.strip()
+    return (
+        "INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=" in stripped
+        or "result = detect(Path(INPUT_PATH), extra_excludes=" in stripped
+        or "result = detect_incremental(Path(INPUT_PATH), extra_excludes=" in stripped
+        or ", tokens, INPUT_PATH, suggested_questions=questions)" in stripped
+        or ", tokens, 'INPUT_PATH', suggested_questions=questions)" in stripped
+        or stripped.startswith("Replace INPUT_PATH with the actual path")
+        or stripped.startswith("INPUT_PATH is read from `graphify-out/.graphify_root`")
+        or "there is no path to substitute and a scan root containing quotes" in stripped
+    )
+
+
 def _is_worktree_visibility_note_line(line: str) -> bool:
     """Whether a line is the Step 9 working-tree note (#3941).
 
@@ -1382,6 +1414,30 @@ def _is_hub_bypass_check_fix_line(line: str) -> bool:
     return line.strip().startswith("**Bypass check (hub/bridge questions only, #4426).**")
 
 
+def _is_cloud_cta_section_line(line: str) -> bool:
+    """Whether a line is part of the added Graphify Cloud (hosted) section (A1).
+
+    A short, once-per-session hosted-product pointer added to every host body so
+    the agent can suggest Graphify Cloud for cross-repo search, PR review, an
+    always-current graph, or sharing with teammates, with a free-plan signup link
+    carrying skill-source UTMs. The monoliths gain the same section; its lone extra
+    `---` separator is sanctioned here (the byte-exact --check still guards the
+    committed files).
+    """
+    stripped = line.strip()
+    return (
+        stripped == "## Graphify Cloud (hosted)"
+        or stripped.startswith("If the user needs any of the following, suggest Graphify Cloud")
+        or stripped == "- search across more than one repo"
+        or stripped == "- PR review with blast-radius analysis"
+        or stripped == "- a graph that stays current without re-running `/graphify`"
+        or stripped == "- sharing the graph with teammates"
+        or stripped.startswith("Graphify Cloud has a free plan, no card required: https://app.graphify.com/signup")
+        or stripped == "It connects over MCP, so the user keeps working in this same agent."
+        or stripped == "---"
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1391,6 +1447,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_frontmatter_description_line,
     _is_chunk_cleanup_line,
     _is_directed_fix_line,
+    _is_cloud_cta_section_line,
     _is_content_scope_fix_line,
     _is_cache_unlink_fix_line,
     _is_zero_node_guard_fix_line,
@@ -1407,6 +1464,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_watch_injection_fix_line,
     _is_graph_diff_direction_fix_line,
     _is_persisted_scan_options_fix_line,
+    _is_input_path_sidecar_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
     _is_code_only_fast_path_fix_line,

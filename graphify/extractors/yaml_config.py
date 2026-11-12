@@ -23,6 +23,51 @@ from graphify.ids import normalize_id
 
 _YAML_MAX_BYTES = 1_048_576  # 1 MiB
 _MAX_PAIRS = 500
+
+# Built lazily by _permissive_loader() once PyYAML is known to be importable
+# (the module stays import-optional, so this cannot be a module-level class).
+_permissive_loader_cls: Any = None
+
+
+def _construct_permissive(loader: Any, tag_suffix: str, node: Any) -> Any:
+    """Build a plain value for an unrecognized ``!`` tag (#5071).
+
+    CloudFormation/SAM intrinsic functions (``!Ref``, ``!Sub``, ``!GetAtt``,
+    ``!Equals``, ...) are short, local tags SafeLoader has no constructor
+    for, so ``safe_load_all`` raised ``ConstructorError`` and the whole file
+    produced zero nodes. The intrinsic itself is never evaluated here, only
+    the tagged value's own shape: a scalar tag becomes its scalar value, a
+    sequence tag its list, and a mapping tag its dict, exactly as if the tag
+    were absent.
+    """
+    import yaml  # type: ignore
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node)
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    return None
+
+
+def _permissive_loader() -> Any:
+    """A ``yaml.SafeLoader`` subclass that also accepts any unknown ``!`` tag.
+
+    Adds no safety-relevant behavior over ``SafeLoader``: it only widens which
+    tags construct a plain value, never which types a value can construct
+    into, so a ``!!python/...`` tag still raises exactly as it does under
+    plain ``safe_load_all``.
+    """
+    global _permissive_loader_cls
+    if _permissive_loader_cls is None:
+        import yaml  # type: ignore
+
+        class _PermissiveSafeLoader(yaml.SafeLoader):
+            pass
+
+        _PermissiveSafeLoader.add_multi_constructor("!", _construct_permissive)
+        _permissive_loader_cls = _PermissiveSafeLoader
+    return _permissive_loader_cls
 _MAX_DEPTH = 6
 
 # Config/manifest filenames worth structural extraction regardless of shape.
@@ -139,10 +184,13 @@ def _mapping_pairs(node: Any) -> list[tuple[str, Any, Any]]:
 def extract_yaml(path: Path) -> dict:
     """Extract structural nodes/edges from a ``.yaml``/``.yml`` file.
 
-    Uses PyYAML ``safe_load_all`` (never ``load``; a ``!!python/...`` tag raises
-    rather than executing) and walks every document in a multi-document stream.
-    Returns an error payload when PyYAML is missing so callers degrade
-    gracefully instead of crashing.
+    Uses a ``SafeLoader`` (never ``load``; a ``!!python/...`` tag raises
+    rather than executing), widened to accept any unrecognized ``!`` tag as a
+    plain scalar/sequence/mapping (#5071 — CloudFormation/SAM's ``!Ref``,
+    ``!Equals``, etc. otherwise raise ``ConstructorError`` and the whole file
+    produces zero nodes), and walks every document in a multi-document
+    stream. Returns an error payload when PyYAML is missing so callers
+    degrade gracefully instead of crashing.
     """
     try:
         import yaml  # type: ignore
@@ -156,7 +204,7 @@ def extract_yaml(path: Path) -> dict:
         if len(raw) > _YAML_MAX_BYTES:
             return {"nodes": [], "edges": [], "error": "yaml file too large to index"}
         text = raw.decode("utf-8", errors="ignore")
-        docs = list(yaml.safe_load_all(text))
+        docs = list(yaml.load_all(text, Loader=_permissive_loader()))
         # The constructed values drive the config gate and document labels; the
         # composed node tree (same documents, same order, nothing constructed)
         # supplies keys as written and their lines, which construction discards.
