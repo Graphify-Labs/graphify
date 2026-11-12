@@ -161,3 +161,70 @@ def test_single_route_has_no_equal_length_note():
     G = _report_graph()
     out = _shortest_path_text(G, {"source": "report_exporter_run", "target": "report_pdfreport_build"})
     assert "equal-length routes" not in out, out
+
+
+def _hub_vs_real_graph():
+    """Two equal-length (2-hop) routes A -> B: one through a sourceless
+    import-hub node (no source_file, the json/os/etc. shape hundreds of
+    unrelated files import) and one through a real file both hops carry
+    identical EXTRACTED confidence for, so the existing weakest-hop tiebreak
+    cannot distinguish them (#5153). "hub" is chosen to sort alphabetically
+    before "real", matching the ordering that used to leak the hub route
+    through once _path_search_graph's own deterministic sort (#2074) made
+    enumeration order reproducible but not hub-aware.
+    """
+    return build_from_json({
+        "nodes": [
+            {"id": "A", "label": "A.py", "file_type": "code", "source_file": "a.py"},
+            {"id": "hub", "label": "json", "file_type": "code", "source_file": ""},
+            {"id": "real", "label": "real_helper.py", "file_type": "code", "source_file": "real_helper.py"},
+            {"id": "B", "label": "B.py", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "A", "target": "hub", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "a.py", "source_location": "L1"},
+            {"source": "hub", "target": "B", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "b.py", "source_location": "L1"},
+            {"source": "A", "target": "real", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "a.py", "source_location": "L2"},
+            {"source": "real", "target": "B", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "real_helper.py", "source_location": "L1"},
+        ],
+        "hyperedges": [],
+    })
+
+
+def test_equal_length_route_through_a_sourceless_hub_is_not_preferred():
+    """#5153: among equal-length, equally-confident routes, the one through a
+    sourceless import-hub node must not be the one reported."""
+    G = _hub_vs_real_graph()
+    out = _shortest_path_text(G, {"source": "A", "target": "B"})
+    assert "real_helper.py" in out, out
+    assert " json " not in out and "-- json" not in out and "json --" not in out, out
+
+
+def test_both_routes_through_hubs_still_resolves(tmp_path):
+    """Control: when EVERY equal-length route goes through a sourceless node,
+    the hub penalty ties and the existing weakest-hop rule still picks a
+    route deterministically, rather than raising or refusing to answer."""
+    G = build_from_json({
+        "nodes": [
+            {"id": "A", "label": "A.py", "file_type": "code", "source_file": "a.py"},
+            {"id": "hub1", "label": "json", "file_type": "code", "source_file": ""},
+            {"id": "hub2", "label": "os", "file_type": "code", "source_file": ""},
+            {"id": "B", "label": "B.py", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "A", "target": "hub1", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "a.py", "source_location": "L1"},
+            {"source": "hub1", "target": "B", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "b.py", "source_location": "L1"},
+            {"source": "A", "target": "hub2", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "a.py", "source_location": "L2"},
+            {"source": "hub2", "target": "B", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "b.py", "source_location": "L2"},
+        ],
+        "hyperedges": [],
+    })
+    out = _shortest_path_text(G, {"source": "A", "target": "B"})
+    assert "Shortest path" in out, out
