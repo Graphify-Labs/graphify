@@ -340,7 +340,7 @@ Both encourage scoped graph queries before broad source searches. Choose the ins
 
 ## What files it handles: ~40 languages
 
-graphify parses ~40 programming languages locally with tree-sitter AST, and maps docs, PDFs, images, and audio/video through an optional semantic pass. Full list: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
+graphify parses ~40 programming languages locally with tree-sitter AST, and maps docs, PDFs, images, and audio/video through an optional semantic pass. Full list: **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)** (including Jupyter `.ipynb` notebooks via markdown sidecars).
 
 ---
 
