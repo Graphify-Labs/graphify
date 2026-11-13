@@ -356,11 +356,11 @@ def _csharp_pre_scan_name_collisions(
     collides. Same-file partial declarations of one type share an id, so their
     members are grouped together. Overloads are one name, never a collision.
     """
-    type_names: dict[str, set[str]] = {}
     member_names: dict[str, set[str]] = {}
     type_decls: list[tuple[object, str, str]] = []
+    type_scopes: dict[tuple[str, tuple[str, ...]], list[tuple[object, str]]] = {}
 
-    def _visit(n, ns: list[str]) -> None:
+    def _visit(n, ns: list[str], owners: tuple[str, ...] = ()) -> None:
         # Types are declared only at file level, in namespace and type bodies
         # and in #if wrappers around them, so only those are entered: the
         # recursion depth is the nesting depth of declarations, never of
@@ -371,7 +371,7 @@ def _csharp_pre_scan_name_collisions(
                 ns_name = _csharp_namespace_name(c, source)
                 body = c.child_by_field_name("body")
                 if body is not None:
-                    _visit(body, scoped + [ns_name] if ns_name else scoped)
+                    _visit(body, scoped + [ns_name] if ns_name else scoped, owners)
             elif c.type == "file_scoped_namespace_declaration":
                 # Applies to the rest of the file, as in the walk.
                 ns_name = _csharp_namespace_name(c, source)
@@ -381,17 +381,31 @@ def _csharp_pre_scan_name_collisions(
                 name_node = c.child_by_field_name("name")
                 name = _read_text(name_node, source) if name_node is not None else ""
                 if name:
-                    plain = _make_id(stem, ".".join(scoped), _csharp_type_name_for_id(c, name))
-                    type_names.setdefault(plain, set()).add(name)
-                    type_decls.append((c, plain, name))
-                # Nested types take the namespace, not the enclosing type (ids
-                # omit the outer type), so they join the same groups.
-                _visit(c, scoped)
+                    type_scopes.setdefault((".".join(scoped), owners), []).append((c, name))
+                    _visit(c, scoped, (*owners, _csharp_type_name_for_id(c, name)))
             elif c.type == "declaration_list" or c.type.startswith("preproc_"):
-                _visit(c, scoped)
+                _visit(c, scoped, owners)
 
     _visit(root_node, [])
-    type_groups = {nid: names for nid, names in type_names.items() if len(names) >= 2}
+    type_groups: dict[str, set[str]] = {}
+    owner_ids: dict[tuple[str, tuple[str, ...]], str] = {}
+    for (namespace, owners), declarations in sorted(
+        type_scopes.items(), key=lambda item: len(item[0][1]),
+    ):
+        parent = owner_ids.get((namespace, owners))
+        names_by_id: dict[str, set[str]] = {}
+        proposed = []
+        for decl, name in declarations:
+            type_name = _csharp_type_name_for_id(decl, name)
+            plain = _make_id(parent, type_name) if parent else _make_id(stem, namespace, type_name)
+            names_by_id.setdefault(plain, set()).add(name)
+            proposed.append((decl, plain, name, type_name))
+        type_groups.update({nid: names for nid, names in names_by_id.items() if len(names) >= 2})
+        for decl, plain, name, type_name in proposed:
+            owner_ids[(namespace, (*owners, type_name))] = _underscore_salted_nid(
+                plain, name, type_groups,
+            )
+            type_decls.append((decl, plain, name))
 
     def _members(n, type_nid: str) -> None:
         for c in n.children:
@@ -701,7 +715,7 @@ def _java_receiver_type_name(type_node, source: bytes) -> str | None:
     if t == "type_identifier":
         name = _read_text(type_node, source)
     elif t == "scoped_type_identifier":
-        name = _read_text(type_node, source).rsplit(".", 1)[-1]
+        name = _read_text(type_node, source)
     elif t == "generic_type":
         base = next(
             (
@@ -772,18 +786,20 @@ def _java_type_chain_leaf(
     chain: list,
     receiver_types: dict,
     bound_names: set[str] | None = None,
+    field_names: set[str] | None = None,
 ) -> list | None:
     """Replace the ["name", x] leaf of a receiver chain with x's declared type
     (["type", T]); a capitalized name nothing declares is a type itself
     (`Foo.create().run()`), as for a plain receiver. A ["field", name, owner]
     is kept only when that owner is such a class name: a local, parameter, or
     field that shadows it is not the class (`AuditLog Service; Service.INSTANCE`).
-    None when x is untyped."""
+    Fields stay ["field_type", name] so their type is resolved in the declaring
+    class's context. None when x is an untyped local."""
     bound = bound_names or set()
     if chain[0] == "call":
         if chain[2] is None:
             return chain
-        inner = _java_type_chain_leaf(chain[2], receiver_types, bound)
+        inner = _java_type_chain_leaf(chain[2], receiver_types, bound, field_names)
         return ["call", chain[1], inner] if inner else None
     if chain[0] == "field":
         owner = chain[2]
@@ -794,7 +810,14 @@ def _java_type_chain_leaf(
             return None
         return ["field", chain[1], ["type", name]]
     if chain[0] == "name":
-        declared = receiver_types.get(chain[1])
+        name = chain[1]
+        if (
+            name in (field_names or ())
+            or name.startswith("this.")
+            or (name not in bound and name not in receiver_types and not name[:1].isupper())
+        ):
+            return ["field_type", name.removeprefix("this.")]
+        declared = receiver_types.get(name)
         if declared:
             return ["type", declared]
         return ["type", chain[1]] if chain[1][:1].isupper() else None
@@ -1725,6 +1748,20 @@ def _swift_user_type_name(user_type_node, source: bytes) -> str | None:
             return text or None
     return None
 
+
+def _swift_receiver_type_name(node, source: bytes) -> str | None:
+    if node is None:
+        return None
+    if node.type == "user_type":
+        names = [_read_text(child, source) for child in node.children
+                 if child.type == "type_identifier"]
+        return ".".join(names) or None
+    if node.type in ("type_annotation", "optional_type", "implicitly_unwrapped_optional_type"):
+        for child in node.named_children:
+            if name := _swift_receiver_type_name(child, source):
+                return name
+    return None
+
 def _swift_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     """Return Swift generic type-parameter names visible from ``node``.
 
@@ -1899,12 +1936,17 @@ def _swift_constructor_type(call_node, source: bytes) -> str | None:
         text = _read_text(first, source)
         if text and text[:1].isupper():
             return text
+    if first is not None and first.type == "navigation_expression":
+        name = _swift_receiver_name(first, source)
+        if name and "." in name:
+            return name
     return None
 
 def _swift_receiver_name(recv_node, source: bytes) -> str | None:
     """Return the depth-1 receiver name of a Swift member call (``recv.method()``).
 
     ``vm.update()`` -> ``vm``; ``Type.staticMethod()`` -> ``Type``;
+    ``Outer.Builder.method()`` -> ``Outer.Builder``;
     ``Singleton.shared.method()`` -> ``Singleton`` (head of the chain);
     ``self.svc.fetch()`` -> ``svc`` (the property the call is reached through).
     Returns None for anything deeper, so resolution stays depth-1.
@@ -1914,6 +1956,19 @@ def _swift_receiver_name(recv_node, source: bytes) -> str | None:
     if recv_node.type == "simple_identifier":
         return _read_text(recv_node, source)
     if recv_node.type == "navigation_expression":
+        names: list[str] = []
+        stack = [recv_node]
+        while stack:
+            child = stack.pop()
+            if child.type == "simple_identifier":
+                names.append(_read_text(child, source))
+            elif child.type in ("navigation_expression", "navigation_suffix"):
+                stack.extend(reversed(child.named_children))
+            else:
+                break
+        else:
+            if names and all(name[:1].isupper() for name in names):
+                return ".".join(names)
         head = recv_node.children[0] if recv_node.children else None
         if head is not None and head.type == "simple_identifier":
             return _read_text(head, source)
@@ -4024,7 +4079,7 @@ def _csharp_receiver_type_name(type_node, source: bytes) -> str | None:
     info = _read_csharp_type_name(type_node, source)
     if not info:
         return None
-    name = info[0]
+    name = ".".join((info[2], info[0])) if info[1] and info[2] else info[0]
     return name or None
 
 
@@ -5616,7 +5671,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
 def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
-                   walk_fn, decl_node_fn=None) -> bool:
+                   walk_fn, decl_node_fn=None, namespace_stack: list[str] | None = None) -> bool:
     """Emit enum member nodes, and a container node for a TS `namespace`/`module`.
 
     `namespace Foo {}` parses as `internal_module` (with `name`/`body` fields);
@@ -5701,9 +5756,18 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                 ns_name = ns_name.strip("'\"`")
             if ns_name:
                 line = node.start_point[0] + 1
-                ns_nid = _decl(_make_id(stem, ns_name), ns_name, "ns", ns_name, line)
+                ns_nid = _decl(_make_id(stem, ".".join(namespace_stack or []), ns_name),
+                               ns_name, "ns", ns_name, line)
                 add_edge_fn(file_nid, ns_nid, "contains", line)
-        if body is not None:
+        if namespace_stack is not None and name_node is not None and ns_name:
+            namespace_stack.append(ns_name)
+            try:
+                if body is not None:
+                    for child in body.children:
+                        walk_fn(child, parent_class_nid)
+            finally:
+                namespace_stack.pop()
+        elif body is not None:
             for child in body.children:
                 walk_fn(child, parent_class_nid)
         return True
@@ -7190,10 +7254,6 @@ def _extract_generic(
     # extensions don't (file stem is part of the id), so they're collected here
     # for a corpus-level merge after every file has been parsed.
     swift_extensions: list[dict] = []
-    # C# type id -> its name within the namespace, enclosing types first
-    # (`` Outer`1.Inner ``). Partial types carry it as `type_path` so the
-    # corpus-level partial merge can key nested and generic halves exactly.
-    csharp_type_paths: dict[str, str | None] = {}
     # #1356: call expressions in property/field initializers (e.g.
     # `let vm = VM()`) live outside function bodies, so the call-walk never
     # reaches them. Collect (owner_nid, call_node) here and walk them too.
@@ -7224,6 +7284,16 @@ def _extract_generic(
     java_field_names: dict[str, set[str]] = {}
     java_return_types: dict[str, str] = {}
     java_method_scopes: dict[int, tuple[object, str]] = {}
+    type_paths: dict[str, str] = {}
+    java_package = ""
+    java_imports: list[str] = []
+    if config.ts_module == "tree_sitter_java":
+        for child in root.children:
+            if child.type == "package_declaration":
+                java_package = _read_text(child, source).removeprefix("package").strip().rstrip(";").strip()
+            elif child.type == "import_declaration":
+                imported = _read_text(child, source).removeprefix("import").strip().rstrip(";").strip()
+                java_imports.append(imported.removeprefix("static ").strip())
     # C# receiver typing is method-scoped too (#2299): class fields/properties
     # are shared, parameters and locals belong only to their declaring method —
     # the old file-wide table let one method's untypable rebinding poison a
@@ -7548,12 +7618,12 @@ def _extract_generic(
                 # label is untouched; arity 0 keeps today's id exactly.
                 class_name_for_id = _csharp_type_name_for_id(node, class_name)
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name_for_id)
+            if parent_class_nid and config.ts_module != "tree_sitter_ruby":
+                class_nid = _make_id(parent_class_nid, class_name_for_id)
             if config.ts_module == "tree_sitter_c_sharp":
                 # `Pair` / `_Pair` in one file share an id otherwise (#4415).
                 class_nid = _underscore_salted_nid(class_nid, class_name, csharp_type_groups)
-            if config.ts_module == "tree_sitter_python" and parent_class_nid:
-                class_nid = _make_id(parent_class_nid, class_name)
-            elif config.ts_module == "tree_sitter_python":
+            if config.ts_module == "tree_sitter_python" and not parent_class_nid:
                 # `Session` / `session()`, `Foo` / `FOO` in one module (#2810).
                 class_nid = _underscore_salted_nid(class_nid, class_name, python_underscore_groups)
             line = node.start_point[0] + 1
@@ -7562,32 +7632,6 @@ def _extract_generic(
                 config.ts_module == "tree_sitter_ruby" and class_nid in seen_ids
             )
             if config.ts_module == "tree_sitter_c_sharp":
-                # The type's name within its namespace, enclosing types first,
-                # each with its arity (`` Outer`1.Inner ``). The id omits the
-                # enclosing types, so this is what tells two same-named nested
-                # types under different outers apart. None when an enclosing
-                # type's path is unknown.
-                _type_path: str | None
-                if parent_class_nid:
-                    _parent_path = csharp_type_paths.get(parent_class_nid)
-                    _type_path = (
-                        f"{_parent_path}.{class_name_for_id}"
-                        if _parent_path is not None else None
-                    )
-                else:
-                    _type_path = class_name_for_id
-                if class_nid not in csharp_type_paths:
-                    csharp_type_paths[class_nid] = _type_path
-                elif csharp_type_paths[class_nid] != _type_path:
-                    # Two declarations in this file share one id but not one
-                    # path (same-named nested types under different outers).
-                    # No path is right for both, so the node gets none and the
-                    # partial merge leaves it alone.
-                    csharp_type_paths[class_nid] = None
-                    _type_path = None
-                    for _prev in nodes:
-                        if _prev.get("id") == class_nid and isinstance(_prev.get("metadata"), dict):
-                            _prev["metadata"].pop("type_path", None)
                 if parent_class_nid:
                     metadata = {"is_nested_type": True}
                 # #2332: `partial class Foo` split across files mints one node
@@ -7606,8 +7650,6 @@ def _extract_generic(
                 ):
                     partial_metadata: dict[str, object] = dict(metadata or {})
                     partial_metadata["is_partial"] = True
-                    if _type_path is not None:
-                        partial_metadata["type_path"] = _type_path
                     metadata = partial_metadata
             if config.ts_module == "tree_sitter_ruby":
                 ruby_body = _find_body(node, config)
@@ -7638,6 +7680,20 @@ def _extract_generic(
                     metadata["python_opaque_bases"] = True
             class_nid = decl_node(class_nid, class_name, "type", class_name, line,
                                   metadata=metadata)
+            parent_path = type_paths.get(parent_class_nid or "")
+            type_path = (
+                f"{parent_path}.{class_name_for_id}"
+                if parent_path and not ruby_segments else class_name_for_id
+            )
+            type_paths[class_nid] = type_path
+            class_node = next(n for n in nodes if n["id"] == class_nid)
+            class_node["metadata"] = sanitize_metadata({
+                **class_node.get("metadata", {}), "type_path": type_path,
+            })
+            if config.ts_module == "tree_sitter_java":
+                class_node["_java_type"] = {
+                    "path": type_path, "package": java_package, "imports": java_imports,
+                }
             if config.ts_module == "tree_sitter_ruby" and metadata:
                 # Reopened declarations collapse onto the same file-local id;
                 # merge fail-closed markers that add_node intentionally skips.
@@ -8868,6 +8924,7 @@ def _extract_generic(
             prop_type: str | None = None
             type_anno = _swift_property_type_node(node)
             if type_anno is not None:
+                prop_type = _swift_receiver_type_name(type_anno, source)
                 refs: list[tuple[str, str]] = []
                 _swift_collect_type_refs(type_anno, source, False, refs)
                 for ref_name, role in refs:
@@ -9493,7 +9550,7 @@ def _extract_generic(
                     type_node = p.child_by_field_name("type")
                     refs: list[tuple[str, str]] = []
                     _swift_collect_type_refs(type_node, source, False, refs)
-                    param_type: str | None = None
+                    param_type = _swift_receiver_type_name(type_node, source)
                     for ref_name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
                         target_nid = ensure_named_node(ref_name, line)
@@ -9856,7 +9913,7 @@ def _extract_generic(
             if _ts_extra_walk(node, source, file_nid, stem, str_path,
                               nodes, edges, seen_ids, function_bodies,
                               parent_class_nid, add_node, add_edge, walk,
-                              decl_node_fn=decl_node):
+                              decl_node_fn=decl_node, namespace_stack=namespace_stack):
                 return
 
         if config.ts_module == "tree_sitter_c_sharp":
@@ -10238,13 +10295,17 @@ def _extract_generic(
     # Names a Java receiver can be without being an inherited field. Keyed by
     # caller node: overloads share one node, so their names are pooled.
     java_bound_names: dict[str, set[str]] = {}
+    java_local_names_by_body = {
+        body_id: _java_bound_names(method_node, source)
+        for body_id, (method_node, _) in java_method_scopes.items()
+    }
     _java_body_caller = {id(body): nid for nid, body in function_bodies}
     _java_field_name_tables = {c: dict.fromkeys(names, "") for c, names in java_field_names.items()}
     for body_id, (method_node, class_nid) in java_method_scopes.items():
         caller = _java_body_caller.get(body_id)
         if caller:
             java_bound_names.setdefault(caller, set()).update(
-                _java_bound_names(method_node, source),
+                java_local_names_by_body[body_id],
                 _fields_up_chain(_java_field_name_tables, class_nid),
             )
     csharp_receiver_types = {
@@ -11174,6 +11235,10 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
+                _swift_defer = (
+                    config.ts_module == "tree_sitter_swift"
+                    and is_member_call and not self_receiver
+                )
                 # Lua: a colon call that was NOT rewritten to a table-qualified name
                 # above (`obj:m()` on an unknown receiver) must not fall back to the
                 # bare-name map, or `m` would bind to any unrelated top-level
@@ -11237,7 +11302,7 @@ def _extract_generic(
                          or (cpp_binding is None and member_receiver in cpp_unknown_fields.get(
                              method_owner.get(caller_nid, ""), ())))
                 )
-                if _python_defer or _java_defer or _csharp_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                if _python_defer or _java_defer or _csharp_defer or _swift_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
@@ -11514,6 +11579,11 @@ def _extract_generic(
                                 rc_entry["receiver_undeclared"] = True
                         if config.ts_module == "tree_sitter_java":
                             rc_entry["lang"] = "java"
+                            field_names = set(_fields_up_chain(
+                                _java_field_name_tables, method_owner.get(caller_nid, caller_nid),
+                            )) - extra_locals
+                            if member_receiver and (is_this_field_call or member_receiver in field_names):
+                                rc_entry["receiver_field"] = member_receiver.removeprefix("this.")
                             receiver_type = (receiver_types or {}).get(member_receiver or "")
                             if receiver_type:
                                 rc_entry["receiver_type"] = receiver_type
@@ -11529,6 +11599,7 @@ def _extract_generic(
                                     java_receiver_chain,
                                     receiver_types if isinstance(receiver_types, dict) else {},
                                     java_bound_names.get(caller_nid),
+                                    field_names,
                                 )
                                 if chain:
                                     rc_entry["java_receiver_chain"] = chain
@@ -11908,7 +11979,8 @@ def _extract_generic(
             body_node,
             caller_nid,
             receiver_types_by_body.get(id(body_node)),
-            frozenset(closure_locals_by_body.get(id(body_node), ())),
+            frozenset(closure_locals_by_body.get(id(body_node), ()))
+            | frozenset(java_local_names_by_body.get(id(body_node), ())),
         )
 
     # #1356: walk property/field initializers (collected above). walk_calls
@@ -12035,7 +12107,9 @@ def _extract_generic(
     # id-keyed ObjC table went stale (#3150).
     _field_table_export = [
         {"lang": _lang, "class_label": _n.get("label"),
-         "source_file": _n.get("source_file"), "fields": dict(_tbl)}
+         "source_file": _n.get("source_file"), "fields": dict(_tbl),
+         "type_path": type_paths.get(_cls),
+         "namespace": (_n.get("metadata") or {}).get("namespace", "")}
         for _lang, _tables in (
             ("java", java_field_types),
             ("java_static", java_static_field_types),
@@ -12073,6 +12147,13 @@ def _extract_generic(
         _pkg = _kotlin_package_name(root, source)
         if _pkg:
             result["kotlin_package"] = _pkg
+            for n in nodes:
+                if n["id"] in callable_def_nids:
+                    n["metadata"] = sanitize_metadata({
+                        **(n.get("metadata") or {}), "namespace": _pkg,
+                    })
+            for entry in result.get("member_field_tables", []):
+                entry["namespace"] = _pkg
     if callable_def_nids:
         # Mark function / method / class defs with a `_callable` attribute so the
         # cross-file indirect_call pass can resolve a by-name callback only to a real

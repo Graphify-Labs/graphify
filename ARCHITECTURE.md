@@ -55,6 +55,40 @@ Always pass `root`. Node ids and `source_file` values are derived relative to it
 
 ## Extraction output schema
 
+The shared extractor includes the enclosing type ID in nested declaration IDs,
+so `Left.Builder` and `Right.Builder` in one file remain distinct. Ruby retains
+its already-qualified class labels; TypeScript namespace paths qualify their
+contained type IDs. Type metadata records a label-based `type_path`, including
+C# generic arity. Exported field tables use this path and namespace, not raw
+node IDs, to survive cache relocation and corpus ID remapping.
+
+Java preserves package/import context for qualified receivers, typed
+locals/parameters/fields, casts, and declared factory returns. Nested member
+types inherited from resolved supertypes participate in lexical lookup; ambiguous
+inherited types stay unlinked. Qualified type paths bind their lexical prefix
+before following member types, without falling back to an unrelated owner.
+Inherited field types, including static-field chains, resolve in their declaring
+type's package/import and lexical context rather than the calling subclass's.
+C# passes the complete declared receiver name to
+its namespace/alias/nested-type resolver, honoring lexical shadowing before
+absolute namespace matches. Qualified member-type lookup includes resolved
+base classes, with directly declared nested types hiding inherited candidates.
+Kotlin declarations persist their package as namespace metadata so explicit
+singleton imports also resolve against unchanged files; import aliases constrain
+only their local binding name. Swift preserves qualified nested receiver names
+in static calls and parameter/property annotations and resolves names in
+the caller's lexical type scopes before module-level definitions; an unrelated
+nested declaration does not shadow a top-level type. Qualified constructor
+initializers retain their complete type path for local receiver typing without
+reintroducing bare-method fallback. Static calls do not require
+a local variable-type table. Ambiguous or absent
+explicit targets stay unlinked rather than falling back to an unrelated name.
+
+AST cache schema 47 retires flat nested IDs and incomplete scope facts.
+Unchanged type metadata is preserved by CLI/watch incremental resolution.
+Existing persisted graphs and source-evidence artifacts with old IDs require
+a full code rebuild: `graphify extract . --code-only --force`.
+
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
 prefixed declarations share the same package identity; foreign namespaces and
