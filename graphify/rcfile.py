@@ -65,6 +65,7 @@ LANGUAGE_ALIASES: dict[str, str] = {
     "julia": ".jl",
     "dart": ".dart",
     "r": ".r",
+    "gdscript": ".gd",
     "fortran": ".f90",
     "shell": ".sh", "bash": ".sh", "sh": ".sh",
     "powershell": ".ps1",
