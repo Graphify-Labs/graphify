@@ -4353,7 +4353,10 @@ def extract_csharp(path: Path) -> dict:
     """Extract C# type declarations, methods, namespaces, and usings from a .cs file."""
     source_override = None
     try:
-        source = path.read_bytes()
+        # Decoded like every other read (#4145): the blanked bytes below become
+        # the parse input, so raw Windows-1252 bytes here would bypass the
+        # decoder whenever the file has a directive (a bare `#region` is enough).
+        source = _read_source_bytes(path)
     except OSError:
         source = None
     if source is not None:
