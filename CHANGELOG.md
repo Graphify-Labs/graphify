@@ -2,6 +2,17 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.109 (2026-11-13)
+
+- Fix: **csharp** a non-UTF-8 source file (Windows-1252/UTF-16) that contains a preprocessor directive is decoded before the directive is blanked, so a non-ASCII identifier is no longer cut short and later members are no longer dropped (#5194, thanks @JensD-git).
+- Fix: **csharp** an explicit interface implementation (`void IFoo.Bar()`) is kept out of overload binding and gets its own node, so it no longer collapses with a public `Bar` overload, and calls dispatch to the correct member (#5193, thanks @JensD-git).
+- Fix: **ids** members or functions of one scope whose names differ only by a leading/trailing `_`, or only by case, get distinct node ids instead of one swallowing the other, now in Kotlin (#5206), Swift (#5204), Dart (#5200) and C++ (including a constructor `Foo` vs destructor `~Foo`, and a trailing-underscore `name_`, #5202); a unique public name keeps the plain id and the twins are salted, as already done for Python, C#, Java and PHP (thanks @rohit-jsfreaky).
+- Fix: **llm** when a per-chunk callback raises during parallel extraction, the remaining queued chunks are cancelled instead of continuing to run, so a failed run stops promptly without wasted model calls (#5187, thanks @MaxWang007).
+- Fix: **extract** a per-file AST failure during an incremental build preserves the source's last good AST records instead of deleting them, marks the run incomplete, and clears the file's manifest hash so the next run re-attempts it (#5191, thanks @sdivyanshu90).
+- Fix: **llm** a response carrying two or more independent graph fragments (or a multi-element array) is rejected and retried instead of caching only the first as if complete; a single object, or a single-element array wrapping one valid fragment, is still accepted (#5192, thanks @sdivyanshu90).
+
+The AST cache schema is bumped to 46; warm caches re-run the affected C#, Kotlin, Swift, Dart and C++ extractions.
+
 ## 0.9.108 (2026-11-12)
 
 - Fix: **csharp** a member call on a receiver typed by a lowercase, underscore-prefixed or keyword-like type (`_Pair`, `pair`, a field or primary-constructor parameter so typed) now binds, and a static call like `pair.Create()` resolves; namespace and unknown receivers still fail closed. Classic extension-method calls on `bool`/`char?` receivers also bind (#5174, thanks @JensD-git).
