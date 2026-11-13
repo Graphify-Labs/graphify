@@ -55,6 +55,12 @@ Always pass `root`. Node ids and `source_file` values are derived relative to it
 
 ## Extraction output schema
 
+`extracted_sources` authorizes replacement only for successful AST extractions
+and deliberate declines. `failed_sources` overrides that authority in both raw
+and clustered incremental merges, preserving the source's last good AST records.
+The CLI reports incompleteness and clears failed sources' manifest hashes so a
+later successful extraction can replace those records normally.
+
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
 prefixed declarations share the same package identity; foreign namespaces and
