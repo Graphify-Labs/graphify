@@ -1,8 +1,8 @@
 """`graphify extract` frees its whole-graph intermediates without changing output.
 
-The Python parse memo pinned every tree-sitter tree (and its node wrappers)
-after AST extraction, and to_json kept copies of the old and new graphs alive
-through the write. Releasing them early must not change a byte of graph.json.
+to_json kept copies of the old and new graphs alive through the write.
+Releasing them early must not change a byte of graph.json. (Python parse trees
+are covered by test_python_parse_release.py.)
 """
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import shutil
 import networkx as nx
 import pytest
 
-import graphify.__main__ as mainmod
 import graphify.export as export_mod
 from graphify.export import to_json
 
@@ -64,46 +63,3 @@ def test_to_json_hyperedge_wipe_warning_still_reads_previous_graph(tmp_path, cap
                    force=True, built_at_commit="abc")
     assert "already holds 1 hyperedge(s)" in capsys.readouterr().err
     assert json.loads(out.read_text(encoding="utf-8"))["hyperedges"] == []
-
-
-def test_extract_cli_releases_python_parse_memo(tmp_path, monkeypatch):
-    pytest.importorskip("tree_sitter_python")
-    from graphify.extractors.resolution import _parse_python_tree_cached
-
-    corpus = tmp_path / "corpus"
-    corpus.mkdir()
-    (corpus / "a.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
-    (corpus / "b.py").write_text(
-        "from a import helper\n\ndef run():\n    return helper()\n", encoding="utf-8"
-    )
-    out_dir = tmp_path / "out"
-    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
-    monkeypatch.setattr(
-        mainmod.sys, "argv",
-        ["graphify", "extract", str(corpus), "--code-only", "--out", str(out_dir)],
-    )
-    _parse_python_tree_cached.cache_clear()
-    try:
-        mainmod.main()
-    except SystemExit as exc:
-        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
-
-    assert (out_dir / "graphify-out" / "graph.json").exists()
-    # Both resolution passes parse a.py and b.py through the memo; it must be
-    # empty once the command is done with it (it held 2 trees before).
-    assert _parse_python_tree_cached.cache_info().currsize == 0
-
-
-@pytest.mark.parametrize("release", [False, True])
-def test_extract_parse_memo_release_is_opt_in(tmp_path, release):
-    pytest.importorskip("tree_sitter_python")
-    from graphify.extract import extract
-    from graphify.extractors.resolution import _parse_python_tree_cached
-
-    (tmp_path / "a.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
-    (tmp_path / "b.py").write_text("from a import helper\n", encoding="utf-8")
-    _parse_python_tree_cached.cache_clear()
-    extract([tmp_path / "a.py", tmp_path / "b.py"], cache_root=tmp_path / "out",
-            root=tmp_path, release_parse_memo=release)
-    # Long-lived callers (watch, MCP) keep the memo warm for their next run.
-    assert _parse_python_tree_cached.cache_info().currsize == (0 if release else 2)
