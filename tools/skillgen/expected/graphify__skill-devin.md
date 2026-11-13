@@ -948,6 +948,10 @@ from graphify.watch import _read_build_excludes, _read_build_gitignore
 INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
 result = detect_incremental(Path(INPUT_PATH), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
+from graphify.detect import summarize_incremental_changes
+boundary_summary = summarize_incremental_changes(result)
+if boundary_summary:
+    print('Changed directory boundaries (files and bytes):', json.dumps(boundary_summary, ensure_ascii=False))
 print(json.dumps(result, indent=2))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result))
 deleted = list(result.get('deleted_files', []))
@@ -960,6 +964,8 @@ if new_total > 0:
     print(f'{new_total} new/changed file(s) to re-extract.')
 "
 ```
+
+If the changed directory boundary summary appears (more than half the corpus changed), show the top directory counts and byte sizes and ask whether the dominant directories belong to the intended corpus before any semantic dispatch. If the user chooses exclusions, add only the agreed patterns to `.graphifyignore` and rerun detection before proceeding; do not exclude directories automatically.
 
 Then populate `.graphify_detect.json` so Steps 3A–6 (which read it unconditionally) see the right state for an incremental run. `files` carries the changed subset (what Part A and Part B's cache check read); `all_files` carries the full corpus for any step that needs corpus-wide context:
 

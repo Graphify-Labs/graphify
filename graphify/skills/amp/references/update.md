@@ -21,6 +21,11 @@ Path('graphify-out/.graphify_partial.txt').unlink(missing_ok=True)
 INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
 result = detect_incremental(Path(INPUT_PATH), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
+from graphify.detect import summarize_incremental_changes
+boundary_summary = summarize_incremental_changes(result)
+if boundary_summary:
+    print('Changed directory boundaries (files and bytes):', json.dumps(boundary_summary, ensure_ascii=False))
+
 nf = result.get('new_files', {})
 print(json.dumps({
     'new_total': new_total,
@@ -60,6 +65,8 @@ Path('graphify-out/.graphify_detect.json').write_text(json.dumps({
 }, ensure_ascii=False), encoding=\"utf-8\")
 "
 ```
+
+If the changed directory boundary summary appears (more than half the corpus changed), show the top directory counts and byte sizes and ask whether the dominant directories belong to the intended corpus before any semantic dispatch. If the user chooses exclusions, add only the agreed patterns to `.graphifyignore` and rerun detection before proceeding; do not exclude directories automatically.
 
 If new files exist, first check whether all changed files are code files:
 
