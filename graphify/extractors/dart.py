@@ -5,6 +5,8 @@ import re
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_source_text
+from graphify.extractors.engine import _underscore_salted_nid
+from graphify.ids import normalize_id
 
 # A match starting with `typedef` is declared in step 2.5, so the variable and
 # method passes skip it. Precompiled: those passes test every match they make.
@@ -499,6 +501,7 @@ def extract_dart(path: Path) -> dict:
     # 5. Top-level and member functions/methods (supports typed/generic/record return types and Riverpod/Bloc references)
     # Restrict indentation to 0-2 spaces to avoid matching nested local functions or methods inside multiline switch statements
     method_pattern = r"^\s{0,2}(?:factory\s+|static\s+|async\s+|external\s+|abstract\s+)?(?:\([^)]+\)|[a-zA-Z0-9_<>,.?]+)(?:\s+[a-zA-Z0-9_<>,.?]+){0,3}\s+(\w+(?:\.\w+)?)\s*\("
+    method_matches: list[tuple[re.Match, str]] = []
     for m in re.finditer(method_pattern, src_clean, re.MULTILINE):
         if _TYPEDEF_LINE.match(m.group(0)):  # legacy alias, declared in 2.5
             continue
@@ -508,8 +511,24 @@ def extract_dart(path: Path) -> dict:
             continue
         if re.match(r"^[A-Z]", name):
             continue
+        method_matches.append((m, name))
+    # A function's id is the file stem plus its name, and `make_id` drops a
+    # leading `_` and folds case, so the library-private `_dispose()` and
+    # `dispose()` of one file (in one class or in two) minted one id and the
+    # second vanished. Group the names by the id they would get and apply
+    # `_underscore_salted_nid`, the Python/C#/Solidity/Java rule (#3302,
+    # #4415, #5058, #5151): a unique public name keeps the plain id, every
+    # other colliding name is salted; a name that collides with nothing keeps
+    # its old id. A `_UpperCamel` name is a private type the pattern caught
+    # in a constructor call (`return _Page(`), not a function: it joins no group.
+    method_names: dict[str, set[str]] = {}
+    for _, name in method_matches:
+        if normalize_id(name) and not re.match(r"^_+[A-Z]", name):
+            method_names.setdefault(_make_id(stem, name), set()).add(name)
+    method_groups = {nid: names for nid, names in method_names.items() if len(names) >= 2}
+    for m, name in method_matches:
         method_line = _line_at(m.start(1))
-        nid = _make_id(stem, name)
+        nid = _underscore_salted_nid(_make_id(stem, name), name, method_groups)
         add_node(nid, name, line=method_line)
         add_edge(file_nid, nid, "defines", line=method_line)
 
