@@ -406,10 +406,29 @@ def _render_frontmatter(platform: Platform) -> str:
 #   * the ``rm -f`` / ``find ... -delete`` cleanup lines become ``Remove-Item``
 #     / ``Get-ChildItem | Remove-Item``, and ``mkdir -p`` becomes ``New-Item``.
 #
+# The same pass runs over ``references/*.md`` when ``shell = "powershell"``
+# (#3600). Those fragments are authored in the shared POSIX sources, so a
+# Windows render must translate them too — otherwise ``mktemp``, ``$(cat ...) -m``,
+# ``export``, and ``if [ ! -f ]`` ship as bash the host cannot run. Reference-only
+# rules, all still strict:
+#
+#   * ``VAR=$(mktemp /tmp/...)`` and a bare ``mktemp /tmp/...`` (the form that
+#     prints a path) become ``[System.IO.Path]::GetTempFileName()``, which
+#     creates an empty temp file and yields its full path for capture;
+#   * ``$(cat graphify-out/.graphify_python) -m ...`` becomes
+#     ``& (Get-Content ...) -m ...``, with ``"$(cat graphify-out/.graphify_root)"``
+#     captured as a trimmed ``Get-Content`` subexpression;
+#   * ``export NAME=value`` becomes ``$env:NAME = 'value'``;
+#   * ``if [ ! -f PATH ]; then`` / ``fi`` become ``if (-not (Test-Path ...)) {`` / ``}``;
+#   * ``VAR=$(graphify ...)`` becomes ``$VAR = $(graphify ...)``;
+#   * a trailing bash ``\`` continuation on a ``graphify`` command becomes a
+#     PowerShell backtick, and ``~/`` on those command lines becomes ``$HOME/``.
+#
 # The translator is deliberately STRICT: any bash line it does not recognize
-# raises at render time, so a future core edit cannot silently ship
-# untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
-# belt-and-braces post-check on the final body.
+# raises at render time, so a future core or reference edit cannot silently ship
+# untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` plus
+# ``_POWERSHELL_BANNED_LINE_RES`` are the belt-and-braces post-check on the final
+# body.
 
 _PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
 _PY_INVOKE_PS_OPEN = "@'"
@@ -423,7 +442,38 @@ _FIND_CHUNKS_PS = (
 )
 
 # Bash-only tokens that must never survive in a powershell-shell render.
-_POWERSHELL_BANNED_TOKENS = ("$(cat ", "rm -f ", "2>/dev/null", "```bash")
+_POWERSHELL_BANNED_TOKENS = ("$(cat ", "$(mktemp", "rm -f ", "2>/dev/null", "```bash")
+# Line-anchored leftovers. A substring check would false-positive on
+# ``graphify export``; these patterns are the bash commands themselves.
+_POWERSHELL_BANNED_LINE_RES = (
+    re.compile(r"(?m)^[ \t]*export[ \t]+[A-Za-z_]"),
+    re.compile(r"(?m)^[ \t]*mktemp\b"),
+    re.compile(r"(?m)^[ \t]*if[ \t]+\["),
+    re.compile(r"(?m)^[ \t]*fi[ \t]*$"),
+    re.compile(r"(?m)^[ \t]*cp[ \t]+"),
+    re.compile(r"/tmp/graphify_"),
+)
+
+_PY_BIN_SUB = "$(cat graphify-out/.graphify_python)"
+_PY_MODULE_PS = "& (Get-Content graphify-out\\.graphify_python)"
+_CAT_ROOT_QUOTED = '"$(cat graphify-out/.graphify_root)"'
+_CAT_ROOT_PS = '"$((Get-Content graphify-out\\.graphify_root).ToString().Trim())"'
+# mktemp templates in the skill docs are ``/tmp/graphify_<name>.XXXXXX``.
+# GetTempFileName() does not take a template; the path it returns is what the
+# capture idiom needs, and anything else (``-d``, a second operand) is rejected.
+_MKTEMP_TEMPLATE_RE = re.compile(r"^/tmp/[A-Za-z0-9_.]+$")
+_MKTEMP_ASSIGN_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)=\$\(mktemp(?:[ \t]+(\S+))?\)$"
+)
+_MKTEMP_BARE_RE = re.compile(r"^mktemp(?:[ \t]+(\S+))?$")
+_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
+_EXPORT_RE = re.compile(
+    r"^export[ \t]+([A-Za-z_][A-Za-z0-9_]*)="
+    r"(?:\"([^\"]*)\"|'([^']*)'|([^\s]+))"
+    r"(?:[ \t]+#(.*))?$"
+)
+_IF_NOT_FILE_RE = re.compile(r"^if\s+\[\s+!\s+-f\s+(\S+)\s+\];\s+then$")
+_ECHO_RE = re.compile(r"""^echo\s+(?:'([^']*)'|"([^"]*)")$""")
 
 
 def _unescape_bash_dq(line: str) -> str:
@@ -438,10 +488,19 @@ def _unescape_bash_dq(line: str) -> str:
     body = line.replace('\\"', '"')
     if body.lstrip().startswith("'@"):
         raise ValueError(f"python body line would close the here-string: {line!r}")
+    # Bash double quotes keep the backslash when the next character is not
+    # ``$``, backtick, ``"``, ``\``, or a newline. The core bodies only use
+    # ``\n`` that way; the query reference also keeps ``\W`` and ``\d`` inside
+    # a raw regex. Any other backslash is still a mistake and fails the render.
     for m in re.finditer(r"\\(.)", body):
-        if m.group(1) != "n":
+        if m.group(1) not in "nWd":
             raise ValueError(f"unexpected backslash escape in python body line: {line!r}")
     return body
+
+
+def _ps_single_quote(value: str) -> str:
+    """Quote ``value`` as a PowerShell single-quoted literal."""
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _rm_to_remove_item(cmd: str) -> str:
@@ -458,42 +517,250 @@ def _rm_to_remove_item(cmd: str) -> str:
     return f"Remove-Item -Force -ErrorAction SilentlyContinue {joined}"
 
 
+def _cp_to_copy_item(cmd: str) -> str:
+    """Translate a ``cp SRC DST`` line to ``Copy-Item``."""
+    parts = cmd.strip()[len("cp "):].split()
+    if not cmd.strip().startswith("cp ") or len(parts) != 2:
+        raise ValueError(f"cannot translate cp to PowerShell: {cmd!r}")
+    for part in parts:
+        if not re.fullmatch(r"[\w./-]+", part):
+            raise ValueError(f"cannot translate cp operand to PowerShell: {part!r}")
+    src, dst = (part.replace("/", "\\") for part in parts)
+    return f"Copy-Item {src} {dst}"
+
+
+def _validate_mktemp_template(template: str | None) -> None:
+    """Accept only the skill docs' ``/tmp/graphify_*.XXXXXX`` template shape."""
+    if template is None:
+        return
+    if _MKTEMP_TEMPLATE_RE.fullmatch(template) is None:
+        raise ValueError(f"cannot translate mktemp template to PowerShell: {template!r}")
+
+
+def _export_to_env(stripped: str) -> str:
+    """Translate ``export NAME=value`` to a process-scoped ``$env:`` assignment.
+
+    ``$env:NAME = ...`` is what a child Python process inherits, which is the
+    property the skill text means by "must be exported".
+    """
+    match = _EXPORT_RE.fullmatch(stripped)
+    if match is None:
+        raise ValueError(f"cannot translate export to PowerShell: {stripped!r}")
+    name, double_quoted, single_quoted, bare, comment = match.groups()
+    value = double_quoted if double_quoted is not None else single_quoted if single_quoted is not None else bare
+    if value is None:
+        raise ValueError(f"cannot translate export to PowerShell: {stripped!r}")
+    rendered = f"$env:{name} = {_ps_single_quote(value)}"
+    if comment is not None:
+        rendered += "  #" + comment
+    return rendered
+
+
+def _translate_py_module(stripped: str) -> str:
+    """Translate ``$(cat .graphify_python) -m ...`` to a call-operator invocation."""
+    prefix = _PY_BIN_SUB + " -m "
+    if not stripped.startswith(prefix):
+        raise ValueError(f"cannot translate python -m invocation: {stripped!r}")
+    rest = stripped[len(_PY_BIN_SUB):]
+    if _CAT_ROOT_QUOTED not in rest and "$(cat " in rest:
+        raise ValueError(f"cannot translate cat substitution: {stripped!r}")
+    rest = rest.replace(_CAT_ROOT_QUOTED, _CAT_ROOT_PS)
+    # ``$((Get-Content ...))`` is the PowerShell capture we just wrote. Any other
+    # ``$(`` is still bash (a second ``$(cat ...)`` that was not the root file).
+    if "$(cat " in rest or "`" in rest:
+        raise ValueError(f"cannot translate python -m invocation: {stripped!r}")
+    return _PY_MODULE_PS + rest
+
+
+def _translate_graphify_command_line(line: str) -> tuple[str, bool]:
+    """Translate one physical line of a ``graphify`` command.
+
+    Returns the translated line and whether the command continues onto the next
+    physical line. Lines with neither a continuation nor a ``~/`` pass through
+    unchanged, so the core skill's ``graphify`` lines stay byte-identical.
+    """
+    stripped_right = line.rstrip()
+    continued = stripped_right.endswith("\\")
+    if not continued and "~/" not in line:
+        return line, False
+    body = stripped_right[:-1].rstrip() if continued else stripped_right
+    if "~/" in body:
+        body = body.replace("~/", "$HOME/")
+    command_side = body.split("#", 1)[0]
+    if "~" in command_side:
+        raise ValueError(f"cannot translate tilde in graphify command: {line!r}")
+    if continued:
+        return body + " `", True
+    return body, False
+
+
+def _translate_continuation_line(line: str) -> tuple[str, bool]:
+    """Translate a physical continuation of a ``graphify`` command."""
+    if not line.strip():
+        raise ValueError("blank line inside a continued graphify command")
+    stripped_right = line.rstrip()
+    continued = stripped_right.endswith("\\")
+    body = stripped_right[:-1].rstrip() if continued else stripped_right
+    if "~/" in body:
+        body = body.replace("~/", "$HOME/")
+    command_side = body.split("#", 1)[0]
+    if "~" in command_side:
+        raise ValueError(f"cannot translate tilde in graphify command: {line!r}")
+    head = body.lstrip()
+    if head.startswith(("$(", "export ", "if ", "rm ", "mktemp", "echo ", "cp ")):
+        raise ValueError(f"cannot translate continued bash line to PowerShell: {line!r}")
+    if continued:
+        return body + " `", True
+    return body, False
+
+
+def _translate_captured_command(inner: str) -> str:
+    """Translate the inside of ``VAR=$(...)`` when it is not ``mktemp``."""
+    inner = inner.strip()
+    if inner.startswith("graphify ") or inner == "graphify":
+        translated, continued = _translate_graphify_command_line(inner)
+        if continued:
+            raise ValueError(f"line continuation inside $(...) is not supported: {inner!r}")
+        return translated
+    raise ValueError(f"cannot translate captured command to PowerShell: {inner!r}")
+
+
+def _dollarize_assigned(line: str, assigned: set[str]) -> str:
+    """Prefix shell variable names assigned in this fence with ``$`` in comments."""
+    if not assigned:
+        return line
+
+    def repl(match: re.Match[str]) -> str:
+        word = match.group(0)
+        if word in assigned:
+            return "$" + word
+        return word
+
+    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\b", repl, line)
+
+
+def _leading_indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
 def _translate_bash_block(lines: list[str]) -> list[str]:
     """Translate the body of one ```` ```bash ```` fence to PowerShell."""
     out: list[str] = []
     in_py = False
+    continued = False
+    if_depth = 0
+    assigned: set[str] = set()
     for line in lines:
         if in_py:
-            if line == '"':
+            if line.strip() == '"':
+                # The here-string terminator must be the first character of the line.
                 out.append(_PY_INVOKE_PS_CLOSE)
                 in_py = False
             else:
                 out.append(_unescape_bash_dq(line))
-        elif line == _PY_INVOKE_POSIX:
-            out.append(_PY_INVOKE_PS_OPEN)
+            continue
+        if continued:
+            translated, continued = _translate_continuation_line(line)
+            out.append(translated)
+            continue
+
+        stripped = line.strip()
+        indent = _leading_indent(line)
+        if not stripped or stripped.startswith("#"):
+            out.append(_dollarize_assigned(line, assigned) if stripped.startswith("#") else line)
+            continue
+        if stripped == _PY_INVOKE_POSIX:
+            out.append(indent + _PY_INVOKE_PS_OPEN)
             in_py = True
-        elif line == _MKDIR_POSIX:
-            out.append(_MKDIR_PS)
-        elif line == _FIND_CHUNKS_POSIX:
-            out.append(_FIND_CHUNKS_PS)
-        elif line.strip().startswith("rm -f "):
-            out.append(_rm_to_remove_item(line))
-        elif not line.strip() or line.lstrip().startswith("#") or line.startswith("graphify "):
-            out.append(line)  # blank lines, comments, and graphify CLI calls are shell-neutral
-        else:
-            raise ValueError(f"cannot translate bash line to PowerShell: {line!r}")
+            continue
+        if stripped == _MKDIR_POSIX:
+            out.append(indent + _MKDIR_PS)
+            continue
+        if stripped == _FIND_CHUNKS_POSIX:
+            out.append(indent + _FIND_CHUNKS_PS)
+            continue
+        if stripped.startswith("rm -f "):
+            out.append(indent + _rm_to_remove_item(stripped))
+            continue
+        if stripped.startswith("cp "):
+            out.append(indent + _cp_to_copy_item(stripped))
+            continue
+        if stripped.startswith("graphify ") or stripped == "graphify":
+            translated, continued = _translate_graphify_command_line(line)
+            out.append(translated)
+            continue
+
+        mktemp_assign = _MKTEMP_ASSIGN_RE.fullmatch(stripped)
+        if mktemp_assign:
+            name, template = mktemp_assign.groups()
+            _validate_mktemp_template(template)
+            assigned.add(name)
+            out.append(f"{indent}${name} = [System.IO.Path]::GetTempFileName()")
+            continue
+        mktemp_bare = _MKTEMP_BARE_RE.fullmatch(stripped)
+        if mktemp_bare:
+            _validate_mktemp_template(mktemp_bare.group(1))
+            out.append(f"{indent}[System.IO.Path]::GetTempFileName()")
+            continue
+        assign = _ASSIGN_RE.fullmatch(stripped)
+        if assign:
+            name, inner = assign.groups()
+            assigned.add(name)
+            out.append(f"{indent}${name} = $({_translate_captured_command(inner)})")
+            continue
+        if stripped.startswith("export "):
+            out.append(indent + _export_to_env(stripped))
+            continue
+        if_match = _IF_NOT_FILE_RE.fullmatch(stripped)
+        if if_match:
+            path = if_match.group(1)
+            if not re.fullmatch(r"[\w./-]+", path):
+                raise ValueError(f"cannot translate test -f operand to PowerShell: {path!r}")
+            if_depth += 1
+            out.append(f"{indent}if (-not (Test-Path {_ps_single_quote(path)})) {{")
+            continue
+        if stripped == "fi":
+            if if_depth <= 0:
+                raise ValueError(f"fi without if: {line!r}")
+            if_depth -= 1
+            out.append(indent + "}")
+            continue
+        echo = _ECHO_RE.fullmatch(stripped)
+        if echo:
+            text = echo.group(1) if echo.group(1) is not None else echo.group(2)
+            out.append(f"{indent}Write-Output {_ps_single_quote(text or '')}")
+            continue
+        if stripped.startswith(_PY_BIN_SUB + " -m "):
+            out.append(indent + _translate_py_module(stripped))
+            continue
+        raise ValueError(f"cannot translate bash line to PowerShell: {line!r}")
     if in_py:
         raise ValueError("unterminated python -c body in bash fence")
+    if continued:
+        raise ValueError("unterminated graphify line continuation in bash fence")
+    if if_depth:
+        raise ValueError("unterminated if in bash fence")
     return out
 
 
 def _translate_prose_line(line: str) -> str:
-    """Translate inline `` `rm -f ...` `` code spans in prose to Remove-Item."""
-    return re.sub(
+    """Translate inline bash code spans in prose (``rm``, ``cp``, ``export``)."""
+    line = re.sub(
         r"`rm -f ([^`]+)`",
         lambda m: "`" + _rm_to_remove_item("rm -f " + m.group(1)) + "`",
         line,
     )
+    line = re.sub(
+        r"`cp ([^`]+)`",
+        lambda m: "`" + _cp_to_copy_item("cp " + m.group(1)) + "`",
+        line,
+    )
+    line = re.sub(
+        r"`export ([^`]+)`",
+        lambda m: "`" + _export_to_env("export " + m.group(1)) + "`",
+        line,
+    )
+    return line
 
 
 def _core_to_powershell(body: str) -> str:
@@ -536,6 +803,9 @@ def _core_to_powershell(body: str) -> str:
     leftovers = [t for t in _POWERSHELL_BANNED_TOKENS if t in translated]
     if re.search(r"\bfind\b[^\n]*-delete", translated):
         leftovers.append("find ... -delete")
+    for pattern in _POWERSHELL_BANNED_LINE_RES:
+        if pattern.search(translated):
+            leftovers.append(pattern.pattern)
     if leftovers:
         raise ValueError(f"bash-only tokens survived the PowerShell render: {leftovers}")
     return translated
@@ -647,11 +917,15 @@ def render(platform: Platform) -> list[RenderedArtifact]:
     # Sorted reference index keeps the output idempotent regardless of map order.
     for name in sorted(references):
         # The agents-md hooks reference is a per-host template; everything else is
-        # read verbatim.
+        # read from the shared POSIX fragment. A powershell-shell host then runs
+        # the same strict translator as the core (#3600), so references cannot
+        # ship bash the core body already refuses to ship.
         if name == "hooks" and platform.hooks_variant == "agents-md":
             body = _render_agents_md_hooks(platform)
         else:
             body = _read_fragment(references[name])
+        if platform.shell == "powershell":
+            body = _normalise(_core_to_powershell(body))
         rel = f"{platform.refs_dst}/{name}.md"
         artifacts.append(RenderedArtifact(rel, body))
     return artifacts
