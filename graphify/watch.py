@@ -2215,6 +2215,36 @@ def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
     return "rendered"
 
 
+_COCHANGE_NOTES_SHOWN: set[tuple[str, str]] = set()
+
+
+def _refresh_cochange(watch_path: Path, out: Path) -> None:
+    """Refresh graphify-out/cochange.json after a successful rebuild.
+
+    Git co-change for `graphify affected`. It runs under the rebuild lock so two
+    hooks never write it at once, costs one `git rev-parse` when HEAD has not
+    moved, and can never fail the rebuild: any error is reported and ignored.
+    A note ("not a git repository", "shallow clone") is printed once per
+    process, so `graphify watch` does not repeat it on every rebuild.
+    """
+    root = watch_path.resolve()
+    try:
+        from graphify.git_cochange import refresh_cochange
+
+        # The same corpus settings the rebuild just used (#1886 excludes,
+        # gitignore switch), so co-change never lists a file the scan skips.
+        _, note = refresh_cochange(
+            root, out,
+            extra_excludes=_read_build_excludes(out),
+            gitignore=_read_build_gitignore(out),
+        )
+    except Exception as exc:  # noqa: BLE001 - a side signal must not break `update`
+        note = f"co-change: skipped ({type(exc).__name__}: {exc})"
+    if note and (str(root), note) not in _COCHANGE_NOTES_SHOWN:
+        _COCHANGE_NOTES_SHOWN.add((str(root), note))
+        print(f"[graphify watch] {note}")
+
+
 def _rebuild_code(
     watch_path: Path,
     *,
@@ -2355,6 +2385,8 @@ def _rebuild_code(
                     no_cluster=no_cluster,
                     acquire_lock=False,
                 ) and ok
+            if ok:
+                _refresh_cochange(watch_path, out)
             return ok
 
     watch_root = watch_path.resolve()

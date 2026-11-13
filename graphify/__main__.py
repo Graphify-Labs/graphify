@@ -944,6 +944,8 @@ def _run_cli() -> None:
         print("    --relation R            edge relation to traverse in reverse (repeatable)")
         print("    --depth N               reverse traversal depth (default 2)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    --no-cochange           hide the 'Changed together in git history' section")
+        print("    --json                  emit JSON; co-change items first, each tagged graph or cochange")
         print("  god-nodes               list the most connected nodes (architectural hubs)")
         print("    --top N                 how many to show (default 10)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")

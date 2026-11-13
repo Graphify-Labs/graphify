@@ -2328,7 +2328,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(EXIT_NOT_FOUND)
     elif cmd == "affected":
         if len(sys.argv) < 3:
-            print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path] [--no-cochange] [--json]", file=sys.stderr)
             sys.exit(1)
         from graphify.affected import (
             DEFAULT_AFFECTED_RELATIONS,
@@ -2340,10 +2340,18 @@ def dispatch_command(cmd: str) -> None:
         graph_path = _default_graph_path()
         depth = 2
         relations: list[str] = []
+        use_cochange = True
+        as_json = False
         args = sys.argv[3:]
         i = 0
         while i < len(args):
-            if args[i] == "--graph" and i + 1 < len(args):
+            if args[i] == "--no-cochange":
+                use_cochange = False
+                i += 1
+            elif args[i] == "--json":
+                as_json = True
+                i += 1
+            elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
             elif args[i].startswith("--graph="):
@@ -2404,16 +2412,46 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(EXIT_AMBIGUOUS)
             print(f"No unique node match for {query}", file=sys.stderr)
             sys.exit(EXIT_NOT_FOUND)
-        print(
-            format_affected(
-                graph,
-                query,
-                relations=relations or DEFAULT_AFFECTED_RELATIONS,
-                depth=depth,
-                root=graph_root,
-                seed=seed,
+        # Git co-change sits next to graph.json (written by `graphify update`).
+        # It is listed in its own labelled section and never changes the graph
+        # results above it; --no-cochange leaves the output exactly as before.
+        cochange = None
+        cochange_state = "off"
+        if use_cochange:
+            from graphify.git_cochange import FILE_NAME, load_cochange
+
+            cochange = load_cochange(gp.parent / FILE_NAME)
+            cochange_state = "ok" if cochange is not None else "missing"
+        if as_json:
+            import json as _json
+
+            from graphify.affected import affected_payload
+
+            print(_json.dumps(
+                affected_payload(
+                    graph,
+                    seed,
+                    relations=relations or DEFAULT_AFFECTED_RELATIONS,
+                    depth=depth,
+                    root=graph_root,
+                    cochange=cochange,
+                    cochange_state=cochange_state,
+                ),
+                indent=2,
+                ensure_ascii=False,
+            ))
+        else:
+            print(
+                format_affected(
+                    graph,
+                    query,
+                    relations=relations or DEFAULT_AFFECTED_RELATIONS,
+                    depth=depth,
+                    root=graph_root,
+                    seed=seed,
+                    cochange=cochange,
+                )
             )
-        )
     elif cmd in ("god-nodes", "god_nodes"):
         # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
         # README-advertised capability, but never a CLI subcommand — `graphify

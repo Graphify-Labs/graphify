@@ -413,6 +413,63 @@ def resolve_seed_outcome(
     return None, [str(node_id) for node_id in rivals]
 
 
+COCHANGE_HEADER = "Changed together in git history (not code links):"
+
+
+def _seed_file(graph: nx.Graph, seed: str, root: Path | None) -> str:
+    return _as_repo_relative(str(graph.nodes[seed].get("source_file") or ""), root)
+
+
+def cochange_hits(
+    graph: nx.Graph,
+    seed: str,
+    cochange: dict,
+    hits: list[AffectedHit],
+    *,
+    root: Path | None = None,
+    min_confidence: float | None = None,
+    top: int | None = None,
+) -> list[dict]:
+    """Co-change partners of the seed's file, each marked when a graph hit
+    already lives in that file. Never touches the graph results themselves."""
+    from graphify.git_cochange import DEFAULT_MIN_CONFIDENCE, DEFAULT_TOP, cochange_partners
+
+    seed_file = _seed_file(graph, seed, root)
+    if not seed_file:
+        return []
+    graph_files = {
+        _as_repo_relative(str(graph.nodes[h.node_id].get("source_file") or ""), root)
+        for h in hits
+    }
+    items = cochange_partners(
+        cochange, seed_file,
+        min_confidence=DEFAULT_MIN_CONFIDENCE if min_confidence is None else min_confidence,
+        top=DEFAULT_TOP if top is None else top,
+    )
+    return [dict(item, also_code_link=item["file"] in graph_files) for item in items]
+
+
+CODE_LINKS_HEADER = "Code links:"
+
+
+def _cochange_lines(items: list[dict], cochange: dict) -> list[str]:
+    lines = ["", COCHANGE_HEADER]
+    if not items:
+        lines.append("- none above the confidence threshold")
+    for item in items:
+        mark = " (also a code link)" if item["also_code_link"] else ""
+        lines.append(
+            f"- {item['file']} [co-change {item['confidence']:.2f}, "
+            f"{item['support']} of {item['seed_commits']} commits]{mark}"
+        )
+    if cochange.get("shallow"):
+        lines.append(
+            f"Note: shallow clone, only {cochange.get('commits_used', 0)} commits of history; "
+            "run `git fetch --unshallow` for better results."
+        )
+    return lines
+
+
 def format_affected(
     graph: nx.Graph,
     query: str,
@@ -421,7 +478,17 @@ def format_affected(
     depth: int = 2,
     root: Path | None = None,
     seed: str | None = None,
+    cochange: dict | None = None,
 ) -> str:
+    """Text report.
+
+    ``cochange`` (a loaded cochange.json) adds a separate, labelled section of at
+    most 10 files BEFORE the graph results, followed by a "Code links:" label and
+    the graph lines, which are unchanged. The section goes first because it is
+    short and the graph list can run to hundreds of lines on a hub file, where a
+    section printed after it was effectively never read. Without ``cochange``
+    the output is exactly the code-link report.
+    """
     relation_list = tuple(relations)
     if seed is None:
         seed = resolve_seed(graph, query, root)
@@ -434,6 +501,9 @@ def format_affected(
         f"Relations: {', '.join(relation_list)}",
         f"Depth: {depth}",
     ]
+    if cochange is not None and cochange.get("status") == "ok":
+        lines += _cochange_lines(cochange_hits(graph, seed, cochange, hits, root=root), cochange)
+        lines += ["", CODE_LINKS_HEADER]
     if not hits:
         lines.append("No affected nodes found.")
         return "\n".join(lines)
@@ -450,6 +520,62 @@ def format_affected(
             f"- {_node_label(graph, hit.node_id)} [{hit.via_relation}] {location}"
         )
     return "\n".join(lines)
+
+
+def affected_payload(
+    graph: nx.Graph,
+    seed: str,
+    *,
+    relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
+    depth: int = 2,
+    root: Path | None = None,
+    cochange: dict | None = None,
+    cochange_state: str = "off",
+) -> dict:
+    """JSON-ready form of ``affected``, in the same order as the text report.
+
+    Every result carries ``source``: ``"cochange"`` items (changed together in
+    git history, at most 10) come first, then ``"graph"`` items (code links, in
+    the order `affected` has always returned them). A consumer that reads the
+    first k results gets the order that measured best; one that wants code links
+    only filters on ``source``. ``cochange_state`` says why there are no
+    co-change items: ``"off"`` (--no-cochange), ``"missing"`` (no cochange.json
+    yet) or ``"ok"``."""
+    relation_list = tuple(relations)
+    hits = affected_nodes(graph, seed, relations=relation_list, depth=depth)
+    results: list[dict] = []
+    info: dict = {"state": cochange_state}
+    if cochange is not None and cochange.get("status") == "ok":
+        info = {
+            "state": "ok",
+            "rev": cochange.get("rev"),
+            "commits_used": cochange.get("commits_used"),
+            "shallow": bool(cochange.get("shallow")),
+        }
+        for item in cochange_hits(graph, seed, cochange, hits, root=root):
+            results.append({"source": "cochange", **item})
+    for hit in hits:
+        data = graph.nodes[hit.node_id]
+        results.append({
+            "source": "graph",
+            "id": hit.node_id,
+            "label": _node_label(graph, hit.node_id),
+            "file": _as_repo_relative(str(data.get("source_file") or ""), root) or None,
+            "relation": hit.via_relation,
+            "depth": hit.depth,
+            "location": (
+                f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
+                if hit.via_location else _format_location(data)
+            ),
+        })
+    return {
+        "seed": {"id": seed, "label": _node_label(graph, seed),
+                 "file": _seed_file(graph, seed, root) or None},
+        "relations": list(relation_list),
+        "depth": depth,
+        "cochange": info,
+        "results": results,
+    }
 
 
 def load_graph(path: Path) -> nx.Graph:
