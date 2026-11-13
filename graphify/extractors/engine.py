@@ -1692,6 +1692,56 @@ def _java_member_nid(class_nid: str, member_node, name: str, source: bytes,
     return _underscore_salted_nid(_make_id(class_nid, name), name, groups)
 
 
+_KOTLIN_MEMBER_BODY_TYPES = ("class_body", "enum_class_body")
+
+
+def _kotlin_function_name(node, source: bytes) -> str:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        name_node = next((c for c in node.children if c.type == "simple_identifier"), None)
+    return _read_text(name_node, source) if name_node is not None else ""
+
+
+def _kotlin_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                       groups_cache: dict) -> str:
+    """Node id for a Kotlin method, salted when a sibling collides.
+
+    ``make_id`` drops a leading ``_`` and folds case, so ``_bar()`` / ``bar()``
+    or ``run()`` / ``Run()`` of one class minted one id: the second declaration
+    vanished and its calls were credited to the survivor. A ``companion
+    object``'s members take the enclosing class's id, so group the functions of
+    the class body and its companion body by the id they would get, then apply
+    ``_underscore_salted_nid``, the Python/C#/Solidity/Java rule (#3302, #4415,
+    #5058, #5151): a unique public name keeps the plain id, every other
+    colliding name is salted. Members that collide with nothing keep their old
+    id; overloads share one name, so they are not a collision.
+    """
+    body = member_node.parent
+    if body is None or body.type not in _KOTLIN_MEMBER_BODY_TYPES or body.parent is None:
+        return _make_id(class_nid, name)
+    owner = body.parent
+    if owner.type == "companion_object" and owner.parent is not None \
+            and owner.parent.type in _KOTLIN_MEMBER_BODY_TYPES:
+        body = owner.parent
+    key = (class_nid, body.start_byte, body.end_byte)
+    groups = groups_cache.get(key)
+    if groups is None:
+        names: dict[str, set[str]] = {}
+        bodies = [body]
+        while bodies:
+            for c in bodies.pop().children:
+                if c.type == "function_declaration":
+                    text = _kotlin_function_name(c, source)
+                    if text and normalize_id(text):
+                        names.setdefault(_make_id(class_nid, text), set()).add(text.strip("`"))
+                elif c.type == "companion_object":
+                    bodies.extend(b for b in c.children if b.type in _KOTLIN_MEMBER_BODY_TYPES)
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    # A backticked name (`` `_case works` ``) is public or not by its text.
+    return _underscore_salted_nid(_make_id(class_nid, name), name.strip("`"), groups)
+
+
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
     """Pre-scan a Swift compilation unit and return (protocol_names, class_like_names)."""
     protocols: set[str] = set()
@@ -7281,6 +7331,8 @@ def _extract_generic(
     php_member_groups: dict = {}
     # Java class body -> method/constructor collision groups, filled lazily.
     java_member_groups: dict = {}
+    # Kotlin class body (with its companion object) -> method collision groups.
+    kotlin_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
@@ -9250,6 +9302,10 @@ def _extract_generic(
                       and t in _JAVA_MEMBER_CALLABLE_TYPES):
                     func_nid = _java_member_nid(
                         parent_class_nid, node, sanitized_name, source, java_member_groups
+                    )
+                elif config.ts_module == "tree_sitter_kotlin" and t == "function_declaration":
+                    func_nid = _kotlin_member_nid(
+                        parent_class_nid, node, sanitized_name, source, kotlin_member_groups
                     )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
