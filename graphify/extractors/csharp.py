@@ -320,6 +320,7 @@ class CsharpNameResolver:
         self.aliases_by_file: dict[str, dict[str, list[tuple[str, str, str | None]]]] = {}
         self.static_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
         self.nested_types_by_holder: dict[str, dict[str, str]] = {}
+        self.base_types_by_holder: dict[str, list[str]] = {}
         self._holder_nid_cache: dict[str, str | None] = {}
 
         for edge in all_edges:
@@ -362,6 +363,13 @@ class CsharpNameResolver:
 
         nested_candidates: dict[tuple[str, str], dict[str, dict]] = {}
         for edge in all_edges:
+            if edge.get("relation") == "inherits":
+                holder_nid, base_nid = edge.get("source"), edge.get("target")
+                if (
+                    isinstance(holder_nid, str) and isinstance(base_nid, str)
+                    and _is_cs_file(self.node_by_id.get(holder_nid, {}).get("source_file"))
+                ):
+                    self.base_types_by_holder.setdefault(holder_nid, []).append(base_nid)
             if edge.get("relation") != "contains":
                 continue
             target_nid = edge.get("target")
@@ -467,6 +475,25 @@ class CsharpNameResolver:
                 hits.add(hit)
         return next(iter(hits)) if len(hits) == 1 else None
 
+    def _resolve_nested_type(self, holder_nid: str, name: str) -> str | None:
+        hits: set[str] = set()
+        seen: set[str] = set()
+        frontier = [holder_nid]
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            node = self.node_by_id.get(nid)
+            if not node or not _is_cs_file(node.get("source_file")):
+                return None
+            declared = self.nested_types_by_holder.get(nid, {}).get(name)
+            if declared:
+                hits.add(declared)
+                continue
+            frontier.extend(self.base_types_by_holder.get(nid, ()))
+        return next(iter(hits)) if len(hits) == 1 else None
+
     def _resolve_holder_nid(self, target_fqn: str) -> str | None:
         base_fqn = _strip_trailing_csharp_generic_args(html.unescape(target_fqn)).strip()
         if not base_fqn:
@@ -487,7 +514,7 @@ class CsharpNameResolver:
 
         parent_nid = self._resolve_holder_nid(prefix)
         if parent_nid:
-            nested_hit = self.nested_types_by_holder.get(parent_nid, {}).get(name)
+            nested_hit = self._resolve_nested_type(parent_nid, name)
             if nested_hit:
                 self._holder_nid_cache[base_fqn] = nested_hit
                 return nested_hit
@@ -508,6 +535,24 @@ class CsharpNameResolver:
           * ``(None, False)`` — scoping knows nothing about the name; a caller
             may fall back (e.g. to the corpus-wide unique bare-name match).
         """
+        if label.startswith("global::"):
+            return self._resolve_holder_nid(label.removeprefix("global::")), True
+        if "." in label:
+            first, _, rest = label.partition(".")
+            holder, decisive = self.resolve_type_name(first, source_node, source_file)
+            if holder:
+                for segment in rest.split("."):
+                    holder = self._resolve_nested_type(holder, segment)
+                    if holder is None:
+                        break
+                return holder, True
+            if decisive and first not in self.aliases_by_file.get(source_file, {}):
+                return None, True
+            qualifier, _, name = label.rpartition(".")
+            qualified = self.resolve_qualified(name, qualifier, source_node, source_file)
+            if qualified:
+                return qualified, True
+            return (None if decisive else self._resolve_holder_nid(label)), True
         if label in self.aliases_by_file.get(source_file, {}):
             return self._resolve_alias(label, source_node, source_file), True
         candidates: list[str] = []

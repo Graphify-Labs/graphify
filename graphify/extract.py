@@ -5509,9 +5509,6 @@ def _resolve_swift_member_calls(
         tt = result.get("swift_type_table")
         if tt and tt.get("path"):
             type_table_by_file[tt["path"]] = tt.get("table", {})
-    if not type_table_by_file:
-        return
-
     def _key(label: str) -> str:
         return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
@@ -5524,11 +5521,52 @@ def _resolve_swift_member_calls(
     # Type name -> definition node ids (real, source-backed, type-like defs only).
     # len != 1 is the god-node guard: an ambiguous type name bails.
     type_def_nids: dict[str, list[str]] = {}
+    top_level_type_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (str(n.get("source_file", "")).lower().endswith(".swift")
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+            path = (n.get("metadata") or {}).get("type_path", n.get("label", ""))
+            if "." not in path:
+                top_level_type_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+
+    type_ids = {nid for definitions in type_def_nids.values() for nid in definitions}
+    lexical_parents: dict[str, str] = {}
+    nested_types: dict[tuple[str, str], set[str]] = {}
+    for edge in all_edges:
+        parent, child = edge.get("source"), edge.get("target")
+        if not isinstance(parent, str) or not isinstance(child, str) or parent not in type_ids:
+            continue
+        if edge.get("relation") == "contains" and child in type_ids:
+            lexical_parents[child] = parent
+            nested_types.setdefault(
+                (parent, _key(node_by_id[child].get("label", ""))), set(),
+            ).add(child)
+        elif edge.get("relation") == "method":
+            lexical_parents[child] = parent
+
+    def scoped_type_definitions(name: str, caller: str) -> list[str]:
+        if "." in name:
+            first, _, rest = name.partition(".")
+            definitions = scoped_type_definitions(first, caller)
+            for segment in rest.split("."):
+                if len(definitions) != 1:
+                    return []
+                definitions = sorted(nested_types.get((definitions[0], _key(segment)), ()))
+            return definitions
+        scope = lexical_parents.get(caller)
+        seen: set[str] = set()
+        while scope and scope not in seen:
+            seen.add(scope)
+            nested = nested_types.get((scope, _key(name)))
+            if nested:
+                return sorted(nested)
+            if _key(node_by_id[scope].get("label", "")) == _key(name):
+                return [scope]
+            scope = lexical_parents.get(scope)
+        return top_level_type_nids.get(_key(name), [])
 
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
     method_index: dict[tuple[str, str], str] = {}
@@ -5596,7 +5634,8 @@ def _resolve_swift_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in all_raw_calls:
-        if not rc.get("is_member_call"):
+        if (not rc.get("is_member_call")
+                or not str(rc.get("source_file", "")).lower().endswith(".swift")):
             continue
         receiver = rc.get("receiver")
         callee = rc.get("callee")
@@ -5620,7 +5659,7 @@ def _resolve_swift_member_calls(
         # do the same for Swift (#2147).
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
-        type_defs = type_def_nids.get(_key(type_name), [])
+        type_defs = scoped_type_definitions(type_name, caller)
         if not type_defs:
             # Declared nowhere here — in a multi-repo setup that usually means "in
             # a repo this build does not contain", so park it for the merge
@@ -6832,6 +6871,7 @@ _CSHARP_KEYWORD_VALUE_TYPES = frozenset(_CSHARP_KEYWORD_TYPE_ALIASES) - {"object
 
 def _csharp_keyword_type(name: str) -> str:
     """The C# keyword spelling of a built-in type name, else ``name`` unchanged."""
+    name = name.removeprefix("global::")
     bare = name[len("System."):] if name.startswith("System.") else name
     return _CSHARP_SYSTEM_TYPE_KEYWORDS.get(bare, bare if bare in _CSHARP_KEYWORD_TYPE_ALIASES else name)
 
@@ -7397,6 +7437,11 @@ def _resolve_csharp_extension_calls(
             if resolved:
                 return resolved, True
             if decisive:
+                if (type_name.removeprefix("global::").startswith("System.")
+                        and _csharp_keyword_type(type_name) in _CSHARP_KEYWORD_TYPE_ALIASES
+                        and (type_name.startswith("global::")
+                             or "System" not in resolver.aliases_by_file.get(src_file, {}))):
+                    return None, False
                 return None, True
         hits = type_def_nids.get(_key(type_name), [])
         if len(hits) == 1:
@@ -7577,6 +7622,12 @@ def _bind_member_field_tables(
             if not label or not isinstance(fields, dict):
                 continue
             candidates = by_label.get(str(label), [])
+            if entry.get("type_path"):
+                candidates = [
+                    n for n in candidates
+                    if (n.get("metadata") or {}).get("type_path") == entry["type_path"]
+                    and (n.get("metadata") or {}).get("namespace", "") == entry.get("namespace", "")
+                ]
             if len(candidates) > 1:
                 sf = str(entry.get("source_file") or "")
                 exact = [n for n in candidates if str(n.get("source_file")) == sf]
@@ -7821,13 +7872,22 @@ def _resolve_java_member_calls(
             supertypes.setdefault(edge["source"], []).append(edge["target"])
     class_fields = _bind_member_field_tables(per_file, all_nodes, lang="java")
     static_fields = _bind_member_field_tables(per_file, all_nodes, lang="java_static")
+    qualified_types: dict[str, list[str]] = {}
+    for node in all_nodes:
+        identity = node.get("_java_type")
+        if not isinstance(identity, dict) or node.get("id") not in contained:
+            continue
+        qualified = ".".join(
+            part for part in (identity.get("package"), identity.get("path")) if part
+        )
+        qualified_types.setdefault(qualified, []).append(node["id"])
 
     def _inherited_field_type(
-        class_nid,
+        class_nid: str | None,
         field: str,
         bases: dict[str, list[str]] = inherits_bases,
         tables: dict[str, dict[str, str]] | None = None,
-    ):
+    ) -> tuple[str, str] | None:
         fields = class_fields if tables is None else tables
         seen: set = set()
         queue = [class_nid]
@@ -7838,7 +7898,7 @@ def _resolve_java_member_calls(
             seen.add(cls)
             hit = fields.get(cls, {}).get(field)
             if hit:
-                return hit
+                return hit, cls
             queue.extend(bases.get(cls, []))
         return None
 
@@ -7920,18 +7980,93 @@ def _resolve_java_member_calls(
         return next(iter(hits)) if len(hits) == 1 else None
 
     def _type_named(name: str, near: str | None) -> str | None:
-        # A name declared more than once (a nested `Builder` in many classes)
-        # is the one in the file that names it, or none.
-        defs = type_def_nids.get(key(name), [])
-        if len(defs) > 1:
-            here = node_by_id.get(near, {}).get("source_file")
-            defs = [nid for nid in defs if node_by_id.get(nid, {}).get("source_file") == here]
-        return defs[0] if len(defs) == 1 else None
+        name = key(name)
+        owner = enclosing_type.get(near or "", near)
+        context = node_by_id.get(owner, {}).get("_java_type", {})
+        package = context.get("package", "")
+
+        def lookup(qualified: str) -> list[str]:
+            return qualified_types.get(qualified, [])
+
+        def unique(defs: list[str] | set[str]) -> str | None:
+            return next(iter(defs)) if len(defs) == 1 else None
+
+        first, dot, rest = name.partition(".")
+
+        def member_types(scope: str, member: str) -> set[str]:
+            hits: set[str] = set()
+            seen: set[str] = set()
+            frontier = [scope]
+            while frontier:
+                nid = frontier.pop()
+                if nid in seen:
+                    continue
+                seen.add(nid)
+                identity = node_by_id.get(nid, {}).get("_java_type", {})
+                if not identity:
+                    continue
+                qualified = ".".join(
+                    part for part in (identity.get("package"), identity.get("path"), member) if part
+                )
+                declared = lookup(qualified)
+                if declared:
+                    hits.update(declared)
+                else:
+                    frontier.extend(supertypes.get(nid, []))
+            return hits
+
+        def nested_type(defs: list[str] | set[str], suffix: str) -> str | None:
+            target = unique(defs)
+            for member in suffix.split(".") if suffix else []:
+                if target is None:
+                    return None
+                target = unique(member_types(target, member))
+            return target
+
+        path = context.get("path", "")
+        while path:
+            scope_name = ".".join(part for part in (package, path) if part)
+            scopes = lookup(scope_name)
+            if path.rsplit(".", 1)[-1] == first:
+                return nested_type(scopes, rest)
+            members = {nid for scope in scopes for nid in member_types(scope, first)}
+            if members:
+                return nested_type(members, rest)
+            path = path.rpartition(".")[0]
+        imports = context.get("imports", [])
+        explicit = [
+            imported for imported in imports
+            if not imported.endswith(".*") and imported.rsplit(".", 1)[-1] == first
+        ]
+        if explicit:
+            imported_hits = {
+                nid for imported in explicit
+                for nid in lookup(imported)
+            }
+            return nested_type(imported_hits, rest)
+        for qualified in dict.fromkeys((".".join(part for part in (package, name) if part), name)):
+            parts = qualified.split(".")
+            for length in range(1, len(parts) + 1):
+                if hits := lookup(".".join(parts[:length])):
+                    return nested_type(hits, ".".join(parts[length:]))
+        wildcard_hits = {
+            nid for imported in imports if imported.endswith(".*")
+            for nid in lookup(imported[:-1] + first)
+        }
+        if wildcard_hits:
+            return nested_type(wildcard_hits, rest)
+        if dot or imports:
+            return None
+        defs = type_def_nids.get(name, [])
+        return unique(defs)
 
     def _chain_type(chain: list, caller: str, depth: int = 0) -> str | None:
         kind = chain[0] if chain and depth <= 16 else None
         if kind == "type":
             return _type_named(chain[1], caller)
+        if kind == "field_type":
+            declared = _inherited_field_type(enclosing_type.get(caller), chain[1], supertypes)
+            return _type_named(*declared) if declared else None
         if kind == "this":
             return enclosing_type.get(caller)
         if kind == "super":
@@ -7950,7 +8085,7 @@ def _resolve_java_member_calls(
             declared = (
                 _inherited_field_type(owner, chain[1], tables=static_fields) if owner else None
             )
-            return _type_named(declared, owner) if declared else None
+            return _type_named(*declared) if declared else None
         return None
 
     for result in per_file:
@@ -8004,19 +8139,29 @@ def _resolve_java_member_calls(
                 exact = True
             else:
                 type_name = raw_call.get("receiver_type")
+                type_context = caller
+                if field_name := raw_call.get("receiver_field"):
+                    declared = _inherited_field_type(enclosing_type.get(caller), field_name, supertypes)
+                    if not declared:
+                        continue
+                    type_name, type_context = declared
                 if not type_name and raw_call.get("receiver_unbound"):
-                    type_name = _inherited_field_type(enclosing_type.get(caller), receiver, supertypes)
+                    declared = _inherited_field_type(enclosing_type.get(caller), receiver, supertypes)
+                    if declared:
+                        type_name, type_context = declared
                 if not type_name and receiver[:1].isupper():
                     type_name = receiver
                     exact = True
                 if not type_name and receiver.startswith("this."):
-                    type_name = _inherited_field_type(
+                    declared = _inherited_field_type(
                         enclosing_type.get(caller), receiver[len("this."):]
                     )
+                    if declared:
+                        type_name, type_context = declared
                 if not type_name:
                     continue
-                type_defs = type_def_nids.get(key(type_name), [])
-                if not type_defs:
+                type_nid = _type_named(type_name, type_context)
+                if not type_nid and not type_def_nids.get(key(type_name.rsplit(".", 1)[-1])):
                     # The type is declared nowhere in this corpus, which in a
                     # multi-repo setup usually means "in a repo this build does
                     # not contain" rather than "does not exist" — park it for the
@@ -8027,9 +8172,8 @@ def _resolve_java_member_calls(
                         node_by_id.get(caller), callee, type_name, "java", raw_call,
                     )
                     continue
-                if len(type_defs) != 1:
+                if not type_nid:
                     continue
-                type_nid = type_defs[0]
 
             method_nid = _method_on_type_or_bases(type_nid, key(callee))
             if not method_nid or method_nid == caller or (caller, method_nid) in existing_pairs:
@@ -8469,12 +8613,10 @@ def _resolve_kotlin_import_targets(
     invoked directly in extract(), not via the tail registry run).
     """
     pkg_results = _kotlin_package_index(per_file)
-    if not pkg_results:
-        return
     # package fqn -> {importable label -> [node ids]}. Member labels (leading
     # dot) are not importable as `P.Name`, and sourceless reference stubs are
     # not definitions; both are excluded so they can't shadow the real symbol.
-    pkg_symbols: dict[str, dict[str, list[str]]] = {}
+    pkg_symbols: dict[str, dict[str, set[str]]] = {}
     for pkg, results in pkg_results.items():
         by_label = pkg_symbols.setdefault(pkg, {})
         for result in results:
@@ -8484,7 +8626,17 @@ def _resolve_kotlin_import_targets(
                 label = str(n.get("label", ""))
                 if not label or label.startswith("."):
                     continue
-                by_label.setdefault(label.strip("()"), []).append(n["id"])
+                by_label.setdefault(label.strip("()"), set()).add(n["id"])
+    for node in all_nodes:
+        if not str(node.get("source_file", "")).endswith((".kt", ".kts")):
+            continue
+        metadata = node.get("metadata") or {}
+        package = metadata.get("namespace")
+        label = str(node.get("label", ""))
+        if package and label and not label.startswith(".") and node.get("type") != "namespace":
+            pkg_symbols.setdefault(package, {}).setdefault(
+                metadata.get("type_path", label.strip("()")), set(),
+            ).add(node["id"])
     for e in all_edges:
         if e.get("relation") != "imports":
             continue
@@ -8494,9 +8646,9 @@ def _resolve_kotlin_import_targets(
         pkg, _, name = str(fqn).rpartition(".")
         if not pkg or not name:
             continue
-        candidates = pkg_symbols.get(pkg, {}).get(name, [])
+        candidates = pkg_symbols.get(pkg, {}).get(name, set())
         if len(candidates) == 1:  # single-candidate guard: never fabricate
-            e["target"] = candidates[0]
+            e["target"] = next(iter(candidates))
 
 
 _C_FAMILY_HEADER_EXTS = frozenset({".h", ".hpp", ".hh", ".hxx", ".cuh", ".inl"})
@@ -9510,12 +9662,30 @@ def _resolve_kotlin_member_calls(
         if name:
             types_by_name.setdefault(name, []).append(n["id"])
 
+    type_ids = {nid for definitions in types_by_name.values() for nid in definitions}
+    imported_types: dict[str, dict[str, set[str]]] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "imports":
+            continue
+        source_file = str(edge.get("source_file") or "")
+        if not source_file.endswith((".kt", ".kts")):
+            continue
+        fqn = (edge.get("metadata") or {}).get("target_fqn")
+        if isinstance(fqn, str) and fqn and not fqn.endswith(".*"):
+            local_name = (edge.get("metadata") or {}).get("alias") or fqn.rsplit(".", 1)[-1]
+            imported_types.setdefault(source_file, {}).setdefault(
+                local_name, set(),
+            ).add(edge["target"])
+
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in raw:
         receiver = rc["kotlin_object_receiver"]
         callee = rc["callee"]
         caller = rc["caller_nid"]
         type_nids = types_by_name.get(receiver, [])
+        explicit = imported_types.get(rc.get("source_file", ""), {}).get(receiver)
+        if explicit is not None:
+            type_nids = sorted(explicit & type_ids)
         if not type_nids:
             # Object/class declared nowhere here — usually in a repo this build does
             # not contain, so park it for the merge (#3152/#3388). A builtin receiver
@@ -12702,7 +12872,7 @@ def extract(
     # edges — so genuine imported calls get promoted INFERRED -> EXTRACTED. The
     # tail registry run (run_language_resolvers below) would be too late.
     run_language_resolvers(
-        paths, per_file, all_nodes, all_edges,
+        paths, per_file, resolution_nodes, all_edges,
         resolvers=[_KOTLIN_IMPORT_TARGET_RESOLVER],
     )
 
