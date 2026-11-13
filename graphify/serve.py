@@ -2996,6 +2996,26 @@ def _build_server(graph_path: str):
                 },
             ),
             types.Tool(
+                name="get_section",
+                description=(
+                    "Return the text of a Markdown section (a heading node, with its "
+                    "subsections) or a whole Markdown page, read from the source "
+                    "file. Use it instead of opening the .md file after query_graph "
+                    "or get_node lands on a heading."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string",
+                                  "description": "Heading label, node ID, or 'path/file.md::Heading' "
+                                                 "when several files share the heading"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
+                        "max_chars": {"type": "integer", "default": 8000,
+                                      "description": "Cap on returned characters"},
+                    },
+                },
+            ),
+            types.Tool(
                 name="get_neighbors",
                 description="Get all direct neighbors of a node with edge details.",
                 inputSchema={
@@ -3155,6 +3175,8 @@ def _build_server(graph_path: str):
         return result
 
     def _tool_get_node(arguments: dict) -> str:
+        from graphify.sections import is_section_node as _is_section_node
+
         raw = _node_arg(arguments)
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
@@ -3181,11 +3203,35 @@ def _build_server(graph_path: str):
             *([f"  Defined in: {sanitize_label(str(d.get('definition_file', '')))} "
                f"{sanitize_label(str(d.get('definition_location', '')))}"]
               if d.get("definition_file") else []),
+            *(["  Section: get_section returns this Markdown section's text"]
+              if _is_section_node(d) else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
             *attrs_line,
         ])
+
+    def _tool_get_section(arguments: dict) -> str:
+        from graphify.sections import (
+            DEFAULT_MAX_CHARS,
+            format_section,
+            read_section,
+            resolve_section_query,
+            section_root,
+        )
+
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        nid, err = resolve_section_query(G, raw)
+        if nid is None:
+            return err
+        d = G.nodes[nid]
+        max_chars = max(1, int(arguments.get("max_chars", DEFAULT_MAX_CHARS)))
+        section, reason = read_section(d, section_root(Path(active_graph_path)), max_chars)
+        if section is None:
+            return sanitize_label(reason)
+        return format_section(section, sanitize_label(d.get("label", nid)))
 
     def _tool_get_neighbors(arguments: dict) -> str:
         raw = _node_arg(arguments)
@@ -3359,6 +3405,7 @@ def _build_server(graph_path: str):
     _handlers = {
         "query_graph": _tool_query_graph,
         "get_node": _tool_get_node,
+        "get_section": _tool_get_section,
         "get_neighbors": _tool_get_neighbors,
         "get_community": _tool_get_community,
         "god_nodes": _tool_god_nodes,

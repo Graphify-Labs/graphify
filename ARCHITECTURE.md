@@ -84,6 +84,15 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+`graphify section` and the `get_section` MCP tool return the text of a Markdown
+heading's section (`graphify/sections.py`). The section's end is found at read
+time from the current file, not stored: it is the line before the next heading
+of the same or a shallower level, by the extractor's own heading, fence and
+frontmatter rules, so a section includes its subsections and an edit inside it
+never leaves a stale range. Reads are confined to the project root, the body
+goes through `redact_secrets`, and the text never enters graph.json, so graphs
+built before this existed work without a rebuild.
+
 Validation reports list/object enum values as schema errors. Graph assembly
 repairs structured `file_type` values to `concept` and structured `confidence`
 values to `INFERRED`, without fabricating a confidence score, so malformed
