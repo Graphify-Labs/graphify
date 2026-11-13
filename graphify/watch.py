@@ -487,6 +487,7 @@ from graphify.detect import (
     IMAGE_EXTENSIONS,
     _load_graphifyignore,
     _is_ignored,
+    ignored_predicate,
 )
 from graphify.rcfile import (
     RC_FILENAME,
@@ -594,14 +595,19 @@ def _rebase_relative_source_files(payload: dict, source_root: Path, target_root:
         return
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
-            for key in _PORTABLE_PATH_KEYS:
-                source = item.get(key)
-                if not source or Path(source).is_absolute():
-                    continue
-                try:
-                    item[key] = (source_root / source).relative_to(target_root).as_posix()
-                except ValueError:
-                    continue
+            declarations = (item.get("metadata") or {}).get("cpp_declaration_sites", [])
+            proofs = [{"source_file": sf} for sf in item.get("_cpp_reconcile_files", [])]
+            for record in [item, *declarations, *proofs]:
+                for key in _PORTABLE_PATH_KEYS:
+                    source = record.get(key)
+                    if not source or Path(source).is_absolute():
+                        continue
+                    try:
+                        record[key] = (source_root / source).relative_to(target_root).as_posix()
+                    except ValueError:
+                        continue
+            if proofs:
+                item["_cpp_reconcile_files"] = [proof["source_file"] for proof in proofs]
 
 
 class _StoredSourcePaths:
@@ -931,10 +937,24 @@ def _reconcile_markdown_links(
             and not _is_file_node(target)
         )
 
+    def _is_code_file_citation(edge: dict) -> bool:
+        """A page -> source-file link citation minted by markdown resolution (#4804)."""
+        if edge.get("relation") != "references" or edge.get("target_file"):
+            return False
+        target = nodes_by_id.get(edge.get("target"))
+        source = nodes_by_id.get(edge.get("source"))
+        return (
+            target is not None
+            and target.get("file_type") == "code"
+            and _is_file_node(target)
+            and source is not None
+            and source.get("file_type") == "document"
+        )
+
     def _keep_edge(edge: dict) -> bool:
         if not (_is_ast_tier(edge) and edge.get("relation") == "references"):
             return True
-        if _is_code_span_mention(edge):
+        if _is_code_span_mention(edge) or _is_code_file_citation(edge):
             return True
         owner = source_paths.normalize(edge.get("source_file"))
         if owner not in parsed_sources:
@@ -2713,6 +2733,12 @@ def _rebuild_code(
                     watch_root=watch_root,
                     normalize_source=_nsf,
                 )
+                from graphify.extractors.resolution import _cpp_reconciliation_paths
+                extract_targets = _cpp_reconciliation_paths(
+                    extract_targets, ctx_graph.get("nodes", []), project_root,
+                    available_paths=code_files,
+                    changed_paths=[Path(p) for p in deleted_source_identities],
+                )
                 ctx_live = {
                     ctx_paths.absolute_identity(str(p), project_root) for p in code_files
                 }
@@ -2747,13 +2773,16 @@ def _rebuild_code(
                     # Rust impl identity connects alpha-renamed generic blocks.
                     for marker in (
                         "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
+                        "_cpp_class_kind", "_cpp_fields", "_cpp_reconcile_files",
+                        "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
+                        "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                         "_rust_impl_key", "_rust_declaration_count",
                         "_ts_public_twin", "_py_property", "_java_ret",
                         "_ts_fields", "_ts_static_fields",
                         "_py_fixture", "_py_return_type", "_go_fields",
                         "_go_package_path",
                     ):
-                        if node.get(marker):
+                        if node.get(marker) or (marker.startswith("_cpp_") and isinstance(node.get(marker), (dict, list))):
                             ctx_node[marker] = node[marker]
                     metadata = node.get("metadata")
                     if isinstance(metadata, dict):
@@ -2764,6 +2793,7 @@ def _rebuild_code(
                                 "ruby_method_kind",
                                 "ruby_lookup_unsafe",
                                 "python_opaque_bases",
+                                "cpp_conditions",
                                 "ruby_reopened",
                                 "ruby_external_method_owners",
                                 # Erlang remote-call resolution keys (#3714): an
@@ -2813,6 +2843,11 @@ def _rebuild_code(
                         "relation": edge.get("relation"),
                         "source_file": source_file,
                     }
+                    if (edge.get("_cpp_include_proof")
+                            and not (edge.get("metadata") or {}).get("cpp_conditions")):
+                        context_edge["_cpp_include_proof"] = True
+                    if edge.get("relation") == "imports" and isinstance(edge.get("source_location"), str):
+                        context_edge["source_location"] = edge["source_location"]
                     if edge.get("context") == "return_type":
                         context_edge["context"] = "return_type"
                     edge_metadata = edge.get("metadata")
@@ -3273,8 +3308,9 @@ def _rebuild_code(
             )
         questions = suggest_questions(G, communities, labels)
         from graphify.report import load_learning_for_report as _llfr
+        from graphify.report import load_report_token_cost as _lrtc
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
-                          {"input": 0, "output": 0}, report_root, suggested_questions=questions,
+                          _lrtc(out), report_root, suggested_questions=questions,
                           built_at_commit=commit, learning=_llfr(out / "graph.json"))
         report_path = out / "GRAPH_REPORT.md"
         # Split back into the tracked (curated) file and the pending
@@ -3609,7 +3645,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     try:
         from watchdog.observers import Observer
         from watchdog.observers.polling import PollingObserver
-        from watchdog.events import FileSystemEventHandler
+        from watchdog.events import FileCreatedEvent, FileSystemEventHandler
     except ImportError as e:
         raise ImportError("watchdog not installed. Run: pip install watchdog") from e
 
@@ -3624,22 +3660,59 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     # without this short-circuit a busy volume can saturate a CPU core
     # discarding events one extension at a time. (gh-928)
     watch_root_for_ignore = watch_path.resolve()
+    ignore_gitignore = _read_build_gitignore(watch_path / _GRAPHIFY_OUT)
     ignore_patterns = _load_graphifyignore(
         watch_root_for_ignore,
-        gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT),
+        gitignore=ignore_gitignore,
     )
+    ignored = ignored_predicate(watch_root_for_ignore, gitignore=ignore_gitignore)
 
     # Observer and dispatch threads need the same root-specific snapshot.
     root_config_path = watch_root_for_ignore / RC_FILENAME
     override_snapshot: dict[str, str] = activate_language_overrides(watch_root_for_ignore)
     config_changed = False
+    # Only Linux prunes the recursive watch tree. macOS and Windows keep the
+    # recursive schedule, so their handler must not require a `watched` entry.
+    manual = sys.platform.startswith("linux")
 
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending, override_snapshot, config_changed
-            if event.is_directory or _is_read_only_event(event):
+            nonlocal ignore_patterns, ignored
+            if event.is_directory:
+                if not manual or _is_read_only_event(event):
+                    return
+                path = Path(os.fsdecode(event.src_path)).resolve()
+                if path.parent not in watched:
+                    return
+                if event.event_type == "created":
+                    add_tree(path, emit_existing=True)
+                elif event.event_type == "deleted":
+                    remove_tree(path)
+                elif event.event_type == "moved":
+                    remove_tree(path)
+                    dest = Path(os.fsdecode(event.dest_path)).resolve()
+                    if under_root(dest):
+                        add_tree(dest, emit_existing=True)
+                return
+            if _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
+            if manual and (
+                path.parent not in watched or not path.parent.exists()
+            ):
+                return
+            if path.name in {".graphifyignore", ".gitignore"}:
+                ignore_patterns = _load_graphifyignore(
+                    watch_root_for_ignore, gitignore=ignore_gitignore
+                )
+                ignored = ignored_predicate(
+                    watch_root_for_ignore, gitignore=ignore_gitignore
+                )
+                if manual:
+                    remove_tree(watch_root_for_ignore)
+                    add_tree(watch_root_for_ignore, emit_existing=False)
+                return
             # Atomic replacement reports the new root config in dest_path.
             dest_raw = getattr(event, "dest_path", None)
             dest_path = Path(os.fsdecode(dest_raw)) if dest_raw else None
@@ -3672,13 +3745,85 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             changed.add(path)
 
     handler = Handler()
-    # Use polling observer on macOS — FSEvents can miss rapid saves in some editors
-    observer = PollingObserver() if sys.platform == "darwin" else Observer()
-    # Ask the kernel only for events the handler treats as changes. Without
-    # this filter the recursive setup walk floods the inotify queue with
-    # IN_OPEN/IN_CLOSE_NOWRITE, overflows it around 4,000 directories, and
-    # watchdog 7 then re-walks the tree forever (#5033).
-    if _observer_accepts_event_filter(observer):
+    observer = (
+        Observer()
+        if manual
+        else (PollingObserver() if sys.platform == "darwin" else Observer())
+    )
+    watched: dict[Path, object] = {}
+    warned_no_filter = False
+
+    def under_root(path: Path) -> bool:
+        try:
+            path.resolve().relative_to(watch_root_for_ignore)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def schedule_one(path: Path) -> None:
+        nonlocal warned_no_filter
+        path = path.resolve()
+        if path in watched or not under_root(path):
+            return
+        if path != watch_root_for_ignore and ignored(path):
+            return
+        if path == watch_root_for_ignore / _GRAPHIFY_OUT:
+            return
+        kwargs = {"recursive": False}
+        if _observer_accepts_event_filter(observer):
+            kwargs["event_filter"] = _watch_event_filter()
+        elif not warned_no_filter:
+            warned_no_filter = True
+            logger.warning(
+                "watchdog does not declare event_filter; read-only inotify "
+                "events may overflow the queue and lose changes (#5033)"
+            )
+        try:
+            watched[path] = observer.schedule(handler, str(path), **kwargs)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                logger.warning(
+                    "inotify watch limit reached while watching %s; "
+                    "changes below it will be missed", path
+                )
+                return
+            raise
+
+    def remove_tree(path: Path) -> None:
+        path = path.resolve()
+        prefix = str(path) + os.sep
+        for key in [p for p in watched if str(p) == str(path) or str(p).startswith(prefix)]:
+            watch = watched.pop(key)
+            try:
+                observer.unschedule(watch)
+            except Exception:
+                pass
+
+    def add_tree(path: Path, *, emit_existing: bool) -> None:
+        path = path.resolve()
+        stack = [path]
+        while stack:
+            current = stack.pop()
+            if not under_root(current):
+                continue
+            if current != watch_root_for_ignore and ignored(current):
+                continue
+            if current == watch_root_for_ignore / _GRAPHIFY_OUT:
+                continue
+            schedule_one(current)
+            try:
+                entries = list(os.scandir(current))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                elif emit_existing and entry.is_file(follow_symlinks=False):
+                    handler.on_any_event(FileCreatedEvent(entry.path))
+
+    if manual:
+        add_tree(watch_root_for_ignore, emit_existing=False)
+    elif _observer_accepts_event_filter(observer):
         observer.schedule(
             handler,
             str(watch_root_for_ignore),

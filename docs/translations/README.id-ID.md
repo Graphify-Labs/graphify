@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Pangkas pengeluaran token agen hingga 80%.</b> Graphify Cloud adalah memori yang selalu aktif yang mengatur agen Anda, menjaga kualitas kode tetap tinggi, dan membuktikan kebenaran dengan verifikasi formal. <a href="https://app.graphify.com/login"><b>Mulai uji coba gratis 14 hari &rarr;</b></a>
+  <b>Pangkas pengeluaran token agen hingga 80%.</b> Graphify Cloud adalah memori yang selalu aktif yang mengatur agen Anda, menjaga kualitas kode tetap tinggi, dan membuktikan kebenaran dengan verifikasi formal. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Mulai gratis, tanpa kartu &rarr;</b></a>
 </p>
 
 Ketik `/graphify` di asisten pengkodean AI Anda dan ia akan memetakan seluruh proyek Anda (kode, dokumen, PDF, gambar, video) menjadi sebuah **knowledge graph** yang dapat Anda **query alih-alih grep** melalui berkas.
@@ -38,7 +38,7 @@ Ketik `/graphify` di asisten pengkodean AI Anda dan ia akan memetakan seluruh pr
 - **Bukan vector index.** Tanpa embeddings, tanpa vector store: sebuah graf nyata yang Anda telusuri. Ajukan pertanyaan, telusuri jalur antara dua hal, atau jelaskan satu konsep.
 
 > [!NOTE]
-> **Ingin ini selalu aktif?** [Graphify Cloud](https://app.graphify.com/login) menjaga graf tetap hidup di sepanjang SDLC Anda: dukungan monorepo dan cross-repo, verifikasi formal, dan tinjauan kode dengan pandangan menyeluruh atas SDLC Anda, plus konektor untuk Sentry, Jira, dan lainnya sehingga insiden dan tiket berada di graf yang sama dengan kode Anda. **[Mulai uji coba gratis 14 hari di app.graphify.com](https://app.graphify.com/login)**.
+> **Ingin ini selalu aktif?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) menjaga graf tetap hidup di sepanjang SDLC Anda: dukungan monorepo dan cross-repo, verifikasi formal, dan tinjauan kode dengan pandangan menyeluruh atas SDLC Anda, plus konektor untuk Sentry, Jira, dan lainnya sehingga insiden dan tiket berada di graf yang sama dengan kode Anda. **[Mulai gratis, tanpa kartu](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Apa yang Anda dapatkan langsung dari awal:
 | **Local-first** | Kode diurai secara lokal dengan tree-sitter (tanpa LLM, tidak ada yang keluar dari mesin Anda); hanya tahap semantik atas dokumen/media yang memanggil backend, dan hanya jika Anda mengonfigurasi satu |
 
 > [!TIP]
-> Menjalankan ini di banyak repo atau sebuah monorepo? [Graphify Cloud](https://app.graphify.com/login) melakukannya secara terus-menerus dan memangkas pengeluaran token agen hingga 80%, dengan tautan cross-repo, tinjauan kode seluruh SDLC, verifikasi formal, dan konektor Sentry/Jira. [Mulai uji coba gratis 14 hari &rarr;](https://app.graphify.com/login)
+> Menjalankan ini di banyak repo atau sebuah monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) melakukannya secara terus-menerus dan memangkas pengeluaran token agen hingga 80%, dengan tautan cross-repo, tinjauan kode seluruh SDLC, verifikasi formal, dan konektor Sentry/Jira. [Mulai gratis, tanpa kartu &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -447,7 +447,7 @@ Setiap perintah dan flag, dengan contoh: **[CLI reference](https://docs.graphify
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) adalah lapisan yang selalu aktif yang dibangun di atas graphify. Alih-alih graf yang Anda bangun ulang sesuai permintaan per folder, ia menjaga satu graf hidup di sepanjang seluruh siklus hidup pengembangan perangkat lunak Anda:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) adalah lapisan yang selalu aktif yang dibangun di atas graphify. Alih-alih graf yang Anda bangun ulang sesuai permintaan per folder, ia menjaga satu graf hidup di sepanjang seluruh siklus hidup pengembangan perangkat lunak Anda:
 
 - **80% lebih sedikit token**: memori yang selalu aktif berarti agen Anda berhenti membaca ulang dan menjelaskan ulang codebase di setiap sesi.
 - **Monorepo dan cross-repo**: satu graf terhubung di seluruh layanan dan repositori, bukan satu graf per folder.
@@ -456,7 +456,7 @@ Setiap perintah dan flag, dengan contoh: **[CLI reference](https://docs.graphify
 - **Konektor SDLC**: tarik Sentry, Jira, dan lainnya, sehingga insiden, tiket, dan kode berada dalam satu graf.
 - **Selalu aktif**: diperbarui terus-menerus di latar belakang di seluruh kode, dokumen, dan rapat.
 
-**[Mulai uji coba gratis 14 hari di app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Mulai gratis, tanpa kartu &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

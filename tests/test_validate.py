@@ -1,4 +1,5 @@
 import pytest
+from copy import deepcopy
 from graphify.validate import validate_extraction, assert_valid
 
 VALID = {
@@ -14,6 +15,51 @@ VALID = {
 
 def test_valid_passes():
     assert validate_extraction(VALID) == []
+
+
+@pytest.mark.parametrize("value", [[], {}, ["code"], {"value": "code"}])
+@pytest.mark.parametrize("collection,field", [("nodes", "file_type"), ("edges", "confidence")])
+def test_structured_enum_values_reported_not_raised(collection, field, value):
+    data = deepcopy(VALID)
+    data[collection][0][field] = value
+    errors = validate_extraction(data)
+    assert any(f"invalid {field}" in error for error in errors)
+    with pytest.raises(ValueError, match=f"invalid {field}"):
+        assert_valid(data)
+
+
+@pytest.mark.parametrize("value", [[], {}, ["code"], {"value": "code"}])
+@pytest.mark.parametrize("entry_point", ["build", "build_from_json"])
+def test_build_repairs_structured_enum_values(entry_point, value):
+    from graphify.build import build, build_from_json
+
+    data = deepcopy(VALID)
+    data["nodes"][0]["file_type"] = value
+    data["edges"][0]["confidence"] = value
+    graph = build([data]) if entry_point == "build" else build_from_json(data)
+    assert graph.number_of_nodes() == 2
+    assert graph.number_of_edges() == 1
+    assert graph.nodes["n1"]["file_type"] == "concept"
+    assert graph.nodes["n2"]["file_type"] == "document"
+    edge = next(iter(graph.edges(data=True)))[2]
+    assert edge["confidence"] == "INFERRED"
+    assert "confidence_score" not in edge
+    assert edge["relation"] == "references"
+    assert edge["source_file"] == "foo.py"
+
+
+@pytest.mark.parametrize("value", [["EXTRACTED"], {"value": "EXTRACTED"}])
+def test_build_repairs_structured_confidence_on_hyperedges(value):
+    from graphify.build import build_from_json
+
+    data = deepcopy(VALID)
+    data["nodes"].append(
+        {"id": "n3", "label": "Baz", "file_type": "document", "source_file": "baz.md"}
+    )
+    data["hyperedges"] = [{"nodes": ["n1", "n2", "n3"], "confidence": value}]
+    graph = build_from_json(data)
+    assert graph.graph["hyperedges"][0]["confidence"] == "INFERRED"
+    assert set(graph.graph["hyperedges"][0]["nodes"]) == {"n1", "n2", "n3"}
 
 def test_missing_nodes_key():
     errors = validate_extraction({"edges": []})

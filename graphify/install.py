@@ -1129,8 +1129,8 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     print()
     print("  /graphify .")
     print()
-    print("Prefer a hosted version? Try the graphify platform free for 14 days:")
-    print("https://app.graphify.com")
+    print("Prefer a hosted version? Graphify Cloud has a free plan, no card required:")
+    print("https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=install")
     print()
 def _print_install_usage() -> None:
     platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])

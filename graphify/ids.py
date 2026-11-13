@@ -44,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from pathlib import Path
 
 __all__ = ["normalize_id", "make_id", "decl_salt", "DeclIdRegistry"]
 
@@ -94,11 +95,16 @@ def decl_salt(name: str) -> str:
 class DeclIdRegistry:
     """Assign unique ids to declarations in one file.
 
-    Ownership is keyed by the id the declaration would have used, so two
-    declarations whose names normalize alike (``Foo`` / ``_Foo``, or ``Base`` in
-    two namespaces) stay distinct. A reference lookup by name only answers when
-    exactly one declaration in the file spells that name; an ambiguous name
-    keeps the caller's existing fallback.
+    Ownership is keyed by the id the declaration would have used plus its kind.
+    The first declaration to claim an id keeps it; a later one whose names
+    normalize alike is salted apart when it is a different kind spelled
+    differently (``class Foo`` / ``function foo``, #4904) or the same kind
+    spelled differently only by leading/trailing underscores (``_save`` /
+    ``save``, #2810). A same-kind respelling that differs otherwise (``Foo`` /
+    ``FOO``) and an identical spelling (prototype + body, a reopened class) reuse
+    the id. A reference lookup by name only answers when exactly one
+    declaration in the file spells that name; an ambiguous name keeps the
+    caller's existing fallback.
     """
 
     def __init__(self, reserved_ids=()):
@@ -109,12 +115,26 @@ class DeclIdRegistry:
         self._by_name: dict[tuple[str, str], set[str]] = {}
         self._salted: set[str] = set()
         self._spelled: dict[str, str] = {}
+        self._respelled: dict[tuple[str, str, str], str] = {}
 
     def resolve(self, nid: str, name: str, kind: str, taken) -> str:
         key = (kind, nid)
         owner = self._owners.get(nid)
         if owner == key:
-            return self._assigned[key]
+            first = self._spelled.get(nid, name)
+            if name == first or name.strip("_") != first.strip("_"):
+                return self._assigned[key]
+            # Same kind, spelled apart only by underscores (`_save` then
+            # `save`): two declarations, not a re-declaration (#2810). Salted
+            # from the spelling like any other collision, memoised per spelling.
+            respelled = self._respelled.get((kind, nid, name))
+            if respelled is not None:
+                return respelled
+            candidate = self._salt(nid, name, kind, taken)
+            self._owners[candidate] = (kind, candidate)
+            self._assigned[(kind, candidate)] = candidate
+            self._respelled[(kind, nid, name)] = candidate
+            return candidate
         if nid not in taken and owner is None:
             self._owners[nid] = key
             self._assigned[key] = nid
@@ -134,14 +154,19 @@ class DeclIdRegistry:
                 and nid not in self._salted
                 and (owner[0] == kind or self._spelled.get(nid) == name)):
             return nid
+        candidate = self._salt(nid, name, kind, taken)
+        self._owners[candidate] = key
+        self._assigned[key] = candidate
+        return candidate
+
+    def _salt(self, nid: str, name: str, kind: str, taken) -> str:
+        """Mint and record a salted id for ``name``; the caller records ownership."""
         base = make_id(nid, decl_salt(name))
         candidate = base
         counter = 2
         while candidate in taken or candidate in self._owners:
             candidate = make_id(base, str(counter))
             counter += 1
-        self._owners[candidate] = key
-        self._assigned[key] = candidate
         self._salted.add(candidate)
         self._spelled[candidate] = name
         self._by_name.setdefault((kind, normalize_id(name)), set()).add(candidate)
@@ -172,3 +197,29 @@ def make_id(*parts: str) -> str:
     what the builder produces from the joined string.
     """
     return normalize_id("_".join(p.strip("_.") for p in parts if p))
+
+
+def _file_stem(path: Path) -> str:
+    """Stem used as the node-ID prefix for a file and its symbols.
+
+    The full path (extension dropped) is preserved as path segments; ``make_id``
+    later collapses the separators to underscores. Using every segment — not just
+    the immediate parent dir (#1504) — means same-named files in different
+    directories get distinct IDs instead of colliding into one
+    last-writer-wins node:
+
+        docs/v1/api/README.md -> docs/v1/api/README -> docs_v1_api_readme
+        docs/v2/api/README.md -> docs/v2/api/README -> docs_v2_api_readme
+
+    Top-level files keep a bare stem (``setup.py`` -> ``setup``). When passed an
+    absolute path the whole path is encoded; the extract() id-remap post-pass
+    re-derives the canonical repo-relative form from ``source_file`` so the on-disk
+    location can't leak into the persisted IDs (#502).
+
+    Returns "" for a path with no name (``Path('.')`` — a source_file that equals
+    the scan root, so it has no per-file stem). Guarding here keeps
+    ``path.with_suffix("")`` from raising ``ValueError: '.' has an empty name`` and
+    protects every caller, not just ``_semantic_id_remap`` (#1618)."""
+    if not path.name:
+        return ""
+    return path.with_suffix("").as_posix()

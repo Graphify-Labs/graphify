@@ -146,6 +146,10 @@ class _GraphContextCache:
         self._entries: OrderedDict[str, dict] = OrderedDict()
         self._pinned: dict[str, dict] = {}
         self._lock = threading.Lock()
+        # One in-flight build per (resolved_path, pinned); keyed separately
+        # from `_entries`/`_pinned` so a rebuild in progress for one path
+        # never blocks a lookup for another (#5177).
+        self._loading: dict[tuple[str, bool], threading.Event] = {}
 
     def _load_entry(self, resolved_path: str, key: tuple[int, int]) -> dict:
         """Build one entry for an already-resolved path and known file key.
@@ -177,27 +181,74 @@ class _GraphContextCache:
 
         ``pinned=True`` is reserved for the server's configured default graph;
         it remains warm without consuming a project-cache slot.
+
+        The actual rebuild (``_load_entry``, which parses graph.json and builds
+        its trigram index) runs outside ``_lock`` so a slow reload of one path
+        never blocks a request for another (#5177). While a rebuild for THIS
+        path is already in flight, a caller that still has an old entry for it
+        gets that stale entry back immediately rather than queuing behind the
+        rebuild; a caller with no entry yet (the path's first ever load) has
+        nothing stale to serve and waits for the one in-flight build instead
+        of starting a redundant second one.
         """
+        entries = self._pinned if pinned else self._entries
+        loading_key = (resolved_path, pinned)
         with self._lock:
             try:
                 stat_result = Path(resolved_path).stat()
             except FileNotFoundError:
                 raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
             key = (stat_result.st_mtime_ns, stat_result.st_size)
-            entries = self._pinned if pinned else self._entries
             entry = entries.get(resolved_path)
             if entry is not None and entry["key"] == key:
                 if not pinned:
                     self._entries.move_to_end(resolved_path)
                 return entry["G"], entry["communities"]
 
-            entry = self._load_entry(resolved_path, key)
-            entries[resolved_path] = entry
+            in_flight = self._loading.get(loading_key)
+            if entry is not None and in_flight is not None:
+                if not pinned:
+                    self._entries.move_to_end(resolved_path)
+                return entry["G"], entry["communities"]
+
+            if in_flight is not None:
+                wait_event, build_here = in_flight, False
+            else:
+                wait_event = threading.Event()
+                self._loading[loading_key] = wait_event
+                build_here = True
+
+        if not build_here:
+            wait_event.wait()
+            # The build this thread waited on may belong to a key that was
+            # already superseded by a newer write; recurse to either pick up
+            # its result or (if it failed, or was already stale on arrival)
+            # take a fresh run at loading/building it.
+            return self.load(resolved_path, pinned=pinned)
+
+        try:
+            new_entry = self._load_entry(resolved_path, key)
+        except BaseException:
+            # Build failed: clear the in-flight marker and wake waiters so one
+            # of them retries. The old entry (if any) is left untouched.
+            with self._lock:
+                self._loading.pop(loading_key, None)
+                wait_event.set()
+            raise
+
+        with self._lock:
+            entries[resolved_path] = new_entry
             if not pinned:
                 self._entries.move_to_end(resolved_path)
                 while len(self._entries) > self._max_contexts:
                     self._entries.popitem(last=False)
-            return entry["G"], entry["communities"]
+            # Clear the in-flight marker and wake waiters in the SAME lock block
+            # that stores the entry. If these ran in a separate block, a woken
+            # waiter could see neither a stored entry nor an in-flight marker in
+            # the gap and start a second full rebuild, defeating single flight.
+            self._loading.pop(loading_key, None)
+            wait_event.set()
+            return new_entry["G"], new_entry["communities"]
 
 
 def _node_arg(arguments: dict) -> str:
@@ -350,6 +401,87 @@ _SOURCE_MATCH_BONUS = 0.5
 # an exact-label tier it did not earn.
 _RATIONALE_MATCH_BONUS = 0.75
 _ATTRIBUTE_MATCH_BONUS = 0.75
+
+# A label may carry a leading qualifier that the query never repeats: a SQL
+# function is `public.sweep_widget_state()`, a namespaced symbol is
+# `fmt.Println`. The full-query tier below only fires on equal/prefix, so the
+# qualifier alone defeats it and the per-token tiers take over — where an
+# unrelated node whose *whole* label is one of the query's tokens outranks the
+# intended one (#5080). Keep the bonus below the exact tier (the query is not
+# the label) but well above the per-token exact tier it has to beat, and scale
+# it by how small the qualifier is so `public.f()` (one token) is trusted more
+# than `a.b.c.d.f()`.
+_QUALIFIED_MATCH_BONUS = 500.0
+_QUALIFIED_MAX_TOKENS = 4
+# Separators that start a new segment of a qualified name.
+_QUALIFIER_SEPARATORS = r"\.{1,}|::|/|\\|:|@"
+# `sweep_widget_state()` and `sweep widget state` are the same name; strip these
+# before comparing. `_search_tokens` already drops them from the inside.
+_NAME_EDGES = "()[]{}"
+
+_CAMEL_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+# Only a separator or a lower->upper transition below the first character can
+# leave a qualifier behind; plain `snake_case_name` cannot, so reject it early.
+_QUALIFIER_MAYBE_RE = re.compile(r"[.::/\\:@]|[a-z0-9][A-Z]")
+# File-extension segments (`.py`, `.md`) are not qualifiers: the tail of
+# `lib/foo/bar.py` is `bar`, not `py`. Numbers are not names either (`3.14`).
+_FILE_SUFFIX_RE = re.compile(r"^(?:py|pyi|js|jsx|ts|tsx|mjs|cjs|go|rs|java|kt|kts|c|h|cc|cpp|hpp|cs|rb|php|swift|scala|lua|sh|bash|sql|md|rst|txt|ya?ml|toml|json|ini|cfg|html?|css|scss|vue|svelte|ex|exs|erl|hs|ml|clj|dart|proto|graphql)$")
+
+
+def _is_name_segment(segment: str) -> bool:
+    """True if `segment` names something rather than being an extension or a number."""
+    return bool(segment) and not segment.isdigit() and not _FILE_SUFFIX_RE.match(segment)
+
+
+def _qualified_tail(norm_label: str) -> tuple[int, str] | None:
+    """Split a label into `(qualifier_token_count, tail_key)`, or `None` if unqualified.
+
+    `public.sweep_widget_state()` -> `(1, "sweep widget state")`: the tail is the
+    part a query would actually name. Segments are split on punctuation, so
+    `fmt.Println` -> `(1, "println")` and `App\\Http\\handle` -> `(2, "handle")`.
+    The CamelCase fallback below only fires on a cased label (an inner lower->upper
+    transition); the scorer's callers pass the already-lowercased `norm_label`, so
+    in practice only the separator path runs — the fallback is defensive.
+    """
+    label = (norm_label or "").strip()
+    # Cheap reject first: without a separator and without an inner capital there
+    # is nothing to split. This is the common case on a whole-graph pass, and it
+    # keeps the regex work off every plain identifier.
+    if not _QUALIFIER_MAYBE_RE.search(label):
+        return None
+    parts = [p for p in re.split(_QUALIFIER_SEPARATORS, label) if p]
+    # Drop trailing non-name segments (`lib/foo/bar.py` -> `lib`, `foo`, `bar`).
+    while parts and not _is_name_segment(parts[-1]):
+        parts.pop()
+    if not parts:
+        return None
+    tail = parts[-1]
+    if len(parts) > 1:
+        head_tokens = len(_search_tokens(" ".join(parts[:-1])))
+        if head_tokens:
+            return head_tokens, _name_key(tail)
+    # No separator: only a CamelCase qualifier can still leave one. Require at
+    # least two words and an inner capital, so all-lower snake_case names are
+    # left alone (they are already matched as one token run).
+    words = _CAMEL_WORD_RE.findall(tail)
+    if len(words) < 2 or not any(w[:1].isupper() for w in words[1:]):
+        return None
+    head_tokens = len(_search_tokens(" ".join(words[:-1])))
+    if not head_tokens:
+        return None
+    return head_tokens, _name_key(words[-1])
+
+
+def _name_key(text: str) -> str:
+    """Token-joined form of an already-normalized name, for comparing two names.
+
+    `norm_label` has been lowercased and had its diacritics stripped already, so
+    splitting on non-alphanumerics is all `_search_tokens` would add here — and
+    skipping the per-call Unicode normalization matters, this runs on the whole
+    graph.
+    """
+    stripped = str(text or "").strip(_NAME_EDGES + " ").lower()
+    return " ".join(re.findall(r"[^\W_]+", stripped))
 
 
 def _flatten_attr_text(val, parts: list[str]) -> None:
@@ -579,13 +711,13 @@ _QUERY_DOC_SUFFIXES = (".md", ".rst", ".txt", ".yml", ".yaml", ".toml", ".cfg", 
 _QUERY_DOC_DIRS = frozenset({"doc", "docs", "example", "examples"})
 
 
-def _query_path_weight(terms: list[str]):
+def _query_path_weight(terms: list[str], demote_docs: bool = True):
     """Score multiplier per node for `query`: tests, docs, config files and nodes
     without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the question itself
     asks about tests (or docs); everything else counts 1.0."""
     words = {tok for t in terms for tok in _search_tokens(t)}
     keep_tests = bool(words & _QUERY_TEST_WORDS)
-    keep_docs = bool(words & _QUERY_DOC_WORDS)
+    keep_docs = (not demote_docs) or bool(words & _QUERY_DOC_WORDS)
 
     def weight(data: dict) -> float:
         path = str(data.get("source_file") or "").replace("\\", "/")
@@ -616,7 +748,11 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
 
 
 def _score_query(
-    G: nx.Graph, terms: list[str], *, collect_per_term_seeds: bool, path_weight=None
+    G: nx.Graph,
+    terms: list[str],
+    *,
+    collect_per_term_seeds: bool,
+    path_weight=None,
 ) -> _QueryScores:
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
@@ -712,6 +848,17 @@ def _score_query(
                 or label_tokens.startswith(joined)
             ):
                 score += _PREFIX_MATCH_BONUS * 10 * joined_w
+            else:
+                # Qualified name: the label is `<qualifier>.<rest>` (or a
+                # CamelCase variant) and the query names the rest. Ranking
+                # below the exact tier — the label is not what was typed — but
+                # above what the per-token tiers can add up to for a node whose
+                # whole label is one query token (#5080).
+                qualified = _qualified_tail(norm_label)
+                if qualified is not None and qualified[0] <= _QUALIFIED_MAX_TOKENS:
+                    qualifier_tokens, tail_key = qualified
+                    if tail_key and tail_key == joined:
+                        score += _QUALIFIED_MATCH_BONUS * joined_w / qualifier_tokens
         # Term coverage (#1602): scale the per-term exact/prefix tiers by the
         # squared fraction of query terms the node's LABEL matches, so a lone
         # generic word that happens to equal a short label (query term "home"
@@ -1006,7 +1153,27 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
     "modules": "import",
     "exports": "export",
     "exported": "export",
+    "inherit": "inherits",
+    "inherited": "inherits",
+    "inheritance": "inherits",
+    "subclass": "inherits",
+    "subclasses": "inherits",
+    "superclass": "inherits",
+    "implements": "implements",
+    "implemented": "implements",
+    "interface": "implements",
+    "interfaces": "implements",
+    "extends": "extends",
 }
+
+# Heritage relations, which a context filter matches by relation name as well as
+# by context. They are the one structural family the extractors disagree on:
+# TypeScript tags them `context="type"`, while C#, Java and Python emit them
+# with no context at all, so a filter that only read `context` could never
+# reach inheritance in those languages (#5178). `type` deliberately stays out
+# of this set — it means the TypeScript context and nothing more, or a
+# TypeScript graph would start losing edges from its other contexts.
+_HERITAGE_RELATIONS = frozenset({"inherits", "implements", "extends"})
 
 
 def _normalize_context_filters(filters: list[str] | None) -> list[str]:
@@ -1051,15 +1218,22 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
+    relations = filters & _HERITAGE_RELATIONS
+
+    def keep(data: dict) -> bool:
+        if data.get("context") in filters:
+            return True
+        return data.get("relation") in relations
+
     H = G.__class__()
     H.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for u, v, key, data in G.edges(keys=True, data=True):
-            if data.get("context") in filters:
+            if keep(data):
                 H.add_edge(u, v, key=key, **data)
     else:
         for u, v, data in G.edges(data=True):
-            if data.get("context") in filters:
+            if keep(data):
                 H.add_edge(u, v, **data)
     return H
 
@@ -1127,10 +1301,14 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
         hub_threshold = 50
     seed_set = set(start_nodes)
     visited: set[str] = set(start_nodes)
-    frontier = set(start_nodes)
+    # Ordered, not sets: iterating a set of node ids follows the per-process
+    # string-hash seed, so the EDGE lines (and which of them survive the token
+    # budget) changed from run to run. Seeds go in ranked order, and each
+    # level in the order it was discovered.
+    frontier = list(dict.fromkeys(start_nodes))
     edges_seen: list[tuple] = []
     for _ in range(depth):
-        next_frontier: set[str] = set()
+        next_frontier: dict[str, None] = {}
         for n in frontier:
             # Don't expand through high-degree hubs (except seeds - a hub that
             # is the starting node should still be explored).
@@ -1138,10 +1316,10 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
                 continue
             for neighbor in G.neighbors(n):
                 if neighbor not in visited:
-                    next_frontier.add(neighbor)
+                    next_frontier[neighbor] = None
                     edges_seen.append((n, neighbor))
         visited.update(next_frontier)
-        frontier = next_frontier
+        frontier = list(next_frontier)
     _complete_induced_edges(G, visited, edges_seen)
     return visited, edges_seen
 
@@ -1505,6 +1683,7 @@ def _query_graph_text(
     graph_path: str | None = None,
     seeds: list[str] | None = None,
     seed_root: Path | None = None,
+    demote_docs: bool = True,
 ) -> str:
     # Explicit start nodes: an external ranker -- embeddings, a learned
     # retriever, grep -- can choose where the traversal begins instead of the
@@ -1551,7 +1730,12 @@ def _query_graph_text(
     # — one combined + one per query token — re-walking the whole graph each
     # time; on a 100k-node, three-term benchmark ~71% of scoring time was
     # spent in those redundant per-term passes.
-    qs = _score_query(G, terms, collect_per_term_seeds=True, path_weight=_query_path_weight(terms))
+    qs = _score_query(
+        G,
+        terms,
+        collect_per_term_seeds=True,
+        path_weight=_query_path_weight(terms, demote_docs=demote_docs),
+    )
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
     # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
@@ -1608,7 +1792,12 @@ def _render_query(
         header_parts.insert(0, f"Graph: {_display_graph_path(graph_path)} "
                                f"({G.number_of_nodes()} nodes)")
     if resolved_filters:
-        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
+        # A filter that selects nothing used to answer with the seed alone and
+        # no hint, which reads as "these symbols are unrelated" (#5178).
+        label = f"Context: {', '.join(resolved_filters)} ({filter_source}"
+        if not traversal_graph.number_of_edges():
+            label += ", matched 0 edges"
+        header_parts.append(label + ")")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
     # Pass the seeds so the queried symbol renders first and survives truncation
@@ -2256,6 +2445,11 @@ def _resolve_path_endpoint(
     symbols of one file were split by graph order behind a score-tie warning,
     and `path::symbol` cannot separate them — only the node id can.
 
+    A name made of words the graph doesn't know is a miss, not the top of a
+    weak ranking (#5079): `explain` already answers "No node matching" for it,
+    and routing from the closest-sounding label instead prints a path through
+    a symbol nobody asked about.
+
     Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
     score fallback picked the node; ``(None, [], message)`` when ambiguous; and
     ``(None, [], None)`` when nothing matches.
@@ -2285,10 +2479,49 @@ def _resolve_path_endpoint(
     no_member = _no_member_match_message(G, query)
     if no_member:
         return None, [], no_member
-    scored = _score_nodes(G, [t.lower() for t in query.split()])
+    terms = [t.lower() for t in query.split()]
+    scored = _score_nodes(G, terms)
     if not scored:
         return None, [], None
+    if not _query_uses_known_words(G, terms):
+        return None, [], None
     return _pick_scored_endpoint(G, scored, query), scored, None
+
+
+def _query_uses_known_words(G: nx.Graph, terms: list[str]) -> bool:
+    """Whether every word of the query occurs in some node's name.
+
+    Scoring ranks by token overlap, so a made-up name still finds candidates:
+    `zzqqxx_no_such_symbol_9137` matches `no_such_symbol_helper()` on `no`,
+    `symbol` and `helper`, and the route through that symbol prints as if it
+    were the one asked for (#5079). The scored fallback is only honest when
+    the query is at least partly in the graph's vocabulary, so each token has
+    to occur somewhere — then the query shares a word with what it routes
+    through (`Rejection judge` -> `Rejection Summary`, its tokens once said
+    whole). A token that appears nowhere (`zzqqxx`, `9137`) means the name the
+    caller asked for isn't in the graph, which is what `explain` reports too.
+
+    Looser than `explain`'s resolution on purpose: there any substring hit is
+    a "near miss" worth refusing with suggestions, but `path` answers with a
+    route rather than a name, and a caller still typing (`draft-generator` for
+    `draft-generator.ts`) needs the score fallback's ranking.
+
+    One pass per token, each stopping at the first node that carries it; the
+    vocabulary is `_search_tokens` pieces of labels and ids, the same split the
+    scorer uses.
+    """
+    tokens = list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t)))
+    if not tokens:
+        return False
+    # A query is usually rejected on its first unknown word (~a fifth of a score
+    # pass on a 60k-node graph), and nothing is memoised on a shared graph.
+    for token in tokens:
+        for nid, d in G.nodes(data=True):
+            if token in _search_tokens(nid) or token in _search_tokens(d.get("label") or ""):
+                break
+        else:
+            return False
+    return True
 
 
 def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
@@ -2413,15 +2646,38 @@ def _path_confidence_key(hop_datas: list[list[dict]]):
     return weakest[0] if weakest is not None else (-1, True, 0.0, 0)
 
 
+def _path_hub_penalty(G: nx.Graph, path_nodes: list[str]) -> int:
+    """Count of intermediate hops this path passes through a sourceless hub
+    node (#5153): a node with no `source_file`, almost always a stdlib/
+    third-party import stub that hundreds of unrelated files import. Such a
+    node carries no semantic claim about how the two endpoints relate, so a
+    route through it is a true shortest path but not a meaningful one — the
+    weakest-hop tiebreak alone cannot tell it apart from a route of plain
+    `imports`/`contains` edges between real files, since both can carry the
+    identical EXTRACTED confidence on every hop. Endpoints are never counted:
+    the caller explicitly asked about them, hub-ness or not.
+    """
+    penalty = 0
+    for nid in path_nodes[1:-1]:
+        if not G.nodes[nid].get("source_file"):
+            penalty += 1
+    return penalty
+
+
 def _weakest_shortest_path(search_graph: nx.Graph, G: nx.Graph, src_nid: str, tgt_nid: str):
     """Among all shortest paths `src_nid` -> `tgt_nid`, the most conservative one.
 
     A path is only as sure as its weakest hop, so when several routes tie on
     length the reported confidence should reflect the weakest of them, not an
-    arbitrary route networkx happens to return first (#4881). Enumeration is
-    bounded by `_MAX_SHORTEST_PATHS`. Raises `nx.NetworkXNoPath` /
-    `nx.NodeNotFound` exactly like `nx.shortest_path`, so callers keep their
-    existing error handling. Returns `(path_nodes, n_routes, capped)`.
+    arbitrary route networkx happens to return first (#4881). A route through
+    a sourceless import hub (`_path_hub_penalty`) is preferred away from
+    first, since it is "shortest" by accident of degree rather than by
+    carrying any claim about the two endpoints (#5153); the weakest-hop rule
+    then still breaks any further tie among the remaining, equally
+    hub-free routes. Enumeration is bounded by `_MAX_SHORTEST_PATHS`. Raises
+    `nx.NetworkXNoPath` / `nx.NodeNotFound` exactly like `nx.shortest_path`,
+    so callers keep their existing error handling. Returns `(path_nodes,
+    n_routes, capped)`.
     """
     paths: list[list[str]] = []
     for p in nx.all_shortest_paths(search_graph, src_nid, tgt_nid):
@@ -2431,7 +2687,10 @@ def _weakest_shortest_path(search_graph: nx.Graph, G: nx.Graph, src_nid: str, tg
     capped = len(paths) > _MAX_SHORTEST_PATHS
     if capped:
         paths = paths[:_MAX_SHORTEST_PATHS]
-    chosen = min(paths, key=lambda p: _path_confidence_key(_path_hop_datas(G, p)))
+    chosen = min(
+        paths,
+        key=lambda p: (_path_hub_penalty(G, p), _path_confidence_key(_path_hop_datas(G, p))),
+    )
     return chosen, len(paths), capped
 
 
@@ -2716,6 +2975,11 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "demote_docs": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Rank source code above docs/config (default). Set false for a docs-first corpus so documents are not soft-demoted.",
+                        },
                     },
                     "required": ["question"],
                 },
@@ -2864,6 +3128,9 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        demote_docs = arguments.get("demote_docs", True)
+        if isinstance(demote_docs, str):
+            demote_docs = demote_docs.lower() not in ("false", "0", "no")
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -2873,6 +3140,7 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            demote_docs=demote_docs,
         )
         querylog.log_query(
             kind="mcp_query",
