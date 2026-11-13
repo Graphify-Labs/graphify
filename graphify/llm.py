@@ -1198,8 +1198,8 @@ def _json_object_candidates(text: str) -> list[int]:
     return preferred + rest
 
 
-def _json_fragment_candidates(text: str) -> "Iterator[str]":
-    """Yield candidate JSON texts from a model reply, most-likely first.
+def _json_fragment_candidates(text: str) -> "Iterator[tuple[str, int, int]]":
+    """Yield candidate JSON texts and source spans, most-likely first.
 
     Two sources, in order:
 
@@ -1215,14 +1215,15 @@ def _json_fragment_candidates(text: str) -> "Iterator[str]":
     handling did, cutting from the first ``` to the last — let a fence in the
     narration truncate the real answer before it was ever parsed (#2882).
     """
-    for _lang, body in sorted(
-        _FENCE_RE.findall(text), key=lambda b: b[0].strip().lower() not in ("json", "")
+    for match in sorted(
+        _FENCE_RE.finditer(text),
+        key=lambda m: m.group(1).strip().lower() not in ("json", ""),
     ):
-        yield body.strip()
+        yield match.group(2).strip(), match.start(2), match.end(2)
     for start in _json_object_candidates(text):
         blob = _balanced_object(text, start)
         if blob is not None:
-            yield blob
+            yield blob, start, start + len(blob)
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -1238,6 +1239,12 @@ def _parse_llm_json(raw: str) -> dict:
     extraction keys is kept only as a last resort — reasoning-first models
     routinely restate the schema (``{"description": "graph fragment"}``) before
     answering, and the narration must never shadow the answer that follows it.
+
+    Independent nonempty fragments are ambiguous: returning only the first
+    would cache missing content as complete, while merging could promote a
+    reasoning sketch to fact. Return empty so hollow retry handles the response.
+    Source spans exclude nested candidates; identical graph payloads discovered
+    more than once are one answer, not ambiguity.
     """
     if len(raw) > _LLM_JSON_MAX_BYTES:
         print(
@@ -1253,9 +1260,12 @@ def _parse_llm_json(raw: str) -> dict:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
             return _sanitize_fragment(parsed)
-        # Top-level array/scalar (common LLM output) is not a usable graph
-        # fragment; fall through rather than returning a non-dict that callers
-        # will try to subscript (e.g. result["input_tokens"]).
+        if isinstance(parsed, list):
+            print(
+                "[graphify] LLM returned an array instead of one graph fragment; "
+                "refusing to accept only its first object.", file=sys.stderr,
+            )
+            return {"nodes": [], "edges": [], "hyperedges": []}
     except json.JSONDecodeError:
         pass
 
@@ -1266,11 +1276,23 @@ def _parse_llm_json(raw: str) -> dict:
     # object would (#2882).
     empty_fragment: dict | None = None   # right shape, nothing in it
     fallback: dict | None = None         # parses, but not a fragment at all
-    for candidate in _json_fragment_candidates(stripped):
+    content: list[tuple[dict, int, int]] = []
+    for candidate, start, end in _json_fragment_candidates(stripped):
+        if any(left <= start and end <= right for _, left, right in content):
+            continue
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError:
             continue
+        if isinstance(parsed, list) and any(
+            isinstance(item, dict) and any(_sanitize_fragment(item).get(k) for k in _FRAGMENT_KEYS)
+            for item in parsed
+        ):
+            print(
+                "[graphify] LLM returned an array of graph fragments; "
+                "refusing to accept only its first object.", file=sys.stderr,
+            )
+            return {"nodes": [], "edges": [], "hyperedges": []}
         if not isinstance(parsed, dict):
             continue
         if any(k in parsed for k in _FRAGMENT_KEYS):
@@ -1283,11 +1305,28 @@ def _parse_llm_json(raw: str) -> dict:
             # empty-fragment tier so the genuine fragment below still wins.
             cand = _sanitize_fragment(parsed)
             if any(cand.get(k) for k in _FRAGMENT_KEYS):
-                return cand
+                content.append((cand, start, end))
+                continue
             if empty_fragment is None:
                 empty_fragment = cand
         elif fallback is None:
             fallback = parsed
+
+    distinct: dict[str, dict] = {}
+    for cand, start, end in content:
+        if any(left <= start and end <= right and (left, right) != (start, end)
+               for _, left, right in content):
+            continue
+        signature = json.dumps({k: cand.get(k, []) for k in _FRAGMENT_KEYS}, sort_keys=True)
+        distinct.setdefault(signature, cand)
+    if len(distinct) > 1:
+        print(
+            "[graphify] LLM returned multiple independent graph fragments; "
+            "refusing to cache only the first as a complete extraction.", file=sys.stderr,
+        )
+        return {"nodes": [], "edges": [], "hyperedges": []}
+    if distinct:
+        return next(iter(distinct.values()))
 
     # A genuinely empty extraction is still a valid answer, and still reads as
     # hollow downstream, so it outranks an object that is not a fragment at all.

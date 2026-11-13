@@ -55,6 +55,16 @@ Always pass `root`. Node ids and `source_file` values are derived relative to it
 
 ## Extraction output schema
 
+Semantic response recovery requires one authoritative graph fragment. Multiple
+independent nonempty candidates or a top-level array enter hollow-response retry;
+exhausted retries leave the files partial and uncached. Nested candidates and
+repeated identical graph payloads do not create ambiguity. A complete top-level
+object remains authoritative, and recovery retains its bounded candidate scan.
+Older semantic cache entries cannot reveal whether their response contained
+discarded fragments. Regenerate affected cached output with
+`graphify extract <root> --force`; this bypasses the semantic cache read and
+replaces its entries with the new extraction.
+
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
 prefixed declarations share the same package identity; foreign namespaces and
