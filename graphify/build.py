@@ -2616,6 +2616,18 @@ def _tier_replacement_sources(
             if norm:
                 new_sem_sources.add(norm)
 
+    # Failure metadata overrides dispatch provenance, including an explicit
+    # ast_sources argument from a caller using the older extraction contract.
+    # Match identity as well as spelling so relative/absolute paths agree.
+    failure_root = str(root) if root is not None else None
+    failed_ast = {
+        _abs_identity(str(sf), failure_root)
+        for ch in chunks if isinstance(ch, dict)
+        for sf in (ch.get("failed_sources") or []) if sf
+    }
+    new_ast_sources = {
+        sf for sf in new_ast_sources if _abs_identity(sf, failure_root) not in failed_ast
+    }
     return new_ast_sources, new_sem_sources
 
 

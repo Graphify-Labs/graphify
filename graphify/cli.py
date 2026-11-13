@@ -5500,6 +5500,7 @@ def dispatch_command(cmd: str) -> None:
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
             "extracted_sources": list(ast_result.get("extracted_sources", [])),
+            "failed_sources": list(ast_result.get("failed_sources", [])),
         }
 
         graph_json_path = graphify_out / "graph.json"
@@ -5515,6 +5516,14 @@ def dispatch_command(cmd: str) -> None:
         # #2543: also drop AST sources that failed (missing optional extra /
         # zero-node anomaly) so they are not frozen as up-to-date.
         _failed_ast_sources = list(ast_result.get("failed_sources") or [])
+        if _failed_ast_sources:
+            _extraction_incomplete = True
+            print(
+                f"[graphify extract] AST extraction incomplete for "
+                f"{len(_failed_ast_sources)} source(s); failed sources will not "
+                "replace saved AST records and remain pending for retry.",
+                file=sys.stderr,
+            )
         # #2879: code files the extractor declined by design this run. They ARE
         # stamped (not failures) but have zero nodes, so the manifest marks the
         # emptiness intentional and the #2543 heal stops re-queuing them.

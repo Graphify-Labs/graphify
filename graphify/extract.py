@@ -11689,6 +11689,9 @@ def extract(
             if _key not in _failed_seen:
                 _failed_sources.append(_key)
                 _failed_seen.add(_key)
+            # Do not let a failed producer's partial payload overwrite saved
+            # definitions later when the successful files are merged.
+            per_file[i] = {"nodes": [], "edges": [], "error": _res["error"]}
             continue
         if _res.get("skipped"):
             # The extractor declined this file by design (data JSON, #1224), so
@@ -13521,10 +13524,10 @@ def extract(
         # failure) so the manifest can mark the emptiness intentional and the
         # #2543 heal stops re-queuing them every incremental (#2879).
         "skipped_sources": _skipped_sources,
-        # Surfaces the actual dispatched source paths so build_merge /
-        # merge_raw_extraction know which files were genuinely re-extracted
-        # rather than guessing ownership from node["source_file"] (#3411).
-        "extracted_sources": [str(p) for p in paths],
+        # Successful extraction (including deliberate declines) authorizes
+        # replacement. A failed source must keep its last good contribution,
+        # not turn a dispatch attempt into permission to delete it (#3411).
+        "extracted_sources": [str(p) for p in paths if str(p) not in _failed_seen],
     }
 
 
