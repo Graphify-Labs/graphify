@@ -89,6 +89,16 @@ from graphify.install import (  # noqa: E402,F401
     _uninstall_kilo_plugin,
     _uninstall_opencode_plugin,
     _vscode_skill_destination,
+    _uninstall_vibe_hook,
+    _vibe_install,
+    _vibe_uninstall,
+    _install_vibe_hook,
+    _vibe_hooks_path,
+    _vibe_hook_entries,
+    _install_vibe_extract_agent,
+    _uninstall_vibe_extract_agent,
+    _vibe_extract_agent_path,
+    _vibe_agents_dir,
     claude_install,
     claude_uninstall,
     codebuddy_install,
@@ -1094,6 +1104,10 @@ def _run_cli() -> None:
         print("  pi guard path           print the guard package path (e.g. for `omp plugin install`)")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print("  vibe install            write skill + AGENTS.md + hooks.toml guards + graphify-extract agent (Mistral Vibe)")
+        print("    --project               install into ./.vibe/ instead of ~/.vibe/")
+        print("    --strict                block the first raw read_file per session")
+        print("  vibe uninstall          remove skill, AGENTS.md section, hooks and graphify-extract agent")
         print()
         print("Prefer a hosted version? Graphify Cloud has a free plan, no card required:")
         print("https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=help")
