@@ -275,6 +275,9 @@ def test_corpus_parallel_continues_after_chunk_failure(tmp_path, capsys):
 
     # 4 chunks dispatched, 1 failed → 3 chunks contributed nodes
     assert len(result["nodes"]) == 3
+    assert result["chunks_total"] == 4
+    assert result["failed_chunks"] == 1
+    assert result["chunk_errors"] == ["simulated API error"]
     err = capsys.readouterr().err
     assert "failed" in err and "simulated API error" in err
 
@@ -459,6 +462,8 @@ def test_files_of_a_failed_chunk_are_not_reported_as_model_omissions(
         )
 
     assert result["failed_chunks"] == 1
+    assert result["chunks_total"] == 3
+    assert result["chunk_errors"] == ["OpenAI package not installed."]
     assert {Path(p).name for p in result["uncovered_files"]} == {"failed.md", "omitted.md"}
     lines = [line for line in capsys.readouterr().err.splitlines() if "produced no nodes" in line]
     failed_lines = [line for line in lines if "failed.md" in line]
@@ -693,6 +698,55 @@ def test_checkpoint_caches_sliced_document_chunks(tmp_path, capsys):
     assert cached and any(n["id"] == "big_title" for n in cached["nodes"]), (
         "sliced document was never checkpointed (#1870)"
     )
+
+
+@pytest.mark.parametrize("max_concurrency", [1, 4])
+def test_failed_slice_keeps_checkpoint_partial_and_run_diagnostics_ordered(
+    tmp_path, max_concurrency,
+):
+    import threading
+
+    from graphify import llm
+    from graphify.cache import check_semantic_cache
+
+    doc = tmp_path / "big.md"
+    doc.write_text("word " * llm._FILE_CHAR_CAP, encoding="utf-8")
+    units = llm.expand_oversized_files([doc], llm._FILE_CHAR_CAP)
+    assert len(units) > 2
+    assert all(isinstance(unit, llm.FileSlice) for unit in units)
+    second_failed = threading.Event()
+
+    def endpoint(chunk, **kwargs):
+        unit = chunk[0]
+        if unit.index == 0:
+            if max_concurrency > 1:
+                assert second_failed.wait(timeout=5)
+            raise RuntimeError("slice 0 failed")
+        if unit.index == 1:
+            second_failed.set()
+            raise RuntimeError("slice 1 failed")
+        return {
+            "nodes": [{"id": f"slice_{unit.index}", "source_file": str(doc),
+                       "source_location": "L1"}],
+            "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1,
+        }
+
+    with patch.object(llm, "extract_files_direct", side_effect=endpoint):
+        result = llm.extract_corpus_parallel(
+            [doc], backend="openai", root=tmp_path, cache_root=tmp_path / "out",
+            token_budget=None, chunk_size=1, max_concurrency=max_concurrency,
+            max_retry_depth=0,
+        )
+
+    assert str(doc) in llm._partial_source_files(result)
+    *_, missing = check_semantic_cache(
+        [str(doc)], root=tmp_path, cache_root=tmp_path / "out",
+        prompt=llm._extraction_system(),
+    )
+    assert missing == [str(doc)]
+    assert result["failed_chunks"] == 2
+    assert result["chunks_total"] == len(units)
+    assert result["chunk_errors"] == ["slice 0 failed", "slice 1 failed"]
 
 
 def test_corpus_parallel_legacy_mode_when_token_budget_is_none(tmp_path):

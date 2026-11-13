@@ -1,6 +1,7 @@
 """Tests for `graphify extract` CLI dispatch path in graphify.__main__."""
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -286,6 +287,15 @@ def test_extract_exits_nonzero_when_all_semantic_chunks_fail(
     assert not (out_dir / "graphify-out" / "graph.json").exists(), (
         "graph.json must not be written when semantic extraction fails"
     )
+    status = json.loads(
+        (out_dir / "graphify-out" / "last_run.json").read_text(encoding="utf-8")
+    )
+    assert status["ok"] is False
+    assert status["exit_code"] == 1
+    assert status["incomplete"] is True
+    assert status["chunks_total"] == 1
+    assert status["chunks_failed"] == 1
+    assert "all semantic chunks failed" in status["error"]
 
 
 def test_extract_succeeds_when_at_least_one_chunk_completes(
@@ -735,6 +745,17 @@ def test_extract_force_flag_redispatches_and_stamps_manifest(monkeypatch, tmp_pa
         "--force over a warm tree must re-dispatch every semantic file"
     )
     assert calls[1]["paths"] == [str(corpus / "README.md")]
+
+    # The upstream force/cache path and the run-status finalizer must coexist:
+    # a warm-cache override still records the actual code and semantic dispatch.
+    status = json.loads(
+        (corpus / "graphify-out" / "last_run.json").read_text(encoding="utf-8")
+    )
+    assert status["ok"] is True
+    assert status["wrote_graph"] is True
+    assert status["files_dispatched"] == 2
+    assert status["chunks_total"] == 1
+    assert status["chunks_failed"] == 0
 
     # The forced run still wrote the semantic cache and stamped the manifest.
     # Entries nest under a p{prompt-fingerprint}/ subdir (#1939).
@@ -1839,3 +1860,231 @@ def test_incremental_stray_attribution_preserves_undispatched_file(
     assert "phantom_ts" not in ids, (
         f"stray attributed to a nonexistent path became a phantom node: {ids}"
     )
+
+
+@pytest.fixture
+def status_accuracy_cli(monkeypatch):
+    """Use the real CLI/corpus/cache stack without credentials or model calls."""
+    for name in (
+        "GRAPHIFY_FORCE", "GRAPHIFY_NO_INCREMENTAL_CACHE",
+        "GRAPHIFY_MAX_RETRY_DEPTH", "GRAPHIFY_OLLAMA_PARALLEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    def run(corpus, *flags):
+        monkeypatch.setattr(mainmod.sys, "argv", [
+            "graphify", "extract", str(corpus), "--backend", "ollama",
+            "--no-dedup", "--out", str(corpus.parent / "out"), *flags,
+        ])
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            return exc.code
+        return 0
+
+    return run
+
+
+@pytest.mark.parametrize("no_cluster", [False, True])
+@pytest.mark.parametrize("growth,allow_partial", [
+    (True, False), (True, True), (False, True), (False, False),
+])
+def test_status_unverified_shrink_independent_of_write_permission(
+    monkeypatch, tmp_path, status_accuracy_cli, no_cluster, growth, allow_partial,
+):
+    """A permitted write must still report the source-specific coverage anomaly."""
+    import graphify.llm as llm
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for name in ("a.md", "b.md"):
+        (corpus / name).write_text(f"# {name}\nInitial text\n", encoding="utf-8")
+    counts = {"a.md": 6, "b.md": 3}
+    dispatched = []
+
+    def endpoint(chunk, **kwargs):
+        dispatched.extend(path.name for path in chunk)
+        return {
+            "nodes": [
+                {"id": f"{path.stem}_{i}", "label": f"{path.stem} topic {i}",
+                 "source_file": path.name, "file_type": "document"}
+                for path in chunk for i in range(counts[path.name])
+            ],
+            "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1,
+        }
+
+    monkeypatch.setattr(llm, "extract_files_direct", endpoint)
+    flags = ["--no-cluster"] if no_cluster else []
+    assert status_accuracy_cli(corpus, *flags) == 0
+    out = tmp_path / "out" / "graphify-out"
+    before = (out / "graph.json").read_bytes()
+    manifest_before = (out / "manifest.json").read_bytes()
+    assert len(json.loads(before)["nodes"]) == 9
+
+    counts["a.md"] = 2
+    (corpus / "a.md").write_text("# A\nChanged text\n", encoding="utf-8")
+    if growth:
+        counts["b.md"] = 20
+        (corpus / "b.md").write_text("# B\nMore text\n", encoding="utf-8")
+    dispatched.clear()
+    if allow_partial:
+        flags.append("--allow-partial")
+    code = status_accuracy_cli(corpus, *flags)
+    # Clustered export also protects saved semantic IDs, even with total growth.
+    wrote = allow_partial or (growth and no_cluster)
+    assert code == (0 if wrote else 1)
+    assert sorted(dispatched) == (["a.md", "b.md"] if growth else ["a.md"])
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert len(graph["nodes"]) == ((22 if growth else 5) if wrote else 9)
+    if not wrote:
+        assert (out / "graph.json").read_bytes() == before
+        assert (out / "manifest.json").read_bytes() == manifest_before
+    else:
+        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        assert bool(manifest["a.md"]["semantic_hash"]) is allow_partial
+
+    status = json.loads((out / "last_run.json").read_text(encoding="utf-8"))
+    assert status["incomplete"] is True
+    assert status["ok"] is False
+    assert status["exit_code"] == code
+    assert status["wrote_graph"] is wrote
+    assert status["nodes_existing"] == 9
+    assert status["unverified_semantic_sources"] == ["a.md"]
+    assert status["chunks_failed"] == 0
+    if wrote:
+        assert status["nodes_written"] == len(graph["nodes"])
+        assert status["refused_reason"] is None
+
+
+def test_status_exclusion_only_prune_and_unchanged_run(
+    tmp_path, status_accuracy_cli,
+):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for name in ("x.py", "keep.py"):
+        (corpus / name).write_text("def kept(): return 1\n", encoding="utf-8")
+    assert status_accuracy_cli(corpus, "--code-only", "--no-cluster") == 0
+    out = tmp_path / "out" / "graphify-out"
+    before = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+
+    (corpus / ".graphifyignore").write_text("x.py\n", encoding="utf-8")
+    assert status_accuracy_cli(corpus, "--code-only", "--no-cluster") == 0
+    graph_bytes = (out / "graph.json").read_bytes()
+    graph = json.loads(graph_bytes)
+    assert {n["source_file"] for n in graph["nodes"]} == {"keep.py"}
+    assert len(graph["nodes"]) < len(before["nodes"])
+    status = json.loads((out / "last_run.json").read_text(encoding="utf-8"))
+    assert status["wrote_graph"] is True
+    assert status["nodes_existing"] == len(before["nodes"])
+    assert status["nodes_written"] == len(graph["nodes"])
+    assert status["ok"] is True
+    assert status["files_dispatched"] == 0
+
+    assert status_accuracy_cli(corpus, "--code-only", "--no-cluster") == 0
+    assert (out / "graph.json").read_bytes() == graph_bytes
+    status = json.loads((out / "last_run.json").read_text(encoding="utf-8"))
+    assert status["wrote_graph"] is False
+    assert status["nodes_written"] is None
+    assert status["nodes_existing"] == len(graph["nodes"])
+    assert status["ok"] is True
+
+
+@pytest.mark.parametrize("extra_cli_drop", [False, True])
+@pytest.mark.parametrize("no_cluster", [False, True])
+def test_status_preserves_library_scope_drops(
+    monkeypatch, tmp_path, status_accuracy_cli, extra_cli_drop, no_cluster,
+):
+    import graphify.llm as llm
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.md").write_text("# A\nValid content\n", encoding="utf-8")
+    (corpus / "stray.py").write_text("def ignored(): pass\n", encoding="utf-8")
+    (corpus / ".graphifyignore").write_text("stray.py\n", encoding="utf-8")
+    library_results = []
+    real_extract = llm.extract_corpus_parallel
+
+    def capture(*args, **kwargs):
+        result = real_extract(*args, **kwargs)
+        library_results.append({
+            "dropped": result["out_of_scope_dropped"],
+            "uncovered": list(result["uncovered_files"]),
+        })
+        return result
+
+    def endpoint(chunk, **kwargs):
+        assert [p.name for p in chunk] == ["a.md"]
+        nodes = [{"id": "a", "label": "A", "source_file": "a.md",
+                  "file_type": "document"}]
+        edges, hyperedges = [], []
+        sources = ["stray.py"] + (["imaginary.md"] if extra_cli_drop else [])
+        for i, source in enumerate(sources):
+            node_id = f"stray_{i}"
+            nodes.append({"id": node_id, "label": node_id,
+                          "source_file": source, "file_type": "document"})
+            edges.append({"source": "a", "target": node_id, "relation": "uses",
+                          "confidence": "EXTRACTED", "source_file": "a.md"})
+            hyperedges.append({"id": f"h{i}", "nodes": ["a", node_id],
+                               "source_file": "a.md"})
+        return {"nodes": nodes, "edges": edges, "hyperedges": hyperedges,
+                "input_tokens": 1, "output_tokens": 1}
+
+    monkeypatch.setattr(llm, "extract_corpus_parallel", capture)
+    monkeypatch.setattr(llm, "extract_files_direct", endpoint)
+    flags = ["--no-cluster"] if no_cluster else []
+    assert status_accuracy_cli(corpus, *flags) == 0
+    assert library_results == [{"dropped": 1, "uncovered": []}]
+    out = tmp_path / "out" / "graphify-out"
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert [n["id"] for n in graph["nodes"]] == ["a"]
+    assert not graph.get("links", graph.get("edges"))
+    assert not graph.get("hyperedges")
+    assert not any(k.startswith("out_of_scope_") for k in graph)
+    status = json.loads((out / "last_run.json").read_text(encoding="utf-8"))
+    assert status["dropped_items"] == (6 if extra_cli_drop else 3)
+    assert status["dropped"] == sorted(
+        ["stray.py"] + (["imaginary.md"] if extra_cli_drop else [])
+    )
+    assert status["incomplete"] is True
+    assert status["ok"] is False
+    assert status["exit_code"] == 0
+    assert status["wrote_graph"] is True
+    assert status["files_with_no_nodes"] == []
+    assert status["chunks_failed"] == 0
+
+    # Diagnostics describe this invocation, not the preceding filtered result.
+    assert status_accuracy_cli(corpus, *flags) == 0
+    assert len(library_results) == 1  # the unchanged corpus needs no new model call
+    status = json.loads((out / "last_run.json").read_text(encoding="utf-8"))
+    assert status["dropped_items"] == 0
+    assert status["dropped"] == []
+    assert status["incomplete"] is False
+    assert status["ok"] is True
+
+
+@pytest.mark.parametrize("bucket", ["edges", "hyperedges"])
+def test_status_prune_relationship_only_write(monkeypatch, tmp_path, bucket):
+    """The real prune writer can change a graph while returning zero removed nodes."""
+    import graphify.cli as cli
+
+    graph_path = tmp_path / "graph.json"
+    graph = {"nodes": [{"id": "a", "source_file": "keep.py"}],
+             "edges": [], "hyperedges": []}
+    if bucket == "edges":
+        graph[bucket] = [{"source": "a", "target": "a", "source_file": "gone.py"}]
+    else:
+        graph[bucket] = [{"id": "h", "nodes": ["a"], "source_file": "gone.py"}]
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    status = cli._ExtractRunStatus(tmp_path / "last_run.json")
+    status.start(tmp_path)
+    monkeypatch.setattr(cli, "_ACTIVE_EXTRACT_STATUS", status)
+    assert cli._prune_graph_json_sources(graph_path, ["gone.py"]) == 0
+    status.finish(0)
+
+    assert json.loads(graph_path.read_text(encoding="utf-8"))[bucket] == []
+    recorded = json.loads((tmp_path / "last_run.json").read_text(encoding="utf-8"))
+    assert recorded["wrote_graph"] is True
+    assert recorded["nodes_existing"] == recorded["nodes_written"] == 1
+    assert recorded["ok"] is True

@@ -2876,8 +2876,12 @@ def extract_corpus_parallel(
         "nodes": [], "edges": [], "hyperedges": [],
         "input_tokens": 0, "output_tokens": 0,
         "failed_chunks": 0,  # count of chunks that raised — loud failure on chunk errors
+        "chunks_total": 0,
+        "chunk_errors": [],
     }
     total = len(chunks)
+    merged["chunks_total"] = total
+    chunk_errors_by_idx: dict[int, str] = {}
     # Files whose chunk raised before returning a response. The #1890
     # reconciliation below must not describe them as omitted by the model (#3616).
     failed_files: set[Path] = set()
@@ -3009,6 +3013,7 @@ def extract_corpus_parallel(
             if exc is not None:
                 print(f"[graphify] chunk {idx + 1}/{total} failed: {exc}", file=sys.stderr)
                 merged["failed_chunks"] += 1
+                chunk_errors_by_idx[idx] = str(exc)[:2000]
                 failed_files.update(unit_path(f) for f in chunk)
                 continue
             assert result is not None
@@ -3035,6 +3040,7 @@ def extract_corpus_parallel(
                         file=sys.stderr,
                     )
                     merged["failed_chunks"] += 1
+                    chunk_errors_by_idx[idx] = str(exc)[:2000]
                     failed_files.update(unit_path(f) for f in chunks[idx])
                     continue
                 assert result is not None
@@ -3059,6 +3065,12 @@ def extract_corpus_parallel(
         merged["_partial_files"] = sorted(
             set(merged.get("_partial_files", []) or []) | {str(p) for p in partial_parents}
         )
+
+    # Keep diagnostics stable when concurrent requests finish in a different
+    # order. This preserves reproducible run-status artifacts and API results.
+    merged["chunk_errors"] = [
+        chunk_errors_by_idx[idx] for idx in sorted(chunk_errors_by_idx)
+    ]
 
     # Loud failure summary — surface chunk failures at end so they're never
     # buried mid-log. Exit 0 preserved for caller compatibility; the
@@ -3104,6 +3116,8 @@ def extract_corpus_parallel(
         p = _resolve_against_root(sf)
         return p.is_file() and p not in _dispatched_resolved
 
+    _scope_buckets = ("nodes", "edges", "hyperedges")
+    _scope_items_before = sum(len(merged[k]) for k in _scope_buckets)
     dropped_ids: set = set()
     dropped_files: set[str] = set()
     kept_nodes: list[dict] = []
@@ -3151,6 +3165,13 @@ def extract_corpus_parallel(
             "excluded from the graph (#1895).",
             file=sys.stderr,
         )
+
+    # Keep diagnostics for callers that apply an additional scope filter later.
+    # out_of_scope_dropped retains its existing node-only API contract.
+    merged["out_of_scope_dropped_items"] = (
+        _scope_items_before - sum(len(merged[k]) for k in _scope_buckets)
+    )
+    merged["out_of_scope_dropped_files"] = sorted(dropped_files)
 
     covered: set[Path] = set()
     for n in merged.get("nodes", []):
