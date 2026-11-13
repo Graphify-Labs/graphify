@@ -287,3 +287,47 @@ def test_bare_call_skips_an_explicit_implementation_declared_first(tmp_path):
     assert (explicit["id"], two_args) in calls
     assert (one_arg, two_args) in calls
     assert not _calls_into(r, explicit["id"])
+
+
+def test_explicit_and_implicit_overloads_of_one_interface_both_dispatch(tmp_path):
+    # One overload implemented explicitly, the other by a public method.
+    src = """namespace Demo
+{
+    public interface IA
+    {
+        int Get();
+        int Get(int a);
+    }
+    public class Service : IA
+    {
+        int IA.Get() { return 0; }
+        public int Get(int a) { return a; }
+    }
+}
+"""
+    r = _extract(tmp_path, {"Service.cs": src})
+    iface = {n["source_location"]: n["id"] for n in _public(r, "Get") if n["source_location"] in ("L5", "L6")}
+    [explicit] = _explicit(r, "Get")
+    [public] = [n["id"] for n in _public(r, "Get") if n["source_location"] == "L11"]
+    dispatch = _edges(r, "dispatches_to")
+    assert (iface["L5"], explicit["id"]) in dispatch
+    assert (iface["L6"], public) in dispatch
+
+
+def test_public_method_keeps_the_plain_id_after_an_explicit_one(tmp_path):
+    # Declaration order must not decide the ordinary method's id.
+    first = """namespace Demo
+{
+    public interface INative { int Get(int a); }
+    public class Service : INative
+    {
+        int INative.Get(int a) => this.Get(a);
+        public int Get(int a) { return a; }
+    }
+}
+"""
+    r = _extract(tmp_path, {"Service.cs": first})
+    [public] = [n for n in _public(r, "Get") if n["source_location"] == "L7"]
+    [explicit] = _explicit(r, "Get")
+    assert public["id"].endswith("service_get")
+    assert not explicit["id"].endswith("service_get")

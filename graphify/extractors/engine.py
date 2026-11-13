@@ -9280,7 +9280,11 @@ def _extract_generic(
                     line,
                     metadata=method_metadata,
                 )
+                # An explicit implementation is never a peer of the ordinary
+                # overloads, and kept out of the group it cannot push a later
+                # ordinary method of the same signature onto a salted id.
                 if (config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration"
+                        and explicit is None
                         and csharp_group_key not in group and nodes and nodes[-1]["id"] == func_nid):
                     group[csharp_group_key] = nodes[-1]
                 add_edge(parent_class_nid, func_nid, "method", line)
