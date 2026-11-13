@@ -1261,6 +1261,15 @@ def _parse_llm_json(raw: str) -> dict:
         if isinstance(parsed, dict):
             return _sanitize_fragment(parsed)
         if isinstance(parsed, list):
+            frags = [
+                item for item in parsed
+                if isinstance(item, dict)
+                and any(_sanitize_fragment(item).get(k) for k in _FRAGMENT_KEYS)
+            ]
+            # A single-element array wrapping one valid fragment is unambiguous;
+            # unwrap it. Zero or two-plus fragments are refused (fail closed).
+            if len(frags) == 1:
+                return _sanitize_fragment(frags[0])
             print(
                 "[graphify] LLM returned an array instead of one graph fragment; "
                 "refusing to accept only its first object.", file=sys.stderr,
@@ -1284,15 +1293,23 @@ def _parse_llm_json(raw: str) -> dict:
             parsed = json.loads(candidate)
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, list) and any(
-            isinstance(item, dict) and any(_sanitize_fragment(item).get(k) for k in _FRAGMENT_KEYS)
-            for item in parsed
-        ):
-            print(
-                "[graphify] LLM returned an array of graph fragments; "
-                "refusing to accept only its first object.", file=sys.stderr,
-            )
-            return {"nodes": [], "edges": [], "hyperedges": []}
+        if isinstance(parsed, list):
+            frags = [
+                item for item in parsed
+                if isinstance(item, dict)
+                and any(_sanitize_fragment(item).get(k) for k in _FRAGMENT_KEYS)
+            ]
+            if len(frags) > 1:
+                print(
+                    "[graphify] LLM returned an array of graph fragments; "
+                    "refusing to accept only its first object.", file=sys.stderr,
+                )
+                return {"nodes": [], "edges": [], "hyperedges": []}
+            # A single-element array wrapping one valid fragment is unambiguous;
+            # unwrap and process it as that object. An array with no fragment
+            # falls through to the non-dict guard below, which skips it.
+            if len(frags) == 1:
+                parsed = frags[0]
         if not isinstance(parsed, dict):
             continue
         if any(k in parsed for k in _FRAGMENT_KEYS):

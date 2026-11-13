@@ -46,6 +46,16 @@ def test_duplicate_discovery_of_one_fragment_is_not_ambiguity(raw):
     assert llm._parse_llm_json(raw) == FIRST
 
 
+@pytest.mark.parametrize("raw", [
+    json.dumps([FIRST]),
+    "```json\n" + json.dumps([FIRST]) + "\n```",
+])
+def test_single_element_array_with_one_valid_fragment_is_accepted(raw):
+    # A model that wraps its one answer in a single-element array is
+    # unambiguous; unwrap it rather than fail-closed into an endless retry.
+    assert llm._parse_llm_json(raw) == FIRST
+
+
 def test_nested_graph_shaped_metadata_is_not_an_independent_answer():
     outer = {"nodes": [{"id": "outer", "metadata": {"nodes": [{"id": "inner"}]}}],
              "edges": [], "hyperedges": []}
