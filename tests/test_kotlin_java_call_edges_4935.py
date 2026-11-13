@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from graphify.extract import extract
 
 LOGGER_JAVA = """\
@@ -81,14 +83,31 @@ def test_a_property_initializer_call_still_resolves(tmp_path: Path) -> None:
     assert ("Holder:Holder", "Logger:.single()") in edges
 
 
-def test_two_classes_with_the_same_name_stay_ambiguous(tmp_path: Path) -> None:
-    edges = _calls(tmp_path, {
+@pytest.mark.parametrize("imported", [False, True])
+def test_same_named_classes_need_explicit_import_to_disambiguate(tmp_path: Path, imported: bool) -> None:
+    files = {
         "a/Dup.java": "package a;\npublic class Dup { public static void ping() {} }\n",
         "b/Dup.java": "package b;\npublic class Dup { public static void ping() {} }\n",
-        "app/Caller.kt": "package app\nimport a.Dup\n"
-                         "class Caller { fun go() { Dup.ping() } }\n",
-    })
-    assert not {e for e in edges if e[0].startswith("Caller")}
+        "app/Caller.kt": "package app\n" + ("import a.Dup\n" if imported else "")
+                         + "class Caller { fun go() { Dup.ping() } }\n",
+    }
+    paths = []
+    for name, body in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        paths.append(path)
+    result = extract(paths, root=tmp_path, cache_root=tmp_path / "cache", parallel=False)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    targets = {
+        e["target"] for e in result["edges"]
+        if e["relation"] == "calls" and nodes[e["source"]]["label"] == ".go()"
+    }
+    expected = {
+        n["id"] for n in result["nodes"]
+        if n["label"] == ".ping()" and n["source_file"] == "a/Dup.java"
+    } if imported else set()
+    assert targets == expected
 
 
 def test_inherited_in_repo_members_still_resolve(tmp_path: Path) -> None:
