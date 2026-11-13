@@ -33,6 +33,20 @@ def is_csharp_constructor_node(node: dict) -> bool:
     )
 
 
+def is_csharp_explicit_interface_node(node: dict) -> bool:
+    """A C# explicit interface implementation (``int IA.Get()``).
+
+    It is reachable only through the interface, so the name-keyed call indexes
+    leave it out; the interface member reaches it by dispatch.
+    """
+    metadata = node.get("metadata") or {}
+    return (
+        isinstance(metadata, dict)
+        and bool(metadata.get("explicit_interface"))
+        and effective_suffix(str(node.get("source_file") or "")) == ".cs"
+    )
+
+
 def _build_csharp_type_def_index(
     all_nodes: list[dict],
     all_edges: list[dict] | None = None,
