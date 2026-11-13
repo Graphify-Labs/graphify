@@ -43,7 +43,7 @@ from graphify.extractors.base import _read_source_text
 # addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
 _SPLITTABLE_TEXT_SUFFIXES = frozenset({
     ".md", ".mdx", ".markdown", ".txt", ".rst",
-    ".qmd", ".skill", ".html",
+    ".qmd", ".skill", ".adoc", ".asciidoc", ".html",
     ".j2", ".jinja", ".jinja2",
 })
 
