@@ -1742,6 +1742,74 @@ def _kotlin_member_nid(class_nid: str, member_node, name: str, source: bytes,
     return _underscore_salted_nid(_make_id(class_nid, name), name.strip("`"), groups)
 
 
+_SWIFT_TYPE_DECL_TYPES = ("class_declaration", "protocol_declaration")
+_SWIFT_TYPE_NAME_TYPES = ("simple_identifier", "type_identifier", "user_type")
+_SWIFT_MEMBER_CALLABLE_TYPES = ("function_declaration", "protocol_function_declaration")
+
+
+def _swift_type_decl_name(decl, source: bytes) -> str:
+    """The name the class branch reads for a Swift type or extension."""
+    name_node = decl.child_by_field_name("name")
+    if name_node is None:
+        name_node = next((c for c in decl.children if c.type in _SWIFT_TYPE_NAME_TYPES), None)
+    return _read_text(name_node, source) if name_node is not None else ""
+
+
+def _swift_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                      groups_cache: dict) -> str:
+    """Node id for a Swift method, salted when a sibling collides.
+
+    ``make_id`` drops a leading ``_`` and folds case, so ``_flatMap()`` /
+    ``flatMap()`` or ``run()`` / ``Run()`` of one type minted one id: the
+    second declaration vanished and its calls were credited to the survivor.
+    A type's id is its file stem plus its name, so its class body and every
+    ``extension`` of it in the file share that id; group the methods of all of
+    them by the id they would get, then apply ``_underscore_salted_nid``, the
+    Python/C#/Solidity/Java rule (#3302, #4415, #5058, #5151): a unique public
+    name keeps the plain id, every other colliding name is salted. Members
+    that collide with nothing keep their old id; overloads share one name, so
+    they are not a collision.
+    """
+    owner = member_node.parent
+    while owner is not None and owner.type not in _SWIFT_TYPE_DECL_TYPES:
+        owner = owner.parent
+    if owner is None:
+        return _make_id(class_nid, name)
+    owner_name = _swift_type_decl_name(owner, source)
+    key = (class_nid, owner_name)
+    groups = groups_cache.get(key)
+    if groups is None:
+        by_owner = groups_cache.get(None)
+        if by_owner is None:
+            # One pass over the file: method names under each type name.
+            by_owner = {}
+            root = owner
+            while root.parent is not None:
+                root = root.parent
+            stack = [(root, None)]
+            while stack:
+                n, decl = stack.pop()
+                if n.type in _SWIFT_MEMBER_CALLABLE_TYPES:
+                    name_node = n.child_by_field_name("name")
+                    if name_node is None:
+                        name_node = next(
+                            (c for c in n.children if c.type == "simple_identifier"), None)
+                    text = _read_text(name_node, source) if name_node is not None else ""
+                    if decl is not None and text and normalize_id(text):
+                        by_owner.setdefault(_swift_type_decl_name(decl, source), set()).add(text)
+                    continue
+                if n.type in _SWIFT_TYPE_DECL_TYPES:
+                    decl = n
+                stack.extend((c, decl) for c in n.children)
+            groups_cache[None] = by_owner
+        names: dict[str, set[str]] = {}
+        for text in by_owner.get(owner_name, ()):
+            names.setdefault(_make_id(class_nid, text), set()).add(text)
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    return _underscore_salted_nid(_make_id(class_nid, name), name, groups)
+
+
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
     """Pre-scan a Swift compilation unit and return (protocol_names, class_like_names)."""
     protocols: set[str] = set()
@@ -7333,6 +7401,8 @@ def _extract_generic(
     java_member_groups: dict = {}
     # Kotlin class body (with its companion object) -> method collision groups.
     kotlin_member_groups: dict = {}
+    # Swift type (class body and same-file extensions) -> method collision groups.
+    swift_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
@@ -9306,6 +9376,11 @@ def _extract_generic(
                 elif config.ts_module == "tree_sitter_kotlin" and t == "function_declaration":
                     func_nid = _kotlin_member_nid(
                         parent_class_nid, node, sanitized_name, source, kotlin_member_groups
+                    )
+                elif (config.ts_module == "tree_sitter_swift"
+                      and t in _SWIFT_MEMBER_CALLABLE_TYPES):
+                    func_nid = _swift_member_nid(
+                        parent_class_nid, node, sanitized_name, source, swift_member_groups
                     )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:

@@ -5536,13 +5536,26 @@ def _resolve_swift_member_calls(
 
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
     method_index: dict[tuple[str, str], str] = {}
+    # (type_node_id, exact name) -> method ids: the folded key joins `bar` /
+    # `_bar` / `Bar`, which are separate member nodes of one type.
+    exact_methods: dict[tuple[str, str], set[str]] = {}
     for e in all_edges:
         if e.get("relation") != "method":
             continue
         src, tgt = e.get("source"), e.get("target")
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(src, _key(tnode.get("label", "")))] = tgt
+            label = str(tnode.get("label", ""))
+            method_index[(src, _key(label))] = tgt
+            if src and tgt:
+                exact_methods.setdefault(
+                    (src, label.removesuffix("()").lstrip(".")), set()).add(tgt)
+
+    def _member(type_nid: str, name: str) -> str | None:
+        exact = exact_methods.get((type_nid, name), set())
+        if len(exact) == 1:
+            return next(iter(exact))
+        return method_index.get((type_nid, _key(name)))
 
     # #2561: pending factory bindings (`let x = Factory.make()`) are label-only —
     # resolve each against the factory method's marked plain return type
@@ -5580,7 +5593,7 @@ def _resolve_swift_member_calls(
                 factory_defs = type_def_nids.get(_key(factory_type), [])
                 if len(factory_defs) != 1:
                     continue
-                method_nid = method_index.get((factory_defs[0], _key(factory_method)))
+                method_nid = _member(factory_defs[0], factory_method)
                 if method_nid is None:
                     continue
                 targets = return_targets_by_method.get(method_nid, set())
@@ -5639,7 +5652,7 @@ def _resolve_swift_member_calls(
         if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
         type_nid = type_defs[0]
-        method_nid = method_index.get((type_nid, _key(callee)))
+        method_nid = _member(type_nid, callee)
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
         if target == caller or (caller, target) in existing_pairs:
