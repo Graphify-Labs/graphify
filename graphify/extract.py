@@ -65,6 +65,7 @@ from graphify.extractors.csharp import (
     _resolve_csharp_type_references,
     bare_csharp_method_labels_in_nodes,
     is_csharp_constructor_node,
+    is_csharp_explicit_interface_node,
 )
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
@@ -6846,6 +6847,7 @@ def _csharp_overload_index(nodes: list[dict], edges: list[dict]) -> dict:
             if e.get("relation") == "method"
             and "arity" in ((node_by_id.get(e.get("target")) or {}).get("metadata") or {})
             and not is_csharp_constructor_node(node_by_id.get(e.get("target")) or {})
+            and not is_csharp_explicit_interface_node(node_by_id.get(e.get("target")) or {})
         },
     }
 
@@ -6957,6 +6959,8 @@ def _resolve_csharp_member_calls(
         enclosing_type.setdefault(tgt, src)
         if is_csharp_constructor_node(tnode):
             continue  # owns its calls (enclosing_type), but is never `x.Name()`
+        if is_csharp_explicit_interface_node(tnode):
+            continue  # `int IA.Get()` owns its calls, but is reached only through IA
         if (tnode.get("metadata") or {}).get("kind") == "operator":
             continue  # `operator +` is never written as a call name
         # Overloads share a key: the first declared one stands for the name,
@@ -12664,8 +12668,9 @@ def extract(
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
-        # A C# constructor is named like its type but never called by name.
-        if is_csharp_constructor_node(n):
+        # A C# constructor is named like its type but never called by name;
+        # an explicit interface implementation is called only through the interface.
+        if is_csharp_constructor_node(n) or is_csharp_explicit_interface_node(n):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")

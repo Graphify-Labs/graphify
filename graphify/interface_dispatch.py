@@ -169,11 +169,14 @@ def resolve_interface_dispatch(
             continue
         score = _dispatch_confidence(len(gated_impls))
 
+        interface_name = method_label(interface_node).split("<", 1)[0].strip()
         for impl_nid, impl_node in gated_impls:
             impl_methods = methods_of.get(impl_nid, {})
             for name, declared in interface_methods.items():
                 for source, target in _overload_pairs(
-                    declared, impl_methods.get(name, set()), node_by_id
+                    declared,
+                    _implementing_members(impl_methods.get(name, set()), interface_name, node_by_id),
+                    node_by_id,
                 ):
                     if source == target or (source, target) in existing_pairs:
                         continue
@@ -191,6 +194,23 @@ def resolve_interface_dispatch(
                     })
 
     all_edges.extend(new_edges)
+
+
+def _implementing_members(candidates: set[str], interface_name: str, node_by_id: dict) -> set[str]:
+    """The implementer's members of one name that can implement this interface.
+
+    A C# explicit implementation (``int IA.Get()``) implements its own interface
+    and wins over a public ``Get()`` for it; it never implements another one.
+    Languages without explicit implementations see ``candidates`` unchanged.
+    """
+    def _explicit(nid: str) -> str | None:
+        meta = (node_by_id.get(nid) or {}).get("metadata")
+        return meta.get("explicit_interface") if isinstance(meta, dict) else None
+
+    own = {c for c in candidates if _explicit(c) == interface_name}
+    if own:
+        return own
+    return {c for c in candidates if not _explicit(c)}
 
 
 def _overload_pairs(

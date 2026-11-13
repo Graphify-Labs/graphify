@@ -198,6 +198,25 @@ def _csharp_type_name_for_id(node, class_name: str) -> str:
     return f"{class_name}`{arity}" if arity else class_name
 
 
+def _csharp_explicit_interface_name(specifier: str) -> str:
+    """The interface's simple name from an explicit-implementation specifier.
+
+    ``Ns.IStore<int>.`` -> ``IStore``: no namespace, no type arguments, the
+    spelling an interface declaration's label has.
+    """
+    text = specifier.strip().rstrip(".")
+    depth = 0
+    out: list[str] = []
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out).rsplit(".", 1)[-1].strip()
+
+
 def _csharp_method_signature(node, source: bytes, params=None) -> tuple[str, dict]:
     """A C# method's parameter signature and the argument counts it accepts.
 
@@ -9195,10 +9214,27 @@ def _extract_generic(
                         # The first declaration keeps the plain id; each other
                         # signature gets its own, salted like #3302/#4415.
                         csharp_sig, csharp_sig_meta = _csharp_method_signature(node, source)
+                        csharp_group_key = csharp_sig
+                        explicit = next((c for c in node.children
+                                         if c.type == "explicit_interface_specifier"), None)
+                        if explicit is not None:
+                            # `int IA.Get()` is reachable only through IA: never
+                            # the same member as a public `Get()` or `IB.Get()`
+                            # of the same signature, so it never shares their id
+                            # and always takes a salted one (the plain id stays
+                            # with the ordinary method). Like `IList<T>.this[]`.
+                            # The metadata `signature` stays the bare parameter
+                            # list: interface dispatch pairs overloads by it.
+                            explicit_text = "".join(_read_text(explicit, source).split())
+                            csharp_group_key = explicit_text + csharp_sig
+                            csharp_sig_meta = {
+                                **csharp_sig_meta,
+                                "explicit_interface": _csharp_explicit_interface_name(explicit_text),
+                            }
                         group = csharp_overloads.setdefault(func_nid, {})
-                        if group and csharp_sig not in group:
+                        if explicit is not None or (group and csharp_group_key not in group):
                             salt = hashlib.sha1(
-                                csharp_sig.encode("utf-8"), usedforsecurity=False
+                                csharp_group_key.encode("utf-8"), usedforsecurity=False
                             ).hexdigest()[:6]
                             func_nid = _make_id(func_nid, salt)
                 elif (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
@@ -9245,8 +9281,8 @@ def _extract_generic(
                     metadata=method_metadata,
                 )
                 if (config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration"
-                        and csharp_sig not in group and nodes and nodes[-1]["id"] == func_nid):
-                    group[csharp_sig] = nodes[-1]
+                        and csharp_group_key not in group and nodes and nodes[-1]["id"] == func_nid):
+                    group[csharp_group_key] = nodes[-1]
                 add_edge(parent_class_nid, func_nid, "method", line)
                 if config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration":
                     csharp_method_returns.setdefault(parent_class_nid, {}).setdefault(
@@ -10105,6 +10141,12 @@ def _extract_generic(
             (n.get("metadata") or {}).get("kind") == "constructor"
         ):
             continue
+        # An explicit interface implementation (`int IA.Get()`) is called only
+        # through the interface, never by its name on the class.
+        if config.ts_module == "tree_sitter_c_sharp" and (
+            (n.get("metadata") or {}).get("explicit_interface")
+        ):
+            continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
         if config.ts_module == "tree_sitter_lua":
@@ -10129,10 +10171,16 @@ def _extract_generic(
             label_to_nid_ci.setdefault(normalised.lower(), n["id"])
 
     # method nid -> its overloads (declaration order), for the call walk.
+    # Explicit interface implementations are not call targets by name, so
+    # they are no one's overload peer either.
+    _csharp_callable_groups = [
+        [p for p in group.values() if not (p.get("metadata") or {}).get("explicit_interface")]
+        for group in csharp_overloads.values()
+    ]
     csharp_overload_peers: dict[str, list[dict]] = {
-        peer["id"]: list(group.values())
-        for group in csharp_overloads.values() if len(group) > 1
-        for peer in group.values()
+        peer["id"]: peers
+        for peers in _csharp_callable_groups if len(peers) > 1
+        for peer in peers
     }
 
     seen_call_pairs: set[tuple[str, str]] = set()
@@ -10180,6 +10228,12 @@ def _extract_generic(
     js_factory_scope: dict[str, str] = {}
     if config.ts_module in _SELF_CALL_LANGUAGES or lexical_calls:
         label_by_nid = {n["id"]: n["label"] for n in nodes}
+        # A C# explicit interface implementation owns its calls but is never
+        # what an unqualified or `this.` call by that name means.
+        csharp_explicit_nids = {
+            n["id"] for n in nodes
+            if (n.get("metadata") or {}).get("explicit_interface")
+        } if config.ts_module == "tree_sitter_c_sharp" else set()
         for e in edges:
             if (
                 config.ts_module == "tree_sitter_c_sharp"
@@ -10195,7 +10249,8 @@ def _extract_generic(
                 name = label_by_nid.get(e["target"], "").strip("()").lstrip(".")
                 if config.ts_module == "tree_sitter_php":
                     name = name.casefold()
-                methods_by_owner.setdefault((e["source"], name), e["target"])
+                if e["target"] not in csharp_explicit_nids:
+                    methods_by_owner.setdefault((e["source"], name), e["target"])
             elif (
                 config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
                 and e["relation"] == "contains"
