@@ -6759,7 +6759,12 @@ def _resolve_cpp_member_calls(
             methods = exact_methods.get((type_nid, callee), set())
             method_nid = next(iter(methods)) if len(methods) == 1 else None
         else:
-            method_nid = method_index.get((type_nid, _key(callee)))
+            # The folded key joins `bar` / `_bar` / `bar_` / `Bar`, which are
+            # separate member nodes of one class: the exact spelling wins when
+            # the type has exactly one member so named.
+            methods = exact_methods.get((type_nid, callee), set())
+            method_nid = (next(iter(methods)) if len(methods) == 1
+                          else method_index.get((type_nid, _key(callee))))
         if method_nid is None:
             inherited_owner = type_lookup.member_owner(type_nid, callee, "method")
             if isinstance(inherited_owner, str) and inherited_owner != type_nid:

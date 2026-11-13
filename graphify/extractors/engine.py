@@ -1532,7 +1532,8 @@ def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) 
 
 
 def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]],
-                           private_prefixes: tuple[str, ...] = ("_",)) -> str:
+                           private_prefixes: tuple[str, ...] = ("_",),
+                           private_suffixes: tuple[str, ...] = ()) -> str:
     """Resolve a declaration's real node id against the collision map.
 
     Shared by the Python and C# pre-scans (#3302, #4415). A name with no
@@ -1547,11 +1548,14 @@ def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]
     the Go extractor uses for its own case-only collision (#2779).
     ``private_prefixes`` widens what counts as non-public: JS/TS also marks
     members private with ``$`` and ``#`` (#4475).
+    ``private_suffixes`` does the same for a trailing mark: C++ spells a
+    private member ``find_`` as often as ``_find``.
     """
     names = groups.get(plain_nid)
     if not names or len(names) < 2:
         return plain_nid
-    public = [n for n in names if not n.startswith(private_prefixes)]
+    public = [n for n in names
+              if not n.startswith(private_prefixes) and not n.endswith(private_suffixes)]
     if len(public) == 1 and name == public[0]:
         return plain_nid
     salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
@@ -1671,6 +1675,67 @@ def _java_member_nid(class_nid: str, member_node, name: str, source: bytes,
         groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
         groups_cache[key] = groups
     return _underscore_salted_nid(_make_id(class_nid, name), name, groups)
+
+
+_CPP_PRIVATE_MEMBER_PREFIXES = ("_", "~")
+_CPP_PRIVATE_MEMBER_SUFFIXES = ("_",)
+
+
+def _cpp_is_method_declarator(decl) -> bool:
+    return decl.type == "function_declarator" or (
+        decl.type in ("pointer_declarator", "reference_declarator")
+        and any(c.type == "function_declarator" for c in decl.children))
+
+
+def _cpp_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                    groups_cache: dict) -> str:
+    """Node id for a C++ member function, salted when a sibling collides.
+
+    ``make_id`` drops a leading or trailing ``_`` and ``~`` and folds case, so
+    ``find()`` / ``find_()``, ``_bar()`` / ``bar()``, ``Run()`` / ``run()`` and a
+    constructor ``Foo()`` / destructor ``~Foo()`` declared in one class body
+    minted one id: the second declaration vanished and its calls were credited
+    to the survivor. Group the member functions of the class body (the inline
+    definitions and the prototypes the walk turns into ``.name()`` nodes, also
+    under ``template``) by the id they would get, then apply
+    ``_underscore_salted_nid``, the Python/C#/Solidity/Java rule (#3302, #4415,
+    #5058, #5151): a unique public name keeps the plain id, every other
+    colliding name is salted. Members that collide with nothing keep their old
+    id; overloads share one name, so they are not a collision. Operators are
+    left alone.
+    """
+    body = member_node.parent
+    while body is not None and body.type == "template_declaration":
+        body = body.parent
+    if body is None or body.type != "field_declaration_list":
+        return _make_id(class_nid, name)
+    key = (class_nid, body.start_byte, body.end_byte)
+    groups = groups_cache.get(key)
+    if groups is None:
+        names: dict[str, set[str]] = {}
+        stack = list(body.children)
+        while stack:
+            c = stack.pop()
+            texts: list[str] = []
+            if c.type == "function_definition":
+                d = c.child_by_field_name("declarator")
+                text = _get_cpp_func_name(d, source) if d is not None else None
+                texts = [text] if text else []
+            elif c.type == "field_declaration" or (
+                    c.type == "declaration" and c.parent is not None
+                    and c.parent.type == "template_declaration"):
+                texts = [t for d in c.children_by_field_name("declarator")
+                         if _cpp_is_method_declarator(d)
+                         for t in [_get_cpp_func_name(d, source)] if t]
+            elif c.type == "template_declaration":
+                stack.extend(c.children)
+            for text in texts:
+                if "::" not in text and not text.startswith("operator") and normalize_id(text):
+                    names.setdefault(_make_id(class_nid, text), set()).add(text)
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    return _underscore_salted_nid(_make_id(class_nid, name), name, groups,
+                                  _CPP_PRIVATE_MEMBER_PREFIXES, _CPP_PRIVATE_MEMBER_SUFFIXES)
 
 
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
@@ -7262,6 +7327,8 @@ def _extract_generic(
     php_member_groups: dict = {}
     # Java class body -> method/constructor collision groups, filled lazily.
     java_member_groups: dict = {}
+    # C++ class body -> member-function collision groups, filled lazily.
+    cpp_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
@@ -9064,12 +9131,11 @@ def _extract_generic(
                     continue
                 line = decl.start_point[0] + 1
                 member_nid = _make_id(parent_class_nid, name)
-                decl_is_method = (
-                    decl.type == "function_declarator"
-                    or (decl.type in ("pointer_declarator", "reference_declarator")
-                        and any(c.type == "function_declarator" for c in decl.children))
-                )
+                decl_is_method = _cpp_is_method_declarator(decl)
                 if decl_is_method:
+                    member_nid = _cpp_member_nid(
+                        parent_class_nid, node, name, source, cpp_member_groups
+                    )
                     add_node(member_nid, f".{name}()", line)
                     add_edge(parent_class_nid, member_nid, "method", line)
                     callable_def_nids.add(member_nid)
@@ -9215,6 +9281,10 @@ def _extract_generic(
                     func_nid = _java_member_nid(
                         parent_class_nid, node, sanitized_name, source, java_member_groups
                     )
+                elif config.ts_module == "tree_sitter_cpp" and t == "function_definition":
+                    func_nid = _cpp_member_nid(
+                        parent_class_nid, node, sanitized_name, source, cpp_member_groups
+                    )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
                     kinds = ruby_method_kinds.setdefault(func_nid, set())
@@ -9258,6 +9328,17 @@ def _extract_generic(
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
                     )
+                if (config.ts_module == "tree_sitter_cpp" and "::" in func_name
+                        and cpp_qualified_names.get(func_nid)
+                        != _cpp_qualified_name(node, func_name, source)):
+                    # `void Foo::_bar() {}` beside a class body whose `_bar` was
+                    # salted away from `bar` lands on that salted member.
+                    leaf = func_name.rsplit("::", 1)[1]
+                    salted_nid = _make_id(func_nid, hashlib.sha1(
+                        leaf.encode("utf-8"), usedforsecurity=False).hexdigest()[:6])
+                    if (cpp_qualified_names.get(salted_nid)
+                            == _cpp_qualified_name(node, func_name, source)):
+                        func_nid = salted_nid
                 if not (config.ts_module == "tree_sitter_cpp" and "::" in func_name
                         and cpp_qualified_names.get(func_nid) == _cpp_qualified_name(node, func_name, source)):
                     func_nid = decl_node(func_nid, sanitized_name, "fn",
