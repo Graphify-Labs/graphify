@@ -66,6 +66,27 @@ def test_help_lists_every_install_platform():
         )
 
 
+def test_help_lists_vibe_once_and_its_install_commands():
+    """#2537: `vibe` must appear exactly once in the --platform list (it is a
+    _PLATFORM_CONFIG key, so appending it again duplicated it) and the
+    per-platform section must advertise `vibe install` / `vibe uninstall`."""
+    import re
+
+    r = subprocess.run(
+        [PYTHON, "-m", "graphify", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, f"--help should exit 0: {r.stderr}"
+    m = re.search(r"install \[--platform P\][^(]*\(([^)]*)\)", r.stdout)
+    assert m, "could not find the install --platform list in `graphify --help`"
+    listed = m.group(1).split("|")
+    assert len(listed) == len(set(listed)), f"duplicate --platform values: {listed}"
+    assert listed.count("vibe") == 1
+    assert "  vibe install" in r.stdout
+    assert "  vibe uninstall" in r.stdout
+
+
 def test_help_lists_project_query_defaults_and_depth_range():
     result = subprocess.run([PYTHON, "-m", "graphify", "--help"], capture_output=True, text=True)
     assert result.returncode == 0

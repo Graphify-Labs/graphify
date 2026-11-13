@@ -1084,7 +1084,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         platform = "antigravity-windows"
     if platform not in _PLATFORM_CONFIG:
         print(
-            f"error: unknown platform '{platform}'. Choose from: {', '.join(_PLATFORM_CONFIG)}, gemini, cursor, vibe",
+            f"error: unknown platform '{platform}'. Choose from: {', '.join(_PLATFORM_CONFIG)}, gemini, cursor",
             file=sys.stderr,
         )
         sys.exit(1)
