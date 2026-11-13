@@ -173,10 +173,8 @@ def resolve_interface_dispatch(
         for impl_nid, impl_node in gated_impls:
             impl_methods = methods_of.get(impl_nid, {})
             for name, declared in interface_methods.items():
-                for source, target in _overload_pairs(
-                    declared,
-                    _implementing_members(impl_methods.get(name, set()), interface_name, node_by_id),
-                    node_by_id,
+                for source, target in _implementing_pairs(
+                    declared, impl_methods.get(name, set()), interface_name, node_by_id
                 ):
                     if source == target or (source, target) in existing_pairs:
                         continue
@@ -196,21 +194,30 @@ def resolve_interface_dispatch(
     all_edges.extend(new_edges)
 
 
-def _implementing_members(candidates: set[str], interface_name: str, node_by_id: dict) -> set[str]:
-    """The implementer's members of one name that can implement this interface.
+def _implementing_pairs(
+    declared: set[str], candidates: set[str], interface_name: str, node_by_id: dict
+) -> list[tuple[str, str]]:
+    """Pair an interface's methods of one name with the implementer's members.
 
-    A C# explicit implementation (``int IA.Get()``) implements its own interface
-    and wins over a public ``Get()`` for it; it never implements another one.
-    Languages without explicit implementations see ``candidates`` unchanged.
+    A C# explicit implementation (``int IA.Get()``) implements a member of its
+    own interface and wins over a public ``Get()`` for it; it never implements
+    another interface. So the interface methods are paired with the explicit
+    implementations of this interface first, and only the ones left over with
+    the ordinary members (``int IA.Get()`` explicit beside a public
+    ``int Get(int)`` implementing ``IA.Get(int)``). Languages without explicit
+    implementations see a single ordinary pass.
     """
     def _explicit(nid: str) -> str | None:
         meta = (node_by_id.get(nid) or {}).get("metadata")
         return meta.get("explicit_interface") if isinstance(meta, dict) else None
 
     own = {c for c in candidates if _explicit(c) == interface_name}
-    if own:
-        return own
-    return {c for c in candidates if not _explicit(c)}
+    ordinary = {c for c in candidates if not _explicit(c)}
+    pairs = _overload_pairs(declared, own, node_by_id) if own else []
+    left = declared - {source for source, _ in pairs}
+    if left and ordinary:
+        pairs += _overload_pairs(left, ordinary, node_by_id)
+    return pairs
 
 
 def _overload_pairs(
