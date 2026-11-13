@@ -3027,21 +3027,32 @@ def extract_corpus_parallel(
         results_by_idx: dict[int, dict] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(_run_one, idx, chunk) for idx, chunk in enumerate(chunks)]
-            for future in as_completed(futures):
-                idx, result, exc = future.result()
-                if exc is not None:
-                    print(
-                        f"[graphify] chunk {idx + 1}/{total} failed: {exc}",
-                        file=sys.stderr,
-                    )
-                    merged["failed_chunks"] += 1
-                    failed_files.update(unit_path(f) for f in chunks[idx])
-                    continue
-                assert result is not None
-                results_by_idx[idx] = result
-                _checkpoint_chunk(idx, result, chunks[idx])
-                if callable(on_chunk_done):
-                    on_chunk_done(idx, total, result)
+            try:
+                for future in as_completed(futures):
+                    idx, result, exc = future.result()
+                    if exc is not None:
+                        print(
+                            f"[graphify] chunk {idx + 1}/{total} failed: {exc}",
+                            file=sys.stderr,
+                        )
+                        merged["failed_chunks"] += 1
+                        failed_files.update(unit_path(f) for f in chunks[idx])
+                        continue
+                    assert result is not None
+                    results_by_idx[idx] = result
+                    _checkpoint_chunk(idx, result, chunks[idx])
+                    if callable(on_chunk_done):
+                        on_chunk_done(idx, total, result)
+            except Exception:
+                # Every chunk was submitted above, and the callback runs only
+                # after one returns. Cancel work that has not started so a
+                # callback failure does not keep queued model calls running
+                # (#5184). cancel() leaves anything already running alone; the
+                # pool then drains that in-flight work and this exception
+                # propagates unchanged.
+                for pending in futures:
+                    pending.cancel()
+                raise
         for idx in sorted(results_by_idx):
             _merge_into(merged, results_by_idx[idx])
 
