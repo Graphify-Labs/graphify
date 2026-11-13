@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -389,7 +389,83 @@ def affected_nodes(
             if not queued:
                 queue.append((source, current_depth + 1))
 
-    return hits
+    return rank_hits(graph, seed, hits, relations=relation_set)
+
+
+def _line(data: dict) -> int:
+    loc = str(data.get("source_location") or "")
+    digits = loc[1:] if loc[:1] in ("L", "l") else loc
+    return int(digits) if digits.isdigit() else 0
+
+
+def rank_hits(
+    graph: nx.Graph,
+    seed: str,
+    hits: list[AffectedHit],
+    *,
+    relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
+) -> list[AffectedHit]:
+    """Order ``hits`` most-likely-impacted first. The set never changes.
+
+    The breadth-first walk discovers hits in graph-iteration order, so within
+    one depth the order said nothing about impact: on a hub file the first ten
+    lines were whichever dependents happened to be stored first. Hits are now
+    sorted by:
+
+    1. distance from the seed (``depth``), unchanged meaning;
+    2. how strongly the hit's file is linked one step closer to the seed: the
+       number of edges, over the traversed relations, from any node of that
+       file into the seed's file (depth 1) or into the files first reached at
+       ``depth - 1``; more first;
+    3. the file path, then the node's line, then its id, so ties are broken the
+       same way every run, whatever order the graph was built in.
+
+    Hits of one file therefore stay together within a depth.
+    """
+    if len(hits) < 2:
+        return list(hits)
+    relation_set = set(relations)
+
+    def file_of(node: str) -> str:
+        return str(graph.nodes[node].get("source_file") or "")
+
+    file_depth: dict[str, int] = {}
+    for h in hits:
+        f = file_of(h.node_id)
+        file_depth[f] = min(file_depth.get(f, h.depth), h.depth)
+    files_at: dict[int, set[str]] = defaultdict(set)
+    for f, d in file_depth.items():
+        files_at[d].add(f)
+    seed_file = file_of(seed)
+
+    def closer(d: int) -> set[str]:
+        return {seed_file} if d <= 1 else files_at.get(d - 1, set())
+
+    nodes_of: dict[str, list[str]] = defaultdict(list)
+    for node, data in graph.nodes(data=True):
+        f = str(data.get("source_file") or "")
+        if f in file_depth and f:
+            nodes_of[f].append(str(node))
+    links: Counter[tuple[str, int]] = Counter()
+    wanted = {(file_of(h.node_id), h.depth) for h in hits}
+    for f, d in wanted:
+        if not f:
+            continue
+        targets = closer(d) - {""}  # a seed with no file must not match every unfiled node
+        n = 0
+        for node in nodes_of.get(f, []):
+            edges = (graph.out_edges(node, data=True) if isinstance(graph, nx.DiGraph)
+                     else graph.edges(node, data=True))
+            for _u, v, data in edges:
+                if str(data.get("relation", "")) in relation_set and file_of(str(v)) in targets:
+                    n += 1
+        links[(f, d)] = n
+
+    def key(h: AffectedHit) -> tuple:
+        f = file_of(h.node_id)
+        return (h.depth, -links[(f, h.depth)], f or "\uffff", _line(graph.nodes[h.node_id]), h.node_id)
+
+    return sorted(hits, key=key)
 
 
 def resolve_seed_outcome(
