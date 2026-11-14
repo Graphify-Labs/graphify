@@ -647,6 +647,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 _add_node(nid, f"{_clean_ident(name)}()", line)
                 routine_nids[_norm_ident(name)] = nid
                 _walk_from_refs(node, nid, line)
+                _walk_writes(node, nid)
 
         elif t == "create_procedure":
             name = _obj_name(node)
@@ -655,6 +656,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 _add_node(nid, f"{_clean_ident(name)}()", line)
                 routine_nids[_norm_ident(name)] = nid
                 _walk_from_refs(node, nid, line)
+                _walk_writes(node, nid)
 
         elif t == "alter_table":
             name = _obj_name(node)
@@ -813,6 +815,153 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for child in node.children:
             walk(child)
 
+    def _table_of(node) -> tuple[str | None, str | None]:
+        """(table as written, alias) of a `relation`, a bare `from`, or a naked
+        object_reference — the three places this grammar puts a table name.
+
+        Only `relation` (and the bare `from` of a DELETE) can carry an alias:
+        the bare identifier next to the object_reference is one (`dbo.Orders
+        o`). The identifiers INSIDE an object_reference are its name parts and
+        must not be read as an alias.
+        """
+        has_siblings = node.type in ("relation", "from")
+        obj = node
+        if has_siblings:
+            obj = next((c for c in node.children if c.type == "object_reference"), None)
+            if obj is None:
+                # `DELETE p FROM ...`: only the alias is named at this level.
+                alias_node = next(
+                    (c for c in node.children
+                     if c.type == "identifier" and not _read(c).startswith("@")),
+                    None,
+                )
+                return None, (_read(alias_node) if alias_node is not None else None)
+        elif node.type != "object_reference":
+            return None, None
+
+        name = _read(obj)
+        suffix = ""
+        alias = None
+        if has_siblings:
+            for c in node.children:
+                if c is obj or c.type != "identifier":
+                    continue
+                text = _read(c)
+                if text.startswith("@"):
+                    suffix = text      # dblink suffix, part of the name
+                else:
+                    alias = text       # `dbo.Orders o`
+            if alias is None and not _is_temp(name) and len(node.children) == 1:
+                # `UPDATE o SET ... FROM x o`: the relation is nothing but an
+                # alias. The DELETE shapes carry more text and stay names.
+                # A single-part bare name only: `dbo.Orders` is a table.
+                if len(obj.children) == 1 and obj.children[0].type == "identifier":
+                    return None, name
+        if suffix and name.startswith("@"):
+            return name, alias
+        return f"{name}{suffix}", alias
+
+    def _is_temp(tbl: str) -> bool:
+        """`#t` / `##t` / `@t`: a temp table or a table variable, i.e. session
+        state rather than a schema object."""
+        return tbl.lstrip("[").startswith(("#", "@"))
+
+    def _write_table(write_node) -> str | None:
+        """The table a DELETE/UPDATE/INSERT/MERGE writes, as written.
+
+        A session object (`#t`, `##t`, `@t`) is returned as-is; the caller drops
+        it, since `_is_temp` has to answer that for the earlier shapes too.
+        """
+        if write_node.type == "insert" and not any(
+            c.type == "keyword_into" for c in write_node.children
+        ):
+            return None
+        # 0.3.13 splits `INSERT INTO ##shared` into an ERROR `##` followed by
+        # an object_reference `shared`; the marker is a sibling, not in the name.
+        first = next(
+            (c for c in write_node.children if c.type in ("object_reference", "relation")),
+            None,
+        )
+        if first is not None:
+            marker = first.prev_sibling
+            while marker is not None and marker.type.startswith("keyword_"):
+                marker = marker.prev_sibling
+            if marker is not None and _read(marker).strip() in ("#", "##", "@"):
+                return f"#{_read(first).strip()}"
+        target = next(
+            (c for c in write_node.children
+             if c.type in ("relation", "object_reference", "from")),
+            None,
+        )
+        tbl, alias = _table_of(target) if target is not None else (None, None)
+        if tbl is not None:
+            return tbl
+        if target is None:
+            # `DELETE FROM dbo.T ...`: `delete` holds nothing but its keyword;
+            # the table is in the sibling FROM.
+            stmt = write_node.parent
+            for clause in (c for c in (stmt.children if stmt else []) if c.type == "from"):
+                for rel in clause.children:
+                    if rel.type in ("object_reference", "relation"):
+                        return _table_of(rel)[0]
+            return None
+        # Only an alias was named (`UPDATE o SET ... FROM x o`); the table is
+        # the FROM relation that declares it. The FROM lives inside `update`,
+        # or beside `delete` when the statement is a DELETE.
+        stmt = write_node.parent
+        if stmt is None:
+            return None
+        scopes = [write_node, stmt]
+        for scope in scopes:
+            for clause in (c for c in scope.children if c.type in ("from", "join")):
+                rels = (
+                    clause.children if clause.type == "from"
+                    else [cc for cc in clause.children if cc.type == "relation"]
+                )
+                for rel in rels:
+                    r_tbl, r_alias = _table_of(rel)
+                    if r_tbl and alias and r_alias and r_alias.lower() == alias.lower():
+                        return r_tbl
+        return None
+
+    def _walk_writes(node, caller_nid: str) -> None:
+        """Emit `writes_to` for the writes in a structurally parsed routine.
+
+        tree-sitter-sql 0.3.13 parses T-SQL `CREATE PROCEDURE ... AS BEGIN
+        ... END` into `procedure_body`, so its statements stay in the tree
+        instead of an ERROR node. The masked-text scan that reads writes only
+        runs when the parse failed, and `_walk_from_refs` only looked at
+        FROM/JOIN — so a DELETE/UPDATE/INSERT or `SELECT ... INTO` in such a
+        procedure silently lost its edge (#5146).
+
+        Deliberately separate from _walk_from_refs, whose CTE and derived-table
+        handling this does not need to touch.
+        """
+        if node.type in ("delete", "update", "insert", "merge"):
+            tbl = _write_table(node)
+            if tbl and not _is_temp(tbl):
+                tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
+                _add_edge(caller_nid, tbl_nid, "writes_to", node.start_point[0] + 1)
+        elif node.type == "statement":
+            # `SELECT ... INTO <table>`: the keyword and the target are
+            # siblings of `select`, so this is read at statement level.
+            for i, c in enumerate(node.children):
+                if c.type != "keyword_into":
+                    continue
+                target = next(
+                    (cc for cc in node.children[i + 1:] if cc.type == "select_expression"),
+                    None,
+                )
+                if target is not None:
+                    tbl = _read(target).strip()
+                    if tbl and not _is_temp(tbl):
+                        tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
+                        _add_edge(caller_nid, tbl_nid, "writes_to",
+                                  c.start_point[0] + 1)
+                break
+        for child in node.children:
+            _walk_writes(child, caller_nid)
+
     def _walk_from_refs(node, caller_nid: str, line: int,
                         cte_names: frozenset[str] = frozenset()) -> None:
         """Recursively find FROM/JOIN table references inside a node, skipping CTEs.
@@ -860,6 +1009,14 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     and _read(prev).rstrip().endswith(")")
                 )
                 prev = c
+                # `FROM #work` / `FROM @ids`: 0.3.13 splits the `#` (or `@`)
+                # into an ERROR node before the relation, so the name arrives
+                # without its marker and would be minted as a table. Session
+                # temp objects are not schema objects.
+                before = c.prev_sibling
+                marker = _read(before).strip() if before is not None else ""
+                if c.type == "relation" and marker in ("#", "##", "@"):
+                    continue
                 if c.type == "relation" and not after_failed_subquery:
                     tbl_ref: str | None = None
                     dblink: str | None = None
@@ -870,6 +1027,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                             dblink = _read(cc)
                     if tbl_ref:
                         tbl = f"{tbl_ref}{dblink}" if dblink else tbl_ref
+                        if _is_temp(tbl):
+                            continue
                         if _norm_ident(tbl) not in cte_names:
                             tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                             _add_edge(caller_nid, tbl_nid, "reads_from",
