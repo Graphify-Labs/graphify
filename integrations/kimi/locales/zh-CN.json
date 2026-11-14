@@ -1,0 +1,23 @@
+{
+  "displayName": "Graphify",
+  "shortDescription": "代码图谱问答",
+  "longDescription": "将 Kimi 连接到你的 Graphify 托管工作区。通过受 OAuth 保护的 Graphify MCP 搜索已索引的仓库、查找符号、追踪调用方和依赖关系、评估变更影响、读取团队记忆，以及查看拉取请求审查状态。",
+  "developerName": "Graphify Labs",
+  "tryPrompts": [
+    "显示你可以通过 Graphify 查询哪些仓库",
+    "解释我的仓库中的身份验证如何工作",
+    "检查修改支付解析器的影响"
+  ],
+  "mcpOverrides": {
+    "graphify": {
+      "displayName": "Graphify MCP",
+      "description": "托管代码图谱、依赖分析、仓库记忆和审查状态"
+    }
+  },
+  "skillOverrides": {
+    "graphify-code-graph": {
+      "displayName": "Graphify 代码图谱",
+      "description": "选择合适的 Graphify 查询并验证基于仓库证据的回答"
+    }
+  }
+}
