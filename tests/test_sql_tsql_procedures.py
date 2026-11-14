@@ -286,3 +286,62 @@ def test_one_edge_per_routine_relation_and_table(tmp_path):
     keys = [(label[e["source"]], e["relation"], label[e["target"]])
             for e in r["edges"] if e["relation"] in (READ, WRITE)]
     assert len(keys) == len(set(keys)), sorted(keys)
+
+
+# T12 -- #5146: tree-sitter-sql 0.3.13 parses `CREATE PROCEDURE ... AS BEGIN
+# ... END` structurally, so the body no longer goes through the masked-text
+# fallback that used to produce the write edges. The structured walk read only
+# FROM/JOIN, which silently dropped every DELETE/UPDATE/INSERT and
+# `SELECT ... INTO` written inside such a procedure.
+def test_structured_tsql_procedure_still_records_its_delete(tmp_path):
+    p = tmp_path / "d2.sql"
+    p.write_text("CREATE PROCEDURE dbo.D AS\nBEGIN\n"
+                 " DELETE FROM dbo.Payments WHERE Amount = 0\nEND\nGO\n")
+    calls = _triples(extract_sql(p))
+    assert ("dbo.d", WRITE, "dbo.payments") in calls, sorted(calls)
+    assert ("dbo.d", READ, "dbo.payments") not in calls, sorted(calls)
+
+
+# Same statement without the trailing GO: no ERROR node, so nothing but the
+# structured walk can produce the edge.
+def test_structured_tsql_procedure_without_batch_separator(tmp_path):
+    p = tmp_path / "d3.sql"
+    p.write_text("CREATE PROCEDURE dbo.D AS\nBEGIN\n"
+                 " DELETE FROM dbo.Payments WHERE Amount = 0\nEND\n")
+    calls = _triples(extract_sql(p))
+    assert ("dbo.d", WRITE, "dbo.payments") in calls, sorted(calls)
+
+
+# `DELETE FROM <table> WHERE ...` (the shape of the issue) must not also mint
+# a reads_from for the table it deletes from.
+def test_delete_from_does_not_read_its_own_target(tmp_path):
+    p = tmp_path / "dn.sql"
+    p.write_text("CREATE PROCEDURE dbo.DN AS\nBEGIN\n"
+                 " DELETE FROM dbo.Payments WHERE Amount = 0\nEND\nGO\n")
+    calls = _triples(extract_sql(p))
+    assert ("dbo.dn", WRITE, "dbo.payments") in calls, sorted(calls)
+    assert ("dbo.dn", READ, "dbo.payments") not in calls, sorted(calls)
+
+
+def test_structured_tsql_procedure_insert_update_and_select_into(tmp_path):
+    p = tmp_path / "w.sql"
+    p.write_text("CREATE PROCEDURE dbo.W AS\nBEGIN\n"
+                 " INSERT INTO dbo.Log (Id) VALUES (1)\n"
+                 " UPDATE dbo.Orders SET Paid = 1 WHERE Id = 2\n"
+                 " SELECT Id INTO dbo.Archive FROM dbo.Orders\nEND\nGO\n")
+    calls = _triples(extract_sql(p))
+    assert ("dbo.w", WRITE, "dbo.log") in calls, sorted(calls)
+    assert ("dbo.w", WRITE, "dbo.orders") in calls, sorted(calls)
+    assert ("dbo.w", WRITE, "dbo.archive") in calls, sorted(calls)
+    assert ("dbo.w", READ, "dbo.orders") in calls, sorted(calls)
+
+
+# A CTE target is not a table even when the statement that names it writes.
+def test_cte_target_is_not_a_write(tmp_path):
+    p = tmp_path / "ctew.sql"
+    p.write_text("CREATE PROCEDURE dbo.CW AS\nBEGIN\n"
+                 " WITH pending AS (SELECT Id FROM dbo.Orders)\n"
+                 " UPDATE pending SET Paid = 1\nEND\nGO\n")
+    calls = _triples(extract_sql(p))
+    assert ("dbo.cw", READ, "dbo.orders") in calls, sorted(calls)
+    assert not any(t in ("pending",) for _s, _rel, t in calls), sorted(calls)
