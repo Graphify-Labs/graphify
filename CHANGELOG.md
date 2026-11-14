@@ -2,6 +2,21 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.108 (2026-11-12)
+
+- Fix: **csharp** a member call on a receiver typed by a lowercase, underscore-prefixed or keyword-like type (`_Pair`, `pair`, a field or primary-constructor parameter so typed) now binds, and a static call like `pair.Create()` resolves; namespace and unknown receivers still fail closed. Classic extension-method calls on `bool`/`char?` receivers also bind (#5174, thanks @JensD-git).
+- Fix: **java** a call through a class-qualified static field (`Service.INSTANCE.get()`, and a chain `Service.INSTANCE.other().m()`) resolves via that field's declared type; a local or parameter that shadows the class name keeps that binding, and an instance field accessed as `Type.field` is not treated as static (#5149, thanks @MaxWang007).
+- Fix: **sql** a routine body preserves comma joins (`FROM a, b`) so every table is read, and keeps a `@dblink` suffix as a distinct remote node instead of pointing the edge at a local same-named table (#5169, thanks @mohitdixit02).
+- Fix: **sql** an unparsed derived table's alias (`FROM (SELECT ...) q` where the subquery fails to parse) is no longer mis-read as a table node; a real table after the subquery is unaffected (#5147, thanks @Yi-111-a).
+- Fix: **path** `graphify path` prefers a route through real files over one that detours through a sourceless import hub (an external or stdlib module stub) when both are equally short and confident; when the only route is via a hub it is still returned (#5153, thanks @ayushcodes10).
+- Fix: **report** GRAPH_REPORT.md keeps the extraction token cost from cost.json after a `graphify update`, instead of resetting it to zero on the AST-only rebuild path (#5154, thanks @kevin9327).
+- Fix: **hooks** the search nudge softens when the graph may be stale (pending changes since the last build), mirroring the read nudge, instead of always telling the agent to query the graph; a genuinely unindexed file still gets the plain nudge (#5132, thanks @ayushcodes10).
+- Fix: **serve** a graph reload no longer stalls every MCP request: the new graph is built off to the side and swapped in atomically, so concurrent requests keep being served the current graph instead of blocking for the whole rebuild, and a single in-flight reload is shared rather than rebuilt per waiter (#5177, thanks @ayushcodes10).
+- Fix: **query** a `--context` filter naming a heritage relation (`inherits`, `implements`, `extends`) now reaches heritage edges that carry no context attribute, so the walk follows a class hierarchy instead of stopping at the seed; non-heritage context-less edges are still filtered out, and the header reports when a filter matched no edges (#5178, thanks @sunhouy).
+- Fix: **sql** Oracle `[NON]EDITIONABLE` PROCEDURE/FUNCTION/TRIGGER DDL is recovered from the ERROR node instead of yielding only a file node; a table or routine literally named `editionable`, and non-routine DDL such as `EDITIONABLE VIEW`, are not mis-recovered (#5167, thanks @Yi-111-a).
+
+The AST cache schema is bumped to 46; warm caches re-run the affected C#, Java, SQL and MATLAB extractions.
+
 ## 0.9.107 (2026-11-11)
 
 - Fix: **cpp** a folded parameterless member declaration (`bar()`) records its implementation in `definition_file` as a path anchored to the same root as `source_file`, instead of a `../`-walk relative to the cache/out root. The zero-argument reconciliation added in 0.9.106 stored the internal `_cpp_source_key` proof form, which `_norm_source_file` cannot re-anchor (it only relativizes absolute paths), so an out-of-tree corpus got a mangled `definition_file`. The sibling decl/def merge already stored the raw `source_file` for this reason; both paths now agree. The include-path proof still uses the key form.
@@ -18,7 +33,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Change: **cloud** the post-build CLI nudge is contextual. It is TTY-only (never in CI or the agent pipeline), respects `GRAPHIFY_NO_TIPS`/`GRAPHIFY_NO_CTA`, and shows on builds 1, 5 and 20 then stays quiet for good. When a local graph reaches 25k nodes, the free plan's per-repo cut-off, the nudge switches to a scale-specific line (tagged `utm_content=scale`) that sells Graphify Pro and links to pricing with the 14-day trial, instead of the free signup: a repo that size no longer fits the free plan, so pointing it at the free plan would land straight on the limit.
 - Feat: **matlab** `.m` files fall back to MATLAB only after explicit remaps and Objective-C content detection; extraction records located definitions, conservative same-file lexical calls, and exact-source inheritance while preserving `.mm` and `.inc=.m` Objective-C routing.
 
-The AST cache schema is bumped to 45; warm caches re-run the affected C++, PHP, Java, module-level-id and MATLAB extractions.
+The AST cache schema is bumped to 44; warm caches re-run the affected C++, PHP, Java and module-level-id extractions.
 
 ## 0.9.106 (2026-11-10)
 

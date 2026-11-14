@@ -726,7 +726,8 @@ def _java_receiver_type_name(type_node, source: bytes) -> str | None:
 def _java_receiver_chain(node, source: bytes, depth: int = 0) -> list | None:
     """Describe a Java receiver that is itself an expression, for the resolver
     to type from declared return types: `new T()` / `(T) x` -> ["type", "T"],
-    `f()` -> ["call", "f", None], `x.f()` -> ["call", "f", <x>], and the leaves
+    `f()` -> ["call", "f", None], `x.f()` -> ["call", "f", <x>],
+    `T.FIELD` -> ["field", "FIELD", <T>], and the leaves
     ["this"], ["super"], ["name", "x"]. None when any part is something else."""
     if node is None or depth > 16:
         return None
@@ -745,7 +746,14 @@ def _java_receiver_chain(node, source: bytes, depth: int = 0) -> list | None:
         owner, field = node.child_by_field_name("object"), node.child_by_field_name("field")
         if owner is not None and owner.type == "this" and field is not None:
             return ["name", f"this.{_read_text(field, source)}"]
-        return None
+        if owner is None or field is None:
+            return None
+        # `Service.INSTANCE`: the object is typed later, and only if it is a
+        # class name. `this.field` stays the name leaf above.
+        inner = _java_receiver_chain(owner, source, depth + 1)
+        if inner is None:
+            return None
+        return ["field", _read_text(field, source), inner]
     if t == "method_invocation":
         name_node = node.child_by_field_name("name")
         if name_node is None:
@@ -760,15 +768,31 @@ def _java_receiver_chain(node, source: bytes, depth: int = 0) -> list | None:
     return None
 
 
-def _java_type_chain_leaf(chain: list, receiver_types: dict) -> list | None:
+def _java_type_chain_leaf(
+    chain: list,
+    receiver_types: dict,
+    bound_names: set[str] | None = None,
+) -> list | None:
     """Replace the ["name", x] leaf of a receiver chain with x's declared type
     (["type", T]); a capitalized name nothing declares is a type itself
-    (`Foo.create().run()`), as for a plain receiver. None when x is untyped."""
+    (`Foo.create().run()`), as for a plain receiver. A ["field", name, owner]
+    is kept only when that owner is such a class name: a local, parameter, or
+    field that shadows it is not the class (`AuditLog Service; Service.INSTANCE`).
+    None when x is untyped."""
+    bound = bound_names or set()
     if chain[0] == "call":
         if chain[2] is None:
             return chain
-        inner = _java_type_chain_leaf(chain[2], receiver_types)
+        inner = _java_type_chain_leaf(chain[2], receiver_types, bound)
         return ["call", chain[1], inner] if inner else None
+    if chain[0] == "field":
+        owner = chain[2]
+        if not owner or owner[0] != "name":
+            return None
+        name = owner[1]
+        if not name or name in receiver_types or name in bound or not name[:1].isupper():
+            return None
+        return ["field", chain[1], ["type", name]]
     if chain[0] == "name":
         declared = receiver_types.get(chain[1])
         if declared:
@@ -931,6 +955,15 @@ def _java_method_receiver_types(
         table.pop(name, None)
     table.update({f"this.{name}": type_name for name, type_name in field_types.items()})
     return table
+
+
+def _java_has_modifier(declaration_node, modifier: str) -> bool:
+    """True when a Java declaration's `modifiers` child contains `modifier`
+    (`static`, `final`, ...). Those keywords are unnamed nodes."""
+    for child in declaration_node.children:
+        if child.type == "modifiers":
+            return any(mod.type == modifier for mod in child.children)
+    return False
 
 
 def _java_annotation_nodes(declaration_node) -> list:
@@ -4166,7 +4199,7 @@ def _csharp_method_receiver_types(
     method_node,
     source: bytes,
     field_types: dict[str, str],
-) -> tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str]]:
+) -> tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str | None]]:
     """Build the SCOPED receiver bindings visible to one C# method (#2299, #2472).
 
     The C# twin of ``_java_method_receiver_types``, but positional: instead of
@@ -4356,10 +4389,11 @@ def _csharp_method_receiver_types(
         )
         bind(name, None if shadowed else field_types.get(field + suffix + "{}"), loop)
 
-    base = {
-        name: type_name
+    # A poisoned field stays in the base scope as None: it types nothing, but
+    # the name is still declared, so it is never read as a type name.
+    base: dict[str, str | None] = {
+        name: None if name in field_poisoned else type_name
         for name, type_name in field_types.items()
-        if name not in field_poisoned
     }
     for name in field_poisoned:
         bindings.pop(name, None)
@@ -4367,7 +4401,7 @@ def _csharp_method_receiver_types(
 
 
 def _csharp_scoped_receiver_type(
-    table: tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str]] | None,
+    table: tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str | None]] | None,
     name: str | None,
     call_byte: int,
 ) -> str | list | None:
@@ -4396,6 +4430,26 @@ def _csharp_scoped_receiver_type(
     if len(inner) == 1:
         return inner[0][2]
     return None
+
+
+def _csharp_receiver_is_declared(
+    table: tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str | None]] | None,
+    name: str,
+    call_byte: int,
+) -> bool:
+    """Whether ``name`` is a local, parameter, field or property at ``call_byte``.
+
+    Typed or not: an untyped binding (``var x = F()``, ``x => ...``) is still a
+    value, so ``x.M()`` on it must never be read as a static call on a type
+    that happens to be named ``x``.
+    """
+    if not table:
+        return False
+    bindings, base = table
+    if name in base:
+        return True
+    return any(start <= call_byte < end for start, end, _ in bindings.get(name, ()))
+
 
 def _ts_receiver_type_table(
     root, source: bytes, table: dict[str, str],
@@ -7166,6 +7220,7 @@ def _extract_generic(
     # Java receiver typing is method-scoped: current-class fields are shared,
     # while parameters and locals belong only to their declaring method.
     java_field_types: dict[str, dict[str, str]] = {}
+    java_static_field_types: dict[str, dict[str, str]] = {}
     java_field_names: dict[str, set[str]] = {}
     java_return_types: dict[str, str] = {}
     java_method_scopes: dict[int, tuple[object, str]] = {}
@@ -8267,10 +8322,11 @@ def _extract_generic(
                         pname = param.child_by_field_name("name")
                         p_line = param.start_point[0] + 1
                         # Receiver binding mirrors the field_declaration rule:
-                        # Pascal-case only (a primitive owns no resolvable
-                        # method) and never a bare type parameter (`T item`).
+                        # any declared type name (`_Pair`, `pair` are valid
+                        # classes; a primitive simply finds no definition), but
+                        # never a bare type parameter (`T item`).
                         recv = _csharp_receiver_type_name(ptype, source)
-                        if (pname is not None and recv and recv[:1].isupper()
+                        if (pname is not None and recv
                                 and recv not in csharp_type_params):
                             csharp_field_types.setdefault(class_nid, {})[
                                 _read_text(pname, source)
@@ -8541,8 +8597,9 @@ def _extract_generic(
                     return
                 # Record the field's declared type for the method-scoped
                 # receiver tables (#2299) — the C# twin of java_field_types.
-                # Pascal-case only: primitives never own a resolvable method.
-                if type_name[:1].isupper():
+                # Any declared type name, as for properties: `_Pair` and `pair`
+                # are valid classes, and a primitive simply finds no definition.
+                if type_name:
                     fields = csharp_field_types.setdefault(parent_class_nid, {})
                     elem_type = _csharp_element_type_name(type_node, source)
                     loop_elems = _csharp_loop_element_types(type_node, source)
@@ -8665,16 +8722,21 @@ def _extract_generic(
         if (config.ts_module == "tree_sitter_java"
                 and t == "field_declaration"
                 and parent_class_nid):
-            java_field_names.setdefault(parent_class_nid, set()).update(
-                _java_declarator_names(node, source)
-            )
+            field_names = _java_declarator_names(node, source)
+            java_field_names.setdefault(parent_class_nid, set()).update(field_names)
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 receiver_type = _java_receiver_type_name(type_node, source)
                 if receiver_type:
                     fields = java_field_types.setdefault(parent_class_nid, {})
-                    for field_name in _java_declarator_names(node, source):
+                    for field_name in field_names:
                         fields[field_name] = receiver_type
+                    # `Type.FIELD.m()` (#5149) reads a static field. An instance
+                    # field of the same name is not visible through the class.
+                    if _java_has_modifier(node, "static"):
+                        static_fields = java_static_field_types.setdefault(parent_class_nid, {})
+                        for field_name in field_names:
+                            static_fields[field_name] = receiver_type
                 line = node.start_point[0] + 1
                 refs: list[tuple[str, str]] = []
                 _java_collect_type_refs(type_node, source, False, refs)
@@ -10929,6 +10991,10 @@ def _extract_generic(
                             if owner is not None and owner.type == "this" and field is not None:
                                 member_receiver = f"this.{_read_text(field, source)}"
                                 is_this_field_call = True
+                            else:
+                                # `Service.INSTANCE.get()` — typed from the
+                                # static field, not as a bare `get()`.
+                                java_receiver_chain = _java_receiver_chain(receiver, source)
                         else:
                             java_receiver_chain = _java_receiver_chain(receiver, source)
             elif config.ts_module == "tree_sitter_ruby":
@@ -11439,6 +11505,13 @@ def _extract_generic(
                                     rc_entry["receiver_call"] = [recv, method, targs]
                             elif receiver_type:
                                 rc_entry["receiver_type"] = receiver_type
+                            elif member_receiver and not _csharp_receiver_is_declared(
+                                receiver_types if isinstance(receiver_types, tuple)
+                                else None, member_receiver, node.start_byte,
+                            ):
+                                # Not a value in scope: `_Pair.Make()` and
+                                # `pair.Create()` name a type, whatever its case.
+                                rc_entry["receiver_undeclared"] = True
                         if config.ts_module == "tree_sitter_java":
                             rc_entry["lang"] = "java"
                             receiver_type = (receiver_types or {}).get(member_receiver or "")
@@ -11455,6 +11528,7 @@ def _extract_generic(
                                 chain = _java_type_chain_leaf(
                                     java_receiver_chain,
                                     receiver_types if isinstance(receiver_types, dict) else {},
+                                    java_bound_names.get(caller_nid),
                                 )
                                 if chain:
                                     rc_entry["java_receiver_chain"] = chain
@@ -11964,6 +12038,7 @@ def _extract_generic(
          "source_file": _n.get("source_file"), "fields": dict(_tbl)}
         for _lang, _tables in (
             ("java", java_field_types),
+            ("java_static", java_static_field_types),
             ("csharp", csharp_field_types),
             ("csharp_returns", csharp_method_returns),
         )

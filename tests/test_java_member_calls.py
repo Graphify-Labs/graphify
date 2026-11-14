@@ -690,3 +690,146 @@ def test_schema_bump_retires_java_entries_cached_without_receiver_chains(tmp_pat
     r = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
     calls = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"}
     assert ("Builder", ".size()") in _call_owners(calls, r, _find(r, ".run()", "client_run"))
+
+
+# `Type.FIELD.m()` — the field is static and its declared type is the class
+# that owns the method. A same-named method on another class must not win.
+_STATIC_FIELD = {
+    "Service.java": (
+        "public class Service {\n"
+        "    public static final Service INSTANCE = new Service();\n"
+        "    public Helper helper;\n"
+        "    public String get() { return \"x\"; }\n"
+        "    public Builder other() { return new Builder(); }\n"
+        "}\n"
+    ),
+    "Helper.java": "class Helper { void ping() {} }\n",
+    "Builder.java": "class Builder { void m() {} }\n",
+    "Decoy.java": (
+        "class Decoy {\n"
+        "    String get() { return \"d\"; }\n"
+        "    Decoy other() { return this; }\n"
+        "    void m() {}\n"
+        "    void ping() {}\n"
+        "}\n"
+    ),
+}
+
+
+def test_class_qualified_static_field_call_resolves_in_the_same_file(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "App.java": (
+            "public class Service {\n"
+            "    public static final Service INSTANCE = new Service();\n"
+            "    public Helper helper;\n"
+            "    public String get() { return \"x\"; }\n"
+            "}\n"
+            "class Helper { void ping() {} }\n"
+            "class Decoy { String get() { return \"d\"; } void ping() {} }\n"
+            "class Handler {\n"
+            "    void handle() {\n"
+            "        Service.INSTANCE.get();\n"
+            "        Service.helper.ping();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    handle = _find(result, ".handle()", "handler")
+    assert (handle, _find(result, ".get()", "service")) in calls
+    assert (handle, _find(result, ".get()", "decoy")) not in calls
+    # An instance field is not a class-qualified static field.
+    assert (handle, _find(result, ".ping()", "helper")) not in calls
+
+
+def test_class_qualified_static_field_call_resolves_across_files(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_STATIC_FIELD,
+        "Handler.java": (
+            "class Handler {\n"
+            "    void handle() { Service.INSTANCE.get(); }\n"
+            "}\n"
+        ),
+    })
+
+    handle = _find(result, ".handle()", "handler")
+    assert (handle, _find(result, ".get()", "service")) in calls
+    assert (handle, _find(result, ".get()", "decoy")) not in calls
+
+
+def test_static_field_chain_follows_the_field_type(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_STATIC_FIELD,
+        "Handler.java": (
+            "class Handler {\n"
+            "    void handle() { Service.INSTANCE.other().m(); }\n"
+            "}\n"
+        ),
+    })
+
+    owners = _call_owners(calls, result, _find(result, ".handle()", "handler"))
+    assert {("Service", ".other()"), ("Builder", ".m()")} <= owners
+    assert not any(owner == "Decoy" for owner, _ in owners)
+
+
+def test_local_or_parameter_named_like_a_class_is_not_a_static_receiver(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_STATIC_FIELD,
+        "AuditLog.java": "class AuditLog { void charge() {} }\n",
+        "Handler.java": (
+            "class Handler {\n"
+            "    void handle() { Service.INSTANCE.get(); }\n"
+            "    void fromLocal() {\n"
+            "        AuditLog Service = new AuditLog();\n"
+            "        Service.charge();\n"
+            "        Service.INSTANCE.get();\n"
+            "    }\n"
+            "    void fromParameter(AuditLog Service) {\n"
+            "        Service.charge();\n"
+            "        Service.INSTANCE.get();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    service_get = _find(result, ".get()", "service")
+    audit_charge = _find(result, ".charge()", "auditlog")
+    assert (_find(result, ".handle()", "handler"), service_get) in calls
+    for caller in ("fromLocal", "fromParameter"):
+        nid = _find(result, f".{caller}()", caller.lower())
+        assert (nid, audit_charge) in calls
+        assert (nid, service_get) not in calls
+
+
+def test_schema_bump_retires_java_entries_cached_without_static_field_chains(
+    tmp_path: Path, monkeypatch,
+):
+    """An entry from schema 43 has no static-field receiver chain; replaying it
+    would leave `Service.INSTANCE.get()` unlinked (#5149)."""
+    import graphify.cache as cache_mod
+    from graphify.cache import save_cached
+    from graphify.extract import extract_java
+
+    files = {
+        **_STATIC_FIELD,
+        "Handler.java": "class Handler { void handle() { Service.INSTANCE.get(); } }\n",
+    }
+    paths = []
+    for name, body in files.items():
+        (tmp_path / name).write_text(body, encoding="utf-8")
+        paths.append(tmp_path / name)
+    current_schema = cache_mod._AST_CACHE_SCHEMA
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "same-version")
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 43)  # last schema without the chain
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    for p in paths:
+        stale = extract_java(p)
+        for raw_call in stale.get("raw_calls", []):
+            raw_call.pop("java_receiver_chain", None)
+        save_cached(p, stale, root=tmp_path, cache_root=tmp_path, kind="ast")
+
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current_schema)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    r = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    calls = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"}
+    assert (_find(r, ".handle()", "handler"), _find(r, ".get()", "service")) in calls

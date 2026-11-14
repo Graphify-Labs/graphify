@@ -1,6 +1,7 @@
 # generate GRAPH_REPORT.md - the human-readable audit trail
 from __future__ import annotations
 from datetime import date
+import json
 from pathlib import Path
 import networkx as nx
 
@@ -50,6 +51,26 @@ def _safe_community_name(label: str) -> str:
     """
     from graphify.export import _obsidian_safe_stem
     return _obsidian_safe_stem(label)
+
+
+def load_report_token_cost(graphify_out: Path) -> dict[str, int]:
+    """Return cumulative token totals from cost.json for GRAPH_REPORT.
+
+    ``graphify update`` and the watcher rewrite the report without making LLM
+    calls, so they must read the existing ledger instead of passing a
+    hard-coded zero (#5154). A missing or unreadable ledger yields zeros.
+    """
+    cost_path = Path(graphify_out) / "cost.json"
+    try:
+        cost = json.loads(cost_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"input": 0, "output": 0}
+    if not isinstance(cost, dict):
+        return {"input": 0, "output": 0}
+    inp, out = cost.get("total_input_tokens", 0), cost.get("total_output_tokens", 0)
+    if type(inp) is not int or type(out) is not int:
+        return {"input": 0, "output": 0}
+    return {"input": inp, "output": out}
 
 
 def load_learning_for_report(graph_path) -> dict | None:

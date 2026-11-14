@@ -643,7 +643,7 @@ def test_ast_cache_schema_rejects_same_version_legacy_collision(
 
 
 def test_matlab_dispatch_schema_retires_upstream_ast_cache(tmp_path, monkeypatch):
-    """A cache from before MATLAB/Objective-C `.m` dispatch must not be served."""
+    """A schema-45 cache must not hide the MATLAB/Objective-C `.m` additions."""
     import graphify.cache as cache_mod
 
     source = tmp_path / "legacy.m"
@@ -651,9 +651,9 @@ def test_matlab_dispatch_schema_retires_upstream_ast_cache(tmp_path, monkeypatch
     monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "same-version")
     monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
     current_schema = cache_mod._AST_CACHE_SCHEMA
-    assert current_schema > 44
+    assert current_schema > 45
 
-    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 44)
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 45)
     old_dir = cache_mod.cache_dir(tmp_path, "ast")
     save_cached(
         source,
