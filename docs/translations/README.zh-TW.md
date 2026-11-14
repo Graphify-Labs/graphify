@@ -411,7 +411,7 @@ viz_node_limit=0
 - **文件、PDF、圖片**：傳送給你的 AI 助理做語意提取（透過 `/graphify` 技能，使用你 IDE 工作階段執行的任何模型）。無頭的 `graphify extract` 需要 `GEMINI_API_KEY` / `GOOGLE_API_KEY`（Gemini）、`MOONSHOT_API_KEY`（Kimi）、`ANTHROPIC_API_KEY`（Claude）、`OPENAI_API_KEY`（OpenAI）、`DEEPSEEK_API_KEY`（DeepSeek）、一個執行中的 Ollama 實例（`OLLAMA_BASE_URL`）、透過標準提供者鏈的 AWS 憑證（Bedrock, 無需 API key，使用 IAM），或 `claude` CLI 二進位檔（Claude Code, 無需 API key，使用你的 Claude 訂閱）。`--dedup-llm` 旗標使用同一個 key。
 - **資料駐留**：`graphify extract` 會根據設定了哪個 API key 自動偵測使用哪個提供者（優先順序：Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama）。對於有資料駐留要求的程式碼，使用 `--backend ollama`（完全本地）或傳入一個明確的 `--backend` 旗標。Kimi（`MOONSHOT_API_KEY`）會路由到位於中國的 Moonshot AI 伺服器。
 - **無遙測**，無使用情況追蹤，無分析。
-- **查詢記錄**：每一次 `graphify query`、`graphify path`、`graphify explain` 以及 MCP `query_graph` 呼叫都會以 JSON Lines 格式記錄到 `~/.cache/graphify-queries.log`（時間戳、問題、語料庫、回傳的節點、耗時）。完整的子圖回應預設**不**儲存。設定 `GRAPHIFY_QUERY_LOG_DISABLE=1` 以退出，或設定 `GRAPHIFY_QUERY_LOG=/dev/null` 以在不停用程式碼路徑的情況下靜默。
+- **查詢記錄**：預設關閉。設定 `GRAPHIFY_QUERY_LOG_ENABLE=1` 後，每一次 `graphify query`、`graphify path`、`graphify explain` 以及 MCP `query_graph` 呼叫都會以 JSON Lines 格式記錄到 `~/.cache/graphify-queries.log`（時間戳記、問題、語料、回傳的節點、耗時）；設定 `GRAPHIFY_QUERY_LOG=<path>` 則改為記錄到該檔案。只有同時設定 `GRAPHIFY_QUERY_LOG_RESPONSES=1` 時才會儲存完整的子圖回應。`GRAPHIFY_QUERY_LOG_DISABLE=1` 強制關閉記錄。
 
 ---
 

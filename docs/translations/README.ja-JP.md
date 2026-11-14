@@ -411,7 +411,7 @@ AI アシスタントに加えて、`graphify query`、`graphify path`、`graphi
 - **ドキュメント、PDF、画像**: 意味的抽出のために AI アシスタントに送られます（`/graphify` スキルを介し、IDE セッションが実行するモデルを使用）。ヘッドレスの `graphify extract` は、`GEMINI_API_KEY` / `GOOGLE_API_KEY`（Gemini）、`MOONSHOT_API_KEY`（Kimi）、`ANTHROPIC_API_KEY`（Claude）、`OPENAI_API_KEY`（OpenAI）、`DEEPSEEK_API_KEY`（DeepSeek）、稼働中の Ollama インスタンス（`OLLAMA_BASE_URL`）、標準のプロバイダチェーン経由の AWS 認証情報（Bedrock、API key 不要、IAM を使用）、または `claude` CLI バイナリ（Claude Code、API key 不要、あなたの Claude サブスクリプションを使用）を必要とします。`--dedup-llm` フラグは同じ key を使います。
 - **データ所在地**: `graphify extract` は、どの API key が設定されているかに基づいて使用するプロバイダを自動検出します（優先順位: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama）。データ所在地の要件があるコードには、`--backend ollama`（完全にローカル）を使うか、明示的な `--backend` フラグを渡してください。Kimi（`MOONSHOT_API_KEY`）は中国の Moonshot AI サーバーへルーティングされます。
 - **テレメトリなし**、使用状況の追跡なし、分析なし。
-- **クエリのログ記録**: すべての `graphify query`、`graphify path`、`graphify explain`、および MCP `query_graph` の呼び出しは、JSON Lines 形式で `~/.cache/graphify-queries.log` に記録されます（タイムスタンプ、質問、コーパス、返されたノード、所要時間）。完全なサブグラフのレスポンスはデフォルトでは**保存されません**。`GRAPHIFY_QUERY_LOG_DISABLE=1` を設定するとオプトアウトでき、`GRAPHIFY_QUERY_LOG=/dev/null` を設定するとコードパスを無効化せずに静かにできます。
+- **クエリのログ記録**: デフォルトでは無効です。`GRAPHIFY_QUERY_LOG_ENABLE=1` を設定すると、`graphify query`、`graphify path`、`graphify explain`、MCP `query_graph` の各呼び出しが `~/.cache/graphify-queries.log` に記録されます。`GRAPHIFY_QUERY_LOG=<path>` を設定するとそのファイルに記録されます。形式は JSON Lines（タイムスタンプ、質問、コーパス、返されたノード数、所要時間）です。サブグラフの完全なレスポンスは `GRAPHIFY_QUERY_LOG_RESPONSES=1` も設定した場合にのみ保存されます。`GRAPHIFY_QUERY_LOG_DISABLE=1` はログを強制的に無効にします。
 
 ---
 
