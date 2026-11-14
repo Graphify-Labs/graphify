@@ -10,8 +10,12 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **llm** when a per-chunk callback raises during parallel extraction, the remaining queued chunks are cancelled instead of continuing to run, so a failed run stops promptly without wasted model calls (#5187, thanks @MaxWang007).
 - Fix: **extract** a per-file AST failure during an incremental build preserves the source's last good AST records instead of deleting them, marks the run incomplete, and clears the file's manifest hash so the next run re-attempts it (#5191, thanks @sdivyanshu90).
 - Fix: **llm** a response carrying two or more independent graph fragments (or a multi-element array) is rejected and retried instead of caching only the first as if complete; a single object, or a single-element array wrapping one valid fragment, is still accepted (#5192, thanks @sdivyanshu90).
+- Fix: **extract** under a symlinked scan root, an in-root file keeps its repo-relative `source_file` instead of collapsing to a bare basename (which merged distinct files into one and emptied the graph); only the parent is resolved, so a file symlink that #2832 keeps distinct still is (#4624, thanks @maruf-asterbyte).
+- Fix: **extract** a variadic parameter references its element type (`xs ...T` in Go, `T... xs` in Java, `params T[]` in C#, `T*` in Scala, `...$xs` in PHP), instead of emitting no type edge (#4638, thanks @madhusudanpatnaik).
+- Fix: **dart** a legacy typedef that returns a function type (`typedef int Function(int) Make();`) is named by its own declared name instead of by `Function` (#4641, thanks @madhusudanpatnaik).
+- Fix: **skill** a file a semantic subagent dispatched but never reported a coverage entry for is treated as unread and re-dispatched, instead of being cached and stamped complete from nodes guessed off its name; the subagent prompt now asks for a coverage entry (0 = never opened) for every file (#2225, thanks @Kalessin-Roke).
 
-The AST cache schema is bumped to 46; warm caches re-run the affected C#, Kotlin, Swift, Dart and C++ extractions.
+The AST cache schema is bumped to 46; warm caches re-run the affected C#, Kotlin, Swift, Dart, C++, Go, Java, Scala and PHP extractions.
 
 ## 0.9.108 (2026-11-12)
 
