@@ -3294,21 +3294,45 @@ def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Pa
     return None
 
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
-    """``(plain caller id, body)`` for every top-level ``def`` in the module.
+    """``(plain caller id, body)`` for every top-level ``def`` and every method of
+    a top-level class, decorated or not.
+
+    A decorated definition is wrapped in a ``decorated_definition`` node, and a
+    method lives in its class body; skipping either dropped every aliased import
+    call made there (``from m import f as g`` then ``g()``), which only these
+    facts can resolve because the bare-name pass never matches ``g`` to ``f``.
 
     Deliberately the *unsalted* id: ``_apply_symbol_resolution_facts`` resolves
     the caller against the final graph, where the underscore-collision spread
     (#3302) is baked into the ids.
     """
+    def definition(node):
+        if node.type == "decorated_definition":
+            return node.child_by_field_name("definition")
+        return node
+
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
-    for node in root_node.children:
-        if node.type != "function_definition":
+    for top in root_node.children:
+        node = definition(top)
+        if node is None:
             continue
         name_node = node.child_by_field_name("name")
         body = node.child_by_field_name("body")
-        if name_node is not None and body is not None:
-            bodies.append((_make_id(stem, _read_text(name_node, source)), body))
+        if name_node is None or body is None:
+            continue
+        name = _read_text(name_node, source)
+        if node.type == "function_definition":
+            bodies.append((_make_id(stem, name), body))
+        elif node.type == "class_definition":
+            for member in body.children:
+                method = definition(member)
+                if method is None or method.type != "function_definition":
+                    continue
+                method_name = method.child_by_field_name("name")
+                method_body = method.child_by_field_name("body")
+                if method_name is not None and method_body is not None:
+                    bodies.append((_make_id(stem, name, _read_text(method_name, source)), method_body))
     return bodies
 
 def _python_call_identifier(node, source: bytes) -> str | None:
