@@ -161,3 +161,20 @@ def test_decorator_reached_through_an_imported_object_keeps_existing_behaviour(t
         "app.py": "from mylib import api\n\n@api.route\ndef load():\n    return 1\n",
     })
     assert _nid("mylib.py", "route") in _deco_targets(r, _nid("app.py", "load"))
+
+
+def test_from_import_does_not_bind_its_own_module_name():
+    """`from mylib import api` binds `api`, never `mylib` itself. py-tree-sitter
+    returns a new Node object on every access, so the module_name child has to be
+    skipped by equality: an `is` check never matches and the module was bound as
+    one of its own imported names."""
+    import tree_sitter_python as tsp
+    from tree_sitter import Language, Parser
+
+    from graphify.extractors.engine import _python_import_bindings
+
+    src = b"from mylib import api\nfrom pkg.sub import a as b\n"
+    tree = Parser(Language(tsp.language())).parse(src)
+    modules, names = _python_import_bindings(tree.root_node, src)
+    assert modules == {}
+    assert names == {"api": ("mylib", "api"), "b": ("pkg.sub", "a")}

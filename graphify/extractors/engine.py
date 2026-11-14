@@ -10758,7 +10758,7 @@ def _python_import_bindings(root_node, source: bytes) -> tuple[dict[str, str], d
                 continue  # relative (`from . import x`) or malformed
             module = _read_text(mod, source)
             for c in stmt.named_children:
-                if c is mod:
+                if c == mod:  # not `is`: py-tree-sitter builds a new Node per access
                     continue
                 if c.type == "dotted_name":
                     name = _read_text(c, source)
