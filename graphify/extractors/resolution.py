@@ -4129,6 +4129,21 @@ def _merge_decl_def_classes(
         rewritten.append(e)
     all_edges[:] = rewritten
 
+
+_GO_COMMENT_RE = re.compile(rb"//[^\n]*|/\*.*?\*/", re.DOTALL)
+_GO_PACKAGE_RE = re.compile(rb"^\s*package\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
+
+
+def _go_package_clause(path: Path) -> str | None:
+    """The package name a Go file's ``package`` clause declares, or None if unreadable."""
+    try:
+        source = _read_source_bytes(path, warn=False)
+    except Exception:
+        return None
+    m = _GO_PACKAGE_RE.search(_GO_COMMENT_RE.sub(b" ", source))
+    return m.group(1).decode("ascii") if m else None
+
+
 def _merge_go_package_types(
     all_nodes: list[dict],
     all_edges: list[dict],
@@ -4150,9 +4165,12 @@ def _merge_go_package_types(
       * Every node in the id-collision must be a ``.go`` file in ONE directory — Go's
         package unit. The id folds in only the directory's NAME, so ``a/svc`` and
         ``b/svc`` collide on id while being different packages; those stay split.
-      * Folding stops at a ``_test.go`` member, whose package clause may be the separate
-        ``svc_test`` package declaring a type of its own name. The clause is not parsed,
-        so same-directory is not evidence of same package there.
+      * A ``_test.go`` member folds only when its package clause names the same
+        package as the group's other files (#5209). An internal test file
+        (``package svc``) commonly adds test-only methods to a package type, while an
+        external test package (``package svc_test``) shares the directory but declares
+        types of its own; same-directory is not evidence of same package there, so a
+        clause that differs or cannot be read keeps the group split.
 
     No edge re-pointing is needed: the group already shares one id, so every edge
     already points at the survivor. The declaration site wins — the file holding
@@ -4187,7 +4205,9 @@ def _merge_go_package_types(
         if len({f.parent for f in files}) != 1:
             continue
         if any(f.name.endswith("_test.go") for f in files):
-            continue
+            clauses = {_go_package_clause(f) for f in files}
+            if len(clauses) != 1 or None in clauses:
+                continue
         # A type whose declaring file is outside the corpus leaves the whole group
         # method-only; one node is still the answer, so fold on the lowest path.
         declared = declaring_files.get(nid, set())
