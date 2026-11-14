@@ -1,0 +1,56 @@
+{
+  "name": "graphify",
+  "version": "1.0.0",
+  "description": "Query indexed repositories, trace code dependencies, assess change impact, and use repository memory through hosted Graphify MCP.",
+  "keywords": [
+    "graphify",
+    "code graph",
+    "repository",
+    "dependencies",
+    "impact analysis",
+    "code review",
+    "MCP"
+  ],
+  "author": "Graphify Labs",
+  "homepage": "https://graphify.com",
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "skillInstructions": "Use Graphify for questions about indexed repositories, code structure, symbols, callers, dependencies, change impact, linked tests, repository memory, and pull request review status. Discover the current tools from the connection rather than assuming a fixed tool list. If the target is unclear, use list_workspaces and list_repositories first. Prefer scoped graph queries before broad source searches, and ground answers in returned source locations. Ask for confirmation before set_workspace or remember. Never claim that review_status starts a review, and never treat graph evidence as coverage of unindexed or uncommitted changes.",
+  "interface": {
+    "defaultLocale": "en-US",
+    "locales": "./locales/",
+    "displayName": "Graphify",
+    "shortDescription": "Code graph answers",
+    "longDescription": "Connect Kimi to your hosted Graphify workspace. Search indexed repositories, find symbols, trace callers and dependencies, assess change impact, recall team memory, and read pull request review status through OAuth-secured Graphify MCP.",
+    "developerName": "Graphify Labs",
+    "websiteURL": "https://graphify.com/mcp",
+    "iconUrl": "https://raw.githubusercontent.com/Graphify-Labs/graphify-cursor-plugin/d33fafa025441d928ba6372f13348b6d885deb07/plugins/graphify/assets/logo.png",
+    "category": "DEVELOPER",
+    "brandColor": {
+      "light": "#16C456",
+      "dark": "#16C456"
+    },
+    "tryPrompts": [
+      "Show which repositories you can query with Graphify",
+      "Explain how authentication works in my repository",
+      "Check the impact of changing my payment parser"
+    ],
+    "mcpOverrides": {
+      "graphify": {
+        "displayName": "Graphify MCP",
+        "description": "Hosted code graphs, dependency analysis, repository memory, and review status"
+      }
+    },
+    "skillOverrides": {
+      "graphify-code-graph": {
+        "displayName": "Graphify code graph",
+        "description": "Choose the right Graphify query and verify repository-grounded answers"
+      }
+    }
+  },
+  "mcpServers": {
+    "graphify": {
+      "url": "https://api.graphify.com/mcp"
+    }
+  }
+}
