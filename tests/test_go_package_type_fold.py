@@ -5,7 +5,8 @@ it mints the type again under the same id, and disambiguation then split those a
 path — leaving one type fragmented into several partial nodes, each owning some of its
 methods, which every single-definition guard downstream reads as an ambiguity. The fold
 runs before disambiguation; the negative cases pin what must stay split, since the id
-folds in the directory's name rather than its path and the package clause is not parsed.
+folds in the directory's name rather than its path, and a ``_test.go`` file folds only when
+its package clause matches the other files' (#5209).
 """
 from __future__ import annotations
 
