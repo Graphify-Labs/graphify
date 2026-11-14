@@ -182,7 +182,7 @@ def _member_keys(lang: str, callee: str) -> tuple[str, ...]:
 
 
 def _add_cross_repo_edge(merged: "nx.Graph", source: str, target: str, relation: str,
-                         caller_data: dict, entry: dict) -> bool:
+                         caller_data: dict, entry: dict, metadata: dict | None = None) -> bool:
     if target == source or merged.has_edge(source, target):
         return False
     merged.add_edge(
@@ -203,6 +203,7 @@ def _add_cross_repo_edge(merged: "nx.Graph", source: str, target: str, relation:
         _src=source,
         _tgt=target,
         **{CROSS_REPO_CALL_MARKER: True},
+        **({"metadata": metadata} if metadata else {}),
     )
     return True
 
@@ -405,5 +406,10 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 if len(targets) != 1:
                     continue
                 target = targets[0]
-            added += _add_cross_repo_edge(merged, caller, target, "calls", caller_data, entry)
+            metadata = entry.get("metadata")
+            conditions = metadata.get("cpp_conditions") if lang == "cpp" and isinstance(metadata, dict) else None
+            added += _add_cross_repo_edge(
+                merged, caller, target, "calls", caller_data, entry,
+                metadata={"cpp_conditions": conditions} if isinstance(conditions, list) and conditions else None,
+            )
     return added

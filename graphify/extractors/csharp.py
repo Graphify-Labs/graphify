@@ -11,10 +11,26 @@ the core migration happens.
 from __future__ import annotations
 
 import html
+from collections.abc import Iterable
 from pathlib import Path
 
 from graphify.extractors.base import _make_id
 from graphify.rcfile import effective_suffix
+
+
+def is_csharp_constructor_node(node: dict) -> bool:
+    """A C# constructor node (instance, static or primary).
+
+    A constructor carries its type's name but is reached only through `new`
+    or a `: base(...)` / `: this(...)` initializer, never by that name, so the
+    name-keyed call indexes leave it out.
+    """
+    metadata = node.get("metadata") or {}
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("kind") == "constructor"
+        and effective_suffix(str(node.get("source_file") or "")) == ".cs"
+    )
 
 
 def _build_csharp_type_def_index(
@@ -187,6 +203,92 @@ def _metadata(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _is_plain_csharp_name(text: str) -> bool:
+    return bool(text) and not any(ch in text for ch in ".()") and not any(
+        ch.isspace() for ch in text
+    )
+
+
+def bare_csharp_method_label(label: object, source_file: object) -> str | None:
+    """Return the ``.Name()`` resolver form of a C# method label, else ``None``.
+
+    Accepts both the extractor's bare ``.Name()`` and the owner-qualified
+    ``Owner.Name()`` display form the graph build assigns (#4883). Extraction
+    emits, and call resolution, interface dispatch, and the method-ghost index
+    match on, the bare form, so anything reading labels back from a persisted
+    graph normalizes through here. C# method and type names never contain a
+    dot (an explicit interface implementation is still labeled ``.Build()``),
+    so the split is unambiguous.
+    """
+    if not _is_cs_file(source_file) or not isinstance(label, str):
+        return None
+    if not label.endswith("()"):
+        return None
+    owner, dot, name = label[:-2].rpartition(".")
+    if not dot or not _is_plain_csharp_name(name):
+        return None
+    if owner and not _is_plain_csharp_name(owner):
+        return None
+    return f".{name}()"
+
+
+def bare_csharp_method_labels_in_nodes(nodes: list[dict]) -> list[dict]:
+    """Copy of *nodes* with owner-qualified C# method labels reverted to ``.Name()``.
+
+    Nodes that need no change are returned as-is; changed nodes are shallow
+    copies, so the caller's list and dicts are never mutated.
+    """
+    out: list[dict] = []
+    for node in nodes:
+        label = node.get("label")
+        bare = bare_csharp_method_label(label, node.get("source_file"))
+        out.append(node if bare is None or bare == label else {**node, "label": bare})
+    return out
+
+
+def csharp_method_label_reassignments(
+    nodes: Iterable[tuple[object, dict]],
+    method_edges: Iterable[tuple[object, object]],
+) -> dict[str, str]:
+    """Return ``{method_id: "Owner.Name()"}`` display labels for C# methods (#4883).
+
+    *nodes* are ``(id, attrs)`` pairs and *method_edges* are ``(owner_id,
+    method_id)`` pairs from ``method`` edges. A method with zero or several
+    distinct owner labels, or an owner whose label is not a plain type name,
+    is omitted and keeps its bare ``.Name()`` label. Derived from the bare form,
+    so applying it to already-qualified labels is a no-op.
+    """
+    owner_label_by_id: dict[str, str] = {}
+    bare_by_id: dict[str, str] = {}
+    for nid, attrs in nodes:
+        if not isinstance(nid, str) or not isinstance(attrs, dict):
+            continue
+        label = attrs.get("label")
+        source_file = attrs.get("source_file")
+        if not isinstance(label, str) or not _is_cs_file(source_file):
+            continue
+        if _is_plain_csharp_name(label):
+            owner_label_by_id[nid] = label
+            continue
+        bare = bare_csharp_method_label(label, source_file)
+        if bare is not None:
+            bare_by_id[nid] = bare
+
+    owner_labels_by_method: dict[str, set[str | None]] = {}
+    for owner, method in method_edges:
+        if isinstance(owner, str) and isinstance(method, str) and method in bare_by_id:
+            owner_labels_by_method.setdefault(method, set()).add(owner_label_by_id.get(owner))
+
+    out: dict[str, str] = {}
+    for method, owner_labels in owner_labels_by_method.items():
+        if len(owner_labels) != 1:
+            continue
+        owner_label = next(iter(owner_labels))
+        if owner_label is not None:
+            out[method] = f"{owner_label}{bare_by_id[method]}"
+    return out
+
+
 class CsharpNameResolver:
     """Namespace/using/alias-aware C# simple-name resolution.
 
@@ -319,6 +421,34 @@ class CsharpNameResolver:
             if self._using_in_scope(scope_kind, scope_id, source_node):
                 _append_unique(scopes, namespace)
         return scopes
+
+    def visible_namespaces(self, source_node: dict, source_file: str) -> list[set[str]]:
+        """Namespaces visible to extension-method lookup, innermost level first.
+
+        C# 12.8.10.3: for each enclosing namespace declaration — innermost first,
+        ending with the compilation unit — consider that namespace and the
+        ``using namespace`` directives declared at that level. A file-level
+        using belongs to the compilation unit, so it is only considered at the
+        outermost level; that is why an extension declared in an inner namespace
+        wins over one imported at the top of the file (#4828).
+
+        A namespace-scoped using is treated as visible at every level inside it.
+        That is coarser than the spec but only ever adds candidates at a deeper
+        level than the directive's own, and the caller drops ties.
+        """
+        chain = [part for part in self._namespace(source_node).split(".") if part]
+        usings = self.namespace_usings_by_file.get(source_file, [])
+        levels: list[set[str]] = []
+        for i in range(len(chain), -1, -1):
+            visible = {".".join(chain[:i])}
+            for target_fqn, scope_kind, scope_id in usings:
+                if scope_kind == "file":
+                    if i == 0:
+                        visible.add(target_fqn)
+                elif self._using_in_scope(scope_kind, scope_id, source_node):
+                    visible.add(target_fqn)
+            levels.append(visible)
+        return levels
 
     def _resolve_alias(self, label: str, source_node: dict, source_file: str) -> str | None:
         hits = set()

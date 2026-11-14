@@ -365,3 +365,111 @@ def test_non_python_import_edge_is_not_repointed(tmp_path):
     assert not any(v == "src_pkg_mod" and u == "app_cs" for _, u, v in _import_edges(G)), (
         "non-Python import edge was repointed onto a Python file (#2072 review)"
     )
+
+
+def _write_tree(base: Path, files: dict[str, str]) -> list[Path]:
+    written = []
+    for rel, body in files.items():
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+        written.append(p)
+    return written
+
+
+_NAMESPACE_BASE = (
+    "class DbApiHook:\n"
+    "    def strip_sql_string(self, sql):\n"
+    "        return sql\n\n"
+    "def free_fn():\n"
+    "    return 1\n"
+)
+_NAMESPACE_SUB = (
+    "from airflow.sql.hooks.sql import DbApiHook, free_fn\n\n"
+    "class PrestoHook(DbApiHook):\n"
+    "    def get_records(self, sql):\n"
+    "        free_fn()\n"
+    "        return self.strip_sql_string(sql)\n"
+)
+
+
+def _calls(result) -> set[tuple[str, str, str]]:
+    labels = {n["id"]: n.get("label", n["id"]) for n in result["nodes"]}
+    return {
+        (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]), e.get("confidence"))
+        for e in result["edges"] if e.get("relation") == "calls"
+    }
+
+
+def test_namespace_distributions_under_src_resolve_across_each_other(tmp_path):
+    """PEP 420: two distributions share the `airflow` namespace, each under its
+    own `src/`, and no directory has an `__init__.py`. The import across them
+    resolves, so the subclass's inherited `self.strip_sql_string()` call and the
+    imported `free_fn()` are extracted, not dropped or left as name guesses."""
+    paths = _write_tree(tmp_path, {
+        "pkgsql/src/airflow/sql/hooks/sql.py": _NAMESPACE_BASE,
+        "pkgpresto/src/airflow/presto/hooks/presto.py": _NAMESPACE_SUB,
+    })
+    calls = _calls(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False))
+    assert (".get_records()", ".strip_sql_string()", "EXTRACTED") in calls, calls
+    assert (".get_records()", "free_fn()", "EXTRACTED") in calls, calls
+
+
+def test_namespace_module_under_two_src_roots_stays_unresolved(tmp_path):
+    """The same namespace module under two `src/` roots is ambiguous: no call is
+    bound to either copy."""
+    paths = _write_tree(tmp_path, {
+        "a/src/airflow/sql/hooks/sql.py": _NAMESPACE_BASE,
+        "b/src/airflow/sql/hooks/sql.py": _NAMESPACE_BASE,
+        "c/src/airflow/presto/hooks/presto.py": _NAMESPACE_SUB,
+    })
+    calls = _calls(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False))
+    assert not any(t == ".strip_sql_string()" for _, t, _ in calls), calls
+    assert not any(t == "free_fn()" and c == "EXTRACTED" for _, t, c in calls), calls
+
+
+def test_loose_module_directly_under_src_is_not_aliased(tmp_path):
+    """`src/helpers.py` (no namespace dir) keeps its old handling: a bare
+    `import helpers` elsewhere may name a third-party module."""
+    from graphify.extract import _namespace_src_module_parts
+
+    assert _namespace_src_module_parts(("pkg", "src", "helpers.py")) is None
+    assert _namespace_src_module_parts(("pkg", "src", "logging", "handlers.py")) is None
+    assert _namespace_src_module_parts(("scripts", "tool.py")) is None
+    assert _namespace_src_module_parts(("d", "src", "airflow", "sql", "hooks", "sql.py")) == (
+        "airflow", "sql", "hooks", "sql.py",
+    )
+
+
+def test_ambiguous_import_placeholder_id_is_independent_of_checkout_path(tmp_path):
+    """#5044: the same tree built in two directories must mint the same
+    placeholder id for an ambiguous import. The id used to hash the absolute
+    source path and the absolute-path-derived importer id, so only the checkout
+    location changed it."""
+    files = {
+        "app/main.py": "from helper import f\n\n\ndef run():\n    return f()\n",
+        "one/helper.py": "def f():\n    return 1\n",
+        "two/helper.py": "def f():\n    return 2\n",
+    }
+
+    def placeholders(checkout: Path) -> list[tuple[str, str, str]]:
+        paths = []
+        for rel, body in files.items():
+            path = checkout / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+            paths.append(path)
+        result = extract(
+            paths, cache_root=checkout / "cache", root=checkout, parallel=False
+        )
+        return sorted(
+            (edge["source"], edge["target"], edge.get("source_file", ""))
+            for edge in result["edges"]
+            if str(edge.get("target", "")).startswith("ambiguous_python_import_")
+        )
+
+    first = placeholders(tmp_path / "checkout-aaa")
+    second = placeholders(tmp_path / "nested" / "checkout-bbbbbbbb")
+
+    assert first, "the ambiguous `helper` import should keep a placeholder edge"
+    assert first == second, f"placeholder ids depend on the checkout path: {first} != {second}"
