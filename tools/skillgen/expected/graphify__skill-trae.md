@@ -337,7 +337,7 @@ for src, n in sorted(covered.items()):
     if total and n < total:
         partial.append((src, n, total))
 
-unread, dropped = drop_unreported_chunk_sources(Path('graphify-out'), Path('INPUT_PATH'))
+unread, dropped = drop_unreported_chunk_sources(Path('graphify-out'), Path(INPUT_PATH))
 Path('graphify-out/.graphify_partial.txt').write_text('\n'.join(dict.fromkeys([s for s, _, _ in partial] + unread)), encoding=\"utf-8\")
 if unread:
     print(f'WARNING: {len(unread)} file(s) reported no coverage, so they were never read. Dropped {dropped} item(s) guessed for them; retried on the next --update:', *unread, sep='\n  ')
