@@ -1525,6 +1525,52 @@ def test_unanchored_pattern_matches_a_name_not_a_path(tmp_path, pattern, ignored
     assert _ignored_among(tmp_path, f"{pattern}\n", ignored + kept) == set(ignored)
 
 
+@pytest.mark.parametrize(
+    ("pattern", "ignored", "kept"),
+    [
+        pytest.param(
+            "Generated\\ Files/",
+            ["Generated Files/winrt/base.h", "pkg/Generated Files/x.h"],
+            ["Generated/x.py", "Files/y.py"],
+            id="escaped-space-from-visualstudio-template",
+        ),
+        pytest.param(
+            "\\!important.py",
+            ["!important.py"],
+            ["important.py"],
+            id="escaped-leading-bang-is-literal",
+        ),
+        pytest.param(
+            "/app/\\[id\\].py",
+            ["app/[id].py"],
+            ["app/i.py", "app/d.py"],
+            id="escaped-brackets-are-literal",
+        ),
+        pytest.param(
+            "[^a]b.py",
+            ["cb.py", "pkg/xb.py"],
+            ["ab.py"],
+            id="caret-negates-a-set",
+        ),
+    ],
+)
+def test_ignore_pattern_escapes_and_sets_match_git(tmp_path, pattern, ignored, kept):
+    """Escapes and `[^...]` read the way git reads them (expected sets checked with git check-ignore)."""
+    _touch(tmp_path, *ignored, *kept)
+
+    assert _ignored_among(tmp_path, f"{pattern}\n", ignored + kept) == set(ignored)
+
+
+def test_glob_match_escapes_wildcards_and_rejects_unclosed_set():
+    from graphify.detect import _glob_match
+
+    assert _glob_match("a*b.py", "a\\*b.py")
+    assert not _glob_match("axb.py", "a\\*b.py")
+    assert _glob_match("a?b", "a\\?b")
+    assert not _glob_match("acb", "a\\?b")
+    assert not _glob_match("[a", "[a")
+
+
 def _detected(root):
     return {
         Path(p).relative_to(root).as_posix()
