@@ -329,12 +329,15 @@ _BODY_NON_TABLES = frozenset({
 })
 
 
-def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
+def _routine_body_refs(masked: str, *, plsql: bool = False) -> list[tuple[str, str, int]]:
     """(relation, table name as written, offset) for each table a masked
     routine body reads (`FROM`/`JOIN`) or writes (`INSERT`/`UPDATE`/`DELETE`/
     `MERGE`/`SELECT ... INTO`), in source order. Temp tables and variables never
     match the identifier atom; CTE names and keywords are dropped; the target of
-    `UPDATE o ... FROM dbo.Orders o` is resolved through the alias."""
+    `UPDATE o ... FROM dbo.Orders o` is resolved through the alias.
+
+    With ``plsql`` a bare `INTO` is not a write: PL/SQL's `SELECT`/`FETCH`/
+    `RETURNING ... INTO` name a variable, not the table T-SQL's creates."""
     non_tables = set(_BODY_NON_TABLES)
     for cm in _BODY_CTE_RX.finditer(masked):
         non_tables.add(_norm_ident(cm.group(1)))
@@ -344,6 +347,8 @@ def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
 
     writes: list[tuple[int, int, str, str]] = []  # (start, end, relation, name)
     for m in _BODY_WRITE_RX.finditer(masked):
+        if plsql and m.group(1).upper() == "INTO":
+            continue
         if m.group(1).upper() != "INTO" and _BODY_EVENT_RX.search(masked[max(0, m.start() - 30):m.start()]):
             continue
         if _usable(m.group(2)):
@@ -386,6 +391,68 @@ def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
             name = aliases.get(name.lower(), name)
         refs.append((pos, relation, name))
     return [(relation, name, pos) for pos, relation, name in sorted(refs)]
+
+
+# `CREATE PACKAGE body IS` names a package called body.
+_PACKAGE_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?PACKAGE\s+"
+    r"(BODY\s+(?!(?:IS|AS)\b))?(?:IF\s+NOT\s+EXISTS\s+)?(" + _TRIGGER_IDENT + r")",
+    re.IGNORECASE,
+)
+# `END IF` / `END LOOP` close openers that are not tracked; `END CASE` is
+# consumed whole so its CASE is not an opener. The lookarounds exclude `$END`,
+# `rec.end`, `:new.end` and a quoted `"END"`.
+_PLSQL_BLOCK_RX = re.compile(
+    r"(?<![\w$#.:\"])(?:(?:PROCEDURE|FUNCTION)\s+(\"(?:[^\"\n]|\"\")+\"|[\w$#]+)"
+    r"|(BEGIN|CASE)|END(?:\s+(IF|LOOP)|\s+CASE)?)(?![\w$#\"])",
+    re.IGNORECASE,
+)
+_PLSQL_HEAD_END_RX = re.compile(r";|(?<![\w$#.])(?:IS|AS)(?![\w$#])", re.IGNORECASE)
+# `PROCEDURE p AS LANGUAGE JAVA NAME ...;` is a definition with no block.
+_PLSQL_CALL_SPEC_RX = re.compile(r"\s*(?:LANGUAGE|EXTERNAL)\b", re.IGNORECASE)
+
+
+def _package_members(masked: str, start: int, limit: int) -> list[tuple[str, int, tuple[int, int] | None, bool]]:
+    """(name, offset, body span or None, is_definition) for each subprogram
+    declared at package level between masked[start] (the end of the package
+    name) and masked[limit]. A member whose END is not found gets no span."""
+    pkg_head = _PLSQL_HEAD_END_RX.search(masked, start, limit)
+    if pkg_head is None or pkg_head.group() == ";":
+        return []
+    members: list[tuple[str, int, tuple[int, int] | None, bool]] = []
+    stack: list[bool] = []  # per open block: True while in a declarative part
+    open_member: tuple[int, int] | None = None
+    in_init = False
+    for tok in _PLSQL_BLOCK_RX.finditer(masked, pkg_head.end(), limit):
+        if tok.group(1):
+            if stack and not stack[-1]:
+                continue
+            head = _PLSQL_HEAD_END_RX.search(masked, tok.end(), limit)
+            is_def = head is not None and head.group() != ";"
+            if not stack:
+                members.append((tok.group(1), tok.start(), None, is_def))
+            if head is not None and is_def and not _PLSQL_CALL_SPEC_RX.match(masked, head.end(), limit):
+                if not stack:
+                    open_member = (len(members) - 1, head.end())
+                stack.append(True)
+        elif tok.group(2):
+            if tok.group(2).upper() == "BEGIN" and stack and stack[-1]:
+                stack[-1] = False
+            else:
+                in_init = in_init or (not stack and tok.group(2).upper() == "BEGIN")
+                stack.append(False)
+        elif not tok.group(3):
+            if not stack:
+                break
+            stack.pop()
+            if not stack and in_init:
+                break
+            if not stack and open_member is not None:
+                idx, body_start = open_member
+                name, pos, _span, is_def = members[idx]
+                members[idx] = (name, pos, (body_start, tok.start()), is_def)
+                open_member = None
+    return members
 
 
 # A `GO` batch separator is a client-tool command, not SQL: tree-sitter-sql reads it as an
@@ -1010,6 +1077,39 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     continue
                 seen_refs.add((relation, tbl_nid))
                 _add_edge(fn_nid, tbl_nid, relation, masked_src.count("\n", 0, m.end() + pos) + 1)
+
+        # Bodies before specs, so a member's node carries the line of its
+        # definition when a spec precedes the body in the same file.
+        member_refs: dict[str, set[tuple[str, str]]] = {}
+        for m in sorted(_PACKAGE_RECOVERY_RX.finditer(masked_src), key=lambda pm: not pm.group(1)):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            pkg_name = m.group(2)
+            pkg_nid = _make_id(stem, pkg_name)
+            _add_node(pkg_nid, _clean_ident(pkg_name), masked_src.count("\n", 0, m.start()) + 1)
+            end = _BODY_END_RX.search(masked_src, m.end())
+            limit = end.start() if end else len(masked_src)
+            for member, pos, span, is_def in _package_members(masked_src, m.end(), limit):
+                if m.group(1) and not is_def:
+                    continue
+                member_nid = _make_id(stem, f"{pkg_name}.{member}")
+                # Overloads share one node.
+                if member_nid not in seen_ids:
+                    member_line = masked_src.count("\n", 0, pos) + 1
+                    seen_ids.add(member_nid)
+                    nodes.append({"id": member_nid, "label": f"{_clean_ident(pkg_name)}.{member}()",
+                                  "file_type": "code", "source_file": str_path,
+                                  "source_location": f"L{member_line}"})
+                    _add_edge(pkg_nid, member_nid, "contains", member_line)
+                if span is None:
+                    continue
+                seen_refs = member_refs.setdefault(member_nid, set())
+                for relation, tbl, ref_pos in _routine_body_refs(masked_src[span[0]:span[1]], plsql=True):
+                    tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
+                    if (relation, tbl_nid) in seen_refs:
+                        continue
+                    seen_refs.add((relation, tbl_nid))
+                    _add_edge(member_nid, tbl_nid, relation, masked_src.count("\n", 0, span[0] + ref_pos) + 1)
 
         for m in _TRIGGER_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):
