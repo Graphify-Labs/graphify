@@ -1,0 +1,562 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "project": "JSONLab",
+    "release": "v2.0",
+    "repository": "https://github.com/NeuroJSON/jsonlab",
+    "commit": "5a58fafdca239e61be4d7b2270307b2445bb571a",
+    "license": "BSD-3-Clause",
+    "attribution": "Qianqian Fang and contributors; original author header and full LICENSE_BSD.txt retained verbatim.",
+    "files": [
+      {
+        "path": "loadjson.m",
+        "source_url": "https://github.com/NeuroJSON/jsonlab/blob/5a58fafdca239e61be4d7b2270307b2445bb571a/loadjson.m",
+        "sha256": "ecb4bca8b9762a1849923536694f418b6cea9e6240959244e9ec629925d366f5",
+        "size_bytes": 21604
+      },
+      {
+        "path": "LICENSE_BSD.txt",
+        "source_url": "https://github.com/NeuroJSON/jsonlab/blob/5a58fafdca239e61be4d7b2270307b2445bb571a/LICENSE_BSD.txt",
+        "sha256": "2e5589a9aa67172658bd5f5d79313160d1327ecdb740ca6cf2fb05f6f4efa74e",
+        "size_bytes": 1707
+      }
+    ]
+  },
+  "contract": {
+    "source_file": "loadjson.m",
+    "coordinates": "One-based rows and UTF-8 byte columns; declaration start is function keyword.",
+    "keys": "Manifest-local logical keys, not Graphify IDs. Resolve actual endpoints using source file, metadata.kind, exact label, metadata.scope_chain and declaration source_location; all definitions here begin at byte column 1.",
+    "definitions": "Exhaustive trustworthy declarations; file node listed separately.",
+    "contains": "Exhaustive immediate containment; source_location is the child declaration row. No method or inherits edges exist in this slice.",
+    "calls": "Exhaustive eligible resolved same-file raw call sites, before persisted pair coalescing. Compare multisets by relationship, endpoint logical keys and source_location. column/source_text independently locate the written identifier; graph source_location uses L<row>. Every call must have confidence EXTRACTED and weight 1.0.",
+    "metadata": "Every file/definition node has nested metadata.language=matlab. Definition kind is matlab_function, scope_chain is []. File kind is matlab_file with matlab_file_kind=function and matlab_primary_name=loadjson.",
+    "denominator": "Cross-file/builtin calls, indexing, handles, anonymous bodies, dotted dispatch and whole-scope-barred calls are excluded, not missing expected calls.",
+    "independence": "Manually reviewed pinned source and accepted issue 4 rules; no MATLAB frontend output, parser output or JSONLab execution used to choose records.",
+    "specification": "https://github.com/JulioLeonPhD/graphify/issues/4#issuecomment-6420416127"
+  },
+  "file": {
+    "key": "file",
+    "path": "loadjson.m",
+    "kind": "matlab_file",
+    "matlab_file_kind": "function",
+    "matlab_primary_name": "loadjson"
+  },
+  "definitions": [
+    {
+      "key": "loadjson@L1:C1",
+      "name": "loadjson",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L1",
+      "column": 1,
+      "end_line": 167,
+      "source_text": "function data = loadjson(fname,varargin)"
+    },
+    {
+      "key": "parse_array@L173:C1",
+      "name": "parse_array",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L173",
+      "column": 1,
+      "end_line": 312,
+      "source_text": "function [object, pos,index_esc] = parse_array(inputstr, pos, esc, index_esc, varargin) % JSON array is written in row-major order"
+    },
+    {
+      "key": "parse_char@L315:C1",
+      "name": "parse_char",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L315",
+      "column": 1,
+      "end_line": 323,
+      "source_text": "function pos=parse_char(inputstr, pos, c)"
+    },
+    {
+      "key": "next_char@L326:C1",
+      "name": "next_char",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L326",
+      "column": 1,
+      "end_line": 333,
+      "source_text": "function [c, pos] = next_char(inputstr, pos)"
+    },
+    {
+      "key": "parseStr@L336:C1",
+      "name": "parseStr",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L336",
+      "column": 1,
+      "end_line": 396,
+      "source_text": "function [str, pos,index_esc] = parseStr(inputstr, pos, esc, index_esc, varargin)"
+    },
+    {
+      "key": "parse_number@L399:C1",
+      "name": "parse_number",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L399",
+      "column": 1,
+      "end_line": 406,
+      "source_text": "function [num, pos] = parse_number(inputstr, pos, varargin)"
+    },
+    {
+      "key": "parse_value@L409:C1",
+      "name": "parse_value",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L409",
+      "column": 1,
+      "end_line": 448,
+      "source_text": "function [val, pos,index_esc] = parse_value(inputstr, pos, esc, index_esc, varargin)"
+    },
+    {
+      "key": "parse_object@L451:C1",
+      "name": "parse_object",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L451",
+      "column": 1,
+      "end_line": 481,
+      "source_text": "function [object, pos, index_esc] = parse_object(inputstr, pos, esc, index_esc, varargin)"
+    },
+    {
+      "key": "error_pos@L485:C1",
+      "name": "error_pos",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L485",
+      "column": 1,
+      "end_line": 493,
+      "source_text": "function pos=error_pos(msg, inputstr, pos)"
+    },
+    {
+      "key": "skip_whitespace@L497:C1",
+      "name": "skip_whitespace",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L497",
+      "column": 1,
+      "end_line": 502,
+      "source_text": "function newpos=skip_whitespace(pos, inputstr)"
+    },
+    {
+      "key": "unescapejsonstring@L505:C1",
+      "name": "unescapejsonstring",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L505",
+      "column": 1,
+      "end_line": 521,
+      "source_text": "function newstr=unescapejsonstring(str)"
+    },
+    {
+      "key": "sscanf_prep@L524:C1",
+      "name": "sscanf_prep",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L524",
+      "column": 1,
+      "end_line": 532,
+      "source_text": "function arraystr=sscanf_prep(str)"
+    },
+    {
+      "key": "parse2darray@L535:C1",
+      "name": "parse2darray",
+      "kind": "matlab_function",
+      "scope_chain": [],
+      "source_location": "L535",
+      "column": 1,
+      "end_line": 552,
+      "source_text": "function [obj, nextidx,nextdim]=parse2darray(inputstr,startpos,arraystr)"
+    }
+  ],
+  "contains": [
+    {
+      "source": "file",
+      "target": "loadjson@L1:C1",
+      "source_location": "L1"
+    },
+    {
+      "source": "file",
+      "target": "parse_array@L173:C1",
+      "source_location": "L173"
+    },
+    {
+      "source": "file",
+      "target": "parse_char@L315:C1",
+      "source_location": "L315"
+    },
+    {
+      "source": "file",
+      "target": "next_char@L326:C1",
+      "source_location": "L326"
+    },
+    {
+      "source": "file",
+      "target": "parseStr@L336:C1",
+      "source_location": "L336"
+    },
+    {
+      "source": "file",
+      "target": "parse_number@L399:C1",
+      "source_location": "L399"
+    },
+    {
+      "source": "file",
+      "target": "parse_value@L409:C1",
+      "source_location": "L409"
+    },
+    {
+      "source": "file",
+      "target": "parse_object@L451:C1",
+      "source_location": "L451"
+    },
+    {
+      "source": "file",
+      "target": "error_pos@L485:C1",
+      "source_location": "L485"
+    },
+    {
+      "source": "file",
+      "target": "skip_whitespace@L497:C1",
+      "source_location": "L497"
+    },
+    {
+      "source": "file",
+      "target": "unescapejsonstring@L505:C1",
+      "source_location": "L505"
+    },
+    {
+      "source": "file",
+      "target": "sscanf_prep@L524:C1",
+      "source_location": "L524"
+    },
+    {
+      "source": "file",
+      "target": "parse2darray@L535:C1",
+      "source_location": "L535"
+    }
+  ],
+  "calls": [
+    {
+      "source": "loadjson@L1:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L103",
+      "column": 8,
+      "source_text": "       error_pos('input file does not exist');"
+    },
+    {
+      "source": "loadjson@L1:C1",
+      "target": "next_char@L326:C1",
+      "source_location": "L136",
+      "column": 18,
+      "source_text": "        [cc,pos]=next_char(inputstr, pos);"
+    },
+    {
+      "source": "loadjson@L1:C1",
+      "target": "parse_object@L451:C1",
+      "source_location": "L139",
+      "column": 51,
+      "source_text": "                [data{jsoncount},pos,index_esc] = parse_object(inputstr, pos, esc, index_esc,opt);"
+    },
+    {
+      "source": "loadjson@L1:C1",
+      "target": "parse_array@L173:C1",
+      "source_location": "L141",
+      "column": 51,
+      "source_text": "                [data{jsoncount},pos,index_esc] = parse_array(inputstr, pos, esc, index_esc,opt);"
+    },
+    {
+      "source": "loadjson@L1:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L143",
+      "column": 21,
+      "source_text": "                pos=error_pos('Outer level structure must be an object or an array',inputstr,pos);"
+    },
+    {
+      "source": "parse_char@L315:C1",
+      "target": "skip_whitespace@L497:C1",
+      "source_location": "L316",
+      "column": 9,
+      "source_text": "    pos=skip_whitespace(pos, inputstr);"
+    },
+    {
+      "source": "parse_char@L315:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L318",
+      "column": 13,
+      "source_text": "        pos=error_pos(sprintf('Expected %c at position %%d', c),inputstr,pos);"
+    },
+    {
+      "source": "parse_char@L315:C1",
+      "target": "skip_whitespace@L497:C1",
+      "source_location": "L321",
+      "column": 13,
+      "source_text": "        pos=skip_whitespace(pos, inputstr);"
+    },
+    {
+      "source": "next_char@L326:C1",
+      "target": "skip_whitespace@L497:C1",
+      "source_location": "L327",
+      "column": 9,
+      "source_text": "    pos=skip_whitespace(pos, inputstr);"
+    },
+    {
+      "source": "parse_number@L399:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L403",
+      "column": 13,
+      "source_text": "        pos=error_pos('Error reading number at position %d',inputstr,pos);"
+    },
+    {
+      "source": "parse_value@L409:C1",
+      "target": "parseStr@L336:C1",
+      "source_location": "L417",
+      "column": 36,
+      "source_text": "            [val, pos,index_esc] = parseStr(inputstr, pos, esc, index_esc,varargin{:});"
+    },
+    {
+      "source": "parse_value@L409:C1",
+      "target": "parse_array@L173:C1",
+      "source_location": "L420",
+      "column": 36,
+      "source_text": "            [val, pos,index_esc] = parse_array(inputstr, pos, esc, index_esc, varargin{:});"
+    },
+    {
+      "source": "parse_value@L409:C1",
+      "target": "parse_object@L451:C1",
+      "source_location": "L423",
+      "column": 36,
+      "source_text": "            [val, pos,index_esc] = parse_object(inputstr, pos, esc, index_esc, varargin{:});"
+    },
+    {
+      "source": "parse_value@L409:C1",
+      "target": "parse_number@L399:C1",
+      "source_location": "L426",
+      "column": 26,
+      "source_text": "            [val, pos] = parse_number(inputstr, pos, varargin{:});"
+    },
+    {
+      "source": "parse_value@L409:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L447",
+      "column": 9,
+      "source_text": "    pos=error_pos('Value expected at position %d',inputstr,pos);"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L452",
+      "column": 9,
+      "source_text": "    pos=parse_char(inputstr, pos, '{');"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "next_char@L326:C1",
+      "source_location": "L459",
+      "column": 14,
+      "source_text": "    [cc,pos]=next_char(inputstr,pos);"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "parseStr@L336:C1",
+      "source_location": "L462",
+      "column": 37,
+      "source_text": "            [str, pos, index_esc] = parseStr(inputstr, pos, esc, index_esc, varargin{:});"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L464",
+      "column": 21,
+      "source_text": "                pos=error_pos('Name of value at position %d cannot be empty',inputstr,pos);"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L466",
+      "column": 17,
+      "source_text": "            pos=parse_char(inputstr, pos, ':');"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "parse_value@L409:C1",
+      "source_location": "L467",
+      "column": 36,
+      "source_text": "            [val, pos,index_esc] = parse_value(inputstr, pos, esc, index_esc, varargin{:});"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "next_char@L326:C1",
+      "source_location": "L473",
+      "column": 22,
+      "source_text": "            [cc,pos]=next_char(inputstr,pos);"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L477",
+      "column": 17,
+      "source_text": "            pos=parse_char(inputstr, pos, ',');"
+    },
+    {
+      "source": "parse_object@L451:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L480",
+      "column": 9,
+      "source_text": "    pos=parse_char(inputstr, pos, '}');"
+    },
+    {
+      "source": "parse2darray@L535:C1",
+      "target": "sscanf_prep@L524:C1",
+      "source_location": "L537",
+      "column": 12,
+      "source_text": "    rowstr=sscanf_prep(inputstr(startpos-1:rowend));"
+    }
+  ],
+  "excluded_same_file_sites": [
+    {
+      "source": "parse_array@L173:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L174",
+      "column": 9,
+      "source_text": "    pos=parse_char(inputstr, pos, '[');",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "next_char@L326:C1",
+      "source_location": "L182",
+      "column": 14,
+      "source_text": "    [cc,pos]=next_char(inputstr,pos);",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "sscanf_prep@L524:C1",
+      "source_location": "L191",
+      "column": 30,
+      "source_text": "                    arraystr=sscanf_prep(arraystr);",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L201",
+      "column": 41,
+      "source_text": "                                    pos=parse_char(inputstr, pos, ']');",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "parse2darray@L535:C1",
+      "source_location": "L210",
+      "column": 48,
+      "source_text": "                                [obj, nextidx]=parse2darray(inputstr,pos+rowstart,arraystr);",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L217",
+      "column": 41,
+      "source_text": "                                    pos=parse_char(inputstr, pos, ']');",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L244",
+      "column": 45,
+      "source_text": "                                        pos=parse_char(inputstr, pos, ']');",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "parse_value@L409:C1",
+      "source_location": "L272",
+      "column": 40,
+      "source_text": "                [val, pos,index_esc] = parse_value(inputstr, pos, esc, index_esc,varargin{:});",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "next_char@L326:C1",
+      "source_location": "L274",
+      "column": 26,
+      "source_text": "                [cc,pos]=next_char(inputstr,pos);",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L278",
+      "column": 21,
+      "source_text": "                pos=parse_char(inputstr, pos, ',');",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parse_array@L173:C1",
+      "target": "parse_char@L315:C1",
+      "source_location": "L307",
+      "column": 9,
+      "source_text": "    pos=parse_char(inputstr, pos, ']');",
+      "reason": "whole-scope eval barrier at L261"
+    },
+    {
+      "source": "parseStr@L336:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L338",
+      "column": 13,
+      "source_text": "        pos=error_pos('String starting with \" expected at position %d',inputstr,pos);",
+      "reason": "whole-scope bare command/script invocation barrier: keyboard; at L390"
+    },
+    {
+      "source": "parseStr@L336:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L371",
+      "column": 25,
+      "source_text": "                    pos=error_pos('End of file reached right after escape character',inputstr,pos);",
+      "reason": "whole-scope bare command/script invocation barrier: keyboard; at L390"
+    },
+    {
+      "source": "parseStr@L336:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L383",
+      "column": 33,
+      "source_text": "                            pos=error_pos('End of file reached in escaped unicode character',inputstr,pos);",
+      "reason": "whole-scope bare command/script invocation barrier: keyboard; at L390"
+    },
+    {
+      "source": "parseStr@L336:C1",
+      "target": "unescapejsonstring@L505:C1",
+      "source_location": "L394",
+      "column": 9,
+      "source_text": "    str=unescapejsonstring(str);",
+      "reason": "whole-scope bare command/script invocation barrier: keyboard; at L390"
+    },
+    {
+      "source": "parseStr@L336:C1",
+      "target": "error_pos@L485:C1",
+      "source_location": "L395",
+      "column": 9,
+      "source_text": "    pos=error_pos('End of file while expecting end of inputstr',inputstr,pos);",
+      "reason": "whole-scope bare command/script invocation barrier: keyboard; at L390"
+    }
+  ],
+  "review_notes": [
+    "All 13 functions are immediate file children, each explicitly terminated by end. No nested definitions, classes, methods, duplicate names or inheritance occur. Primary function loadjson agrees with loadjson.m.",
+    "All accepted targets are unique exact-case file-local functions. Inputs, outputs and assignment roots in each caller do not bind any of these target names; no imports or nested lexical ancestors occur.",
+    "parse_array: eval(arraystr) at L261 vetoes the entire callable scope, including sites before eval and unreachable paths; catch does not restore binding confidence. The handle @unescapejsonstring at L263 is separately excluded.",
+    "parseStr: bare keyboard; at L390 is an unknown-workspace command invocation, even in a supposedly unreachable otherwise branch. It vetoes all five same-file call sites in that callable. The declaration and incoming calls remain valid.",
+    "No eligible same-file sites occur in error_pos, skip_whitespace, unescapejsonstring or sscanf_prep. parse2darray calls external match_bracket at L536 (excluded) and local sscanf_prep at L537 (included).",
+    "Parenthesis expressions on bound inputstr, data, objid, esc, str, object, poShow, arraystr, astr, dims and other assigned roots are indexing, never calls. Field/indexed assignments do not create callable targets.",
+    "External helpers include varargin2struct, jsonopt, jdatadecode, fast_match_bracket, nestbracket2dim, encodevarname and match_bracket. None has a declaration in this file, so none is in the call denominator.",
+    "containers.Map at L455 is dotted constructor syntax; anonymous-function bodies at L285 and L509 and replacement-expression string at L520 are excluded. Bare values such as pwd, inf and nargin in expressions are not direct parenthesized call sites or standalone command statements.",
+    "L103 error_pos has fewer arguments than its signature; static eligible call identity does not assert runtime validity. Corpus source is not repaired or executed.",
+    "This corpus is intentionally limited: synthetic fixtures, not this manifest, cover classes, namespaces, nested scopes and duplicate names."
+  ]
+}
