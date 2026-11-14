@@ -439,6 +439,62 @@ def test_dedup_still_merges_crossfile_true_duplicates():
     assert len(result_nodes) == 1
 
 
+# ── #3568: trailing parenthetical qualifier on a re-mentioned concept ────────
+
+def test_dedup_merges_concept_with_trailing_qualifier():
+    """A concept re-mentioned from a memory file keeps its own name but can grow
+    a trailing parenthetical gloss naming where it was mentioned from — that
+    must still merge onto the concept's existing node rather than forking a
+    second one, and an edge pointing at the duplicate must rewire to the
+    survivor."""
+    nodes = [
+        {"id": "docs_port_registry_resolution_resolver", "label": "Registry Resolver",
+         "file_type": "concept", "source_file": "docs/port-registry-resolution.md"},
+        {"id": "docs_port_registry_resolution_registry_resolver",
+         "label": "Registry Resolver (port-registry-resolution doc concept)",
+         "file_type": "concept", "source_file": "graphify-out/memory/query_1.md"},
+    ]
+    edges = [
+        {"source": "caller", "target": "docs_port_registry_resolution_registry_resolver",
+         "relation": "references", "confidence": "AMBIGUOUS"},
+    ]
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+    assert len(result_nodes) == 1
+    survivor = result_nodes[0]["id"]
+    assert result_edges == [
+        {"source": "caller", "target": survivor, "relation": "references", "confidence": "AMBIGUOUS"}
+    ]
+
+
+def test_dedup_does_not_merge_qualified_concepts_with_different_names():
+    """The qualifier strip only widens the match for an otherwise-identical
+    name — two genuinely different concepts, one of them carrying a trailing
+    qualifier, must stay distinct."""
+    nodes = [
+        {"id": "docs_auth_login_flow", "label": "Login Flow",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+        {"id": "docs_auth_logout_flow", "label": "Logout Flow (auth doc concept)",
+         "file_type": "concept", "source_file": "graphify-out/memory/query_2.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_qualifier_strip_does_not_apply_outside_concept_nodes():
+    """The trailing-qualifier strip is scoped to `concept` nodes (#3568's own
+    reproduction) — a document node with the same shape must not start
+    merging across files just because its label happens to end in
+    parentheses, since document headings are file-anchored on purpose (#1284)."""
+    nodes = [
+        {"id": "d1", "label": "Installation Guide", "file_type": "document",
+         "source_file": "docs/a.md"},
+        {"id": "d2", "label": "Installation Guide (a doc section)", "file_type": "document",
+         "source_file": "docs/b.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
 # ── #1504: cross-chunk node ID collision warning ──────────────────────────────
 
 def test_cross_chunk_id_collision_emits_warning(capsys):
