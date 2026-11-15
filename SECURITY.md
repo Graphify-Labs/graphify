@@ -38,7 +38,7 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 | YAML frontmatter injection | `_yaml_str()` escapes backslashes, double quotes, and newlines before embedding user-controlled strings (webpage titles, query questions) in YAML frontmatter. |
 | Encoding crashes on source files | All tree-sitter byte slices decoded with `errors="replace"` - non-UTF-8 source files degrade gracefully instead of crashing extraction. |
 | Symlink traversal | `os.walk(..., followlinks=False)` is parameterized to avoid unchecked traversal where appropriate. |
-| Symlink escape during ingest | `ingest` writes through `lstat` and refuses to replace an existing directory entry, including a symlink, so a crafted source tree cannot redirect writes outside the output directory. |
+| Symlink escape during ingest | `ingest` checks names with `lstat` and creates capture files exclusively. If another entry takes the selected name, the capture retries with a numbered name. |
 | Credentials in persisted text | `security.redact_secrets()` replaces credential-shaped substrings in labels and rationale text before they are written to `graph.json`. |
 | Destructive uninstall | `uninstall --purge` refuses to delete the project folder, the home directory, or a filesystem root, including when `GRAPHIFY_OUT` points outside the project. |
 | Corrupted graph.json | `_load_graph()` in `serve.py` wraps `json.JSONDecodeError` and prints a clear recovery message instead of crashing. |

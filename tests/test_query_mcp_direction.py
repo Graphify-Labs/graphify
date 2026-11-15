@@ -52,7 +52,10 @@ def test_mcp_query_explicit_context_filter_still_applies(tmp_path):
     kept = _query_graph_text(G, "callee_fn", depth=2, context_filters=["call"])
     assert "Context: call (explicit)" in kept and "NODE caller_fn" in kept
     dropped = _query_graph_text(G, "callee_fn", depth=2, context_filters=["import"])
-    assert "Context: import (explicit)" in dropped and "NODE caller_fn" not in dropped
+    # No `import` edge here, so the header says the filter matched nothing
+    # instead of leaving an empty answer to be read as "unrelated" (#5178).
+    assert "Context: import (explicit, matched 0 edges)" in dropped
+    assert "NODE caller_fn" not in dropped
 
 
 def test_traversal_view_keeps_multigraph_parallel_and_mutual_edges():

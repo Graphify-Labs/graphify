@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Vähennä agenttien tokenkulutusta 80%.</b> Graphify Cloud on aina päällä oleva muisti, joka ohjaa agenttejasi, pitää koodin laadun korkeana ja todistaa oikeellisuuden formaalilla verifioinnilla. <a href="https://app.graphify.com/login"><b>Aloita ilmainen 14 päivän kokeilu &rarr;</b></a>
+  <b>Vähennä agenttien tokenkulutusta 80%.</b> Graphify Cloud on aina päällä oleva muisti, joka ohjaa agenttejasi, pitää koodin laadun korkeana ja todistaa oikeellisuuden formaalilla verifioinnilla. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Aloita ilmaiseksi, ei korttia &rarr;</b></a>
 </p>
 
 Kirjoita `/graphify` AI-koodausavustajaasi, niin se kartoittaa koko projektisi (koodi, dokumentit, PDF-tiedostot, kuvat, videot) **tietograafiksi**, jota voit **kysellä sen sijaan, että greppaisit** tiedostoja läpi.
@@ -38,7 +38,7 @@ Kirjoita `/graphify` AI-koodausavustajaasi, niin se kartoittaa koko projektisi (
 - **Ei vektori-indeksi.** Ei embeddingejä, ei vektorivarastoa: oikea graafi, jota läpikäyt. Esitä kysymys, jäljitä polku kahden asian välillä tai selitä yksi käsite.
 
 > [!NOTE]
-> **Haluatko tämän aina päälle?** [Graphify Cloud](https://app.graphify.com/login) pitää graafin elävänä koko SDLC:n läpi: monorepo- ja repojen välinen tuki, formaali verifiointi ja koodikatselmointi lintuperspektiivistä koko SDLC:ääsi, sekä liittimet Sentryyn, Jiraan ja muihin, niin että häiriöt ja tiketit ovat samassa graafissa kuin koodisi. **[Aloita ilmainen 14 päivän kokeilu osoitteessa app.graphify.com](https://app.graphify.com/login)**.
+> **Haluatko tämän aina päälle?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) pitää graafin elävänä koko SDLC:n läpi: monorepo- ja repojen välinen tuki, formaali verifiointi ja koodikatselmointi lintuperspektiivistä koko SDLC:ääsi, sekä liittimet Sentryyn, Jiraan ja muihin, niin että häiriöt ja tiketit ovat samassa graafissa kuin koodisi. **[Aloita ilmaiseksi, ei korttia](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Mitä saat suoraan laatikosta:
 | **Paikallinen ensin** | Koodi jäsennetään paikallisesti tree-sitterillä (ei LLM:ää, mikään ei poistu koneeltasi); vain dokumenttien/median semanttinen käsittely kutsuu taustajärjestelmää, ja vain jos määrität sellaisen |
 
 > [!TIP]
-> Ajatko tätä useiden repojen tai monorepon yli? [Graphify Cloud](https://app.graphify.com/login) tekee sen jatkuvasti ja leikkaa agenttien tokenkulutusta 80%, repojen välisillä linkeillä, koko SDLC:n kattavalla koodikatselmoinnilla, formaalilla verifioinnilla ja Sentry/Jira-liittimillä. [Aloita ilmainen 14 päivän kokeilu &rarr;](https://app.graphify.com/login)
+> Ajatko tätä useiden repojen tai monorepon yli? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) tekee sen jatkuvasti ja leikkaa agenttien tokenkulutusta 80%, repojen välisillä linkeillä, koko SDLC:n kattavalla koodikatselmoinnilla, formaalilla verifioinnilla ja Sentry/Jira-liittimillä. [Aloita ilmaiseksi, ei korttia &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -447,7 +447,7 @@ Jokainen komento ja lippu, esimerkkien kera: **[CLI-viite](https://docs.graphify
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) on aina päällä oleva kerros, joka on rakennettu graphifyn päälle. Sen sijaan, että rakentaisit graafin tarvittaessa uudelleen kansiokohtaisesti, se pitää yhtä elävää graafia koko ohjelmistokehityksen elinkaaren läpi:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) on aina päällä oleva kerros, joka on rakennettu graphifyn päälle. Sen sijaan, että rakentaisit graafin tarvittaessa uudelleen kansiokohtaisesti, se pitää yhtä elävää graafia koko ohjelmistokehityksen elinkaaren läpi:
 
 - **80% vähemmän tokeneita**: aina päällä oleva muisti tarkoittaa, että agenttisi lopettavat koodikannan uudelleenlukemisen ja -selittämisen joka istunnossa.
 - **Monorepo ja repojen välinen**: yksi yhdistetty graafi jokaisen palvelun ja repositorion yli, ei graafia kansiota kohden.
@@ -456,7 +456,7 @@ Jokainen komento ja lippu, esimerkkien kera: **[CLI-viite](https://docs.graphify
 - **SDLC-liittimet**: tuo mukaan Sentry, Jira ja muita, niin että häiriöt, tiketit ja koodi elävät yhdessä graafissa.
 - **Aina päällä**: päivittyy jatkuvasti taustalla koodin, dokumenttien ja kokousten yli.
 
-**[Aloita ilmainen 14 päivän kokeilu osoitteessa app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Aloita ilmaiseksi, ei korttia &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

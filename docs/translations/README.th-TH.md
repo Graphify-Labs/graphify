@@ -20,7 +20,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>ลดการใช้จ่ายโทเคนของเอเจนต์ลง 80%</b> Graphify Cloud คือหน่วยความจำที่ทำงานตลอดเวลา ซึ่งกำกับดูแลเอเจนต์ของคุณ รักษาคุณภาพโค้ดให้สูง และพิสูจน์ความถูกต้องด้วยการตรวจสอบเชิงรูปนัย <a href="https://app.graphify.com/login"><b>เริ่มทดลองใช้ฟรี 14 วัน &rarr;</b></a>
+  <b>ลดการใช้จ่ายโทเคนของเอเจนต์ลง 80%</b> Graphify Cloud คือหน่วยความจำที่ทำงานตลอดเวลา ซึ่งกำกับดูแลเอเจนต์ของคุณ รักษาคุณภาพโค้ดให้สูง และพิสูจน์ความถูกต้องด้วยการตรวจสอบเชิงรูปนัย <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;</b></a>
 </p>
 
 พิมพ์ `/graphify` ในผู้ช่วยเขียนโค้ด AI ของคุณ แล้วมันจะแมปทั้งโปรเจกต์ของคุณ (โค้ด, เอกสาร, PDF, รูปภาพ, วิดีโอ) ให้เป็น **กราฟความรู้** ที่คุณสามารถ **สืบค้นแทนการ grep** ไฟล์ทีละไฟล์ได้
@@ -38,7 +38,7 @@
 - **ไม่ใช่ดัชนีเวกเตอร์** ไม่มี embedding ไม่มีที่เก็บเวกเตอร์: เป็นกราฟจริงที่คุณเดินสำรวจได้ ถามคำถามหนึ่งข้อ ตามเส้นทางระหว่างสองสิ่ง หรืออธิบายแนวคิดหนึ่งอย่าง
 
 > [!NOTE]
-> **อยากให้สิ่งนี้ทำงานตลอดเวลาไหม?** [Graphify Cloud](https://app.graphify.com/login) รักษากราฟให้สดตลอดทั้ง SDLC ของคุณ: รองรับ monorepo และข้าม repo, การตรวจสอบเชิงรูปนัย, และการรีวิวโค้ดด้วยมุมมองภาพรวมของ SDLC ของคุณ รวมถึงตัวเชื่อมต่อสำหรับ Sentry, Jira และอื่น ๆ เพื่อให้เหตุการณ์และทิกเก็ตอยู่ในกราฟเดียวกับโค้ดของคุณ **[เริ่มทดลองใช้ฟรี 14 วันที่ app.graphify.com](https://app.graphify.com/login)**
+> **อยากให้สิ่งนี้ทำงานตลอดเวลาไหม?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) รักษากราฟให้สดตลอดทั้ง SDLC ของคุณ: รองรับ monorepo และข้าม repo, การตรวจสอบเชิงรูปนัย, และการรีวิวโค้ดด้วยมุมมองภาพรวมของ SDLC ของคุณ รวมถึงตัวเชื่อมต่อสำหรับ Sentry, Jira และอื่น ๆ เพื่อให้เหตุการณ์และทิกเก็ตอยู่ในกราฟเดียวกับโค้ดของคุณ **[เริ่มใช้ฟรี ไม่ต้องใช้บัตร](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graph.html แบบโต้ตอบของ graphify ที่แสดงฐานโค้ด FastAPI เป็นกราฟความรู้แบบ force-directed พร้อมคำอธิบายของชุมชนที่ตรวจพบ" width="900">
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **Local-first** | โค้ดถูกแยกวิเคราะห์ในเครื่องด้วย tree-sitter (ไม่มี LLM ไม่มีอะไรออกจากเครื่องของคุณ) มีเพียงการประมวลผลเชิงความหมายกับเอกสาร/สื่อเท่านั้นที่เรียกใช้แบ็กเอนด์ และต่อเมื่อคุณกำหนดค่าไว้ |
 
 > [!TIP]
-> กำลังรันสิ่งนี้ข้ามหลาย repo หรือ monorepo อยู่ใช่ไหม? [Graphify Cloud](https://app.graphify.com/login) ทำสิ่งนี้อย่างต่อเนื่องและลดการใช้จ่ายโทเคนของเอเจนต์ลง 80% พร้อมลิงก์ข้าม repo, การรีวิวโค้ดครอบคลุมทั้ง SDLC, การตรวจสอบเชิงรูปนัย และตัวเชื่อมต่อ Sentry/Jira [เริ่มทดลองใช้ฟรี 14 วัน &rarr;](https://app.graphify.com/login)
+> กำลังรันสิ่งนี้ข้ามหลาย repo หรือ monorepo อยู่ใช่ไหม? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) ทำสิ่งนี้อย่างต่อเนื่องและลดการใช้จ่ายโทเคนของเอเจนต์ลง 80% พร้อมลิงก์ข้าม repo, การรีวิวโค้ดครอบคลุมทั้ง SDLC, การตรวจสอบเชิงรูปนัย และตัวเชื่อมต่อ Sentry/Jira [เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -439,7 +439,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) คือเลเยอร์ที่ทำงานตลอดเวลา ซึ่งสร้างขึ้นบน graphify แทนที่จะเป็นกราฟที่คุณสร้างใหม่ตามต้องการต่อโฟลเดอร์ มันรักษากราฟสดหนึ่งกราฟตลอดวงจรการพัฒนาซอฟต์แวร์ทั้งหมดของคุณ:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) คือเลเยอร์ที่ทำงานตลอดเวลา ซึ่งสร้างขึ้นบน graphify แทนที่จะเป็นกราฟที่คุณสร้างใหม่ตามต้องการต่อโฟลเดอร์ มันรักษากราฟสดหนึ่งกราฟตลอดวงจรการพัฒนาซอฟต์แวร์ทั้งหมดของคุณ:
 
 - **โทเคนน้อยลง 80%**: หน่วยความจำที่ทำงานตลอดเวลาหมายความว่าเอเจนต์ของคุณหยุดอ่านซ้ำและอธิบายฐานโค้ดซ้ำในทุกเซสชัน
 - **Monorepo และข้าม repo**: กราฟที่เชื่อมต่อกันหนึ่งกราฟข้ามทุกบริการและทุกที่เก็บ ไม่ใช่กราฟหนึ่งต่อหนึ่งโฟลเดอร์
@@ -448,7 +448,7 @@ viz_node_limit=0
 - **ตัวเชื่อมต่อ SDLC**: ดึง Sentry, Jira และอื่น ๆ เข้ามา เพื่อให้เหตุการณ์ ทิกเก็ต และโค้ดอยู่ในกราฟเดียว
 - **ทำงานตลอดเวลา**: อัปเดตอย่างต่อเนื่องในเบื้องหลัง ข้ามโค้ด เอกสาร และการประชุม
 
-**[เริ่มทดลองใช้ฟรี 14 วันที่ app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

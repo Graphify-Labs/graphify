@@ -413,3 +413,41 @@ def test_merge_graphs_previous_malformed_json_errors_gracefully(tmp_path):
     assert r.returncode == 1, r.stdout + r.stderr
     assert "--previous file is not readable JSON" in r.stderr
     assert "Traceback" not in r.stderr
+
+
+def _write_nodes(p: Path, nodes: list[dict]):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": nodes, "links": [],
+    }))
+
+
+def test_merge_graphs_reports_unified_external_nodes(tmp_path):
+    """The merged total is lower than the sum of inputs only because external stubs
+    share global bare ids (#2873). The CLI must say so instead of dropping the count silently."""
+    a = tmp_path / "r1" / "graphify-out" / "graph.json"
+    b = tmp_path / "r2" / "graphify-out" / "graph.json"
+    _write_nodes(a, [{"id": "A"}, {"id": "arraylist", "external": True}])
+    _write_nodes(b, [{"id": "B"}, {"id": "arraylist", "external": True}])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    assert "unified 1 external node(s) shared across repos" in r.stdout
+    assert "Merged 2 graphs -> 3 nodes" in r.stdout
+
+
+def test_merge_graphs_reports_nothing_when_no_external_collision(tmp_path):
+    a = tmp_path / "r1" / "graphify-out" / "graph.json"
+    b = tmp_path / "r2" / "graphify-out" / "graph.json"
+    _write_nodes(a, [{"id": "A"}, {"id": "typing", "external": True}])
+    _write_nodes(b, [{"id": "B"}, {"id": "pathlib", "external": True}])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    assert "unified" not in r.stdout
+    assert "Merged 2 graphs -> 4 nodes" in r.stdout

@@ -405,8 +405,8 @@ def _detached_launch(rebuild_body: str) -> str:
 # absolute while --git-common-dir is the relative ".git", and a raw compare would
 # false-positive on the PRIMARY checkout and wrongly skip it.
 _WORKTREE_GUARD = """\
-_GFY_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
-_GFY_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+_GFY_GITDIR=$(CDPATH= cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
+_GFY_COMMONDIR=$(CDPATH= cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
 if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then
     exit 0
 fi

@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Csökkentse az ügynökök tokenköltségét 80%-kal.</b> A Graphify Cloud mindig aktív memória, amely irányítja az ügynökeit, magasan tartja a kódminőséget, és formális verifikációval bizonyítja a helyességet. <a href="https://app.graphify.com/login"><b>Indítson ingyenes 14 napos próbaidőszakot &rarr;</b></a>
+  <b>Csökkentse az ügynökök tokenköltségét 80%-kal.</b> A Graphify Cloud mindig aktív memória, amely irányítja az ügynökeit, magasan tartja a kódminőséget, és formális verifikációval bizonyítja a helyességet. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Kezdje ingyen, kártya nélkül &rarr;</b></a>
 </p>
 
 Írja be a `/graphify` parancsot az AI-kódolási asszisztensébe, és az a teljes projektjét (kód, dokumentumok, PDF-ek, képek, videók) **tudásgráffá** alakítja, amelyet **lekérdezhet ahelyett, hogy grep-pel** keresgélne a fájlok között.
@@ -38,7 +38,7 @@
 - **Nem vektorindex.** Nincsenek beágyazások, nincs vektortár: egy valódi gráf, amelyet bejár. Tegyen fel egy kérdést, kövesse nyomon a két dolog közötti utat, vagy magyaráztasson el egy fogalmat.
 
 > [!NOTE]
-> **Szeretné ezt mindig aktívan?** A [Graphify Cloud](https://app.graphify.com/login) a teljes SDLC-jén át élőben tartja a gráfot: monorepo- és repository-közi támogatás, formális verifikáció, valamint kódellenőrzés madártávlatból az SDLC-jéről, továbbá konnektorok a Sentryhez, Jirához és másokhoz, hogy az incidensek és jegyek ugyanabban a gráfban legyenek, mint a kódja. **[Indítson ingyenes 14 napos próbaidőszakot az app.graphify.com oldalon](https://app.graphify.com/login)**.
+> **Szeretné ezt mindig aktívan?** A [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) a teljes SDLC-jén át élőben tartja a gráfot: monorepo- és repository-közi támogatás, formális verifikáció, valamint kódellenőrzés madártávlatból az SDLC-jéről, továbbá konnektorok a Sentryhez, Jirához és másokhoz, hogy az incidensek és jegyek ugyanabban a gráfban legyenek, mint a kódja. **[Kezdje ingyen, kártya nélkül](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Amit alapból kap:
 | **Local-first** | A kódot lokálisan elemzi a tree-sitter (nincs LLM, semmi sem hagyja el a gépét); csak a dokumentumokon/médián végzett szemantikai futtatás hív meg egy backendet, és csak akkor, ha beállít egyet |
 
 > [!TIP]
-> Sok repón vagy egy monorepón át futtatja ezt? A [Graphify Cloud](https://app.graphify.com/login) folyamatosan végzi, és 80%-kal csökkenti az ügynökök tokenköltségét, repository-közi hivatkozásokkal, SDLC-szintű kódellenőrzéssel, formális verifikációval és Sentry/Jira konnektorokkal. [Indítson ingyenes 14 napos próbaidőszakot &rarr;](https://app.graphify.com/login)
+> Sok repón vagy egy monorepón át futtatja ezt? A [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) folyamatosan végzi, és 80%-kal csökkenti az ügynökök tokenköltségét, repository-közi hivatkozásokkal, SDLC-szintű kódellenőrzéssel, formális verifikációval és Sentry/Jira konnektorokkal. [Kezdje ingyen, kártya nélkül &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -447,7 +447,7 @@ Minden parancs és flag, példákkal: **[CLI reference](https://docs.graphify.co
 
 ## Graphify Cloud
 
-A [**Graphify Cloud**](https://app.graphify.com/login) a graphify tetejére épülő, mindig aktív réteg. Ahelyett, hogy mappánként igény szerint újraépítene egy gráfot, egyetlen élő gráfot tart fenn a teljes szoftverfejlesztési életciklusán át:
+A [**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) a graphify tetejére épülő, mindig aktív réteg. Ahelyett, hogy mappánként igény szerint újraépítene egy gráfot, egyetlen élő gráfot tart fenn a teljes szoftverfejlesztési életciklusán át:
 
 - **80%-kal kevesebb token**: a mindig aktív memória azt jelenti, hogy az ügynökei minden munkamenetben abbahagyják a kódbázis újraolvasását és újramagyarázását.
 - **Monorepo és repository-közi**: egyetlen összekapcsolt gráf minden szolgáltatáson és repository-n át, nem mappánkénti gráf.
@@ -456,7 +456,7 @@ A [**Graphify Cloud**](https://app.graphify.com/login) a graphify tetejére ép�
 - **SDLC-konnektorok**: húzza be a Sentryt, Jirát és másokat, hogy az incidensek, jegyek és a kód egyetlen gráfban éljenek.
 - **Mindig aktív**: folyamatosan frissül a háttérben a kódon, dokumentumokon és megbeszéléseken át.
 
-**[Indítson ingyenes 14 napos próbaidőszakot az app.graphify.com oldalon &rarr;](https://app.graphify.com/login)**
+**[Kezdje ingyen, kártya nélkül &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

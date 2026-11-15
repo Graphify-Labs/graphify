@@ -439,3 +439,37 @@ def test_loose_module_directly_under_src_is_not_aliased(tmp_path):
     assert _namespace_src_module_parts(("d", "src", "airflow", "sql", "hooks", "sql.py")) == (
         "airflow", "sql", "hooks", "sql.py",
     )
+
+
+def test_ambiguous_import_placeholder_id_is_independent_of_checkout_path(tmp_path):
+    """#5044: the same tree built in two directories must mint the same
+    placeholder id for an ambiguous import. The id used to hash the absolute
+    source path and the absolute-path-derived importer id, so only the checkout
+    location changed it."""
+    files = {
+        "app/main.py": "from helper import f\n\n\ndef run():\n    return f()\n",
+        "one/helper.py": "def f():\n    return 1\n",
+        "two/helper.py": "def f():\n    return 2\n",
+    }
+
+    def placeholders(checkout: Path) -> list[tuple[str, str, str]]:
+        paths = []
+        for rel, body in files.items():
+            path = checkout / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+            paths.append(path)
+        result = extract(
+            paths, cache_root=checkout / "cache", root=checkout, parallel=False
+        )
+        return sorted(
+            (edge["source"], edge["target"], edge.get("source_file", ""))
+            for edge in result["edges"]
+            if str(edge.get("target", "")).startswith("ambiguous_python_import_")
+        )
+
+    first = placeholders(tmp_path / "checkout-aaa")
+    second = placeholders(tmp_path / "nested" / "checkout-bbbbbbbb")
+
+    assert first, "the ambiguous `helper` import should keep a placeholder edge"
+    assert first == second, f"placeholder ids depend on the checkout path: {first} != {second}"

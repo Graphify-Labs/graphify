@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>צמצמו את הוצאות הטוקנים של הסוכן ב-80%.</b> Graphify Cloud הוא זיכרון תמידי שמנהל את הסוכנים שלכם, שומר על איכות קוד גבוהה, ומוכיח נכונות באמצעות אימות פורמלי. <a href="https://app.graphify.com/login"><b>התחילו תקופת ניסיון חינם של 14 יום &rarr;</b></a>
+  <b>צמצמו את הוצאות הטוקנים של הסוכן ב-80%.</b> Graphify Cloud הוא זיכרון תמידי שמנהל את הסוכנים שלכם, שומר על איכות קוד גבוהה, ומוכיח נכונות באמצעות אימות פורמלי. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>התחילו בחינם, ללא כרטיס &rarr;</b></a>
 </p>
 
 הקלידו `/graphify` בעוזר קוד ה-AI שלכם והוא ממפה את כל הפרויקט (קוד, מסמכים, PDFs, תמונות, סרטונים) ל**גרף ידע** שאפשר **לתשאל במקום לבצע grep** על הקבצים.
@@ -38,7 +38,7 @@
 - **לא אינדקס וקטורי.** ללא embeddings, ללא מאגר וקטורים: גרף אמיתי שעוברים בו. שאלו שאלה, עקבו אחר הנתיב בין שני דברים, או הסבירו מושג אחד.
 
 > [!NOTE]
-> **רוצים את זה באופן תמידי?** [Graphify Cloud](https://app.graphify.com/login) שומר על הגרף חי לאורך כל ה-SDLC שלכם: תמיכה במונורפו ובין מאגרים, אימות פורמלי, וסקירת קוד עם מבט על של ה-SDLC שלכם, בתוספת מחברים ל-Sentry, Jira, ועוד, כך שתקריות וכרטיסים יושבים באותו גרף כמו הקוד שלכם. **[התחילו תקופת ניסיון חינם של 14 יום ב-app.graphify.com](https://app.graphify.com/login)**.
+> **רוצים את זה באופן תמידי?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) שומר על הגרף חי לאורך כל ה-SDLC שלכם: תמיכה במונורפו ובין מאגרים, אימות פורמלי, וסקירת קוד עם מבט על של ה-SDLC שלכם, בתוספת מחברים ל-Sentry, Jira, ועוד, כך שתקריות וכרטיסים יושבים באותו גרף כמו הקוד שלכם. **[התחילו בחינם, ללא כרטיס](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **מקומי-ראשון** | הקוד מנותח מקומית עם tree-sitter (ללא LLM, שום דבר לא עוזב את המכונה שלכם); רק המעבר הסמנטי על מסמכים/מדיה פונה לשרת עורפי, ורק אם הגדרתם אחד |
 
 > [!TIP]
-> מריצים את זה על פני מאגרים רבים או מונורפו? [Graphify Cloud](https://app.graphify.com/login) עושה זאת ברציפות ומצמצם את הוצאות הטוקנים של הסוכן ב-80%, עם קישורים בין מאגרים, סקירת קוד לכל ה-SDLC, אימות פורמלי, ומחברי Sentry/Jira. [התחילו תקופת ניסיון חינם של 14 יום &rarr;](https://app.graphify.com/login)
+> מריצים את זה על פני מאגרים רבים או מונורפו? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) עושה זאת ברציפות ומצמצם את הוצאות הטוקנים של הסוכן ב-80%, עם קישורים בין מאגרים, סקירת קוד לכל ה-SDLC, אימות פורמלי, ומחברי Sentry/Jira. [התחילו בחינם, ללא כרטיס &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -439,7 +439,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) היא השכבה התמידית שנבנתה מעל graphify. במקום גרף שאתם בונים מחדש לפי דרישה לכל תיקייה, היא שומרת גרף חי אחד לאורך כל מחזור חיי פיתוח התוכנה שלכם:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) היא השכבה התמידית שנבנתה מעל graphify. במקום גרף שאתם בונים מחדש לפי דרישה לכל תיקייה, היא שומרת גרף חי אחד לאורך כל מחזור חיי פיתוח התוכנה שלכם:
 
 - **80% פחות טוקנים**: זיכרון תמידי אומר שהסוכנים שלכם מפסיקים לקרוא ולהסביר מחדש את בסיס הקוד בכל סשן.
 - **מונורפו ובין מאגרים**: גרף מחובר אחד על פני כל שירות ומאגר, לא גרף לכל תיקייה.
@@ -448,7 +448,7 @@ viz_node_limit=0
 - **מחברי SDLC**: משכו פנימה את Sentry, Jira, ועוד, כך שתקריות, כרטיסים, וקוד חיים בגרף אחד.
 - **תמידי**: מתעדכן ברציפות ברקע על פני קוד, מסמכים, ופגישות.
 
-**[התחילו תקופת ניסיון חינם של 14 יום ב-app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[התחילו בחינם, ללא כרטיס &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

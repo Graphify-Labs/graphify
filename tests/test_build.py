@@ -1528,6 +1528,67 @@ def test_graph_has_legacy_ids_detects_old_scheme():
     assert graph_has_legacy_ids(go_symbol, root=".") is False
 
 
+def test_graph_has_legacy_ids_honors_the_scan_root_prefix():
+    """A subfolder build run from its parent (`graphify update sub`) stores
+    source_file cwd-relative (#2603) but mints ids scan-root-relative. With the
+    marker's prefix the fresh graph is canonical; without it, `pkg_mod` reads as
+    the old one-parent form of `sub/pkg/mod.py` and every query warned."""
+    from graphify.build import graph_has_legacy_ids
+    fresh = [{"id": "pkg_mod", "source_file": "sub/pkg/mod.py", "type": "code", "source_location": "L1"}]
+    assert graph_has_legacy_ids(fresh, root=None) is True  # the false positive
+    assert graph_has_legacy_ids(fresh, root=None, source_prefix="sub") is False
+    assert graph_has_legacy_ids(fresh, root=None, source_prefix="sub/") is False
+    # A genuinely pre-#1504 id under the same prefix is still caught.
+    old = [{"id": "v1_readme", "source_file": "sub/docs/v1/README.md", "type": "document", "source_location": "L1"}]
+    assert graph_has_legacy_ids(old, root=None, source_prefix="sub") is True
+    # A source_file outside the prefix is judged as stored.
+    other = [{"id": "docs_v1_readme", "source_file": "docs/v1/README.md", "type": "document", "source_location": "L1"}]
+    assert graph_has_legacy_ids(other, root=None, source_prefix="sub") is False
+
+
+@pytest.mark.parametrize("marker, expected", [
+    ("sub", "sub"),
+    ("./a/b/", "a/b"),
+    ("a\\b", "a/b"),
+    (".", None),
+    ("", None),
+    ("../elsewhere", None),
+    ("/abs/scan/root", None),
+    ("C:\\scan\\root", None),
+])
+def test_legacy_id_source_prefix_reads_the_relative_marker(tmp_path, marker, expected):
+    from graphify.build import legacy_id_source_prefix
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(marker, encoding="utf-8")
+    assert legacy_id_source_prefix(out / "graph.json") == expected
+
+
+def test_legacy_id_source_prefix_without_marker(tmp_path):
+    from graphify.build import legacy_id_source_prefix
+    assert legacy_id_source_prefix(tmp_path / "graph.json") is None
+
+
+def test_subfolder_build_from_parent_is_not_flagged_legacy(tmp_path, monkeypatch):
+    """End to end: `graphify update proj` from proj's parent, then the same
+    probe the query/serve consumers run, must not call the fresh graph legacy."""
+    import json
+    from graphify.build import graph_has_legacy_ids, legacy_id_source_prefix
+    from graphify.watch import _rebuild_code
+    proj = tmp_path / "proj"
+    (proj / "pkg").mkdir(parents=True)
+    (proj / "pkg" / "mod.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    (proj / "main.py").write_text("from pkg.mod import a\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert _rebuild_code(Path("proj"), no_cluster=True)
+    gp = proj / "graphify-out" / "graph.json"
+    nodes = json.loads(gp.read_text(encoding="utf-8"))["nodes"]
+    files = {n["source_file"] for n in nodes if n.get("source_location") == "L1"}
+    assert "proj/pkg/mod.py" in files  # stored cwd-relative (#2603)
+    assert legacy_id_source_prefix(gp) == "proj"
+    assert graph_has_legacy_ids(nodes, source_prefix=legacy_id_source_prefix(gp)) is False
+
+
 # ── #2408: globally-scoped MCP node ids are not file-stem derived ──────────────
 
 @pytest.mark.parametrize("mcp_kind, nid", [

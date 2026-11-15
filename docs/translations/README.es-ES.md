@@ -20,7 +20,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Reduce el gasto de tokens de tus agentes en un 80%.</b> Graphify Cloud es una memoria siempre activa que gobierna tus agentes, mantiene alta la calidad del código y demuestra la correctitud con verificación formal. <a href="https://app.graphify.com/login"><b>Comienza una prueba gratuita de 14 días &rarr;</b></a>
+  <b>Reduce el gasto de tokens de tus agentes en un 80%.</b> Graphify Cloud es una memoria siempre activa que gobierna tus agentes, mantiene alta la calidad del código y demuestra la correctitud con verificación formal. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Empieza gratis, sin tarjeta &rarr;</b></a>
 </p>
 
 Escribe `/graphify` en tu asistente de programación con IA y mapea todo tu proyecto (código, documentos, PDF, imágenes, vídeos) en un **grafo de conocimiento** que puedes **consultar en lugar de usar grep** sobre los archivos.
@@ -38,7 +38,7 @@ Escribe `/graphify` en tu asistente de programación con IA y mapea todo tu proy
 - **No es un índice vectorial.** Sin embeddings, sin almacén de vectores: un grafo real que recorres. Haz una pregunta, traza la ruta entre dos cosas o explica un concepto.
 
 > [!NOTE]
-> **¿Lo quieres siempre activo?** [Graphify Cloud](https://app.graphify.com/login) mantiene el grafo vivo a lo largo de todo tu SDLC: soporte para monorepo y entre repositorios, verificación formal y revisión de código con una vista panorámica de tu SDLC, además de conectores para Sentry, Jira y más, para que los incidentes y los tickets vivan en el mismo grafo que tu código. **[Comienza una prueba gratuita de 14 días en app.graphify.com](https://app.graphify.com/login)**.
+> **¿Lo quieres siempre activo?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) mantiene el grafo vivo a lo largo de todo tu SDLC: soporte para monorepo y entre repositorios, verificación formal y revisión de código con una vista panorámica de tu SDLC, además de conectores para Sentry, Jira y más, para que los incidentes y los tickets vivan en el mismo grafo que tu código. **[Empieza gratis, sin tarjeta](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Lo que obtienes de inmediato:
 | **Local primero** | El código se analiza localmente con tree-sitter (sin LLM, nada sale de tu máquina); solo la pasada semántica sobre documentos/medios llama a un backend, y solo si configuras uno |
 
 > [!TIP]
-> ¿Ejecutando esto en muchos repositorios o en un monorepo? [Graphify Cloud](https://app.graphify.com/login) lo hace de forma continua y reduce el gasto de tokens de los agentes en un 80%, con enlaces entre repositorios, revisión de código en todo el SDLC, verificación formal y conectores de Sentry/Jira. [Comienza una prueba gratuita de 14 días &rarr;](https://app.graphify.com/login)
+> ¿Ejecutando esto en muchos repositorios o en un monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) lo hace de forma continua y reduce el gasto de tokens de los agentes en un 80%, con enlaces entre repositorios, revisión de código en todo el SDLC, verificación formal y conectores de Sentry/Jira. [Empieza gratis, sin tarjeta &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -447,7 +447,7 @@ Cada comando y flag, con ejemplos: **[Referencia de CLI](https://docs.graphify.c
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) es la capa siempre activa construida sobre graphify. En lugar de un grafo que reconstruyes bajo demanda por carpeta, mantiene un único grafo vivo a lo largo de todo tu ciclo de vida de desarrollo de software:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) es la capa siempre activa construida sobre graphify. En lugar de un grafo que reconstruyes bajo demanda por carpeta, mantiene un único grafo vivo a lo largo de todo tu ciclo de vida de desarrollo de software:
 
 - **80% menos tokens**: la memoria siempre activa hace que tus agentes dejen de releer y reexplicar el código en cada sesión.
 - **Monorepo y entre repositorios**: un único grafo conectado a través de cada servicio y repositorio, no un grafo por carpeta.
@@ -456,7 +456,7 @@ Cada comando y flag, con ejemplos: **[Referencia de CLI](https://docs.graphify.c
 - **Conectores de SDLC**: incorpora Sentry, Jira y más, para que los incidentes, los tickets y el código vivan en un solo grafo.
 - **Siempre activo**: se actualiza continuamente en segundo plano a través de código, documentos y reuniones.
 
-**[Comienza una prueba gratuita de 14 días en app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Empieza gratis, sin tarjeta &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

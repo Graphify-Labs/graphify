@@ -107,7 +107,8 @@ def test_extraction_keeps_the_bare_resolver_label(tmp_path):
     _write(tmp_path, {"Report.cs": _ISSUE_REPRO})
     raw = extract([tmp_path / "Report.cs"], root=tmp_path)
     methods = sorted(n["label"] for n in raw["nodes"] if n["label"].endswith("()"))
-    assert methods == [".Build()", ".Build()", ".Build()", ".Run()"]
+    # `.Exporter()` is Exporter's constructor.
+    assert methods == [".Build()", ".Build()", ".Build()", ".Exporter()", ".Run()"]
 
 
 def test_incremental_rebuild_binds_into_an_unchanged_file(tmp_path):

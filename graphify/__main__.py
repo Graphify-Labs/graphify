@@ -933,7 +933,10 @@ def _run_cli() -> None:
         print("    --context C             explicit edge-context filter (repeatable)")
         print("    --seed X                start at node X (id, label or file path; repeatable)")
         print("                            instead of the question's keyword matches")
-        print("    --budget N              cap output at N tokens (default 2000)")
+        print("    --budget N, --budget=N  cap output at N tokens (default 2000)")
+        print("    --depth N, --depth=N    traversal depth 1-6 (default 2)")
+        print("                            absent options use the selected graph project's .graphifyrc")
+        print("                            query_budget / query_depth. Explicit options override project values.")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  query, path and explain exit 0 with an answer, 3 when a name is ambiguous")
         print("  (the candidates are listed), 4 when no node matches")
@@ -1092,8 +1095,8 @@ def _run_cli() -> None:
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
         print()
-        print("Prefer a hosted version? Try the graphify platform free for 14 days:")
-        print("https://app.graphify.com")
+        print("Prefer a hosted version? Graphify Cloud has a free plan, no card required:")
+        print("https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=help")
         print()
         return
 

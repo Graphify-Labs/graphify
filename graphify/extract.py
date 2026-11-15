@@ -27,8 +27,10 @@ from .resolver_registry import (
 )
 from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
+from .go_dispatch import resolve_go_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
@@ -39,8 +41,10 @@ from graphify.rcfile import (
     get_language_overrides,
     set_language_overrides,
 )
+from graphify.extractors.engine import _cpp_is_header_guard, _js_import_is_type_only
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
+    _PYTHON_BUILTIN_NAMES,
     _file_stem,
     _make_id,
     _read_source_bytes,
@@ -60,6 +64,8 @@ from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
     bare_csharp_method_labels_in_nodes,
+    is_csharp_constructor_node,
+    is_csharp_explicit_interface_node,
 )
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
@@ -138,11 +144,18 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _load_workspace_packages,
     _match_tsconfig_alias,
     _merge_decl_def_classes,
+    _merge_cpp_forward_classes,
+    _merge_cpp_member_declarations,
+    _cpp_reconciliation_paths,
+    _cpp_source_key,
+    _cpp_exact_includes,
+    _cpp_include_path,
     _merge_go_package_types,
     _node_disambiguation_source_key,
     _package_entry_candidates,
     _parse_js_tree,
     _parse_python_tree,
+    _parse_python_tree_cached,
     _pascal_class_stem_cache,
     _pascal_project_root,
     _pascal_resolve_class,
@@ -366,6 +379,26 @@ def _suppress_ambiguous_python_imports(
         except (OSError, RuntimeError):
             return False
 
+    def _root_relative_source_file(source_file: str) -> str:
+        """Scan-root-relative POSIX form of ``source_file`` for id hashing."""
+        if not source_file:
+            return ""
+        path = Path(source_file)
+        if not path.is_absolute():
+            return path.as_posix()
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            pass
+        try:
+            return path.resolve().relative_to(root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            pass
+        try:
+            return os.path.relpath(str(path), str(root)).replace("\\", "/")
+        except ValueError:
+            return path.name  # different Windows drive: no relative path
+
     kept_edges: list[dict] = []
     for edge in edges:
         if not isinstance(edge, dict):
@@ -424,10 +457,16 @@ def _suppress_ambiguous_python_imports(
             continue
         # A raw dotted alias could itself belong to an unrelated real node. Use
         # a stable, node-less id so the graph builder drops the unresolved edge
-        # instead of fabricating a link to that node.
+        # instead of fabricating a link to that node. The id is hashed only
+        # from checkout-independent material: at this point source_file and the
+        # importer's node id still embed the absolute scan root, so the same
+        # commit built in two directories would mint different ids (#5044).
+        # The root-relative file, the import's location and the module name
+        # already identify the import site uniquely.
         identity = "\0".join((
-            str(module_name), str(edge.get("source_file", "")),
-            str(edge.get("source_location", "")), str(edge.get("source", "")),
+            str(module_name),
+            _root_relative_source_file(str(edge.get("source_file", ""))),
+            str(edge.get("source_location", "")),
         ))
         target = _make_id(f"ambiguous_python_import_{hashlib.sha1(identity.encode()).hexdigest()[:12]}")
         while target in node_ids:
@@ -1142,6 +1181,12 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                 resolved = _resolve_c_include_path(raw, str_path)
                 if resolved is not None:
                     tgt_nid = _make_id(str(resolved))
+                    parent = node.parent
+                    unconditional = True
+                    while parent is not None:
+                        if parent.type.startswith("preproc_") and not _cpp_is_header_guard(parent, source):
+                            unconditional = False
+                        parent = parent.parent
                     edges.append({
                         "source": file_nid,
                         "target": tgt_nid,
@@ -1156,6 +1201,7 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                         # batch's paths keeps the raw absolute-path id no later pass
                         # ever learns to relativize (#2243).
                         "target_file": str(resolved),
+                        "_cpp_include_proof": unconditional,
                     })
                     break
             module_name = raw.split("/")[-1].split(".")[0]
@@ -2238,6 +2284,87 @@ def extract_python(path: Path, *, root: Path | None = None) -> dict:
     return result
 
 
+_TS_TYPED_TAG_RE = re.compile(
+    rb"(?<![A-Za-z0-9_$])(?P<tag>[A-Za-z_$][A-Za-z0-9_$]*)"
+    rb"(?P<types><\s*\{[^{}]*\}\s*\[\s*\]\s*>)(?=\s*`)"
+)
+_TS_QUALIFIED_IMPORT_TYPE_RE = re.compile(
+    rb"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)\s*\."
+    rb"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?=\s*<)"
+)
+
+
+def _normalize_ts_tag_and_import_annotations(source: bytes, *, tsx: bool = False) -> bytes | None:
+    """Repair two parser gaps without changing runtime expressions or byte offsets.
+
+    A typed tagged template with an object-array type and an import-qualified
+    generic type annotation are valid TypeScript, but this grammar can lose
+    later declarations. Mask only confirmed type syntax in a temporary parse;
+    the original source and line/byte positions remain untouched.
+    """
+    tags = list(_TS_TYPED_TAG_RE.finditer(source))
+    imports = list(_TS_QUALIFIED_IMPORT_TYPE_RE.finditer(source))
+    if not tags and not imports:
+        return None
+    try:
+        import tree_sitter_typescript as ts_typescript
+        from tree_sitter import Language, Parser
+        factory = ts_typescript.language_tsx if tsx else ts_typescript.language_typescript
+        parser = Parser(Language(factory()))
+        original = parser.parse(source).root_node
+    except Exception:
+        return None
+    if not original.has_error:
+        return None
+
+    # A missing token at the tagged template's backtick distinguishes the
+    # grammar failure from a correctly parsed expression elsewhere in the file.
+    missing = []
+    stack = [original]
+    while stack:
+        node = stack.pop()
+        if node.is_missing:
+            missing.append(node.start_byte)
+        stack.extend(node.children)
+
+    candidates = []
+    for match in tags:
+        start, end = match.span('types')
+        backtick = source.find(b'`', end)
+        if (backtick >= 0 and any(end <= pos <= backtick for pos in missing)
+                and _ts_import_is_code(original, match.start('tag'))):
+            candidates.append((start, end, match.start('tag'), 'tag'))
+    for match in imports:
+        if _ts_import_is_code(original, match.start()):
+            candidates.append((match.start(), match.start('name'), match.start('name'), 'annotation'))
+    if not candidates:
+        return None
+
+    masked = bytearray(source)
+    for start, end, _, _ in candidates:
+        masked[start:end] = re.sub(rb'[^\r\n]', b' ', source[start:end])
+    recovered = parser.parse(bytes(masked)).root_node
+    accepted = []
+    for start, end, anchor, kind in candidates:
+        node = recovered.descendant_for_byte_range(anchor, anchor + 1)
+        while node is not None:
+            if kind == 'annotation' and node.type == 'type_annotation':
+                accepted.append((start, end))
+                break
+            if kind == 'tag' and node.type == 'call_expression':
+                arguments = node.child_by_field_name('arguments')
+                if arguments is not None and arguments.type == 'template_string':
+                    accepted.append((start, end))
+                break
+            node = node.parent
+    if not accepted:
+        return None
+    result = bytearray(source)
+    for start, end in accepted:
+        result[start:end] = masked[start:end]
+    return bytes(result)
+
+
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
     suffix = effective_suffix(path).lower()
@@ -2249,11 +2376,27 @@ def extract_js(path: Path) -> dict:
     else:
         config = _JS_CONFIG
     source_override = None
+    type_only_import_offsets: set[int] = set()
     if is_ts:
         try:
             source = _read_source_bytes(path)
             working = _normalize_ts_export_type_star(source) or source
             normalized = _normalize_ts_import_types(working, tsx=suffix == ".tsx")
+            if normalized is not None:
+                type_only_import_offsets.update(
+                    match.start() for match in _TS_IMPORT_CALL_RE.finditer(working)
+                    if normalized[match.start():match.start() + 6] != b'import'
+                )
+            working = normalized if normalized is not None else working
+            before_annotations = working
+            normalized = _normalize_ts_tag_and_import_annotations(
+                before_annotations, tsx=suffix == ".tsx"
+            )
+            if normalized is not None:
+                type_only_import_offsets.update(
+                    match.start() for match in _TS_QUALIFIED_IMPORT_TYPE_RE.finditer(before_annotations)
+                    if normalized[match.start():match.start() + 6] != b'import'
+                )
             working = normalized if normalized is not None else working
             source_override = working if working is not source else None
         except OSError:
@@ -2261,11 +2404,13 @@ def extract_js(path: Path) -> dict:
     result = _extract_generic(path, config, source_override=source_override)
     if "error" not in result:
         _extract_js_rationale(path, result)
-        _rescue_js_dynamic_imports(path, result)
+        _rescue_js_dynamic_imports(path, result, type_only_import_offsets=type_only_import_offsets)
     return result
 
 
-def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
+def _rescue_js_dynamic_imports(
+    path: Path, result: dict, *, type_only_import_offsets: set[int] | None = None
+) -> None:
     """Recover ``import('…')`` edges the AST pass does not emit for plain JS/TS.
 
     tree-sitter models ``await import('x')`` as a ``call_expression``, not an
@@ -2295,6 +2440,35 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
         src = _read_source_text(path, warn=False)
         if not _re.search(r"(?<!\w)import\s*\(", src):  # cheap bail — most files have none
             return
+        type_only_positions: set[int] = set()
+        if effective_suffix(path).lower() in (".ts", ".tsx", ".mts", ".cts"):
+            from tree_sitter import Language, Parser
+            import tree_sitter_typescript as ts_typescript
+
+            raw_source = _read_source_bytes(path, warn=False)
+            factory = (ts_typescript.language_tsx if effective_suffix(path).lower() == ".tsx"
+                       else ts_typescript.language_typescript)
+            root = Parser(Language(factory())).parse(raw_source).root_node
+            type_only_import_offsets = set(type_only_import_offsets or ())
+            type_only_import_offsets.update(
+                match.start() for match in _TS_IMPORT_CALL_RE.finditer(raw_source)
+                if _js_import_is_type_only(
+                    root.descendant_for_byte_range(match.start(), match.start() + 1)
+                )
+            )
+        if type_only_import_offsets:
+            # The AST uses UTF-8 bytes with original line endings, whereas the
+            # rescue pass reads text with universal-newline translation. Map
+            # offsets in one pass so CRLF, BOM and non-ASCII text stay aligned.
+            raw_source = _read_source_bytes(path, warn=False)
+            cursor = position = 0
+            for offset in sorted(type_only_import_offsets):
+                if offset < cursor or raw_source[offset:offset + 6] != b'import':
+                    continue
+                segment = raw_source[cursor:offset].decode('utf-8')
+                position += len(segment.replace('\r\n', '\n').replace('\r', '\n'))
+                type_only_positions.add(position)
+                cursor = offset
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
@@ -2338,6 +2512,10 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
             r"""(?<!\w)import\s*\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
             src,
         ):
+            # TypeScript import types are not executable import() calls.
+            # Regex offsets are characters, while tree-sitter offsets are bytes.
+            if m.start() in type_only_positions:
+                continue
             raw = m.group(1) or m.group(2) or m.group(3)
             if not raw:
                 continue
@@ -3406,6 +3584,323 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
     return _CPP_EXPORT_MACRO_RE.sub(repl, source)
 
 
+_CPP_CONDITIONAL_TOKEN_RE = re.compile(
+    rb'//(?:\\\r?\n|[^\r\n])*|/\*[\s\S]*?(?:\*/|\Z)'
+    rb"|\b[0-9](?:[A-Za-z_0-9.]|'[A-Za-z_0-9])*"
+    rb'|(?:u8|u|U|L)?R"([^ ()\\\t\v\f\r\n]{0,16})\('
+    rb'|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\''
+    rb'|^[ \t\v\f]*#[ \t]*([A-Za-z_][A-Za-z_0-9]*)(?:\\\r?\n|[^\r\n])*',
+    re.MULTILINE,
+)
+_CPP_CONDITIONAL_VARIANT_LIMIT = 32
+
+
+def _cpp_conditional_tokens(source: bytes):
+    pos = 0
+    while match := _CPP_CONDITIONAL_TOKEN_RE.search(source, pos):
+        pos = match.end()
+        if match.group(1) is not None:
+            end = source.find(b")" + match.group(1) + b'"', pos)
+            pos = len(source) if end == -1 else end + len(match.group(1)) + 2
+        yield match, pos
+
+
+def _cpp_conditional_groups(source: bytes) -> tuple[list[dict], str | None]:
+    """Read conditional ranges only; never evaluate macros or open includes."""
+    groups: list[dict] = []
+    stack: list[dict] = []
+    for match, _ in _cpp_conditional_tokens(source):
+        word = match.group(2)
+        if source[max(0, match.start() - 3):match.start()].endswith((b"\\\n", b"\\\r\n")):
+            continue  # A physical line after a splice is not a directive line.
+        if word not in (b"if", b"ifdef", b"ifndef", b"elif", b"else", b"endif"):
+            continue
+        text = match.group().strip()
+        argument = re.sub(rb"/\*[\s\S]*?\*/|//[^\r\n]*", b"", text)
+        argument = re.sub(rb"^#[ \t]*[A-Za-z_]+", b"", argument).strip()
+        if ((word in (b"if", b"elif") and not argument)
+                or (word in (b"ifdef", b"ifndef")
+                    and not re.fullmatch(rb"[A-Za-z_][A-Za-z_0-9]*", argument))
+                or (word in (b"else", b"endif") and argument)):
+            return groups, "malformed conditional directive"
+        line = source.count(b"\n", 0, match.start()) + 1
+        branch = {"directive": text.decode("utf-8", errors="replace"),
+                  "directive_line": line, "start_byte": match.end(),
+                  "start_line": source.count(b"\n", 0, match.end()) + 2}
+        if word in (b"if", b"ifdef", b"ifndef"):
+            if len(groups) >= 128:
+                return groups, "conditional-group limit exceeded"
+            group = {"line": line, "start_byte": match.start(), "branches": [branch],
+                     "directives": [(match.start(), match.end())]}
+            if stack:
+                group["parent"] = groups.index(stack[-1])
+                group["parent_branch"] = len(stack[-1]["branches"]) - 1
+            groups.append(group)
+            stack.append(group)
+            continue
+        if not stack:
+            return groups, "unbalanced conditional directives"
+        group = stack[-1]
+        if group.get("has_else"):
+            if word != b"endif":
+                return groups, "conditional branch after else"
+        previous = group["branches"][-1]
+        previous.update(end_byte=match.start(), end_line=line - 1)
+        group["directives"].append((match.start(), match.end()))
+        if word in (b"elif", b"else"):
+            group["branches"].append(branch)
+            group["has_else"] = word == b"else"
+        else:
+            if not group.get("has_else"):
+                group["branches"].append({"directive": "#else (implicit)",
+                    "directive_line": line, "start_byte": match.start(),
+                    "end_byte": match.start(), "start_line": line, "end_line": line - 1,
+                    "implicit": True})
+            group["end_byte"] = match.end()
+            stack.pop()
+    return groups, "unbalanced conditional directives" if stack else None
+
+
+def _cpp_expression_conditional_groups(source: bytes, groups: list[dict]) -> set[int]:
+    """Find candidates lexically; recovered trees must later confirm the scope."""
+    code = bytearray(source)
+    for match, end in _cpp_conditional_tokens(source):
+        code[match.start():end] = re.sub(rb"[^\r\n]", b" ", source[match.start():end])
+    tokens = iter(re.finditer(rb"[A-Za-z_][A-Za-z_0-9]*|[^\s]", code))
+    token = next(tokens, None)
+    stack: list[tuple[bytes, bool]] = []
+    previous = b""
+    statement = 0
+    selected = set()
+    for index, group in enumerate(groups):
+        while token is not None and token.start() < group["start_byte"]:
+            value = token.group()
+            if value in (b"(", b"[", b"{"):
+                expression = value == b"("
+                if value == b"{":
+                    prefix = bytes(code[statement:token.start()])
+                    expression = (previous in (b"=", b"return", b"co_return")
+                        or (previous in (b",", b"{") and bool(stack) and stack[-1][1])
+                        or ((re.fullmatch(rb"[A-Za-z_][A-Za-z_0-9]*|>|\]", previous) is not None)
+                            and previous not in (b"else", b"try", b"do")
+                            and not re.search(rb"\b(?:namespace|class|struct|enum|union|extern)\b", prefix)))
+                    statement = token.end()
+                stack.append((value, expression))
+            elif value in (b")", b"]", b"}"):
+                if stack:
+                    stack.pop()
+                if value == b"}":
+                    statement = token.end()
+            elif value == b";":
+                statement = token.end()
+            previous = value
+            token = next(tokens, None)
+        if (stack and stack[-1][1]) or group.get("parent") in selected:
+            selected.add(index)
+    return selected
+
+
+def _recover_cpp_conditional_initializers(path: Path, source: bytes, original: dict) -> dict:
+    """Recover expression directives with separate, bounded syntactic branch views.
+
+    shortcut: branch-wise views do not enumerate configurations, use a compilation
+    database and a real configured frontend when configuration semantics are needed.
+    """
+    if not original.get("parse_errors"):
+        return original
+    groups, problem = _cpp_conditional_groups(source)
+    if not groups and not problem:
+        return original
+    coverage = {"schema": 1, "status": "unrecovered", "coverage": "branch-wise syntax",
+                "conditions_evaluated": False, "combinations_enumerated": False,
+                "recovered_from": original["parse_errors"]}
+
+    def annotate(result: dict) -> dict:
+        file_node = next((n for n in result.get("nodes", [])
+                          if n.get("id") == _make_id(str(path))), None)
+        if file_node is not None:
+            file_node.setdefault("metadata", {})["cpp_conditional_recovery"] = coverage
+        return result
+
+    if problem:
+        coverage["reason"] = problem
+        return annotate(original)
+    selected = _cpp_expression_conditional_groups(source, groups)
+    if not selected:
+        return original
+    coverage["groups"] = [{k: v for k, v in g.items() if k not in ("directives", "has_else")}
+                           | {"recovered": i in selected} for i, g in enumerate(groups)]
+    choices = [tuple(0 for _ in groups)]
+    for index in sorted(selected):
+        for branch in range(len(groups[index]["branches"])):
+            choice = list(choices[0])
+            choice[index] = branch
+            current = groups[index]
+            while "parent" in current:
+                parent = current["parent"]
+                choice[parent] = current["parent_branch"]
+                current = groups[parent]
+            value = tuple(choice)
+            if value not in choices:
+                choices.append(value)
+            if len(choices) > _CPP_CONDITIONAL_VARIANT_LIMIT:
+                coverage["reason"] = "branch-view limit exceeded"
+                return annotate(original)
+    coverage["variant_count"] = len(choices)
+
+    def active(index: int, choice: tuple[int, ...]) -> bool:
+        current = groups[index]
+        while "parent" in current:
+            parent = current["parent"]
+            if parent in selected and choice[parent] != current["parent_branch"]:
+                return False
+            current = groups[parent]
+        return True
+
+    coverage["views"] = [[{"group_line": groups[index]["line"], "branch": choice[index]}
+                           for index in sorted(selected) if active(index, choice)] for choice in choices]
+    from tree_sitter import Language, Parser
+
+    parser = Parser(Language(importlib.import_module("tree_sitter_cpp").language()))
+    for index in sorted(selected):
+        for start, end in groups[index]["directives"][:-1]:
+            head = source[start:end]
+            if re.search(rb"#[ \t]*(?:if|ifdef|ifndef|elif)\b", head):
+                head = re.sub(rb"(#[ \t]*)elif\b", rb"\1if", head)
+                if parser.parse(head + b"\n#endif\n").root_node.has_error:
+                    coverage["reason"] = "malformed conditional expression"
+                    return annotate(original)
+    merged: dict | None = None
+    seen: dict[str, dict[str, int]] = {key: {} for key in ("nodes", "edges", "raw_calls")}
+    node_ids: dict[str, dict] = {}
+    for view_index, choice in enumerate(choices):
+        view = bytearray(source)
+
+        def blank(start: int, end: int) -> None:
+            view[start:end] = re.sub(rb"[^\r\n]", b" ", source[start:end])
+
+        for index in sorted(selected):
+            group = groups[index]
+            for start, end in group["directives"]:
+                blank(start, end)
+            for branch_index, branch in enumerate(group["branches"]):
+                if branch_index != choice[index]:
+                    blank(branch["start_byte"], branch["end_byte"])
+        root = parser.parse(bytes(view)).root_node
+        if root.has_error:
+            coverage["reason"] = "a branch view still has parse errors"
+            return annotate(original)
+        for index in sorted(selected):
+            if not active(index, choice):
+                continue
+            start = groups[index]["start_byte"]
+            node = root.descendant_for_byte_range(start, start)
+            while node is not None and node.type not in (
+                "initializer_list", "argument_list", "compound_statement"
+            ):
+                node = node.parent
+            if node is None or node.type == "compound_statement":
+                coverage["reason"] = "a branch view falls outside initializer or argument syntax"
+                return annotate(original)
+        # Guard validation needs every call site, not a branch-dependent first call.
+        result = _extract_generic(
+            path, _CPP_CONFIG, source_override=bytes(view), preserve_call_sites=True,
+        )
+        if result.get("parse_errors") or result.get("error"):
+            coverage["reason"] = "a branch view still has parse errors"
+            return annotate(original)
+        if merged is None:
+            merged = {key: value for key, value in result.items() if key not in seen}
+            merged.update({key: [] for key in seen})
+        elif any(result.get(key) != merged.get(key)
+                 for key in result.keys() | merged.keys() if key not in seen):
+            coverage["reason"] = "branch views have incompatible resolver metadata"
+            return annotate(original)
+        for key in seen:
+            for record in result.get(key, []):
+                if key == "nodes":
+                    previous = node_ids.setdefault(record["id"], record)
+                    if previous != record:
+                        coverage["reason"] = "branch views have conflicting symbol identities"
+                        return annotate(original)
+                signature = json.dumps(record, sort_keys=True)
+                if signature not in seen[key]:
+                    merged[key].append(record)
+                seen[key][signature] = seen[key].get(signature, 0) | (1 << view_index)
+    assert merged is not None
+    coverage["status"] = "recovered"
+    # The durable file range map also covers later resolver-created call edges.
+    for key in seen:
+        for record in merged[key]:
+            location = re.match(r"L(\d+)", record.get("source_location") or "")
+            line = int(location[1]) if location else 0
+            guards = [(index, branch_index) for index, g in enumerate(groups)
+                      for branch_index, branch in enumerate(g["branches"])
+                      if branch["start_line"] <= line <= branch["end_line"]]
+            expected = sum(1 << view_index for view_index, choice in enumerate(choices)
+                           if all(choice[index] == branch for index, branch in guards if index in selected))
+            if seen[key][json.dumps(record, sort_keys=True)] != expected:
+                # A split callee/type may start before the guard choosing its name.
+                coverage["status"] = "unrecovered"
+                coverage["reason"] = "branch-spanning records lack source guard provenance"
+                return annotate(original)
+            conditions = [{"group_line": groups[index]["line"], "branch": branch}
+                          for index, branch in guards]
+            if conditions:
+                record.setdefault("metadata", {})["cpp_conditions"] = conditions
+    return annotate(merged)
+
+
+def _stamp_cpp_condition_provenance(nodes: list[dict], edges: list[dict]) -> None:
+    """Apply recovered source ranges to later resolver edges and parked callsites."""
+    ranges: dict[str, list[tuple[int, int, int, int]]] = {}
+    for node in nodes:
+        metadata = node.get("metadata")
+        coverage = metadata.get("cpp_conditional_recovery") if isinstance(metadata, dict) else None
+        if not isinstance(coverage, dict) or coverage.get("status") != "recovered":
+            continue
+        sf = node.get("source_file")
+        groups = coverage.get("groups")
+        if not isinstance(sf, str) or not sf or not isinstance(groups, list):
+            continue
+        sf = PurePath(sf).as_posix()
+        for group in groups:
+            if (not isinstance(group, dict) or type(group.get("line")) is not int
+                    or not isinstance(group.get("branches"), list)):
+                continue
+            for index, branch in enumerate(group["branches"]):
+                if (not isinstance(branch, dict)
+                        or any(type(branch.get(key)) is not int for key in ("start_line", "end_line"))):
+                    continue
+                ranges.setdefault(sf, []).append(
+                    (branch["start_line"], branch["end_line"], group["line"], index)
+                )
+    if not ranges:
+        return
+
+    def stamp(record: dict, file_key: str, line_key: str) -> None:
+        sf = PurePath(str(record.get(file_key) or "")).as_posix()
+        location = re.match(r"L(\d+)", str(record.get(line_key) or ""))
+        if sf not in ranges or location is None:
+            return
+        line = int(location[1])
+        conditions = [{"group_line": group_line, "branch": branch}
+                      for start, end, group_line, branch in ranges[sf] if start <= line <= end]
+        if conditions:
+            metadata = record.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["cpp_conditions"] = conditions
+
+    for edge in edges:
+        stamp(edge, "source_file", "source_location")
+    for node in nodes:
+        metadata = node.get("metadata")
+        if isinstance(metadata, dict):
+            for entry in metadata.get(UNRESOLVED_CALLS_KEY) or ():
+                if isinstance(entry, dict) and entry.get("lang") == "cpp":
+                    stamp(entry, "file", "line")
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
@@ -3425,6 +3920,7 @@ def extract_cpp(path: Path) -> dict:
     result = _extract_generic(
         path, _CPP_CONFIG, source_override=source_override
     )
+    result = _recover_cpp_conditional_initializers(path, source_override, result)
     return _augment_cpp_string_tests(path, result)
 
 
@@ -3586,13 +4082,289 @@ def _normalize_csharp_verbatim_interpolation(source: bytes) -> bytes | None:
     return out
 
 
+# Maps every byte but CR and LF to a space: blanking keeps lines and columns.
+_CSHARP_BLANK_TABLE = bytes(b if b in (0x0A, 0x0D) else 0x20 for b in range(256))
+
+
+def _csharp_token_end(source: bytes, i: int) -> int:
+    """End (exclusive) of the comment, char or string literal opening at ``i``.
+
+    Returns ``i`` when no such token opens there. A line-bounded token (a ``//``
+    comment, a char literal, a regular string) stops *before* its newline, so
+    the caller still sees the next line start. Holes of interpolated strings
+    are walked as code, so a quote inside ``{...}`` does not end the string.
+    """
+    n = len(source)
+    if source.startswith(b"//", i):
+        nl = source.find(b"\n", i)
+        return n if nl == -1 else nl
+    if source.startswith(b"/*", i):
+        end = source.find(b"*/", i + 2)
+        return n if end == -1 else end + 2
+    if source[i:i + 1] == b"'":
+        j = i + 1
+        while j < n and source[j:j + 1] not in (b"'", b"\n"):
+            j += 2 if source[j:j + 1] == b"\\" else 1
+        return j + 1 if source[j:j + 1] == b"'" else min(j, n)
+    quote, run, interpolated, verbatim = _csharp_string_opener(source, i)
+    if run == 0:
+        return i
+    if run >= 3:
+        end = source.find(b'"' * run, quote + run)
+        return n if end == -1 else end + run
+    if run == 2:
+        return quote + 2
+    j = quote + 1
+    while j < n:
+        ch = source[j:j + 1]
+        if verbatim and source.startswith(b'""', j):
+            j += 2
+        elif ch == b"\\" and not verbatim:
+            j += 2
+        elif ch == b'"':
+            return j + 1
+        elif ch == b"\n" and not verbatim:
+            return j
+        elif interpolated and source.startswith(b"{{", j):
+            j += 2
+        elif interpolated and ch == b"{":
+            depth = 1
+            j += 1
+            while j < n and depth:
+                end = _csharp_token_end(source, j)
+                if end > j:
+                    j = end
+                    continue
+                c = source[j:j + 1]
+                depth += (c == b"{") - (c == b"}")
+                j += 1
+        else:
+            j += 1
+    return n
+
+
+def _csharp_branch_balanced(text: bytearray, start: int, end: int) -> bool:
+    """True when ``{}`` and ``()`` in ``text[start:end]`` each net to zero.
+
+    Comments, char and string literals are skipped.
+    """
+    src = bytes(text[start:end])
+    brace = paren = 0
+    j = 0
+    while j < len(src):
+        tok = _csharp_token_end(src, j)
+        if tok > j:
+            j = tok
+            continue
+        ch = src[j:j + 1]
+        brace += (ch == b"{") - (ch == b"}")
+        paren += (ch == b"(") - (ch == b")")
+        j += 1
+    return brace == 0 and paren == 0
+
+
+_CSHARP_NOT_A_TYPE = frozenset({
+    b"return", b"new", b"await", b"throw", b"if", b"while", b"for", b"foreach",
+    b"switch", b"case", b"using", b"lock", b"catch", b"when", b"is", b"as",
+    b"in", b"out", b"ref", b"else", b"yield", b"nameof", b"typeof", b"sizeof",
+    b"default", b"var", b"goto", b"fixed", b"checked", b"unchecked", b"and", b"or", b"not",
+})
+
+
+_CSHARP_MEMBER_DECL_RE = re.compile(
+    rb"([A-Za-z_][A-Za-z0-9_]*|[>\]?*])\s+([A-Za-z_][A-Za-z0-9_]*)"
+    rb"\s*(?:<[^<>(){};]*>)?\s*(\(|\{|=>)"
+)
+
+
+def _csharp_branch_member_sigs(text: bytearray, start: int, end: int) -> set[tuple[bytes, int]]:
+    """(name, arity) of the members a branch declares at its own brace depth.
+
+    A heuristic, not a parse: a declaration is an identifier preceded by a
+    type-like token (an identifier that is not a statement keyword, or ``>``,
+    ``]``, ``?``, ``*``) and followed by ``(`` (arity = top-level commas + 1, 0
+    for ``()``) or by ``{``/``=>`` (a property or type, arity -1). Both branches
+    of a group sit at the same place in the file, so a shared (name, arity)
+    means the same member of the same type is declared twice.
+    """
+    src = bytes(text[start:end])
+    # Mask comments and literals so they never look like code.
+    masked = bytearray(src)
+    j = 0
+    while j < len(src):
+        tok = _csharp_token_end(src, j)
+        if tok > j:
+            masked[j:tok] = src[j:tok].translate(_CSHARP_BLANK_TABLE)
+            j = tok
+        else:
+            j += 1
+    code = bytes(masked)
+    depth_at = []
+    d = 0
+    for ch in code:
+        depth_at.append(d)
+        if ch == 0x7B:
+            d += 1
+        elif ch == 0x7D:
+            d -= 1
+    sigs: set[tuple[bytes, int]] = set()
+    for m in _CSHARP_MEMBER_DECL_RE.finditer(code):
+        if depth_at[m.start(2)] != 0 or m.group(1) in _CSHARP_NOT_A_TYPE:
+            continue
+        name = m.group(2)
+        if m.group(3) != b"(":
+            sigs.add((name, -1))
+            continue
+        k = m.end(3)
+        level, angle, commas, empty = 1, 0, 0, True
+        while k < len(code) and level:
+            c = code[k:k + 1]
+            if c in (b"(", b"[", b"{"):
+                level += 1
+            elif c in (b")", b"]", b"}"):
+                level -= 1
+            elif c == b"<":
+                angle += 1
+            elif c == b">":
+                angle = max(0, angle - 1)
+            elif c == b"," and level == 1 and angle == 0:
+                commas += 1
+            if level and not c.isspace():
+                empty = False
+            k += 1
+        sigs.add((name, 0 if empty else commas + 1))
+    return sigs
+
+
+def _blank_csharp_preprocessor(source: bytes) -> bytes | None:
+    """Blank C# preprocessor directives and the ``#if`` branches that derail parsing, or None.
+
+    tree-sitter-c-sharp parses the raw text, directives and all branches
+    together. Its error recovery around a directive can close the enclosing
+    class early, so every later member loses its type owner, its field typing
+    and its calls.
+
+    Every directive line (``#if``/``#elif``/``#else``/``#endif``, and also
+    ``#region``, ``#pragma``, ``#nullable``, ``#define`` ...) is blanked. The
+    first branch of each ``#if`` group is always kept. A later ``#elif`` /
+    ``#else`` branch is kept too, so members that exist only there (an
+    older-framework fallback) stay in the graph (#2631), unless keeping it
+    would derail the parse:
+
+    * its ``{}`` or ``()`` do not net to zero on their own (``class A : B {``
+      ``#else`` ``class A {``), or
+    * it declares a member (name + arity) that a kept branch of the same group
+      already declares (``void Write(Span<char> s)`` ``#else``
+      ``void Write(string s)`` sharing one body).
+
+    Nested groups are decided first, so an outer branch is judged on what is
+    left of it. No symbols are evaluated. Measured against the compiler on
+    Newtonsoft.Json, Dapper and AutoMapper.
+
+    The rewrite is **byte-length preserving**: removed bytes become spaces and
+    every ``\\n``/``\\r`` is kept, so every remaining byte keeps its line and
+    column and source locations stay accurate (the #2876 contract).
+
+    A ``#`` line inside a comment or a multi-line string is not a directive;
+    comments and string literals are skipped while looking for line starts.
+    Returns None when the file has no directive.
+    """
+    n = len(source)
+    # (line_start, line_end, keyword) for every directive line.
+    directives: list[tuple[int, int, bytes]] = []
+    i = 0
+    while i < n:
+        # i is at a line start here.
+        p = i
+        while p < n and source[p:p + 1] in (b" ", b"\t", b"\v", b"\f"):
+            p += 1
+        if source[p:p + 1] == b"#":
+            nl = source.find(b"\n", p)
+            end = n if nl == -1 else nl
+            k = p + 1
+            while k < end and source[k:k + 1] in (b" ", b"\t"):
+                k += 1
+            w = k
+            while w < end and source[w:w + 1].isalpha():
+                w += 1
+            directives.append((i, end, source[k:w]))
+            i = end + 1
+            continue
+        # Walk the line as code; a comment or string may run past its end.
+        j = p
+        while j < n:
+            ch = source[j:j + 1]
+            if ch == b"\n":
+                break
+            end = _csharp_token_end(source, j)
+            if end > j:
+                j = end
+            elif ch in (b"$", b"@"):
+                # Resume past the whole `$`/`@` run (see _csharp_string_opener).
+                j = max(j + 1, _csharp_string_opener(source, j)[0])
+            else:
+                j += 1
+        i = j + 1
+    if not directives:
+        return None
+
+    out = bytearray(source)
+
+    def blank(start: int, end: int) -> None:
+        out[start:end] = source[start:end].translate(_CSHARP_BLANK_TABLE)
+
+    def keep(branch: int, bodies: list[tuple[int, int]], kept: list[int]) -> bool:
+        if branch == 0:
+            return True
+        start, end = bodies[branch]
+        if not _csharp_branch_balanced(out, start, end):
+            return False
+        sigs = _csharp_branch_member_sigs(out, start, end)
+        return not any(sigs & _csharp_branch_member_sigs(out, *bodies[k]) for k in kept)
+
+    # Each open #if group: the (directive start, directive end) of its #if and
+    # of every #elif/#else seen so far.
+    stack: list[list[tuple[int, int]]] = []
+
+    def close(heads: list[tuple[int, int]], endif_start: int) -> None:
+        bodies = [(heads[k][1], heads[k + 1][0] if k + 1 < len(heads) else endif_start)
+                  for k in range(len(heads))]
+        kept: list[int] = []
+        for k in range(len(bodies)):
+            if keep(k, bodies, kept):
+                kept.append(k)
+            else:
+                blank(*bodies[k])
+
+    for start, end, word in directives:
+        blank(start, end)
+        if word == b"if":
+            stack.append([(start, end)])
+        elif word in (b"elif", b"else") and stack:
+            stack[-1].append((start, end))
+        elif word == b"endif" and stack:
+            close(stack.pop(), start)
+    # An unterminated #if runs to the end of the file.
+    while stack:
+        close(stack.pop(), n)
+    return bytes(out)
+
+
 def extract_csharp(path: Path) -> dict:
     """Extract C# type declarations, methods, namespaces, and usings from a .cs file."""
     source_override = None
     try:
-        source_override = _normalize_csharp_verbatim_interpolation(path.read_bytes())
+        # Decoded like every other read (#4145): the blanked bytes below become
+        # the parse input, so raw Windows-1252 bytes here would bypass the
+        # decoder whenever the file has a directive (a bare `#region` is enough).
+        source = _read_source_bytes(path)
     except OSError:
-        pass
+        source = None
+    if source is not None:
+        source_override = _blank_csharp_preprocessor(source)
+        source_override = _normalize_csharp_verbatim_interpolation(
+            source_override or source
+        ) or source_override
     return _extract_generic(path, _CSHARP_CONFIG, source_override=source_override)
 
 
@@ -4595,6 +5367,9 @@ def _merge_csharp_partial_class_nodes(
             cn = rc.get("caller_nid")
             if cn in remap:
                 rc["caller_nid"] = remap[cn]
+            eo = rc.get("evidence_owner")
+            if eo in remap:
+                rc["evidence_owner"] = remap[eo]
 
 
 def _drop_shadowed_csharp_partial_bases(all_nodes: list[dict], all_edges: list[dict]) -> None:
@@ -4761,13 +5536,26 @@ def _resolve_swift_member_calls(
 
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
     method_index: dict[tuple[str, str], str] = {}
+    # (type_node_id, exact name) -> method ids: the folded key joins `bar` /
+    # `_bar` / `Bar`, which are separate member nodes of one type.
+    exact_methods: dict[tuple[str, str], set[str]] = {}
     for e in all_edges:
         if e.get("relation") != "method":
             continue
         src, tgt = e.get("source"), e.get("target")
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(src, _key(tnode.get("label", "")))] = tgt
+            label = str(tnode.get("label", ""))
+            method_index[(src, _key(label))] = tgt
+            if src and tgt:
+                exact_methods.setdefault(
+                    (src, label.removesuffix("()").lstrip(".")), set()).add(tgt)
+
+    def _member(type_nid: str, name: str) -> str | None:
+        exact = exact_methods.get((type_nid, name), set())
+        if len(exact) == 1:
+            return next(iter(exact))
+        return method_index.get((type_nid, _key(name)))
 
     # #2561: pending factory bindings (`let x = Factory.make()`) are label-only —
     # resolve each against the factory method's marked plain return type
@@ -4805,7 +5593,7 @@ def _resolve_swift_member_calls(
                 factory_defs = type_def_nids.get(_key(factory_type), [])
                 if len(factory_defs) != 1:
                     continue
-                method_nid = method_index.get((factory_defs[0], _key(factory_method)))
+                method_nid = _member(factory_defs[0], factory_method)
                 if method_nid is None:
                     continue
                 targets = return_targets_by_method.get(method_nid, set())
@@ -4864,7 +5652,7 @@ def _resolve_swift_member_calls(
         if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
         type_nid = type_defs[0]
-        method_nid = method_index.get((type_nid, _key(callee)))
+        method_nid = _member(type_nid, callee)
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
         if target == caller or (caller, target) in existing_pairs:
@@ -5310,7 +6098,7 @@ def _resolve_python_member_calls(
                         _emit_call(caller, _method_of(cls, callee), rc, inferred=True)
             continue
         receiver_type = rc.get("receiver_type")
-        if receiver_type and not receiver[:1].isupper():
+        if receiver_type and (not receiver[:1].isupper() or rc.get("_python_module_instance")):
             # Typed-receiver arm: `request.read()` where the extractor typed the
             # local or parameter `request` from an annotation (`request: Request`)
             # or a constructor binding (`client = Client(...)`, `with Client() as
@@ -5320,6 +6108,9 @@ def _resolve_python_member_calls(
             # otherwise emit nothing. The method must be the class's own. A typed
             # local is never an imported module, so the module arm is skipped.
             class_nids = class_def_nids.get(_key(receiver_type), [])
+            if rc.get("_python_module_instance"):
+                class_nids = [nid for nid in class_nids
+                              if node_by_id[nid].get("label") == receiver_type]
             caller_file = _file_node(caller)
             if len(class_nids) == 1 and caller_file is not None:
                 cls = class_nids[0]
@@ -5721,15 +6512,16 @@ def _resolve_cpp_member_calls(
 
     The shared cross-file pass drops every ``is_member_call`` because a bare method
     name (``bar``) collides across the corpus and inflates god-nodes (#543/#1219).
-    The C++ extractor records each member call's receiver and a per-file
-    ``var -> ClassName`` table (``cpp_type_table``) built from local declarations.
+    The C++ extractor records lexical receiver bindings, access chains and
+    class-scoped field types. Older scoped-call records also use a per-file
+    ``var -> ClassName`` table (``cpp_type_table``).
     This pass types the receiver, then emits an edge ONLY when that type resolves
     to exactly ONE definition (the god-node guard).
 
     Receiver typing, by precision tier:
       * ``Foo::bar()`` — the scope ``Foo`` names the type explicitly -> EXTRACTED.
       * ``this->bar()`` — the receiver is the caller's own enclosing class -> EXTRACTED.
-      * ``f.bar()`` / ``f->bar()`` — ``f`` typed via the file's local table -> INFERRED.
+      * ``f.bar()`` / ``f->bar()`` and field chains — declared receiver types -> INFERRED.
     A receiver whose type can't be inferred locally is SKIPPED (no guess): a false
     call edge is worse than a missing one. The ``_merge_decl_def_classes`` pass has
     already folded each header/impl class pair into one node, so a paired class is a
@@ -5793,6 +6585,83 @@ def _resolve_cpp_member_calls(
         if n.get("source_file") and label.endswith("()") and "::" in label:
             qualified_method_nids.setdefault(label, []).append(n["id"])
 
+    # Receiver chains use literal, case-sensitive identities, including namespaces.
+    exact_methods: dict[tuple[str, str], set[str]] = {}
+    type_lookup = CppTypeLookup(all_nodes, all_edges)
+    for rel in ("defines", "method"):
+        grouped: dict[tuple[str, str], set[str]] = {}
+        for e in all_edges:
+            target_node = node_by_id.get(e.get("target", ""), {})
+            label = target_node.get("label", "")
+            if e.get("relation") == rel and label.endswith("()"):
+                name = label.removesuffix("()").lstrip(".").rsplit("::", 1)[-1]
+                grouped.setdefault((e["source"], name), set()).add(e["target"])
+        exact_methods.update(grouped)
+
+    def resolve_chain(rc: dict) -> str | None:
+        chain = rc["cpp_receiver_chain"]
+        if not chain:
+            return None
+        root_name = chain[0][0]
+        owner = enclosing_type.get(rc["caller_nid"], "")
+        owner_node = node_by_id.get(owner, {})
+        scope = owner_node.get("_cpp_qualified") or rc.get("cpp_receiver_scope", "")
+        if root_name == "this":
+            name = owner_node.get("_cpp_qualified", "") + "*"
+        elif "cpp_receiver_type" in rc:
+            name = rc["cpp_receiver_type"]
+        else:
+            field_owner = type_lookup.member_owner(owner, root_name, "field") if owner else None
+            if not isinstance(field_owner, str):
+                return None
+            owner_node = node_by_id[field_owner]
+            scope = owner_node.get("_cpp_qualified", "")
+            name = owner_node.get("_cpp_fields", {}).get(root_name, "")
+        source = rc.get("source_file", "")
+        use_source = source
+        use_position = rc.get("cpp_call_byte", 0)
+        position = rc.get("cpp_receiver_byte", rc.get("cpp_call_byte", 0))
+        if root_name != "this" and "cpp_receiver_type" not in rc:
+            source = owner_node.get("source_file", source)
+            position = owner_node.get("_cpp_field_positions", {}).get(root_name, position)
+        type_nid = ""
+        for index, (member, operator) in enumerate(chain):
+            if index:
+                field_owner = type_lookup.member_owner(type_nid, member, "field")
+                if not isinstance(field_owner, str):
+                    return None
+                owner_node = node_by_id[field_owner]
+                name = owner_node.get("_cpp_fields", {}).get(member, "")
+                scope = owner_node.get("_cpp_qualified", "")
+                source = owner_node.get("source_file", source)
+                position = owner_node.get("_cpp_field_positions", {}).get(member, 0)
+            type_nid = type_lookup.resolve(name, scope, source, position, operator,
+                                          use_source=use_source, use_position=use_position)
+            if type_nid is None:
+                return None
+        return type_nid
+
+    def chain_park_name(rc: dict) -> str | None:
+        """The bare receiver-type name of a SINGLE-element C++ chain, so a call
+        onto a typed local whose class is declared in no local file can still be
+        PARKED for the cross-repo merge instead of dropped (#3152). A multi-hop
+        chain is not a single parkable name, and `this`/field roots are in-repo."""
+        chain = rc["cpp_receiver_chain"]
+        if len(chain) != 1 or "cpp_receiver_type" not in rc:
+            return None
+        name = re.sub(r"\b(const|volatile)\b", "", rc["cpp_receiver_type"]).strip()
+        identifier = r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*"
+        if chain[0][1] == "->":
+            smart = re.fullmatch(rf"std::(?:unique_ptr|shared_ptr)\s*<\s*({identifier})\s*>", name)
+            if smart:
+                name = smart[1]
+            elif name.endswith("*"):
+                name = name[:-1].strip()
+            else:
+                return None
+        name = name.removeprefix("::")
+        return name if re.fullmatch(r"[A-Za-z_]\w*", name) else None
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -5814,7 +6683,43 @@ def _resolve_cpp_member_calls(
             continue
         # Determine the receiver's type and the resulting confidence.
         qualified_fallback_label: str | None = None
-        if receiver == "this":
+        if "cpp_receiver_chain" in rc:
+            type_nid = resolve_chain(rc)
+            if type_nid is None:
+                # A single-element chain whose receiver type is known but declared
+                # in no local file is a cross-repo candidate: park it by type name
+                # for the merge to finish, as the non-chain receiver path does
+                # below — otherwise a typed local calling into another repo is
+                # silently dropped (#3152 regression from the chain resolver).
+                park_name = chain_park_name(rc)
+                owner = node_by_id.get(enclosing_type.get(caller, ""), {})
+                alias = park_name is not None and type_lookup.is_alias(
+                    park_name, owner.get("_cpp_qualified") or rc.get("cpp_receiver_scope", ""),
+                    src_file,
+                    rc.get("cpp_receiver_byte", rc.get("cpp_call_byte", 0)),
+                )
+                if park_name is not None and not alias and not type_def_nids.get(_key(park_name)):
+                    _park_unresolved_member_call(
+                        node_by_id.get(caller), callee, park_name, "cpp", rc,
+                    )
+                continue
+            type_qualified = receiver == "this" and len(rc["cpp_receiver_chain"]) == 1
+        elif rc.get("cpp_scoped_call"):
+            type_nid = type_lookup.resolve(
+                receiver, rc.get("cpp_call_scope", ""), src_file,
+                rc.get("cpp_call_byte", 0), ".",
+            )
+            if type_nid is None:
+                alias = type_lookup.is_alias(
+                    receiver, rc.get("cpp_call_scope", ""), src_file,
+                    rc.get("cpp_call_byte", 0),
+                )
+                if receiver[:1].isupper() and not alias and not type_def_nids.get(_key(receiver)):
+                    _park_unresolved_member_call(node_by_id.get(caller), callee, receiver, "cpp", rc)
+                continue
+            qualified_fallback_label = f"{receiver}::{callee}()"
+            type_qualified = True
+        elif receiver == "this":
             # this->bar(): receiver is the caller's own enclosing class.
             type_nid = enclosing_type.get(caller)
             if not type_nid:
@@ -5867,7 +6772,21 @@ def _resolve_cpp_member_calls(
                 continue
             type_nid = type_defs[0]
             type_qualified = False
-        method_nid = method_index.get((type_nid, _key(callee)))
+        if "cpp_receiver_chain" in rc or rc.get("cpp_scoped_call"):
+            methods = exact_methods.get((type_nid, callee), set())
+            method_nid = next(iter(methods)) if len(methods) == 1 else None
+        else:
+            # The folded key joins `bar` / `_bar` / `bar_` / `Bar`, which are
+            # separate member nodes of one class: the exact spelling wins when
+            # the type has exactly one member so named.
+            methods = exact_methods.get((type_nid, callee), set())
+            method_nid = (next(iter(methods)) if len(methods) == 1
+                          else method_index.get((type_nid, _key(callee))))
+        if method_nid is None:
+            inherited_owner = type_lookup.member_owner(type_nid, callee, "method")
+            if isinstance(inherited_owner, str) and inherited_owner != type_nid:
+                methods = exact_methods.get((inherited_owner, callee), set())
+                method_nid = next(iter(methods)) if len(methods) == 1 else None
         if method_nid is None and qualified_fallback_label is not None:
             candidates = qualified_method_nids.get(qualified_fallback_label, [])
             if len(candidates) == 1:
@@ -5888,6 +6807,55 @@ def _resolve_cpp_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+        if isinstance(rc.get("metadata"), dict):
+            all_edges[-1]["metadata"] = dict(rc["metadata"])
+
+
+# C# predefined/BCL type names that are never declared in the scanned corpus.
+# A receiver of one of these types can still be the target of an extension method
+# (`this string`), so the extractor now stamps the type name (#4828) — but the
+# type is not a cross-repo candidate, so a failed instance lookup must not park it
+# as one (#3152).
+# Member names a BCL type owns. A receiver whose type is *not* declared in the
+# corpus could be a BCL type, and if it is, an instance method of that name beats
+# any extension. Without a BCL symbol table the graph cannot prove the negative,
+# so these names are never bound through an out-of-corpus receiver (#4828). A
+# generic (`this T`) or `this object` declaration is still subject to this rule.
+_CSHARP_BCL_MEMBER_NAMES = frozenset({
+    "Add", "Any", "Cast", "Clear", "Compare", "CompareTo", "Concat", "Contains",
+    "CopyTo", "Count", "Dispose", "Equals", "First", "ForEach", "Format",
+    "GetEnumerator", "GetHashCode", "GetType", "GetValue", "IndexOf", "Insert",
+    "Join", "Keys", "Last", "Length", "Parse", "Remove", "Replace", "Select",
+    "Split", "Substring", "ToArray", "ToDictionary", "ToLower", "ToList",
+    "ToString", "ToUpper", "Trim", "TryParse", "Values", "Where",
+})
+
+_CSHARP_WELL_KNOWN_TYPES = frozenset({
+    "bool", "byte", "char", "decimal", "double", "dynamic", "float", "int",
+    "long", "nint", "nuint", "object", "sbyte", "short", "string", "uint",
+    "ulong", "ushort", "void",
+})
+
+# A C# keyword type and its System type are one type: `bool` is `Boolean`, so a
+# `bool` receiver matches `this Boolean` and a `Boolean` receiver `this bool`.
+_CSHARP_KEYWORD_TYPE_ALIASES = {
+    "bool": "Boolean", "byte": "Byte", "sbyte": "SByte", "char": "Char",
+    "decimal": "Decimal", "double": "Double", "float": "Single", "int": "Int32",
+    "uint": "UInt32", "nint": "IntPtr", "nuint": "UIntPtr", "long": "Int64",
+    "ulong": "UInt64", "short": "Int16", "ushort": "UInt16",
+    "object": "Object", "string": "String",
+}
+_CSHARP_SYSTEM_TYPE_KEYWORDS = {v: k for k, v in _CSHARP_KEYWORD_TYPE_ALIASES.items()}
+
+# Keyword value types own no `Value` member, so `x.Value` on one can only be
+# `Nullable<T>.Value` (`char? c; c.Value`), whose type is T itself.
+_CSHARP_KEYWORD_VALUE_TYPES = frozenset(_CSHARP_KEYWORD_TYPE_ALIASES) - {"object", "string"}
+
+
+def _csharp_keyword_type(name: str) -> str:
+    """The C# keyword spelling of a built-in type name, else ``name`` unchanged."""
+    bare = name[len("System."):] if name.startswith("System.") else name
+    return _CSHARP_SYSTEM_TYPE_KEYWORDS.get(bare, bare if bare in _CSHARP_KEYWORD_TYPE_ALIASES else name)
 
 
 def _csharp_overload_index(nodes: list[dict], edges: list[dict]) -> dict:
@@ -5899,6 +6867,8 @@ def _csharp_overload_index(nodes: list[dict], edges: list[dict]) -> dict:
             e.get("target"): e.get("source") for e in edges
             if e.get("relation") == "method"
             and "arity" in ((node_by_id.get(e.get("target")) or {}).get("metadata") or {})
+            and not is_csharp_constructor_node(node_by_id.get(e.get("target")) or {})
+            and not is_csharp_explicit_interface_node(node_by_id.get(e.get("target")) or {})
         },
     }
 
@@ -5994,6 +6964,13 @@ def _resolve_csharp_member_calls(
     method_peers: dict[tuple[str, str], list[dict]] = {}
     enclosing_type: dict[str, str] = {}
     for e in all_edges:
+        if e.get("relation") == "defines" and e.get("context") == "field":
+            # A property/indexer whose accessors make calls is a caller in
+            # its type, like a method; it is never a method_index target.
+            owner, member = e.get("source"), e.get("target")
+            if _is_cs_file(e.get("source_file")) and isinstance(owner, str) and isinstance(member, str):
+                enclosing_type.setdefault(member, owner)
+            continue
         if e.get("relation") != "method":
             continue
         src, tgt = e.get("source"), e.get("target")
@@ -6001,6 +6978,12 @@ def _resolve_csharp_member_calls(
         if tnode is None:
             continue
         enclosing_type.setdefault(tgt, src)
+        if is_csharp_constructor_node(tnode):
+            continue  # owns its calls (enclosing_type), but is never `x.Name()`
+        if is_csharp_explicit_interface_node(tnode):
+            continue  # `int IA.Get()` owns its calls, but is reached only through IA
+        if (tnode.get("metadata") or {}).get("kind") == "operator":
+            continue  # `operator +` is never written as a call name
         # Overloads share a key: the first declared one stands for the name,
         # and the call's argument count picks among them below (#4584).
         method_key = (src, _key(tnode.get("label", "")))
@@ -6085,8 +7068,15 @@ def _resolve_csharp_member_calls(
         ``_resolve_type_name_nid`` collapses "absent", "ambiguous" and "scoping was
         decisive" into one ``None``, and only the first is a cross-repo candidate,
         so re-check the bare-name index instead of trusting the ``None``.
+
+        A well-known BCL name is NOT a cross-repo candidate: ``string``/``int``
+        receivers are typed now that extension methods need their declared type
+        (#4828), and parking every ``x.ToString()`` would stamp a useless
+        ``unresolved_calls`` payload on most caller nodes in a .NET corpus.
         """
         if type_name and not type_def_nids.get(_key(type_name)):
+            if str(type_name).lower() in _CSHARP_WELL_KNOWN_TYPES:
+                return
             _park_unresolved_member_call(
                 caller_node, rc.get("callee"), type_name, "csharp", rc,
             )
@@ -6223,15 +7213,25 @@ def _resolve_csharp_member_calls(
             if not type_nid:
                 continue
             type_qualified = False
-        else:
-            type_name = rc.get("receiver_type")
-            if not type_name:
-                continue
+        elif rc.get("receiver_type"):
+            type_name = rc["receiver_type"]
             type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
             if not type_nid:  # ambiguous or absent -> bail (god-node guard)
                 _park_if_absent(type_name, caller_node, rc)
                 continue
             type_qualified = False
+        elif rc.get("receiver_undeclared"):
+            # `_Pair.Make()` / `pair.Create()`: no local, parameter, field or
+            # property of that name is in scope, so the receiver names a type
+            # like `Type.M()` above, only not Pascal-cased. Bind only when it
+            # resolves to exactly one declared type; never park it, since an
+            # undeclared lowercase name is as likely a namespace or alias.
+            type_nid = _resolve_type_name_nid(receiver, caller_node, src_file)
+            if not type_nid:
+                continue
+            type_qualified = True
+        else:
+            continue
         method_nid = _method_on_type_or_bases(type_nid, _key(callee))
         if not method_nid:
             continue  # receiver typed, but the type has no such method — skip
@@ -6254,6 +7254,325 @@ def _resolve_csharp_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+
+
+def _resolve_csharp_extension_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Bind C# extension-method calls (``recv.Ext()``) to their declaration (#4828).
+
+    An extension invocation is static dispatch: the receiver is the first
+    argument of a method declared on a *static class*, not a member of the
+    receiver's type. ``_resolve_csharp_member_calls`` therefore cannot see it —
+    it looks the name up on the receiver's type and its base chain, and an
+    extension lives on a sibling type — so a widely used helper had no callers
+    in the graph and looked dead.
+
+    The declaration side now records ``extended_type`` (plus arity and a
+    type-parameter marker) on the extension node; this pass joins call sites to
+    it. Every rule is a C# resolution rule, and anything unprovable is dropped:
+
+      * the receiver's declared type must be in the corpus and its base chain
+        fully resolved — an out-of-corpus base may declare an *instance* member
+        of that name, which always wins over an extension;
+      * the receiver type must declare no instance member of that name;
+      * the declaring static class's namespace must be visible at the call site,
+        walking the enclosing namespace declarations outward (a file-level
+        ``using`` belongs to the compilation unit, so an inner-namespace
+        extension wins);
+      * the extended type must be the receiver's type or one of its resolved
+        base types or interfaces;
+      * the declaration must accept the call's argument count, using the same
+        ``arity``/``min_arity`` facts #4584 already records (the receiver is one
+        parameter short of the call);
+      * more than one surviving declaration is ambiguous and binds nothing.
+
+    An open generic (``this T``) or ``this object`` declaration applies to any
+    receiver, but only when no exact/base match exists — C# prefers the
+    non-generic candidate.
+
+    A receiver whose type the corpus never declares (``string``, ``int``, a
+    third-party type) cannot have its instance members enumerated, so the
+    instance-wins rule is replaced by two conservative proofs: the member name
+    is not one a BCL type owns (``ToString``, ``GetValue``, …), and no regular
+    method anywhere in the corpus has that name. Such an edge is INFERRED 0.75,
+    one tier below a receiver whose declaration table typed it.
+
+    A chained receiver (``v.ToString().Mask()``) has no type at all: typing it
+    needs the inner call's return type, which for a BCL call the corpus does not
+    know. The same two proofs apply, with no type-compatibility filter — only a
+    name that is unique enough to survive them binds (``v.ToString().Mask()``
+    does; anything named like an ordinary member does not). A capitalized
+    untyped receiver is a type name (``Convert.ToInt32(x)``), never a value an
+    extension can apply to, so it is skipped.
+
+    A keyword type and its System type are one type (``bool`` receiver,
+    ``this Boolean``), unless the corpus declares a type of that name. And
+    ``x.Value`` on a keyword value type can only be ``Nullable<T>.Value``
+    (``char? c; c.Value.IsWs()``), so its type is T.
+    """
+    def _key(label: str) -> str:
+        # Case and `_` are part of a C# name (#4415); drop only the `.M()` decoration.
+        return re.sub(r"\W+", "", str(label))
+
+    node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
+    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+
+    type_def_nids: dict[str, list[str]] = {}
+    for nid in contained:
+        n = node_by_id.get(nid)
+        if (
+            n is not None
+            and _is_cs_file(n.get("source_file"))
+            and _is_type_like_definition(n)
+        ):
+            type_def_nids.setdefault(_key(n.get("label", "")), []).append(nid)
+
+    resolver = CsharpNameResolver(all_nodes, all_edges)
+
+    # Extension declarations, by the name a call site spells.
+    ext_by_name: dict[str, list[dict]] = {}
+    method_owner: dict[str, str] = {}
+    method_index: dict[tuple[str, str], list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        owner, method_nid = e.get("source"), e.get("target")
+        mnode = node_by_id.get(method_nid)
+        if mnode is None or not _is_cs_file(mnode.get("source_file")):
+            continue
+        method_owner.setdefault(method_nid, owner)
+        method_index.setdefault((owner, _key(mnode.get("label", ""))), []).append(method_nid)
+        meta = mnode.get("metadata") or {}
+        arity = meta.get("arity")
+        if not meta.get("extension") or not isinstance(arity, int):
+            continue
+        low = meta.get("min_arity")
+        ext_by_name.setdefault(_key(mnode.get("label", "")), []).append({
+            "method": method_nid,
+            "extended": str(meta.get("extended_type") or ""),
+            "ext_arity": meta.get("extended_type_arity") or 0,
+            "is_type_param": bool(meta.get("extended_is_type_param")),
+            "arity": arity,
+            "low": low if isinstance(low, int) else arity,
+            "variadic": bool(meta.get("variadic")),
+            "namespace": str(meta.get("namespace") or ""),
+        })
+    if not ext_by_name:
+        return
+
+    # `ext_by_name` covers only extension declarations; this is every *other*
+    # C# method name, used to prove a name is not an ordinary member (#4828).
+    ext_method_ids = {d["method"] for decls in ext_by_name.values() for d in decls}
+    regular_method_names = {
+        key
+        for (_owner, key), mids in method_index.items()
+        for mid in mids
+        if mid not in ext_method_ids
+    }
+
+    # Supertype graph. A target with no source_file is a placeholder for a type
+    # the corpus never declares: the chain through it is UNRESOLVED.
+    supers: dict[str, set[str]] = {}
+    for e in all_edges:
+        if e.get("relation") not in ("inherits", "implements"):
+            continue
+        if not _is_cs_file(e.get("source_file")):
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        if isinstance(src, str) and isinstance(tgt, str):
+            supers.setdefault(src, set()).add(tgt)
+
+    closure_cache: dict[str, tuple[set[str], bool]] = {}
+
+    def _closure(nid: str) -> tuple[set[str], bool]:
+        cached = closure_cache.get(nid)
+        if cached is not None:
+            return cached
+        out: set[str] = set()
+        unresolved = False
+        stack = [nid]
+        while stack:
+            cur = stack.pop()
+            if cur in out:
+                continue
+            out.add(cur)
+            for sup in supers.get(cur, ()):
+                snode = node_by_id.get(sup)
+                if snode is None or not snode.get("source_file"):
+                    unresolved = True
+                    continue
+                stack.append(sup)
+        closure_cache[nid] = (out, unresolved)
+        return out, unresolved
+
+    def _resolve_type_nid(type_name: str | None, caller_node: dict | None,
+                          src_file: str) -> tuple[str | None, bool]:
+        """(definition nid, decisive). ``(None, True)`` means ambiguous or
+        scoping-known-and-unresolvable; ``(None, False)`` means declared nowhere
+        in this corpus — the out-of-corpus rung."""
+        if not type_name:
+            return None, False
+        if caller_node is not None:
+            resolved, decisive = resolver.resolve_type_name(
+                type_name, caller_node, src_file
+            )
+            if resolved:
+                return resolved, True
+            if decisive:
+                return None, True
+        hits = type_def_nids.get(_key(type_name), [])
+        if len(hits) == 1:
+            return hits[0], True
+        return None, bool(hits)
+
+    def _same_type(extended: str, recv_name: str) -> bool:
+        """Whether an extension's ``this`` type names the receiver's type.
+
+        ``bool`` and ``Boolean`` are one type, unless the corpus declares a
+        type of either name (then it is that type, not System's).
+        """
+        if _key(extended) == _key(recv_name):
+            return True
+        if type_def_nids.get(_key(extended)) or type_def_nids.get(_key(recv_name)):
+            return False
+        kw = _csharp_keyword_type(extended)
+        return kw in _CSHARP_KEYWORD_TYPE_ALIASES and kw == _csharp_keyword_type(recv_name)
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for result in per_file:
+        for rc in result.get("raw_calls") or []:
+            if rc.get("lang") != "csharp" or not rc.get("is_member_call"):
+                continue
+            caller = rc.get("caller_nid")
+            callee = rc.get("callee")
+            argc = rc.get("arity")
+            receiver = rc.get("receiver")
+            chain = rc.get("receiver_chain") or []
+            if not caller or not callee or not isinstance(argc, int):
+                continue
+            if receiver == "base":
+                continue  # base.M() is nominal dispatch, never an extension
+            src_file = str(rc.get("source_file") or "")
+            caller_node = node_by_id.get(caller)
+            if caller_node is None:
+                continue
+
+            recv_name = rc.get("receiver_type")
+            if (not recv_name and len(chain) == 2 and chain[1] == "Value"
+                    and _csharp_keyword_type(chain[0]) in _CSHARP_KEYWORD_VALUE_TYPES
+                    and not type_def_nids.get(_key(chain[0]))):
+                # `char? c; c.Value.IsWs()`: a keyword value type has no `Value`
+                # member, so this is Nullable<T>.Value, typed T.
+                chain = chain[:1]
+            if not recv_name and chain:
+                if len(chain) > 1:
+                    # `x.F.M()` needs F's declared type, not x's: fail closed
+                    # rather than bind the extension to the root's type.
+                    continue
+                recv_name = chain[0]
+            if not recv_name and receiver == "this":
+                owner = method_owner.get(caller)
+                owner_node = node_by_id.get(owner) if owner else None
+                recv_name = (owner_node or {}).get("label")
+
+            candidates = ext_by_name.get(_key(callee))
+            if not candidates:
+                continue
+
+            closure: set[str] = set()
+            if not recv_name:
+                # A capitalized untyped receiver is a type named in source
+                # (`Convert.ToInt32(x)`), not a value an extension applies to.
+                if receiver and not rc.get("receiver_type") and str(receiver)[:1].isupper():
+                    continue
+                roc = True
+            else:
+                recv_nid, decisive = _resolve_type_nid(recv_name, caller_node, src_file)
+                if recv_nid is None and decisive:
+                    continue  # the receiver's own type is ambiguous here
+                roc = recv_nid is None  # receiver type declared nowhere in the corpus
+
+            if not roc:
+                closure, unresolved = _closure(recv_nid)
+                if unresolved:
+                    # An out-of-corpus base may declare this name as an instance
+                    # member, which beats any extension. Not provable: no edge.
+                    continue
+                if any(method_index.get((owner, _key(callee))) for owner in closure):
+                    continue  # an instance member (or an override) wins
+            else:
+                # Instance members of an undeclared type cannot be enumerated;
+                # refuse a name a BCL type owns, and a name any regular method
+                # in the corpus already spells.
+                if callee in _CSHARP_BCL_MEMBER_NAMES:
+                    continue
+                if _key(callee) in regular_method_names:
+                    continue
+
+            for visible in resolver.visible_namespaces(caller_node, src_file):
+                at_level = [d for d in candidates if d["namespace"] in visible]
+                if at_level:
+                    candidates = at_level
+                    break
+            else:
+                continue
+
+            if not recv_name:
+                # No type to be compatible with: the guarded name rules above are
+                # the whole proof, and a tie stays unbound.
+                applicable = candidates
+            else:
+                exact = [
+                    d for d in candidates
+                    if not d["is_type_param"] and _same_type(d["extended"], recv_name)
+                ]
+                inherited = []
+                if not roc:
+                    inherited = [
+                        d for d in candidates
+                        if not d["is_type_param"]
+                        and _key(d["extended"]) in {
+                            _key((node_by_id.get(c) or {}).get("label", "")) for c in closure
+                        }
+                    ]
+                applicable = exact or inherited
+                if not applicable:
+                    applicable = [
+                        d for d in candidates
+                        if d["is_type_param"] or d["extended"].lower() in ("object", "dynamic")
+                    ]
+            if not applicable:
+                continue
+
+            fits = [
+                d for d in applicable
+                if d["low"] <= argc and (argc <= d["arity"] - 1 or d["variadic"])
+            ]
+            if len(fits) != 1:
+                continue  # no declaration accepts this call shape, or ambiguous
+
+            method_nid = fits[0]["method"]
+            if method_nid == caller or (caller, method_nid) in existing_pairs:
+                continue
+            existing_pairs.add((caller, method_nid))
+            all_edges.append({
+                "source": caller,
+                "target": method_nid,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "INFERRED",
+                # 0.85 when the extractor's declaration table typed the receiver;
+                # 0.75 when the receiver's type is out of corpus (or absent) and
+                # the binding rests on the BCL/regular-name guards — the discrete
+                # INFERRED rubric in references/extraction-spec.md.
+                "confidence_score": 0.75 if roc else 0.85,
+                "source_file": src_file,
+                "source_location": rc.get("source_location"),
+                "weight": 1.0,
+            })
 
 
 def _bind_member_field_tables(
@@ -6477,7 +7796,12 @@ def _resolve_java_member_calls(
 
     A receiver that is itself a call (`builder().size(3).build()`), a `new T()`
     or a cast is typed step by step from the declared return types the
-    extractor put on method nodes (`_java_ret`).
+    extractor put on method nodes (`_java_ret`). A class-qualified static
+    field (`Service.INSTANCE.get()`, and `Service.INSTANCE.other().m()`) is
+    the same walk: the field's declared type on that class, including one
+    inherited from a superclass, types the next step. A local, parameter, or
+    field that shadows the class name is not that class. An instance field
+    accessed as `Type.field` is not.
     """
     def key(label: str) -> str:
         return str(label).strip().removeprefix(".").removesuffix("()")
@@ -6521,8 +7845,15 @@ def _resolve_java_member_calls(
         if edge.get("relation") in ("inherits", "implements"):
             supertypes.setdefault(edge["source"], []).append(edge["target"])
     class_fields = _bind_member_field_tables(per_file, all_nodes, lang="java")
+    static_fields = _bind_member_field_tables(per_file, all_nodes, lang="java_static")
 
-    def _inherited_field_type(class_nid, field: str, bases: dict[str, list[str]] = inherits_bases):
+    def _inherited_field_type(
+        class_nid,
+        field: str,
+        bases: dict[str, list[str]] = inherits_bases,
+        tables: dict[str, dict[str, str]] | None = None,
+    ):
+        fields = class_fields if tables is None else tables
         seen: set = set()
         queue = [class_nid]
         while queue:
@@ -6530,7 +7861,7 @@ def _resolve_java_member_calls(
             if not cls or cls in seen:
                 continue
             seen.add(cls)
-            hit = class_fields.get(cls, {}).get(field)
+            hit = fields.get(cls, {}).get(field)
             if hit:
                 return hit
             queue.extend(bases.get(cls, []))
@@ -6637,6 +7968,14 @@ def _resolve_java_member_calls(
             method_nid = _method_on_type_or_bases(owner, key(chain[1])) if owner else None
             returned = node_by_id.get(method_nid or "", {}).get("_java_ret")
             return _type_named(returned, method_nid) if returned else None
+        if kind == "field":
+            # `Type.FIELD` — the static field's declared type, then the chain
+            # continues (`Type.FIELD.other().m()`). Not an instance field.
+            owner = _chain_type(chain[2], caller, depth + 1)
+            declared = (
+                _inherited_field_type(owner, chain[1], tables=static_fields) if owner else None
+            )
+            return _type_named(declared, owner) if declared else None
         return None
 
     for result in per_file:
@@ -7329,6 +8668,127 @@ def _resolve_c_include_edges(
             e.pop("target_file", None)
 
 
+def _resolve_csharp_constructor_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Link a C# construction to the constructor overload it runs.
+
+    `new X(a, b)` already has a `calls` edge to the type X (in-file or from
+    the shared/qualified passes). This adds one to the X constructor whose
+    parameter count fits two arguments, and links a constructor's
+    `: this(...)` to its own type's overload and `: base(...)` to its base
+    type's. Additive: the edge to the type stays.
+
+    Fail closed, never a guess across types or overloads:
+      * the type is the one the caller's own `calls` edges already bound for
+        that name; none, or two types with the name, gives no edge;
+      * `: base(...)` needs exactly one resolvable `inherits` target, and no
+        unresolved (out-of-corpus) base;
+      * exactly one non-static constructor (explicit or primary) must accept
+        the argument count (``_csharp_pick_overload``); a type with no
+        declared constructor gets no edge.
+    """
+    records = [
+        rc for result in per_file if isinstance(result, dict)
+        for rc in result.get("raw_calls", []) or []
+        if rc.get("lang") == "csharp"
+        and (rc.get("csharp_ctor_site") or rc.get("csharp_ctor_init"))
+    ]
+    if not records:
+        return
+    node_by_id = {n.get("id"): n for n in all_nodes}
+    ctors_of: dict[str, list[dict]] = {}
+    owner_of: dict[str, str] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        tnode = node_by_id.get(e.get("target"))
+        type_nid = e.get("source")
+        if tnode is None or not isinstance(type_nid, str) or not is_csharp_constructor_node(tnode):
+            continue
+        owner_of.setdefault(tnode["id"], type_nid)
+        bucket = ctors_of.setdefault(type_nid, [])
+        if all(c["id"] != tnode["id"] for c in bucket):
+            bucket.append(tnode)
+
+    def _pick(type_nid: str | None, argc: object) -> dict | None:
+        ctors = [
+            c for c in ctors_of.get(type_nid or "", [])
+            if (c.get("metadata") or {}).get("signature") != "static"
+        ]
+        if not ctors or not isinstance(argc, int):
+            return None
+        return _csharp_pick_overload(ctors, argc)
+
+    def _bare(label: object) -> str:
+        return re.sub(r"\W+", "", str(label or ""))
+
+    # caller -> bare type name -> {type nid: confidence of the `new` edge}
+    built: dict[str, dict[str, dict[str, str]]] = {}
+    callers = {rc.get("caller_nid") for rc in records if rc.get("csharp_ctor_site")}
+    for e in all_edges:
+        if e.get("relation") != "calls" or e.get("source") not in callers:
+            continue
+        tnode = node_by_id.get(e.get("target"))
+        if tnode is None or tnode["id"] in owner_of or not tnode.get("source_file"):
+            continue
+        built.setdefault(e["source"], {}).setdefault(_bare(tnode.get("label")), {})[
+            tnode["id"]
+        ] = str(e.get("confidence") or "INFERRED")
+
+    bases_of: dict[str, set[str]] = {}
+    unresolved_base: set[str] = set()
+    for e in all_edges:
+        derived = e.get("source")
+        if (e.get("relation") != "inherits" or not isinstance(derived, str)
+                or not _is_cs_file(e.get("source_file"))):
+            continue
+        tnode = node_by_id.get(e.get("target"))
+        if tnode is None or not tnode.get("source_file"):
+            unresolved_base.add(derived)
+        else:
+            bases_of.setdefault(derived, set()).add(tnode["id"])
+
+    existing = {
+        (e.get("source"), e.get("target")) for e in all_edges if e.get("relation") == "calls"
+    }
+    for rc in records:
+        caller = rc.get("caller_nid")
+        if not caller:
+            continue
+        confidence = "EXTRACTED"
+        if rc.get("csharp_ctor_site"):
+            types = built.get(caller, {}).get(rc["csharp_ctor_site"], {})
+            if len(types) != 1:
+                continue
+            type_nid, confidence = next(iter(types.items()))
+        elif rc.get("csharp_ctor_init") == "this":
+            type_nid = owner_of.get(caller)
+        else:
+            owner = owner_of.get(caller)
+            bases = bases_of.get(owner or "", set())
+            if owner is None or owner in unresolved_base or len(bases) != 1:
+                continue
+            type_nid = next(iter(bases))
+        target = _pick(type_nid, rc.get("arity"))
+        if target is None or target["id"] == caller or (caller, target["id"]) in existing:
+            continue
+        existing.add((caller, target["id"]))
+        all_edges.append({
+            "source": caller,
+            "target": target["id"],
+            "relation": "calls",
+            "context": "call",
+            "confidence": confidence,
+            "confidence_score": 1.0 if confidence == "EXTRACTED" else 0.85,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 def _resolve_csharp_qualified_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -7673,12 +9133,9 @@ def _resolve_go_member_calls(
 ) -> None:
     """Resolve Go member calls (``g.Greet()``) through the receiver's declared type.
 
-    The shared cross-file pass skips member calls, so a method call on a receiver whose
-    type is declared in another file resolved to nothing. The per-file ``go_type_table``
-    names the declared type of every struct field, parameter (the method receiver
-    included), ``var x T`` and ``x := T{}`` binding; this pass looks the receiver up
-    there, takes the single declaration of that type, and emits the ``calls`` edge to its
-    method. Always INFERRED: the type comes from a declaration, never from the call site.
+    Local bindings carry their receiver type; only unbound names may fall back to
+    package variables. Fields resolve through their owning struct. Always INFERRED:
+    the method target comes from the receiver's declared type.
 
     Names are matched case-sensitively, unlike the sibling resolvers. Go exports by
     capitalisation, so `Run` and `run` on one type are two different methods with two
@@ -7686,6 +9143,10 @@ def _resolve_go_member_calls(
 
     A receiver typed to a type this corpus declares nowhere is parked on the caller for
     a merged graph to finish (#3152).
+
+    A package-qualified type (`plugins.Client`, `*svc.Greeter`), the usual shape of a
+    dependency injected from another package, resolves through the caller's import of
+    that package: only a declaration whose file sits at the imported path qualifies.
     """
     raw = [
         rc
@@ -7696,11 +9157,13 @@ def _resolve_go_member_calls(
     ]
     if not raw:
         return
-    type_table_by_file: dict[str, dict[str, str]] = {}
+    package_vars_by_file: dict[str, dict[str, str | None]] = {}
+    imports_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
         tt = result.get("go_type_table")
         if tt and tt.get("path"):
-            type_table_by_file[tt["path"]] = tt.get("table", {})
+            package_vars_by_file[tt["path"]] = tt.get("package_vars", {})
+            imports_by_file[tt["path"]] = result.get("go_imports") or {}
 
     def _key(label: object) -> str:
         return str(label or "").strip().removeprefix(".").removesuffix("()")
@@ -7712,15 +9175,19 @@ def _resolve_go_member_calls(
     # class would both answer a Go receiver and hide that nothing local declares it.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
-    # A struct's fields, by struct id, from the file node that declares it: a method in
-    # one file of the package and the struct in another is the common Go layout, and the
-    # caller's flat table holds only what its own file declares. An id two files declare
-    # has no single answer.
+    # Owner fields may be declared in a sibling file. Duplicate owner declarations
+    # provide no unique field type.
     fields_by_type: dict[str, list[dict[str, str]]] = {}
+    # A Go type node id folds in only the package directory's name, which says nothing
+    # about the import path (`api/v1` and `web/v1` even share one); the files that declare
+    # the node do, so a node keeps every path it is declared at.
+    package_paths_by_nid: dict[str, set[str]] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
         if n.get("_callable_class") and _lang_family(n.get("source_file")) == "go":
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+            if n.get("_go_package_path"):
+                package_paths_by_nid.setdefault(n["id"], set()).add(n["_go_package_path"])
         for struct_nid, fields in (n.get("_go_fields") or {}).items():
             fields_by_type.setdefault(struct_nid, []).append(fields)
 
@@ -7734,20 +9201,42 @@ def _resolve_go_member_calls(
                 (e.get("source"), _key(tnode.get("label", ""))), []).append(e["target"])
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
-    for rc in raw:
+    # One edge survives per pair, so direct calls must take priority over method values.
+    for rc in sorted(raw, key=lambda call: bool(call.get("indirect"))):
         receiver, callee, caller = rc["member_receiver"], rc["callee"], rc["caller_nid"]
-        # The enclosing method's own receiver is typed by its declaration, which beats the
-        # flat table: two types in one file may both name their receiver `s`.
-        type_name = rc.get("receiver_type") or type_table_by_file.get(
-            rc.get("source_file", ""), {}).get(receiver)
-        if not type_name and rc.get("field_owner"):
+        # The enclosing method's own receiver is typed by its declaration (the
+        # scoped `receiver_type`), which already covers params and locals. A field
+        # receiver is typed from its owning struct's declaration instead.
+        type_name = rc.get("receiver_type")
+        from_sibling = False
+        if rc.get("field_owner"):
+            type_name = None
             owner_defs = type_def_nids.get(_key(rc["field_owner"]), [])
             declared = fields_by_type.get(owner_defs[0], []) if len(owner_defs) == 1 else []
             if len(declared) == 1:
                 type_name = declared[0].get(receiver)
+                from_sibling = True
+        elif not type_name and not rc.get("receiver_bound"):
+            type_name = package_vars_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
-        type_defs = type_def_nids.get(_key(type_name), [])
+        if "." in type_name:
+            # `pkg.T`: bind only to the `T` declared at the path this file imports `pkg`
+            # from. That is exact import evidence, so it also settles two packages that
+            # both declare `T`. No match means stdlib or a module outside this corpus,
+            # which stays unresolved as before rather than being parked. A sibling file's
+            # field already carries the import path in place of `pkg`.
+            if from_sibling:
+                import_path, _, bare = type_name.rpartition(".")
+            else:
+                alias, _, bare = type_name.partition(".")
+                import_path = imports_by_file.get(rc.get("source_file", ""), {}).get(alias)
+            type_defs = [nid for nid in type_def_nids.get(_key(bare), [])
+                         if import_path and import_path in package_paths_by_nid.get(nid, ())]
+            if not type_defs:
+                continue
+        else:
+            type_defs = type_def_nids.get(_key(type_name), [])
         if not type_defs:
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
@@ -7922,6 +9411,76 @@ def _resolve_elixir_qualified_calls(
         })
 
 
+def _jvm_scope_index(
+    all_nodes: list[dict], all_edges: list[dict]
+) -> tuple[dict[str, str], dict[str, list[str]], dict[str, str], set[str]]:
+    """Per-corpus tables for deciding which classes a bare Kotlin/Java call can reach.
+
+    Returns ``(owner_of, bases_of, enclosing_of, sourceless)``: method id ->
+    declaring class, class -> its ``inherits`` targets, nested class -> its
+    enclosing class, and the ids of nodes with no ``source_file`` (the stubs
+    left for classes declared outside the corpus).
+    """
+    owner_of: dict[str, str] = {}
+    bases_of: dict[str, list[str]] = {}
+    enclosing_of: dict[str, str] = {}
+    for e in all_edges:
+        rel = e.get("relation")
+        if rel == "method":
+            owner_of[e["target"]] = e["source"]
+        elif rel == "inherits":
+            bases_of.setdefault(e["source"], []).append(e["target"])
+        elif rel == "contains":
+            enclosing_of[e["target"]] = e["source"]
+    sourceless = {n["id"] for n in all_nodes if not n.get("source_file")}
+    return owner_of, bases_of, enclosing_of, sourceless
+
+
+def _jvm_reachable_candidates(
+    candidates: list[str],
+    caller: str,
+    callee: str,
+    index: tuple[dict[str, str], dict[str, list[str]], dict[str, str], set[str]],
+    imported_symbols: set[str],
+) -> list[str]:
+    """Drop bare-call candidates the caller's class cannot reach (#4935).
+
+    A bare ``getString(1)`` can name a member of the caller's own class, of a
+    superclass, or of an enclosing class. When a class in that chain extends a
+    class outside the corpus, an unresolved base may declare the member, and
+    the corpus-wide name match then binds the call to a same-named method of an
+    unrelated class (``Activity.getString`` became ``Prefs.getString``). In that
+    case keep only candidates that are not class members, that belong to the
+    chain, or that the file imports by name (``import pkg.Obj.member``,
+    ``import static``). A caller whose chain is fully in the corpus is left
+    alone, so a receiver lambda such as ``with(p) { getString() }`` keeps the
+    edge it has today.
+    """
+    owner_of, bases_of, enclosing_of, sourceless = index
+    chain: set[str] = set()
+    todo = [owner_of.get(caller, caller)]
+    external_base = False
+    while todo:
+        cls = todo.pop()
+        if cls in chain:
+            continue
+        chain.add(cls)
+        for base in bases_of.get(cls, ()):
+            if base in sourceless:
+                external_base = True
+            else:
+                todo.append(base)
+        if cls in enclosing_of:
+            todo.append(enclosing_of[cls])
+    if not external_base:
+        return candidates
+    imported_by_name = _make_id(callee) in imported_symbols
+    return [
+        c for c in candidates
+        if c not in owner_of or owner_of[c] in chain or c in imported_symbols or imported_by_name
+    ]
+
+
 def _resolve_kotlin_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -7993,10 +9552,13 @@ def _resolve_kotlin_member_calls(
         if len(type_nids) != 1:
             continue
         wanted = f".{callee}"
-        candidates = [
+        # Overloads share one node id (the id has no parameter types), so the
+        # type holds one ``method`` edge per declaration to the same target.
+        # Count distinct ids, or an overloaded method reads as ambiguous (#4935).
+        candidates = list(dict.fromkeys(
             m for m in methods_by_type.get(type_nids[0], [])
             if str(node_by_id.get(m, {}).get("label", "")).strip("()") == wanted
-        ]
+        ))
         if len(candidates) != 1:
             continue
         tgt = candidates[0]
@@ -8069,6 +9631,12 @@ register_language_resolver(
 # bound to the receiver's declared type instead of a bare same-named match.
 register_language_resolver(
     LanguageResolver("csharp_member_calls", frozenset({".cs"}), _resolve_csharp_member_calls)
+)
+# C# extension-method calls (#4828): `recv.Ext()` where Ext is a `this`-parameter
+# method on a static class. Runs after the nominal pass so an instance member has
+# already won, and adds only the calls that pass could not bind.
+register_language_resolver(
+    LanguageResolver("csharp_extension_calls", frozenset({".cs"}), _resolve_csharp_extension_calls)
 )
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
@@ -8161,6 +9729,14 @@ register_language_resolver(
         "csharp_qualified_calls", frozenset({".cs"}), _resolve_csharp_qualified_calls
     )
 )
+# C# constructors (`new X(a, b)`, `: base(...)`, `: this(...)`): the overload
+# that runs, picked by argument count once the constructed type is bound.
+# Runs after csharp_qualified_calls so every `new` has its type edge.
+register_language_resolver(
+    LanguageResolver(
+        "csharp_constructor_calls", frozenset({".cs"}), _resolve_csharp_constructor_calls
+    )
+)
 # C# member-level interface dispatch (#3003): a call through an injected
 # dependency lands on the interface's method, so the implementation sits in the
 # graph unreachable from the call site. Lives in graphify.csharp_dispatch;
@@ -8177,6 +9753,14 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "swift_protocol_dispatch", frozenset({".swift"}), resolve_swift_protocol_dispatch
+    )
+)
+# Go member-level interface dispatch: the same edge, but Go types satisfy an
+# interface implicitly, so graphify.go_dispatch infers the implementers from
+# method sets before handing them to graphify.interface_dispatch.
+register_language_resolver(
+    LanguageResolver(
+        "go_interface_dispatch", frozenset({".go"}), resolve_go_interface_dispatch
     )
 )
 # Markdown code-span mentions (`Widget`, `mod.py::Widget::render`) become
@@ -9400,10 +10984,25 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
 # dropped and the header is isolated. `#import` is an ObjC-only directive (illegal
 # in C and C++), so this won't hijack genuine C/C++ headers, and extract_objc
 # resolves quoted imports via _resolve_c_include_path.
+# Bytes the header sniffers inspect. read_bytes()[:N] loads the whole file first,
+# which is a full-file read and allocation per call (#4978).
+_SNIFF_BYTES = 256 * 1024
+
 _OBJC_HEADER_MARKERS = (b"@interface", b"@protocol", b"@implementation", b"@import", b"#import")
 
 
-def _is_objc_header(path: Path) -> bool:
+def _sniff_head(path: Path, head: bytes | None = None) -> bytes:
+    """First _SNIFF_BYTES of ``path``, or ``head`` when the caller already read it."""
+    if head is not None:
+        return head
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(_SNIFF_BYTES)
+    except OSError:
+        return b""
+
+
+def _is_objc_header(path: Path, head: bytes | None = None) -> bool:
     """Whether a `.h` file is Objective-C rather than C/C++ (#1475).
 
     `.h` is shared by C, C++, and ObjC; the suffix map routes it to extract_c,
@@ -9411,11 +11010,8 @@ def _is_objc_header(path: Path) -> bool:
     edges). Sniffing for an ObjC-only directive reroutes genuine ObjC headers to
     extract_objc while leaving every C/C++ header on its existing extractor.
     """
-    try:
-        head = path.read_bytes()[:256 * 1024]
-    except OSError:
-        return False
-    return any(marker in head for marker in _OBJC_HEADER_MARKERS)
+    data = _sniff_head(path, head)
+    return any(marker in data for marker in _OBJC_HEADER_MARKERS)
 
 
 # C++-only signals. None of these are valid in a plain C header, so finding one
@@ -9448,7 +11044,7 @@ def _is_objc_source(path: Path) -> bool:
     return _is_objc_header(path)
 
 
-def _is_cpp_header(path: Path) -> bool:
+def _is_cpp_header(path: Path, head: bytes | None = None) -> bool:
     """Whether a `.h` file is C++ rather than plain C (#1547).
 
     Mirrors `_is_objc_header`: sniffs for a C++-only token. Used only to reroute
@@ -9456,15 +11052,19 @@ def _is_cpp_header(path: Path) -> bool:
     priority). Conservative by construction — a plain C header matches nothing
     here and keeps its existing extract_c routing.
     """
-    try:
-        head = path.read_bytes()[:256 * 1024]
-    except OSError:
-        return False
-    return any(marker in head for marker in _CPP_HEADER_MARKERS)
+    data = _sniff_head(path, head)
+    return any(marker in data for marker in _CPP_HEADER_MARKERS)
 
 
-def _get_extractor(path: Path) -> Any | None:
-    """Return the correct extractor function for a file, or None if unsupported."""
+def _get_extractor(path: Path, *, sniff_headers: bool = True) -> Any | None:
+    """Return the correct extractor function for a file, or None if unsupported.
+
+    ``sniff_headers=False`` answers the weaker question "does any extractor own
+    this file" without reading it, for callers that only test for None (the #4978
+    reconcile loop). It is NOT interchangeable with the default: a C++ header
+    asked this way resolves to extract_c, which loses the class. Never use it to
+    pick a grammar for an actual parse.
+    """
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
@@ -9491,11 +11091,16 @@ def _get_extractor(path: Path) -> Any | None:
     if suffix not in _DISPATCH and suffix.lower() in _DISPATCH:
         suffix = suffix.lower()
     if suffix == ".h":
-        if _is_objc_header(path):
+        if not sniff_headers:
+            # Every .h dialect resolves to a non-None extractor, so a caller that
+            # only asks "is it None" does not need to read the file (#4978).
+            return _DISPATCH.get(".h")
+        head = _sniff_head(path)
+        if _is_objc_header(path, head):
             return extract_objc
         # A C++ class header routed to extract_c loses the class entirely (the C
         # grammar has no class_specifier). Reroute to extract_cpp (#1547).
-        if _is_cpp_header(path):
+        if _is_cpp_header(path, head):
             return extract_cpp
     # `.m` is Objective-C OR MATLAB. extract_objc unconditionally would force-parse
     # MATLAB through the ObjC grammar into garbage (#1702). Route to extract_objc
@@ -9621,6 +11226,43 @@ def _spawn_cannot_reimport_main() -> bool:
     return main_file is None or not os.path.isfile(main_file)
 
 
+# Uncached source bytes that make one more extraction worker worth starting.
+# Extraction runs at roughly 0.5-1 MB/s per core, and a worker costs a process
+# start plus its own grammar loads (~0.4 s with spawn). Measured on 4 cores
+# against requests/flask/click/jsoup/caddy/vuejs-core: at 0.5 MB per worker the
+# whole run is as fast as one worker per core with spawn (worst +0.1 s) and at
+# most 0.3 s slower with fork, while 0.75-1 MB costs up to 0.8 s.
+_BYTES_PER_WORKER = 500_000
+
+
+def _default_max_workers(uncached_work: list[tuple[int, Path]]) -> int:
+    """Worker count for the extraction pool when the caller passed none.
+
+    GRAPHIFY_MAX_WORKERS (``--max-workers`` sets it too) wins, bounded by the
+    number of files, exactly as before. Otherwise start one worker per
+    ``_BYTES_PER_WORKER`` of uncached source, capped at the CPU count. A big
+    job still gets every core (the old cap of 8 cost a 32-thread box 4x,
+    #792); a small one no longer starts a process per core that each load
+    graphify and the grammars for under a second of work.
+    """
+    env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
+    if env_raw:
+        try:
+            v = int(env_raw)
+        except ValueError:
+            v = 0
+        if v > 0:
+            return min(v, len(uncached_work))
+    total_bytes = 0
+    for _, path in uncached_work:
+        try:
+            total_bytes += os.path.getsize(path)
+        except OSError:
+            pass
+    by_size = -(-total_bytes // _BYTES_PER_WORKER)  # ceil
+    return max(1, min(os.cpu_count() or 4, len(uncached_work), by_size))
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -9639,22 +11281,7 @@ def _extract_parallel(
     import concurrent.futures
 
     if max_workers is None:
-        # Honour GRAPHIFY_MAX_WORKERS env override; otherwise scale to the
-        # full CPU. The historical `, 8)` cap was a safety bound for laptops
-        # in 2023 — on a 32-thread workstation it costs a 4x slowdown
-        # (issue #792). Capping at len(uncached_work) keeps small jobs
-        # from spawning useless idle workers.
-        env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
-        env_cap = None
-        if env_raw:
-            try:
-                v = int(env_raw)
-                if v > 0:
-                    env_cap = v
-            except ValueError:
-                pass
-        cpu_cap = env_cap if env_cap is not None else (os.cpu_count() or 4)
-        max_workers = min(cpu_cap, len(uncached_work))
+        max_workers = _default_max_workers(uncached_work)
 
     # Windows ProcessPoolExecutor hard-caps at 61 workers (CPython limitation
     # tied to WaitForMultipleObjects). Clamp here so every path — auto-compute,
@@ -9817,6 +11444,7 @@ def extract(
     max_workers: int | None = None,
     resolution_context_nodes: list[dict] | None = None,
     resolution_context_edges: list[dict] | None = None,
+    release_parse_memo: bool = False,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -9837,8 +11465,9 @@ def extract(
             Anchors ids/source_file only as a fallback when `root` is unset.
         parallel: if True and there are >= _PARALLEL_THRESHOLD uncached files,
             use ProcessPoolExecutor for multi-core extraction.
-        max_workers: max subprocess count. Defaults to cpu_count (or the
-            value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
+        max_workers: max subprocess count. Defaults to GRAPHIFY_MAX_WORKERS
+            if set, else one worker per _BYTES_PER_WORKER of uncached source
+            up to cpu_count; always bounded by len(uncached_work).
         resolution_context_nodes: read-only AST nodes from files that are NOT
             being extracted this run (an incremental rebuild's unchanged
             corpus, #2406). They extend the cross-file resolution indexes —
@@ -9856,6 +11485,9 @@ def extract(
             Read-only, same contract as
             resolution_context_nodes: they widen the resolvers' view but only
             fresh results are appended to the returned nodes/edges.
+        release_parse_memo: clear the Python parse memo once both resolution
+            passes are done. One-shot callers (`graphify extract`) set it to
+            cut peak RAM; long-lived callers keep the memo for the next run.
     """
     paths = [Path(p) for p in paths]
     if resolution_context_nodes:
@@ -9913,6 +11545,15 @@ def extract(
     elif cache_root is not None:
         root = cache_root
     root = root.resolve()
+    if resolution_context_nodes:
+        expanded = _cpp_reconciliation_paths(paths, resolution_context_nodes, root)
+        if len(expanded) != len(paths):
+            paths = expanded
+            refreshed = {_cpp_source_key(p, root) for p in paths}
+            resolution_context_nodes = [n for n in resolution_context_nodes
+                                        if _cpp_source_key(n.get("source_file", ""), root) not in refreshed]
+            resolution_context_edges = [e for e in resolution_context_edges or []
+                                        if _cpp_source_key(e.get("source_file", ""), root) not in refreshed]
     python_scan_paths = list(paths)
     for context_node in resolution_context_nodes or []:
         source_file = context_node.get("source_file")
@@ -10073,6 +11714,9 @@ def extract(
             if _key not in _failed_seen:
                 _failed_sources.append(_key)
                 _failed_seen.add(_key)
+            # Do not let a failed producer's partial payload overwrite saved
+            # definitions later when the successful files are merged.
+            per_file[i] = {"nodes": [], "edges": [], "error": _res["error"]}
             continue
         if _res.get("skipped"):
             # The extractor declined this file by design (data JSON, #1224), so
@@ -10270,6 +11914,41 @@ def extract(
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+    # Newly introduced pairs have no persisted proof group yet. Reparse only
+    # exact-identity candidates from the caller's permitted unchanged corpus.
+    cpp_names = {n.get("_cpp_qualified") for n in all_nodes
+                 if n.get("_cpp_class_kind") in {"forward", "definition"}}
+    member_files: dict[str, set[str]] = {}
+    for node in all_nodes:
+        if node.get("_cpp_member_records"):
+            member_files.setdefault(node.get("_cpp_qualified", ""), set()).add(
+                _cpp_source_key(node.get("source_file", ""), root))
+    includes = _cpp_exact_includes([*all_nodes, *(resolution_context_nodes or [])],
+                                  [*all_edges, *(resolution_context_edges or [])], root) if member_files else {}
+    present = {_cpp_source_key(p, root) for p in paths}
+    candidates = {_cpp_source_key(n.get("source_file", ""), root)
+                  for n in resolution_context_nodes or []
+                  if n.get("_cpp_class_kind") in {"forward", "definition"}
+                  and n.get("_cpp_qualified") in cpp_names}
+    for node in resolution_context_nodes or []:
+        if node.get("_cpp_member_records"):
+            candidate = _cpp_source_key(node.get("source_file", ""), root)
+            if any(_cpp_include_path(includes, source, candidate) or _cpp_include_path(includes, candidate, source)
+                   for source in member_files.get(node.get("_cpp_qualified", ""), ())):
+                candidates.add(candidate)
+    additions = [root / sf for sf in sorted(candidates - present - {""}) if (root / sf).is_file()]
+    if additions:
+        expanded = _cpp_reconciliation_paths(paths + additions, resolution_context_nodes or [], root)
+        refreshed = {_cpp_source_key(p, root) for p in expanded}
+        return extract(
+            expanded, cache_root=cache_root, root=root, parallel=parallel,
+            max_workers=max_workers,
+            resolution_context_nodes=[n for n in resolution_context_nodes or []
+                                      if _cpp_source_key(n.get("source_file", ""), root) not in refreshed],
+            resolution_context_edges=[e for e in resolution_context_edges or []
+                                      if _cpp_source_key(e.get("source_file", ""), root) not in refreshed],
+            release_parse_memo=release_parse_memo,
+        )
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
@@ -10284,6 +11963,7 @@ def extract(
         paths, all_nodes, all_edges, root,
         ambiguous_python_modules=ambiguous_python_modules,
         resolution_context_nodes=resolution_context_nodes,
+        raw_calls=all_raw_calls,
     )
 
     # Merge a header-declared class (and its methods) with its sibling-impl
@@ -10572,6 +12252,10 @@ def extract(
             _new = _remapped(rc.get("caller_nid"), rc.get("source_file"))
             if _new is not None:
                 rc["caller_nid"] = _new
+            if rc.get("evidence_owner"):
+                _new_eo = _remapped(rc.get("evidence_owner"), rc.get("source_file"))
+                if _new_eo is not None:
+                    rc["evidence_owner"] = _new_eo
         # swift_extensions[].nid is the same kind of id carrier as caller_nid
         # above (cache.py remaps both), consumed by _merge_swift_extensions far
         # below. Left stale it matches no node, so whether the extension merge
@@ -10653,6 +12337,9 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+                eo = rc.get("evidence_owner")
+                if eo in sym_remap:
+                    rc["evidence_owner"] = sym_remap[eo]
             # Same for swift_extensions[].nid (see the id_remap pass above).
             for result in per_file:
                 for ext in result.get("swift_extensions", []) or []:
@@ -10661,14 +12348,15 @@ def extract(
                         ext["nid"] = sym_remap[en]
             _remap_objc_field_tables(per_file, sym_remap)
         if edge_alias_candidates:
-            def _edge_key(edge: dict) -> str:
+            def _edge_key(edge: dict) -> bytes:
                 # target_file is a transient stamp (#1814/#1983); exclude it
                 # from twin identity or an alias edge (stamped) never matches
                 # the canonical twin the shared resolver emits (unstamped).
-                return json.dumps(
+                # A digest, since one key per edge in the corpus is kept at once.
+                return hashlib.blake2b(json.dumps(
                     {k: v for k, v in edge.items() if k != "target_file"},
                     sort_keys=True, separators=(",", ":"), default=str,
-                )
+                ).encode(), digest_size=16).digest()
             edge_key_counts = Counter(_edge_key(edge) for edge in all_edges)
             owned_node_ids = {node.get("id") for node in all_nodes}
             deduped_edges: list[dict] = []
@@ -10696,6 +12384,7 @@ def extract(
                         continue
                 deduped_edges.append(edge)
             all_edges[:] = deduped_edges
+            del edge_key_counts, owned_node_ids, deduped_edges, edge_alias_candidates
 
     # Repoint symbol-level alias edges that resolve THROUGH a barrel (#1983
     # follow-up). The candidates rewrite above learns old→canonical forms only
@@ -10856,6 +12545,9 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+    if release_parse_memo:
+        # Both Python resolution passes are done; the memo pins every tree.
+        _parse_python_tree_cached.cache_clear()
     # An incremental build re-extracts only the changed files, so the rewire also
     # needs the unchanged ones as candidates, or it resolves less than a full build.
     _fresh_ids = {n.get("id") for n in all_nodes}
@@ -10982,8 +12674,27 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    _merge_cpp_forward_classes(all_nodes, all_edges, all_raw_calls, resolution_nodes,
+                               resolution_context_edges or [], root)
+    if resolution_context_nodes:
+        fresh_ids = {n["id"] for n in all_nodes}
+        resolution_nodes = all_nodes + [n for n in resolution_context_nodes
+                                        if n.get("id") not in fresh_ids]
+    else:
+        resolution_nodes = all_nodes
+    _merge_cpp_member_declarations(all_nodes, all_edges, all_raw_calls, resolution_nodes,
+                                   resolution_context_edges or [], root)
+    if resolution_context_nodes:
+        fresh_ids = {n["id"] for n in all_nodes}
+        resolution_nodes = all_nodes + [n for n in resolution_context_nodes if n.get("id") not in fresh_ids]
+    else:
+        resolution_nodes = all_nodes
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
+            continue
+        # A C# constructor is named like its type but never called by name;
+        # an explicit interface implementation is called only through the interface.
+        if is_csharp_constructor_node(n) or is_csharp_explicit_interface_node(n):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")
@@ -11117,6 +12828,10 @@ def extract(
     _member_nids = {
         e.get("target") for e in all_edges if e.get("relation") in ("case_of", "defines")
     }
+    _method_nids = {
+        e.get("target") for e in all_edges + list(resolution_context_edges or [])
+        if e.get("relation") == "method"
+    }
     # Top-level Elixir module names per file, for scoping unqualified Elixir
     # calls below. Read from `resolution_nodes` so an unchanged file's modules
     # stay visible on an incremental rebuild (`_elixir_module` is carried by the
@@ -11129,8 +12844,10 @@ def extract(
             )
     _csharp_stub_resolver: CsharpNameResolver | None = None  # built on first use
     _csharp_method_owner: dict[str, str] | None = None  # method nid -> type nid, built on first use
+    _csharp_member_owner: dict[str, str] | None = None  # property/indexer nid -> type nid, ditto
     _csharp_outer_type: dict[str, str] | None = None  # nested type nid -> outer type label, built on first use
     _csharp_overload_cache: dict = {}  # filled on first use (#4584)
+    _jvm_index = None  # built on first Kotlin/Java bare call (#4935)
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
@@ -11225,6 +12942,8 @@ def extract(
         candidates = global_label_to_nids.get(callee, [])
         if not candidates and _lang_is_case_insensitive(rc.get("source_file")):
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
+        if rc.get("language") == "go":
+            candidates = [candidate for candidate in candidates if candidate not in _method_nids]
         if not candidates:
             continue
         if rc.get("lang") == "csharp" and not rc.get("csharp_new") and len(candidates) > 1:
@@ -11332,6 +13051,14 @@ def extract(
         )
         imported_symbols = file_to_symbol_imports.get(caller_file_nid, set())
         imported_modules = file_to_module_imports.get(caller_file_nid, set())
+        if caller_family == "jvm":
+            if _jvm_index is None:
+                _jvm_index = _jvm_scope_index(all_nodes, all_edges)
+            candidates = _jvm_reachable_candidates(
+                candidates, caller, callee, _jvm_index, imported_symbols
+            )
+            if not candidates:
+                continue
 
         def _has_import_evidence(candidate_id: str) -> bool:
             # Direct symbol import (`import { foo }`) is the strongest evidence:
@@ -11361,7 +13088,15 @@ def extract(
                     e["target"]: e["source"] for e in all_edges
                     if e.get("relation") == "method"
                 }
-            caller_owner = _csharp_method_owner.get(rc.get("caller_nid", ""))
+            if _csharp_member_owner is None:
+                # A property/indexer accessor's call: its type is the owner.
+                _csharp_member_owner = {
+                    e["target"]: e["source"] for e in all_edges
+                    if e.get("relation") == "defines" and e.get("context") == "field"
+                }
+            caller_owner = _csharp_method_owner.get(
+                rc.get("caller_nid", ""), _csharp_member_owner.get(rc.get("caller_nid", ""))
+            )
             if caller_owner is not None:
                 own_type_matches = [
                     c for c in candidates if _csharp_method_owner.get(c) == caller_owner
@@ -11430,6 +13165,20 @@ def extract(
                         if tgt is None:
                             continue
                     has_import_evidence = False
+        # #4989: Python bare names resolve through the caller module's own
+        # bindings. A builtin-named callee is only a project symbol when the
+        # caller's file imports that exact symbol. Module-import evidence (the
+        # caller imported some other name from the file defining a same-named
+        # class) must NOT count: it used to promote `raise NotImplementedError`
+        # to EXTRACTED against a package class the file never bound (#2945 is
+        # the same distinction for confidence, this is the binding condition).
+        # Without a direct import the name is the builtin, so prefer no edge.
+        if (
+            effective_suffix(str(rc.get("source_file", ""))) == ".py"
+            and callee in _PYTHON_BUILTIN_NAMES
+            and tgt not in imported_symbols
+        ):
+            continue
         # A source-less candidate is an unresolved external stub, not a
         # project-defined callable. It can remain a target of type/reference
         # edges, but a name-only call must not turn it into a cross-file calls
@@ -11570,6 +13319,8 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+    # Every call is resolved. Half of the corpus's rows are these.
+    del all_raw_calls, per_file
 
     # A Rust `use` group keeps one edge per binding; its v8 edge only served the calls above.
     all_edges[:] = [e for e in all_edges if not e.pop("_rust_use_group", False)]
@@ -11611,6 +13362,18 @@ def extract(
         try:
             rel = sf_path.relative_to(root)
         except ValueError:
+            # `root` was resolved above but sf_path was not: under a symlinked
+            # scan path (macOS /var -> /private/var, a symlinked checkout) the
+            # raw form is never "under" root, and the out-of-root branch kept
+            # only the basename, so every page.tsx read as one file (#4624).
+            # Retry with the DIRECTORY resolved before calling it out-of-root.
+            # Only the parent: resolving the file itself would follow a file
+            # symlink onto its target and merge the two sources (#2832).
+            try:
+                rel = (_resolved(sf_path.parent) / sf_path.name).relative_to(root)
+            except (ValueError, OSError, RuntimeError):
+                rel = None
+        if rel is None:
             portable = _portable_out_of_root_sf(sf_path)
             canonical_id = _make_id("ext", portable)
             new_sf = portable
@@ -11784,6 +13547,8 @@ def extract(
         if _df and "\\" in str(_df):
             _item["definition_file"] = PurePath(_df).as_posix()
 
+    _stamp_cpp_condition_provenance(all_nodes, all_edges)
+
     return {
         "nodes": all_nodes,
         "edges": all_edges,
@@ -11797,10 +13562,10 @@ def extract(
         # failure) so the manifest can mark the emptiness intentional and the
         # #2543 heal stops re-queuing them every incremental (#2879).
         "skipped_sources": _skipped_sources,
-        # Surfaces the actual dispatched source paths so build_merge /
-        # merge_raw_extraction know which files were genuinely re-extracted
-        # rather than guessing ownership from node["source_file"] (#3411).
-        "extracted_sources": [str(p) for p in paths],
+        # Successful extraction (including deliberate declines) authorizes
+        # replacement. A failed source must keep its last good contribution,
+        # not turn a dispatch attempt into permission to delete it (#3411).
+        "extracted_sources": [str(p) for p in paths if str(p) not in _failed_seen],
     }
 
 

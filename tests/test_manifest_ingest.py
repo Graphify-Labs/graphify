@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from graphify.build import build_from_json
 from graphify.detect import FileType, classify_file
 from graphify.extract import extract
@@ -15,6 +17,79 @@ def _write(p: Path, text: str) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
     return p
+
+
+_POM_NS = "http://maven.apache.org/POM/4.0.0"
+_POM_NAMESPACE_FORMS = [
+    ("", ""),
+    (f' xmlns="{_POM_NS}"', ""),
+    (f" xmlns='{_POM_NS}'", ""),
+    (f' xmlns = "{_POM_NS}"', ""),
+    (f' xmlns:m="{_POM_NS}"', "m:"),
+]
+
+
+def _pom_namespace_fixture(declaration: str, prefix: str) -> str:
+    return '''<{p}project{decl} xmlns:x="urn:other">
+      <{p}parent><{p}groupId>com.acme</{p}groupId>
+        <{p}artifactId>parent</{p}artifactId><{p}version>1.2</{p}version></{p}parent>
+      <{p}artifactId>app</{p}artifactId>
+      <{p}properties><{p}core.name>core</{p}core.name></{p}properties>
+      <{p}dependencies><{p}dependency>
+        <{p}groupId>${{project.groupId}}</{p}groupId>
+        <{p}artifactId>${{core.name}}</{p}artifactId>
+      </{p}dependency><x:dependency>
+        <x:groupId>other</x:groupId><x:artifactId>foreign</x:artifactId>
+      </x:dependency></{p}dependencies>
+      <{p}profiles><{p}profile><{p}dependencies><{p}dependency>
+        <{p}groupId>com.acme</{p}groupId><{p}artifactId>profile</{p}artifactId>
+      </{p}dependency></{p}dependencies></{p}profile></{p}profiles>
+      <{p}dependencyManagement><{p}dependencies><{p}dependency>
+        <{p}groupId>com.acme</{p}groupId><{p}artifactId>managed</{p}artifactId>
+      </{p}dependency></{p}dependencies></{p}dependencyManagement>
+      <{p}build><{p}plugins><{p}plugin><{p}dependencies><{p}dependency>
+        <{p}groupId>com.acme</{p}groupId><{p}artifactId>plugin</{p}artifactId>
+      </{p}dependency></{p}dependencies></{p}plugin></{p}plugins></{p}build>
+    </{p}project>'''.format(p=prefix, decl=declaration)
+
+
+@pytest.mark.parametrize("declaration,prefix", _POM_NAMESPACE_FORMS)
+def test_pom_namespace_spellings_preserve_identity_properties_and_scopes(
+    tmp_path, declaration, prefix,
+):
+    path = _write(tmp_path / "pom.xml", _pom_namespace_fixture(declaration, prefix))
+
+    result = extract_package_manifest(path)
+
+    assert not result.get("error")
+    assert len(result["nodes"]) == 1
+    package = result["nodes"][0]
+    assert package["id"] == "pkg_com_acme_app"
+    assert package["label"] == "com.acme:app"
+    assert package["version"] == "1.2"
+    assert package["source_file"] == str(path)
+    assert {edge["target"] for edge in result["edges"]} == {
+        "pkg_com_acme_core", "pkg_com_acme_profile",
+    }
+    assert all(edge["source"] == package["id"] for edge in result["edges"])
+
+
+@pytest.mark.parametrize("declaration,prefix", _POM_NAMESPACE_FORMS[2::2])
+def test_namespaced_pom_dependencies_survive_extract_build_and_cache(
+    tmp_path, declaration, prefix,
+):
+    app = _write(tmp_path / "app/pom.xml", _pom_namespace_fixture(declaration, prefix))
+    core = _write(tmp_path / "core/pom.xml", '''<project>
+      <groupId>com.acme</groupId><artifactId>core</artifactId>
+    </project>''')
+
+    for _ in range(2):
+        result = extract([app, core], root=tmp_path, cache_root=tmp_path / "cache")
+        assert not result.get("failed_sources")
+        graph = build_from_json(result, directed=True, root=tmp_path)
+        assert graph.nodes["pkg_com_acme_app"]["label"] == "com.acme:app"
+        assert graph.has_edge("pkg_com_acme_app", "pkg_com_acme_core")
+        assert graph["pkg_com_acme_app"]["pkg_com_acme_core"]["relation"] == "depends_on"
 
 
 # ── routing: manifests are deterministic (CODE), not LLM documents ───────────

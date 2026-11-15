@@ -207,9 +207,10 @@ def test_install_hook_carries_strict_flag():
     read_strict = next(h for h in strict if h["matcher"] == "Read|Glob")["hooks"][0]["command"]
     assert read_soft.endswith("hook-guard read")
     assert read_strict.endswith("hook-guard read --strict")
-    # search hook is unchanged either way
-    for hooks in (soft, strict):
-        assert next(h for h in hooks if h["matcher"] == "Bash|Grep")["hooks"][0]["command"].endswith("hook-guard search")
+    search_soft = next(h for h in soft if h["matcher"] == "Bash|Grep")["hooks"][0]["command"]
+    search_strict = next(h for h in strict if h["matcher"] == "Bash|Grep")["hooks"][0]["command"]
+    assert search_soft.endswith("hook-guard search")
+    assert search_strict.endswith("hook-guard search --strict")
 
 
 def test_strict_deny_shows_the_files_graph_nodes(tmp_path, monkeypatch):

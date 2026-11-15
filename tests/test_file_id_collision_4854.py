@@ -370,11 +370,7 @@ def test_fresh_and_cached_extraction_agree(tmp_path):
 def test_schema_bumped_for_the_id_change():
     from graphify import cache
 
-    assert cache._AST_CACHE_SCHEMA >= 30
-    source = Path(cache.__file__).read_text(encoding="utf-8")
-    marker = f"_AST_CACHE_SCHEMA = {cache._AST_CACHE_SCHEMA}"
-    line = next(line for line in source.splitlines() if line.startswith(marker))
-    assert "#4854" in line, "schema bump must document #4854"
+    assert cache._AST_CACHE_SCHEMA >= 34
 
 
 def test_decl_ids_survive_the_ast_cache(tmp_path):

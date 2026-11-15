@@ -166,6 +166,9 @@ def diagnose_extraction(
     Missing ``ref_*`` targets are expected external references produced for
     dependencies outside the scanned corpus. They are counted separately from
     actionable internal dangling endpoints.
+
+    Non-list node containers contribute no node counts. The original input is
+    still passed to the protected build attempt so its error remains visible.
     """
     from graphify.build import build_from_json
 
@@ -176,8 +179,9 @@ def diagnose_extraction(
     # Code-typed semantic nodes the extractor could not verify against the source
     # it read (#1949): likely-inferred (or hallucinated) symbols surfaced from a
     # document. Count them so the flag on graph.json nodes is actually surfaced.
+    raw_nodes = extraction.get("nodes")
     unverified_node_count = sum(
-        1 for n in extraction.get("nodes", [])
+        1 for n in (raw_nodes if isinstance(raw_nodes, list) else [])
         if isinstance(n, dict) and n.get("verification") == "unverified"
     )
 

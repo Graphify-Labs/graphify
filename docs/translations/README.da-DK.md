@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Reducér agenternes tokenforbrug med 80%.</b> Graphify Cloud er en altid aktiv hukommelse, der styrer dine agenter, holder kodekvaliteten høj og beviser korrekthed med formel verifikation. <a href="https://app.graphify.com/login"><b>Start en gratis 14-dages prøveperiode &rarr;</b></a>
+  <b>Reducér agenternes tokenforbrug med 80%.</b> Graphify Cloud er en altid aktiv hukommelse, der styrer dine agenter, holder kodekvaliteten høj og beviser korrekthed med formel verifikation. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Kom gratis i gang, uden kort &rarr;</b></a>
 </p>
 
 Skriv `/graphify` i din AI-kodeassistent, og den kortlægger hele dit projekt (kode, dokumenter, PDF-filer, billeder, videoer) til en **vidensgraf**, som du kan **forespørge i stedet for at greppe** gennem filer.
@@ -38,7 +38,7 @@ Skriv `/graphify` i din AI-kodeassistent, og den kortlægger hele dit projekt (k
 - **Ikke et vektorindeks.** Ingen embeddings, intet vektorlager: en rigtig graf, du gennemløber. Stil et spørgsmål, spor stien mellem to ting, eller forklar ét begreb.
 
 > [!NOTE]
-> **Vil du have dette altid aktivt?** [Graphify Cloud](https://app.graphify.com/login) holder grafen levende gennem hele din SDLC: understøttelse af monorepo og krydsrepo, formel verifikation og kodegennemgang med et fugleperspektiv over din SDLC, plus connectors til Sentry, Jira med mere, så hændelser og sager ligger i samme graf som din kode. **[Start en gratis 14-dages prøveperiode på app.graphify.com](https://app.graphify.com/login)**.
+> **Vil du have dette altid aktivt?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) holder grafen levende gennem hele din SDLC: understøttelse af monorepo og krydsrepo, formel verifikation og kodegennemgang med et fugleperspektiv over din SDLC, plus connectors til Sentry, Jira med mere, så hændelser og sager ligger i samme graf som din kode. **[Kom gratis i gang, uden kort](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -123,7 +123,7 @@ Hvad du får ud af kassen:
 | **Lokalt først** | Kode parses lokalt med tree-sitter (ingen LLM, intet forlader din maskine); kun den semantiske gennemgang af dokumenter/medier kalder en backend, og kun hvis du konfigurerer en |
 
 > [!TIP]
-> Kører du dette på tværs af mange repos eller et monorepo? [Graphify Cloud](https://app.graphify.com/login) gør det kontinuerligt og reducerer agenternes tokenforbrug med 80%, med krydsrepolinks, kodegennemgang på tværs af hele SDLC, formel verifikation og Sentry/Jira-connectors. [Start en gratis 14-dages prøveperiode &rarr;](https://app.graphify.com/login)
+> Kører du dette på tværs af mange repos eller et monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) gør det kontinuerligt og reducerer agenternes tokenforbrug med 80%, med krydsrepolinks, kodegennemgang på tværs af hele SDLC, formel verifikation og Sentry/Jira-connectors. [Kom gratis i gang, uden kort &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -447,7 +447,7 @@ Hver kommando og hvert flag, med eksempler: **[CLI-reference](https://docs.graph
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) er det altid aktive lag bygget oven på graphify. I stedet for en graf, du genopbygger efter behov pr. mappe, holder det én levende graf gennem hele din softwareudviklingslivscyklus:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) er det altid aktive lag bygget oven på graphify. I stedet for en graf, du genopbygger efter behov pr. mappe, holder det én levende graf gennem hele din softwareudviklingslivscyklus:
 
 - **80% færre tokens**: altid aktiv hukommelse betyder, at dine agenter holder op med at genlæse og genforklare kodebasen hver session.
 - **Monorepo og krydsrepo**: én forbundet graf på tværs af hver tjeneste og hvert repository, ikke en graf pr. mappe.
@@ -456,7 +456,7 @@ Hver kommando og hvert flag, med eksempler: **[CLI-reference](https://docs.graph
 - **SDLC-connectors**: hent Sentry, Jira med mere ind, så hændelser, sager og kode lever i én graf.
 - **Altid aktiv**: opdateres kontinuerligt i baggrunden på tværs af kode, dokumenter og møder.
 
-**[Start en gratis 14-dages prøveperiode på app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Kom gratis i gang, uden kort &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

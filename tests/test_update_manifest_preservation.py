@@ -36,9 +36,11 @@ def test_update_preserves_undispatched_semantic_stamps(tmp_path, monkeypatch, ho
     # and the raw scan corpus. INPUT_PATH is a constant fixture root here.
     block = artifact.content.split("from graphify.cli import _stamped_manifest_files", 1)[1]
     block = "from graphify.cli import _stamped_manifest_files" + block.split("print('[graphify update] Manifest saved.')", 1)[0]
+    # Since #4762 the block reads the scan root from .graphify_root into INPUT_PATH
+    # above this slice; provide that resolved value directly in the exec scope.
     scope = {"incremental": incremental, "new_extraction": json.loads(extraction_path.read_text(encoding="utf-8")),
-             "Path": Path, "save_manifest": save_manifest}
-    exec(compile(block.replace("INPUT_PATH", "."), str(artifact.path), "exec"), scope)
+             "Path": Path, "save_manifest": save_manifest, "INPUT_PATH": "."}
+    exec(compile(block, str(artifact.path), "exec"), scope)
     after = load_manifest(root=tmp_path)
     assert str(docs[0]) not in after
     for p in docs[2:] if failed_change else docs[1:]:
