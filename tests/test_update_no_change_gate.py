@@ -81,6 +81,31 @@ def test_unchanged_tree_skips_extraction_and_leaves_outputs_untouched(
     assert _snapshot(built) == before, "outputs must be byte-identical"
 
 
+def test_oversized_data_json_does_not_block_the_no_change_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """A data file over the JSON size cap is declined by design, not a failure.
+
+    extract_json() reports an over-1-MiB JSON as an error, so the extractor
+    counted it as a failed source. A failed source is never stamped into the
+    manifest, so the next run re-extracted it and the no-change gate never
+    passed, forcing the full pipeline on every `graphify update`. Declined
+    files are stamped (#2879), so an unchanged tree with one must still skip.
+    """
+    root = _corpus(tmp_path / "corpus")
+    (root / "data").mkdir()
+    (root / "data" / "dump.json").write_bytes(b'{"rows": "' + b"x" * 1_100_000 + b'"}')
+    assert _rebuild_code(root, acquire_lock=False) is True
+    before = _snapshot(root)
+    calls = _spy_extract(monkeypatch)
+
+    assert _rebuild_code(root, acquire_lock=False) is True
+
+    assert SKIP_MESSAGE in capsys.readouterr().out
+    assert calls == [], "an unchanged oversized data file must not force extraction"
+    assert _snapshot(root) == before
+
+
 def test_new_file_takes_the_full_path(
     built: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
