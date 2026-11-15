@@ -125,6 +125,15 @@ Unchanged type metadata is preserved by CLI/watch incremental resolution.
 Existing persisted graphs and source-evidence artifacts with old IDs require
 a full code rebuild: `graphify extract . --code-only --force`.
 
+Unresolved Python direct calls through unconditional top-level `from ... import ...`
+statements constrain name-based fallback to the imported name and module. An
+external import does not bind to an unrelated same-named corpus symbol, and an
+alias cannot acquire a second target named after the alias. This guard runs after
+per-file cache loading, including on changed-file extractions with unchanged
+resolution context; it does not change callback or function-local import handling.
+Explicitly supplied callers outside the scan root retain their existing fallback.
+Previously emitted false edges are removed when their caller is re-extracted.
+
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
 prefixed declarations share the same package identity; foreign namespaces and
