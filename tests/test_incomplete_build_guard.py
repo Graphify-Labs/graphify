@@ -100,8 +100,9 @@ def test_allow_partial_forces_write_despite_incomplete(monkeypatch, tmp_path):
 
 
 def test_complete_extraction_keeps_force_write(monkeypatch, tmp_path):
-    # All chunks succeeded -> a complete build legitimately keeps force=True so a
-    # genuine dedup/deletion shrink still overwrites.
+    # All chunks succeeded and dedup did not shrink the saved graph. A complete
+    # run still force-writes in that case. A dedup shrink is refused unless
+    # --allow-dedup-shrink (#3774); see test_dedup_shrink_refuses_force_write.
     rec = _seed_to_json_recorder(monkeypatch, returns=True)
     _arm_extract(monkeypatch, tmp_path, chunk_total=1, chunk_succeeded=1)
 

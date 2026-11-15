@@ -141,3 +141,88 @@ import Hero from '@components/Hero.astro';
     result = extract_astro(page)
     targets = _import_targets(result, relation="imports_from")
     assert _make_id(str(hero)) in targets
+
+
+def _labels(result: dict) -> dict[str, str]:
+    """Label -> source_location for every node except the file node."""
+    return {
+        str(n.get("label")): str(n.get("source_location"))
+        for n in result.get("nodes", [])
+        if n.get("id") != result.get("nodes", [{}])[0].get("id")
+    }
+
+
+def test_extract_astro_template_is_not_a_parse_error(tmp_path):
+    """The template is not TS; only frontmatter and <script> bodies are parsed (#2788).
+
+    Parsing the whole file as JS reported every page as a syntax error, and
+    symbols the parser could not recover past the template were dropped.
+    """
+    page = _write(
+        tmp_path / "src/pages/results.astro",
+        """---
+import Layout from '../layouts/Layout.astro';
+interface Props { year: number }
+const { year } = Astro.props;
+function rank(scores: number[]): number[] {
+  return [...scores].sort((a, b) => b - a);
+}
+---
+
+<Layout title={`Results ${year}`}>
+  <ol>{rank([3, 1, 2]).map((s) => <li class="score">{s}</li>)}</ol>
+</Layout>
+<script type="application/ld+json">{ "@type": "Event", "name": "x" }</script>
+<script>
+  function toggle(el: HTMLElement) { el.classList.toggle('open'); }
+  document.querySelectorAll('ol').forEach((el) => toggle(el));
+</script>
+""",
+    )
+    result = extract_astro(page)
+    assert result.get("parse_errors") is None
+    labels = _labels(result)
+    assert "rank()" in labels and "toggle()" in labels
+    # Masking keeps offsets, so locations still point at the original lines.
+    assert labels["rank()"] == "L5"
+    assert labels["toggle()"] == "L15"
+
+
+def test_extract_astro_scripts_on_one_line_do_not_merge(tmp_path):
+    """Two script bodies on one line must not parse as a single statement."""
+    page = _write(
+        tmp_path / "src/pages/inline.astro",
+        "<script>const a = 1</script><script>function b() {}</script>\n",
+    )
+    result = extract_astro(page)
+    assert result.get("parse_errors") is None
+    assert "b()" in _labels(result)
+
+
+def test_extract_astro_trailing_comment_does_not_hide_next_script(tmp_path):
+    """A comment at the closing tag must end before the next script (#4072)."""
+    page = _write(
+        tmp_path / "inline-comment.astro",
+        "<script>const a = 1 // trailing comment</script>"
+        "<script>function visible() {}</script>\n",
+    )
+    result = extract_astro(page)
+    assert result.get("parse_errors") is None
+    assert _labels(result)["visible()"] == "L1"
+
+
+def test_astro_mask_preserves_bytes_and_newlines_after_comment():
+    from graphify.extract import _astro_mask_non_script
+
+    source = (
+        "---\nconst title = 'hello';\n---\n"
+        "<script>const a = 1 // comment</script>"
+        "<script>function visible() {}</script>\r\n"
+    )
+    masked = _astro_mask_non_script(source).encode("utf-8")
+    original = source.encode("utf-8")
+    assert len(masked) == len(original)
+    assert masked.index(b"function visible") == original.index(b"function visible")
+    assert [(i, c) for i, c in enumerate(masked) if c in (10, 13)] == [
+        (i, c) for i, c in enumerate(original) if c in (10, 13)
+    ]

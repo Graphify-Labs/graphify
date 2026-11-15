@@ -30,6 +30,7 @@ from graphify.export import (
     to_graphml,
     to_json,
     to_obsidian,
+    to_svg,
 )
 
 # Legal in XML and in a filename — these must survive untouched.
@@ -124,6 +125,74 @@ def test_stem_keeps_the_words_around_the_control_character():
 def test_a_label_that_is_only_control_characters_still_yields_a_name():
     stem = _obsidian_safe_stem("\x00\x0b\x1b")
     assert stem and not any(ord(c) < 32 for c in stem)
+
+
+# ---------------------------------------------------------------------------
+# SVG
+# ---------------------------------------------------------------------------
+
+def _svg(tmp_path, G, community_labels=None, communities=COMMUNITIES):
+    pytest.importorskip("matplotlib")
+    out = tmp_path / "g.svg"
+    to_svg(G, communities, str(out), community_labels=community_labels)
+    return out.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("ch", BREAK)
+def test_svg_survives_a_control_character(tmp_path, ch):
+    ET.fromstring(_svg(tmp_path, _graph(f"Build {ch}log capture")))  # must be well-formed XML
+
+
+@pytest.mark.parametrize("ch", BREAK)
+def test_svg_survives_a_control_character_in_a_community_label(tmp_path, ch):
+    """The legend is a second path from a label to the file."""
+    svg = _svg(tmp_path, _graph("plain"), {0: f"Core {ch}module"})
+    ET.fromstring(svg)
+    assert "Core" in svg and "module" in svg
+
+
+@pytest.mark.parametrize("ch", KEEP)
+def test_svg_keeps_the_whitespace_xml_allows(tmp_path, ch):
+    """Tab, LF and CR are valid XML; the fix must not sweep them up with the rest."""
+    svg = _svg(tmp_path, _graph(f"Release{ch}Notes"))
+    ET.fromstring(svg)
+    assert "Release" in svg and "Notes" in svg
+    assert "ReleaseNotes" not in svg  # nothing was removed between the words
+
+
+def test_svg_still_carries_the_readable_part_of_the_label(tmp_path):
+    svg = _svg(tmp_path, _graph("Build \x1b[31mlog\x1b[0m capture"))
+    assert "Build [31mlog[0m capture" in svg
+    assert "\x1b" not in svg
+
+
+def test_svg_clean_labels_are_unchanged(tmp_path):
+    svg = _svg(tmp_path, _graph("Perfectly Ordinary Heading"), {0: "Ordinary Community"})
+    assert "Perfectly Ordinary Heading" in svg
+    assert "Ordinary Community (2)" in svg
+
+
+@pytest.mark.parametrize("ch", BREAK)
+def test_svg_survives_a_control_character_in_the_id_of_an_unlabelled_node(tmp_path, ch):
+    """A node with no label is drawn under its id: a third path from text to the file."""
+    G = build_from_json({
+        "nodes": [{"id": f"we{ch}ird", "file_type": "code", "source_file": "a.py"}],
+        "edges": [], "hyperedges": [],
+    })
+    svg = _svg(tmp_path, G, communities={0: [f"we{ch}ird"]})
+    ET.fromstring(svg)
+    assert "weird" in svg
+
+
+def test_svg_draws_a_label_that_is_not_a_string(tmp_path):
+    """nx.draw_networkx_labels str()s a non-string label on its own; the strip
+    must not turn that into a TypeError, nor into an empty label."""
+    G = _graph("x")
+    G.nodes["a"]["label"] = 5
+    del G.nodes["b"]["label"]  # falls back to the node id
+    svg = _svg(tmp_path, G)
+    ET.fromstring(svg)
+    assert "<!-- 5 -->" in svg or ">5</text>" in svg  # svg.fonttype: path (default) or none
 
 
 # ---------------------------------------------------------------------------

@@ -119,6 +119,42 @@ def test_existing_lower_confidence_is_not_overwritten(tmp_path):
     assert "verification" not in out["made_up()"]
 
 
+def test_case_variant_extracted_confidence_is_still_evidence_checked(tmp_path):
+    src = tmp_path / "mod.py"
+    src.write_text(_SOURCE, encoding="utf-8")
+    # build._fold_confidence (#4529) treats a mis-cased enum value as THE enum
+    # value and corrects its spelling, so `"extracted"` and `"Extracted"` reach
+    # graph.json as EXTRACTED — exactly as solid a claim as the uppercase form.
+    # Evidence-binding must therefore check them too; a case-sensitive
+    # comparison let a fabricated symbol keep an unqualified EXTRACTED node.
+    nodes = [
+        {"id": "a", "label": "made_up_lower()", "file_type": "code",
+         "source_file": "mod.py", "confidence": "extracted"},
+        {"id": "b", "label": "made_up_title()", "file_type": "code",
+         "source_file": "mod.py", "confidence": "Extracted"},
+    ]
+    out = _by_label(_run([src], nodes, tmp_path))
+    assert out["made_up_lower()"]["verification"] == "unverified"
+    assert out["made_up_title()"]["verification"] == "unverified"
+
+
+def test_hedged_confidence_is_left_alone_in_any_case(tmp_path):
+    # Control: a model that hedged the node needs no second flag, and that must
+    # hold for the mis-cased spellings of the hedging values too — widening the
+    # EXTRACTED match must not start flagging INFERRED/AMBIGUOUS nodes.
+    src = tmp_path / "mod.py"
+    src.write_text(_SOURCE, encoding="utf-8")
+    nodes = [
+        {"id": "a", "label": "hedged_lower()", "file_type": "code",
+         "source_file": "mod.py", "confidence": "inferred"},
+        {"id": "b", "label": "hedged_ambiguous()", "file_type": "code",
+         "source_file": "mod.py", "confidence": "ambiguous"},
+    ]
+    out = _by_label(_run([src], nodes, tmp_path))
+    assert "verification" not in out["hedged_lower()"]
+    assert "verification" not in out["hedged_ambiguous()"]
+
+
 def test_label_identifiers_helper():
     assert llm._label_identifiers("foo()") == ["foo"]
     assert llm._label_identifiers("Cls.method(x)") == ["Cls", "method"]

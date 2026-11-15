@@ -127,7 +127,12 @@ def test_same_name_modules_in_separate_loose_directories(tmp_path):
         tools / "helper.py",
         tools / "main.py",
     ]
-    res = extract(paths, root=tmp_path, parallel=False)
+    # Keep this cold: the shared content-hash cache can replay an extraction
+    # that predates private import-resolution metadata and mask the ambiguity
+    # guard's behavior.
+    res = extract(
+        paths, root=tmp_path, parallel=False, cache_root=tmp_path / "graphify-cache"
+    )
     G = build_from_json(res, root=str(tmp_path), directed=True)
 
     edges = _edge_set(G)
@@ -173,9 +178,11 @@ def test_package_isolation_pep328(tmp_path):
         f"Package import in pkg/app.py was falsely repointed to sibling pkg_helper: {import_edges[0]}"
     )
 
-    # No member call was resolved (package isolation)
+    # The coarse external call must not resolve to the package's local helper.
     call_edges = [e for e in res["edges"] if e.get("relation") == "calls"]
-    assert not call_edges, f"Spurious call edge resolved inside package: {call_edges}"
+    assert [(e["source"], e["target"]) for e in call_edges] == [
+        ("pkg_app_run", "helper")
+    ], f"Package call was falsely resolved to a local sibling: {call_edges}"
 
 
 def test_no_cross_directory_leakage(tmp_path):
@@ -209,12 +216,14 @@ def test_no_cross_directory_leakage(tmp_path):
         f"Unrelated src/app.py import was leaked to scripts_utils: {import_edges[0]}"
     )
 
-    # No member call resolved
+    # The coarse external call must not resolve to the other directory's utils.
     call_edges = [
         e for e in res["edges"]
         if e.get("source") == "src_app_run" and e.get("relation") == "calls"
     ]
-    assert not call_edges, f"Spurious cross-directory call edge resolved: {call_edges}"
+    assert [(e["source"], e["target"]) for e in call_edges] == [
+        ("src_app_run", "utils")
+    ], f"Call was falsely resolved across directories: {call_edges}"
 
 
 def test_aliased_import_resolves_member_call(tmp_path):
@@ -261,3 +270,71 @@ def test_aliased_import_resolves_member_call(tmp_path):
     edges = _edge_set(G)
     assert ("imports", "scripts_main", "scripts_greeter") in edges
     assert ("calls", "scripts_main_run", "scripts_greeter_greet") in edges
+
+
+def test_bare_stdlib_import_does_not_bind_to_same_stem_sibling(tmp_path):
+    """G. Stdlib shadow (#4261):
+    A loose directory with a sibling named like a stdlib module
+    (scripts/logging.py) must NOT capture a bare `import logging` from
+    scripts/service.py — that import means the stdlib `logging`, so the edge
+    must stay the external bare target, not repoint to scripts_logging.
+    """
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "logging.py").write_text("def configure():\n    return 1\n", encoding="utf-8")
+    (scripts / "service.py").write_text(
+        "import logging\n\n"
+        "def run():\n"
+        "    return logging.getLogger(__name__)\n",
+        encoding="utf-8",
+    )
+
+    paths = [scripts / "logging.py", scripts / "service.py"]
+    # Cold cache: the shared content-hash cache can replay an extraction that
+    # predates the stdlib-shadow guard and mask the fix.
+    res = extract(
+        paths, root=tmp_path, parallel=False, cache_root=tmp_path / "graphify-cache"
+    )
+
+    import_edges = [
+        e for e in res["edges"]
+        if e.get("source") == "scripts_service" and e.get("relation") == "imports"
+    ]
+    assert len(import_edges) == 1
+    assert import_edges[0]["target"] == "logging", (
+        f"Bare `import logging` was falsely repointed to the sibling stdlib-shadow "
+        f"file scripts_logging: {import_edges[0]}"
+    )
+
+    # The import and member call must stay unresolved external in the built graph,
+    # not bound to the same-stem sibling file node (#4261 via the build-side #1504
+    # pre-migration stem-alias index).
+    G = build_from_json(res, root=str(tmp_path), directed=True)
+    edges = _edge_set(G)
+    assert ("imports", "scripts_service", "scripts_logging") not in edges
+    assert ("calls", "scripts_service_run", "scripts_logging") not in edges
+
+
+def test_non_stdlib_sibling_still_repoints_control(tmp_path):
+    """H. Positive control for #4261:
+    The stdlib guard must not over-reach. A sibling whose name is NOT a stdlib
+    module (scripts/greeter.py) still repoints as before.
+    """
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "greeter.py").write_text("def greet():\n    return 42\n", encoding="utf-8")
+    (scripts / "service.py").write_text(
+        "import greeter\n\n"
+        "def run():\n"
+        "    return greeter.greet()\n",
+        encoding="utf-8",
+    )
+
+    paths = [scripts / "greeter.py", scripts / "service.py"]
+    res = extract(
+        paths, root=tmp_path, parallel=False, cache_root=tmp_path / "graphify-cache"
+    )
+    G = build_from_json(res, root=str(tmp_path), directed=True)
+    edges = _edge_set(G)
+    assert ("imports", "scripts_service", "scripts_greeter") in edges
+    assert ("calls", "scripts_service_run", "scripts_greeter_greet") in edges

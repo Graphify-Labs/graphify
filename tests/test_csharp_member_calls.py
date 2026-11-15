@@ -279,6 +279,127 @@ def test_this_field_receiver_resolves(tmp_path):
     assert (commit, cache_save) not in calls
 
 
+def test_null_conditional_field_receiver_resolves(tmp_path):
+    """#3797: `_s?.Save()` is a conditional_access_expression, not a
+    member_access_expression. It used to fall through to the raw-text split,
+    which typed the receiver as `_s?` (nothing), so the call was dropped."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+            "public class Repo {\n"
+            "    private Server _s = new Server();\n"
+            "    public bool? Commit() { return _s?.Save(); }\n"
+            "}\n"
+        )
+    })
+    commit = _find(r, ".Commit()", "commit")
+    server_save = _find(r, ".Save()", "server")
+    cache_save = _find(r, ".Save()", "cache")
+    assert (commit, server_save) in calls, "_s?.Save() must resolve like _s.Save()"
+    assert (commit, cache_save) not in calls
+
+
+def test_null_conditional_this_field_receiver_resolves(tmp_path):
+    """`this._s?.Save()`: the condition is the same this-field access a plain
+    `this._s.Save()` carries, so it types the same way."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+            "public class Repo {\n"
+            "    private Server _s = new Server();\n"
+            "    public bool? Commit() { return this._s?.Save(); }\n"
+            "}\n"
+        )
+    })
+    commit = _find(r, ".Commit()", "commit")
+    server_save = _find(r, ".Save()", "server")
+    cache_save = _find(r, ".Save()", "cache")
+    assert (commit, server_save) in calls
+    assert (commit, cache_save) not in calls
+
+
+def test_null_conditional_bare_this_receiver_resolves(tmp_path):
+    """`this?.Save()` resolves like `this.Save()` (#4077)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Other { public bool Save() => false; }\n"
+            "public class Repo {\n"
+            "    public bool Save() => true;\n"
+            "    public bool? Commit() { return this?.Save(); }\n"
+            "}\n"
+        )
+    })
+    commit = _find(r, ".Commit()", "commit")
+    repo_save = _find(r, ".Save()", "repo")
+    other_save = _find(r, ".Save()", "other")
+    assert (commit, repo_save) in calls, "this?.Save() must resolve like this.Save()"
+    assert (commit, other_save) not in calls
+
+
+def test_null_conditional_cross_file_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "Server.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+        ),
+        "Repo.cs": (
+            "public class Repo { private Server _s = new Server(); "
+            "public bool? Commit() { return _s?.Save(); } }\n"
+        ),
+    })
+    assert any("commit" in s and "server_save" in t for s, t in calls)
+    assert not any("commit" in s and "cache_save" in t for s, t in calls)
+
+
+_STORE = (
+    "public interface IStore { void Save(); }\n"
+    "public class Store : IStore { public void Save() { } }\n"
+)
+
+
+def _store_call(tmp_path, editor_body: str):
+    """Call `IStore.Save()` from another file; return (calls, caller, IStore.Save, Store.Save)."""
+    calls, r = _calls(tmp_path, {
+        "Store.cs": _STORE,
+        "Editor.cs": (
+            "public class Editor {\n"
+            "    object _obj;\n"
+            "    IStore Store => (IStore)_obj;\n"
+            f"    public void Run() {{ {editor_body} }}\n"
+            "}\n"
+        ),
+    })
+    run = _find(r, ".Run()", "editor")
+    istore_save = _find(r, ".Save()", "istore")
+    store_save = next(n["id"] for n in r["nodes"]
+                      if n["label"] == ".Save()" and n["id"] != istore_save)
+    return calls, run, istore_save, store_save
+
+
+def test_cast_receiver_resolves_to_cast_type(tmp_path):
+    """`((IStore)_obj).Save()`: the cast names the receiver type (#3797)."""
+    calls, run, istore_save, store_save = _store_call(tmp_path, "((IStore)_obj).Save();")
+    assert (run, istore_save) in calls
+    assert (run, store_save) not in calls
+
+
+def test_as_cast_receiver_resolves_to_cast_type(tmp_path):
+    """`(_obj as IStore).Save()` types the receiver the same way (#3797)."""
+    calls, run, istore_save, store_save = _store_call(tmp_path, "(_obj as IStore).Save();")
+    assert (run, istore_save) in calls
+    assert (run, store_save) not in calls
+
+
+def test_property_receiver_shadows_same_named_type(tmp_path):
+    """`IStore Store => ...; Store.Save()`: inside Editor `Store` is the
+    property, so the call is IStore.Save, not the class Store's (#3797)."""
+    calls, run, istore_save, store_save = _store_call(tmp_path, "Store.Save();")
+    assert (run, istore_save) in calls
+    assert (run, store_save) not in calls
+
+
 def test_base_receiver_resolves_to_base_class_method(tmp_path):
     calls, r = _calls(tmp_path, {
         "Base.cs": "public class BaseSvc { public bool Ping() => true; }\n",
@@ -776,3 +897,217 @@ def test_struct_primary_constructor_parameter_emits_references_edge(tmp_path):
     idep = _find(r, "IDep", "idep")
     assert (holder, idep) in _refs(r), \
         "a struct primary-constructor parameter type must produce a references edge"
+
+
+# --- Preprocessor directives -------------------------------------------------
+# tree-sitter-c-sharp parses `#if`/`#elif`/`#else`/`#endif` with every branch in
+# place. Its error recovery can close the enclosing class early, so every later
+# member lost its `Type.` owner, its field typing and its calls. The C# extractor
+# now blanks directive lines, plus any later branch whose braces/parens do not
+# balance or that redeclares a member the kept branch already declares, keeping
+# each remaining byte on its line and column. Other `#elif`/`#else` branches are
+# kept so members that exist only there stay in the graph (#2631).
+
+_PP_BUFFER = (
+    "namespace Repro3;\n"
+    "\n"
+    "public class Buffer\n"
+    "{\n"
+    "    public void Append(char c) { }\n"
+    "}\n"
+)
+
+_PP_WRITER = (
+    "namespace Repro3\n"
+    "{\n"
+    "    public class Writer\n"
+    "    {\n"
+    "        private readonly Buffer _buffer = new Buffer();\n"
+    "        private int _state;\n"
+    "\n"
+    "        public int State\n"
+    "        {\n"
+    "            get\n"
+    "            {\n"
+    "                {\n"
+    "                    return _state;\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "\n"
+    "        public string Path\n"
+    "        {\n"
+    "            get\n"
+    "            {\n"
+    "                {\n"
+    "                    return \"\";\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "\n"
+    "        public void WriteValue(int typeCode)\n"
+    "        {\n"
+    "            {\n"
+    "                switch (typeCode)\n"
+    "                {\n"
+    "#if HAVE_DB_NULL\n"
+    "                    case 1:\n"
+    "                        break;\n"
+    "#endif\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "\n"
+    "        public void Flush()\n"
+    "        {\n"
+    "            Prepare();\n"
+    "            _buffer.Append('x');\n"
+    "        }\n"
+    "\n"
+    "        private void Prepare() { }\n"
+    "    }\n"
+    "}\n"
+)
+
+
+def _member(r, owner: str, name: str):
+    """The one method node `name` declared inside class `owner`."""
+    suffix = f"_{owner}_{name}".lower()
+    matches = [n for n in r["nodes"]
+               if n["label"] == f".{name}()" and n["id"].endswith(suffix)]
+    assert len(matches) == 1, (owner, name, [(n["id"], n["label"]) for n in r["nodes"]])
+    return matches[0]
+
+
+def test_preprocessor_if_does_not_orphan_later_members(tmp_path):
+    calls, r = _calls(tmp_path, {"Writer.cs": _PP_WRITER, "Buffer.cs": _PP_BUFFER})
+    flush = _member(r, "Writer", "Flush")
+    prepare = _member(r, "Writer", "Prepare")
+    append = _member(r, "Buffer", "Append")
+    assert (flush["id"], prepare["id"]) in calls
+    assert (flush["id"], append["id"]) in calls, "_buffer.Append() must resolve through the field type"
+
+
+def test_preprocessor_blanking_keeps_member_line_numbers(tmp_path):
+    _, r = _calls(tmp_path, {"Writer.cs": _PP_WRITER, "Buffer.cs": _PP_BUFFER})
+    lines = _PP_WRITER.splitlines()
+    for name, decl in (("WriteValue", "public void WriteValue("),
+                       ("Flush", "public void Flush()"),
+                       ("Prepare", "private void Prepare()")):
+        want = next(i for i, line in enumerate(lines, 1) if decl in line)
+        assert _member(r, "Writer", name)["source_location"] == f"L{want}", name
+
+
+def test_preprocessor_nested_split_signature_keeps_one_header(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "Sink.cs": (
+            "public class Fast { public void Run() {} }\n"
+            "public class Slow { public void Run() {} }\n"
+            "public class Old { public void Run() {} }\n"
+        ),
+        "Host.cs": (
+            "public class Host\n"
+            "{\n"
+            "    private Fast _fast = new Fast();\n"
+            "    private Slow _slow = new Slow();\n"
+            "    private Old _old = new Old();\n"
+            "#if NET\n"
+            "  #if NET8_0_OR_GREATER\n"
+            "    public void Write(System.ReadOnlySpan<char> s)\n"
+            "  #else\n"
+            "    public void Write(char[] s)\n"
+            "  #endif\n"
+            "#else\n"
+            "    public void Write(string s)\n"
+            "#endif\n"
+            "    {\n"
+            "#if NET\n"
+            "        _fast.Run();\n"
+            "  #if DEBUG\n"
+            "        _slow.Run();\n"
+            "  #else\n"
+            "        _old.Run();\n"
+            "  #endif\n"
+            "#else\n"
+            "        _old.Run();\n"
+            "#endif\n"
+            "    }\n"
+            "\n"
+            "    public void Flush() { _fast.Run(); }\n"
+            "}\n"
+        ),
+    })
+    write = _member(r, "Host", "Write")
+    flush = _member(r, "Host", "Flush")
+    fast = _member(r, "Fast", "Run")["id"]
+    slow = _member(r, "Slow", "Run")["id"]
+    old = _member(r, "Old", "Run")["id"]
+    assert write["source_location"] == "L8"
+    assert flush["source_location"] == "L28"
+    assert (write["id"], fast) in calls
+    assert (write["id"], slow) in calls, "a nested #if keeps its first branch inside a kept branch"
+    assert (write["id"], old) in calls, "balanced #else statements are kept"
+    assert (flush["id"], fast) in calls
+
+
+def test_preprocessor_elif_else_redeclaring_a_member_are_blanked(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "Sink.cs": (
+            "public class A { public void Go() {} }\n"
+            "public class B { public void Go() {} }\n"
+            "public class C { public void Go() {} }\n"
+        ),
+        "Host.cs": (
+            "public class Host\n"
+            "{\n"
+            "    private A _a = new A();\n"
+            "    private B _b = new B();\n"
+            "    private C _c = new C();\n"
+            "#if HAVE_A\n"
+            "    public void Run() { _a.Go(); }\n"
+            "#elif HAVE_B\n"
+            "    public void Run() { _b.Go(); }\n"
+            "#else\n"
+            "    public void Run() { _c.Go(); }\n"
+            "#endif\n"
+            "#region tail\n"
+            "    public void Tail() { Run(); }\n"
+            "#endregion\n"
+            "}\n"
+        ),
+    })
+    run = _member(r, "Host", "Run")
+    tail = _member(r, "Host", "Tail")
+    assert run["source_location"] == "L7"
+    assert tail["source_location"] == "L14"
+    assert (run["id"], _member(r, "A", "Go")["id"]) in calls
+    for other in ("B", "C"):
+        assert (run["id"], _member(r, other, "Go")["id"]) not in calls, (
+            f"the #elif/#else branch calling {other}.Go() must not be parsed")
+    assert (tail["id"], run["id"]) in calls
+
+
+def test_preprocessor_unbalanced_else_type_header_is_blanked(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "Base.cs": "public class Base { public void Ping() {} }\n",
+        "Host.cs": (
+            "public class Sink { public void Go() {} }\n"
+            "#if NET\n"
+            "public class Host : Base\n"
+            "{\n"
+            "#else\n"
+            "public class Host\n"
+            "{\n"
+            "    public void OldOnly() { }\n"
+            "#endif\n"
+            "    private Sink _sink = new Sink();\n"
+            "    public void Run() { _sink.Go(); Ping(); }\n"
+            "}\n"
+        ),
+    })
+    run = _member(r, "Host", "Run")
+    assert run["source_location"] == "L11"
+    assert (run["id"], _member(r, "Sink", "Go")["id"]) in calls
+    assert (run["id"], _member(r, "Base", "Ping")["id"]) in calls
+    assert not any(n["label"] == ".OldOnly()" for n in r["nodes"]), (
+        "an #else branch whose braces do not balance is blanked")

@@ -359,3 +359,211 @@ resource "aws_db_instance" "main" {
     assert "hunter2-super-secret" not in _json.dumps(node)
     assert "AKIAWHATEVER" not in _json.dumps(node)
     assert "leaky" not in _json.dumps(node)
+
+
+def test_terraform_redact_value_recurses_into_lists():
+    """A secret nested inside a list — a list of objects, or a nested list — must
+    be redacted, matching the map case. HCL routinely nests objects in tuples
+    (`list(object(...))`, dynamic blocks), and recursing into dicts but not lists
+    left those values leaking (#3644 follow-up)."""
+    from graphify.extractors.terraform import _redact_value
+
+    # list of objects: the secret-named inner key is redacted, ordinary key kept
+    assert _redact_value("connections", [{"host": "db", "password": "x"}]) == [
+        {"host": "db", "password": "[redacted]"}
+    ]
+    # nested list -> list -> object
+    assert _redact_value("stages", [[{"api_key": "sk-1"}]]) == [[{"api_key": "[redacted]"}]]
+    # a sensitive KEY still redacts the whole list value
+    assert _redact_value("passwords", ["a", "b"]) == "[redacted]"
+    # a non-secret list of scalars is left intact
+    assert _redact_value("ports", [80, 443]) == [80, 443]
+
+
+def test_terraform_secret_in_list_of_objects_is_redacted(tmp_path):
+    """End-to-end: a `password` inside a tuple-of-objects attribute must not reach
+    the graph verbatim, exactly as it wouldn't inside a map (#3644 follow-up)."""
+    body = """\
+resource "aws_x" "y" {
+  name = "app"
+  connections = [
+    { host = "db1", password = "leaky-in-list" },
+    { host = "db2", token = "tok-in-list" },
+  ]
+}
+"""
+    r = extract_terraform(_write(tmp_path, "conns.tf", body))
+    node = next(n for n in r["nodes"] if n["label"] == "aws_x.y")
+    conns = node["attributes"]["connections"]
+    assert conns[0]["host"] == "db1" and conns[0]["password"] == "[redacted]"
+    assert conns[1]["host"] == "db2" and conns[1]["token"] == "[redacted]"
+    import json as _json
+    assert "leaky-in-list" not in _json.dumps(node)
+    assert "tok-in-list" not in _json.dumps(node)
+
+
+def test_terraform_secret_named_variable_default_and_output_value_are_redacted(tmp_path):
+    """A `variable`/`output` block names its secret in the block LABEL, not in an
+    attribute key: `variable "db_password" { default = "..." }` stores the
+    credential under the generic key `default`, and `output "admin_token"` under
+    `value`. Key-name matching alone never sees the secret signal, so the
+    hardcoded default reached graph.json verbatim. Terraform's own
+    `sensitive = true` marker must be honoured the same way."""
+    body = """\
+variable "db_password" {
+  type    = string
+  default = "hunter2-default"
+}
+
+variable "region" {
+  type    = string
+  default = "us-east-1"
+}
+
+variable "signing_material" {
+  type      = string
+  sensitive = true
+  default   = "marked-sensitive"
+}
+
+output "admin_token" {
+  value = "tok-in-output"
+}
+
+output "bucket_name" {
+  value = "my-bucket"
+}
+"""
+    r = extract_terraform(_write(tmp_path, "vars.tf", body))
+    by_label = {n["label"]: n for n in r["nodes"]}
+    # secret-named blocks: the literal is redacted, the type stays visible
+    assert by_label["var.db_password"]["attributes"]["default"] == "[redacted]"
+    assert by_label["var.db_password"]["attributes"]["type"] == "string"
+    assert by_label["output.admin_token"]["attributes"]["value"] == "[redacted]"
+    # Terraform's explicit `sensitive = true` marker is honoured
+    assert by_label["var.signing_material"]["attributes"]["default"] == "[redacted]"
+    # ordinary variables/outputs are untouched
+    assert by_label["var.region"]["attributes"]["default"] == "us-east-1"
+    assert by_label["output.bucket_name"]["attributes"]["value"] == "my-bucket"
+    import json as _json
+    dumped = _json.dumps(r["nodes"])
+    for secret in ("hunter2-default", "tok-in-output", "marked-sensitive"):
+        assert secret not in dumped
+
+
+def test_terraform_name_value_pair_secret_is_redacted(tmp_path):
+    """The name/value-pair idiom (ECS `environment` / `secrets`, any
+    `[{ name, value }]` list) names the secret in the `name` LITERAL, while the
+    credential sits under the generic key `value`. Key-name matching never sees
+    that signal, so `{ name = "DB_PASSWORD", value = "hunter2" }` reached
+    graph.json verbatim (#3787). Ordinary name/value config stays intact."""
+    body = """\
+resource "aws_ecs_task_definition" "app" {
+  family = "app"
+  environment = [
+    { name = "DB_PASSWORD", value = "hunter2" },
+    { name = "LOG_LEVEL", value = "debug" },
+  ]
+  env_refs = [{ name = "API_KEY", valueFrom = "arn:aws:ssm:us-east-1:1:parameter/api" }]
+  single = { name = "client_secret", value = "in-a-map" }
+}
+"""
+    r = extract_terraform(_write(tmp_path, "ecs.tf", body))
+    node = next(n for n in r["nodes"] if n["label"] == "aws_ecs_task_definition.app")
+    attrs = node["attributes"]
+    assert attrs["environment"][0] == {"name": "DB_PASSWORD", "value": "[redacted]"}
+    assert attrs["environment"][1] == {"name": "LOG_LEVEL", "value": "debug"}
+    assert attrs["env_refs"][0] == {"name": "API_KEY", "valueFrom": "[redacted]"}
+    assert attrs["single"] == {"name": "client_secret", "value": "[redacted]"}
+    import json as _json
+    dumped = _json.dumps(node)
+    for secret in ("hunter2", "in-a-map", "parameter/api"):
+        assert secret not in dumped
+
+
+def test_aliased_providers_of_the_same_type_get_distinct_nodes(tmp_path):
+    """Two `provider "aws" {...}` blocks distinguished only by `alias` must not
+    collapse onto one node: before, the second block's own attributes
+    silently overwrote the first's, and the SAME id with no alias could never
+    tell the two configurations apart."""
+    body = """\
+provider "aws" {
+  alias  = "west"
+  region = "us-west-1"
+}
+
+provider "aws" {
+  alias  = "east"
+  region = "us-east-1"
+}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "provider.aws.west" in by_label
+    assert "provider.aws.east" in by_label
+    assert by_label["provider.aws.west"]["attributes"]["region"] == "us-west-1"
+    assert by_label["provider.aws.east"]["attributes"]["region"] == "us-east-1"
+
+
+def test_unaliased_provider_keeps_its_plain_id(tmp_path):
+    """The common case, a single provider block for a type with no `alias`,
+    must be unaffected: same id, same reference behaviour as before."""
+    body = 'variable "region" { default = "us-east-1" }\nprovider "aws" { region = var.region }\n'
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    labels = set(_labels(r))
+    assert "provider.aws" in labels
+    assert "provider.aws.None" not in labels
+    assert ("provider.aws", "var.region") in _rel_pairs(r, "references")
+
+
+def test_provider_reference_resolves_to_its_aliased_block(tmp_path):
+    """`provider = aws.west` inside a resource names the ALIASED provider
+    block, not a resource/data node that happens to share that shape; before,
+    this produced a dangling edge to a node that was never minted."""
+    body = """\
+provider "aws" {
+  alias  = "west"
+  region = "us-west-1"
+}
+
+resource "aws_instance" "web" {
+  provider = aws.west
+}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    refs = _rel_pairs(r, "references")
+    assert ("aws_instance.web", "provider.aws.west") in refs
+    # the target must be a real node, not a dangling id with no matching node
+    ids = {n["id"] for n in r["nodes"]}
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "references"}
+    assert targets <= ids
+
+
+def test_bare_provider_reference_resolves_to_the_unaliased_block(tmp_path):
+    """`provider = aws` with no alias must resolve to the plain `provider.aws`
+    node, the same one the block itself minted."""
+    body = """\
+provider "aws" { region = "us-east-1" }
+
+resource "aws_instance" "web" {
+  provider = aws
+}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    assert ("aws_instance.web", "provider.aws") in _rel_pairs(r, "references")
+
+
+def test_a_local_named_provider_is_not_misread_as_a_provider_reference(tmp_path):
+    """A local variable that happens to be NAMED `provider` is a local
+    definition, not a provider assignment; its own value must resolve through
+    the normal reference rules, not the provider-alias address space."""
+    body = """\
+locals {
+  provider = data.aws_caller_identity.current.account_id
+}
+
+data "aws_caller_identity" "current" {}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    refs = _rel_pairs(r, "references")
+    assert ("local.provider", "data.aws_caller_identity.current") in refs

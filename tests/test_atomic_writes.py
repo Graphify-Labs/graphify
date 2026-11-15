@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from graphify.paths import write_text_atomic
+from graphify.paths import os_replace_with_fallback, write_text_atomic
 
 
 def test_write_text_atomic_writes_and_leaves_no_tmp(tmp_path):
@@ -350,3 +350,21 @@ def test_write_text_atomic_succeeds_near_windows_max_path(tmp_path):
     write_text_atomic(target, "content-at-max-path")
     assert target.read_text(encoding="utf-8") == "content-at-max-path"
     assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_os_replace_with_fallback_still_replaces_a_readonly_destination(tmp_path):
+    """Install/cache callers replace their own copies, which can be read-only
+    (e.g. a skill copied from a read-only package): only the generic atomic write
+    path refuses a read-only destination, never this shared helper."""
+    import stat as _stat
+
+    dst = tmp_path / "SKILL.md"
+    dst.write_text("old", encoding="utf-8")
+    os.chmod(dst, _stat.S_IREAD)
+    src = tmp_path / "SKILL.md.tmp"
+    src.write_text("new", encoding="utf-8")
+    try:
+        os_replace_with_fallback(src, dst)
+        assert dst.read_text(encoding="utf-8") == "new"
+    finally:
+        os.chmod(dst, _stat.S_IWRITE)

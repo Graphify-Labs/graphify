@@ -253,8 +253,9 @@ def test_regex_rescue_unmapped_at_alias_resolves(tmp_path: Path):
     )
     resolution = _resolve_rescued_specifier(svelte_file, "@/lib.js", aliases={}, base_url=None)
     assert resolution is not None
-    node_id, stub_sf, resolved_file = resolution
+    node_id, stub_sf, resolved_file, is_external = resolution
     assert resolved_file == lib
+    assert is_external is False
 
 
 def test_unresolved_at_alias_does_not_infer_call_to_unrelated_definition(tmp_path: Path):

@@ -1,0 +1,134 @@
+name: PR management
+
+# Two lightweight, no-build jobs that run only on PR metadata (never on PR code),
+# mirroring practices from larger OSS projects:
+#   * contributor-label: tag a PR from a returning community contributor so
+#     maintainers can see community work at a glance.
+#   * pr-standards: nudge PR titles toward the conventional-commit format the
+#     changelog and release notes are built from (non-blocking; comment + label).
+# Both skip maintainers listed in .github/TEAM_MEMBERS and all bots.
+# pull_request_target is used so the token can label/comment on PRs from forks;
+# neither job checks out or executes PR code, so this is safe.
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  contributor-label:
+    # Only needs to run once, when the PR is opened.
+    if: github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const login = pr.user.login;
+            if (login.endsWith('[bot]')) return;
+
+            // author_association is CONTRIBUTOR only once a prior commit by this
+            // user has landed in the repo (our authorship-preserving cherry-picks
+            // count), so this flags returning community contributors and never a
+            // first-PR author or a maintainer (who reports MEMBER / OWNER).
+            if (pr.author_association !== 'CONTRIBUTOR') return;
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['contributor'],
+            });
+
+  pr-standards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const login = pr.user.login;
+            if (login.endsWith('[bot]')) return;
+
+            // Exempt maintainers listed in .github/TEAM_MEMBERS (read from the
+            // base repo, never from the PR branch).
+            let members = [];
+            try {
+              const { data: file } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/TEAM_MEMBERS',
+              });
+              members = Buffer.from(file.content, 'base64')
+                .toString()
+                .split('\n')
+                .map((l) => l.trim())
+                .filter(Boolean);
+            } catch (e) {
+              // No TEAM_MEMBERS file: treat everyone as a community contributor.
+            }
+            if (members.includes(login)) return;
+
+            const LABEL = 'needs:title';
+            const MARKER = '<!-- pr-standards:title -->';
+            // feat:, fix(scope):, docs (scope):, chore!: ... (conventional commits)
+            const titleOk = /^(feat|fix|docs|chore|refactor|test|perf|build|ci|style|revert)(\([a-zA-Z0-9 _-]+\))?!?:\s+\S/.test(
+              pr.title,
+            );
+
+            async function hasLabel() {
+              const { data } = await github.rest.issues.listLabelsOnIssue({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+              });
+              return data.some((l) => l.name === LABEL);
+            }
+
+            if (titleOk) {
+              if (await hasLabel()) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name: LABEL,
+                }).catch(() => {});
+              }
+              return;
+            }
+
+            // Non-conforming title: label it and post one gentle, non-blocking note.
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: [LABEL],
+            });
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+            });
+            if (comments.some((c) => c.body && c.body.includes(MARKER))) return;
+
+            const body =
+              MARKER +
+              '\n' +
+              `Thanks @${login}! One small thing: our changelog and release notes are ` +
+              'built from PR titles, so we use the [conventional-commits](https://www.conventionalcommits.org) ' +
+              'format, for example:\n\n' +
+              '```\nfix(python): resolve a bare stdlib import correctly\n```\n\n' +
+              'Prefixes we use: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`, `build`, `ci`. ' +
+              'Editing the PR title clears this automatically. This is just a nudge and does not block review.';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body,
+            });

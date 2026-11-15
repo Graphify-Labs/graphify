@@ -67,6 +67,7 @@ def test_same_namespace_and_name_across_repos_are_linked(tmp_path):
     endpoints = {links[0]["source"], links[0]["target"]}
     assert endpoints == {"svc_a::evt", "svc_b::evt"}
     assert links[0]["confidence"] == "INFERRED"
+    assert links[0]["confidence_score"] == 0.85
 
 
 def test_same_name_in_different_namespaces_is_not_linked(tmp_path):

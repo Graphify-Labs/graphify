@@ -15,7 +15,25 @@ _GLOBAL_MANIFEST = _GLOBAL_DIR / "global-manifest.json"
 def _load_manifest() -> dict:
     if _GLOBAL_MANIFEST.exists():
         try:
-            return json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
+            manifest = json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
+            repos = manifest.get("repos") if isinstance(manifest, dict) else None
+            if not isinstance(repos, dict):
+                raise ValueError("expected a manifest object with a repos map")
+            # Isolate a malformed repo entry instead of discarding every tracked
+            # repo: a single bad value should not lose the user's other repos
+            # (#5020). Drop the bad ones, keep the rest, and say which went. Only
+            # a non-dict root or repos map is unrecoverable enough to back up.
+            bad = sorted(name for name, info in repos.items() if not isinstance(info, dict))
+            if bad:
+                for name in bad:
+                    repos.pop(name)
+                print(
+                    f"[graphify global] dropped {len(bad)} malformed repo "
+                    f"entr{'y' if len(bad) == 1 else 'ies'} ({', '.join(bad)}) "
+                    f"from {_GLOBAL_MANIFEST}; kept {len(repos)} valid repo(s).",
+                    file=sys.stderr,
+                )
+            return manifest
         except Exception as exc:
             # Don't silently wipe the user's manifest on a parse error: that
             # deletes every tracked repo. Back the bad file up and surface the
@@ -67,7 +85,7 @@ def _save_global_graph(G: nx.Graph) -> None:
     except TypeError:
         data = _jg.node_link_data(G)
     from graphify.paths import write_json_atomic
-    write_json_atomic(_GLOBAL_GRAPH, data, indent=2)
+    write_json_atomic(_GLOBAL_GRAPH, data, compact=True)
 
 
 def _file_hash(path: Path) -> str:
@@ -110,6 +128,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     data = json.loads(source_path.read_text(encoding="utf-8"))
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    from graphify.paths import restore_arc_direction
+    data = restore_arc_direction(data)
     try:
         src_G = _jg.node_link_graph(data, edges="links")
     except TypeError:
@@ -142,6 +162,11 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     for u, v, data in prefixed.edges(data=True):
         u = remap.get(u, u)
         v = remap.get(v, v)
+        # The direction markers name endpoints too; rewire them with u/v so
+        # they never point at a deduplicated (absent) external node.
+        for key in ("_src", "_tgt"):
+            if data.get(key) in remap:
+                data = {**data, key: remap[data[key]]}
         if u != v:  # don't introduce self-loops via remapping
             G.add_edge(u, v, **data)
 

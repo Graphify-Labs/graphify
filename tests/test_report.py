@@ -52,6 +52,32 @@ def test_report_omits_unclassified_line_when_none():
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
     assert "Unclassified:" not in report
 
+
+def test_report_surfaces_the_unclassified_warning_next_to_the_count():
+    """#2942: a bare count reads as routine even when it is most of the
+    corpus. When detect() decided the share was large enough to warn about,
+    the report must say so right in the Corpus Check section, not bury it."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = {
+        **detection,
+        "unclassified": ["a.xml", "b.xml", "c.xml"],
+        "unclassified_warning": (
+            "3 of 4 files seen (75%) have no supported extractor and are "
+            "missing from this graph entirely."
+        ),
+    }
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "WARNING: 3 of 4 files seen (75%)" in report
+
+
+def test_report_omits_the_unclassified_warning_when_detect_did_not_set_one():
+    """Backward compatible: detect() decided the share was routine (or the
+    key is simply absent, matching old cached detection dicts), no new line."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = {**detection, "unclassified": ["a.toml"]}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "WARNING:" not in report
+
 def test_report_contains_god_nodes():
     G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
@@ -201,3 +227,77 @@ def test_report_hubs_use_wikilinks_when_obsidian():
     labels = {cid: f"Widget {cid}" for cid in communities}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert "[[_COMMUNITY_" in report
+
+
+def test_report_hub_wikilink_matches_the_exported_filename_stem():
+    # The wikilink target must be exactly what export._obsidian_safe_stem
+    # would name the real _COMMUNITY_*.md note for the same label, or the
+    # link dangles once --obsidian actually writes the vault. A hub label
+    # that happens to look like a source file (a plausible fallback name,
+    # since communities can be named after their highest-degree member)
+    # used to keep its ".qmd" suffix here while the export dropped it.
+    from graphify.export import _obsidian_safe_stem
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    cid = next(iter(communities))
+    labels = dict(labels)
+    labels[cid] = "report.qmd"
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
+    expected = _obsidian_safe_stem("report.qmd")
+    assert expected == "report"
+    assert f"[[_COMMUNITY_{expected}|report.qmd]]" in report
+    assert "[[_COMMUNITY_report.qmd|" not in report
+
+
+def test_report_hub_wikilink_falls_back_to_unnamed_for_punctuation_only_label():
+    # export._obsidian_safe_stem refuses to name a note after a label with no
+    # word characters at all, falling back to "unnamed" instead of writing a
+    # filename like "@.md". The wikilink must point at that same fallback.
+    from graphify.export import _obsidian_safe_stem
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    cid = next(iter(communities))
+    labels = dict(labels)
+    labels[cid] = "@@@"
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
+    assert _obsidian_safe_stem("@@@") == "unnamed"
+    assert "[[_COMMUNITY_unnamed|@@@]]" in report
+
+
+def test_load_report_token_cost_reads_ledger_totals(tmp_path):
+    """#5154: the report must show cost.json totals, not a hard-coded zero."""
+    from graphify.report import load_report_token_cost, generate
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "cost.json").write_text(
+        '{"runs": [], "total_input_tokens": 136750, "total_output_tokens": 4200}\n',
+        encoding="utf-8",
+    )
+    tokens = load_report_token_cost(out)
+    assert tokens == {"input": 136750, "output": 4200}
+
+    G, communities, cohesion, labels, gods, surprises, detection, _ = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "Token cost: 136,750 input · 4,200 output" in report
+
+
+def test_load_report_token_cost_missing_or_malformed_is_zero(tmp_path):
+    from graphify.report import load_report_token_cost
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    assert load_report_token_cost(out) == {"input": 0, "output": 0}
+    (out / "cost.json").write_text("{not json", encoding="utf-8")
+    assert load_report_token_cost(out) == {"input": 0, "output": 0}
+    (out / "cost.json").write_text("[]", encoding="utf-8")
+    assert load_report_token_cost(out) == {"input": 0, "output": 0}
+    (out / "cost.json").write_text(
+        '{"total_input_tokens": "136750", "total_output_tokens": 1}',
+        encoding="utf-8",
+    )
+    assert load_report_token_cost(out) == {"input": 0, "output": 0}
+
+
+def test_watch_rebuild_passes_cost_json_totals_to_the_report():
+    """#5154: graphify update used to hard-code {0, 0} at the generate() call."""
+    from pathlib import Path as _P
+    source = _P("graphify/watch.py").read_text(encoding="utf-8")
+    assert '{"input": 0, "output": 0}' not in source
+    assert "load_report_token_cost" in source

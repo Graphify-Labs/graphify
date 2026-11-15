@@ -126,6 +126,220 @@ def test_ambiguous_package_alias_is_not_repointed(tmp_path):
     )
 
 
+def test_scan_root_module_wins_over_nested_same_name(tmp_path):
+    """A nested duplicate must not shadow the resolver's scan-root-first hit."""
+    app_path = tmp_path / "app.py"
+    root_module = tmp_path / "pkg.py"
+    nested_module = tmp_path / "nested" / "pkg.py"
+    app_path.write_text("from pkg import Thing\n", encoding="utf-8")
+    root_module.write_text("class Thing:\n    pass\n", encoding="utf-8")
+    nested_module.parent.mkdir(parents=True)
+    nested_module.write_text("class Thing:\n    pass\n", encoding="utf-8")
+
+    result = extract(
+        [app_path, root_module, nested_module],
+        cache_root=tmp_path / "cache",
+        root=tmp_path,
+        parallel=False,
+    )
+    app_id = next(
+        node["id"] for node in result["nodes"] if node.get("label") == "app.py"
+    )
+    root_module_id = next(
+        node["id"] for node in result["nodes"]
+        if node.get("label") == "pkg.py" and node.get("source_file") == "pkg.py"
+    )
+    nested_module_id = next(
+        node["id"] for node in result["nodes"]
+        if node.get("label") == "pkg.py" and node.get("source_file") == "nested/pkg.py"
+    )
+    targets = {
+        edge["target"] for edge in result["edges"]
+        if edge.get("source") == app_id and edge.get("relation") == "imports_from"
+    }
+
+    assert root_module_id in targets
+    assert nested_module_id not in targets
+
+
+def test_ambiguous_absolute_from_import_does_not_bind_symbols_or_calls(tmp_path):
+    """An importer-relative hit must not bypass corpus-wide module ambiguity."""
+    def write_file(path: Path, content: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    paths = []
+    for sub in ("a", "b"):
+        pkg = tmp_path / sub / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        paths.append(write_file(pkg / "__init__.py", ""))
+        paths.append(write_file(
+            pkg / "mod.py",
+            "class Thing:\n    pass\n\ndef run():\n    return 1\n",
+        ))
+    app_path = write_file(
+        tmp_path / "a" / "src" / "pkg" / "app.py",
+        "from pkg.mod import Thing, run\n\n"
+        "def invoke():\n    return Thing(), run()\n",
+    )
+    paths.append(app_path)
+
+    result = extract(
+        paths, cache_root=tmp_path / "cache", root=tmp_path, parallel=False
+    )
+
+    app = next(
+        node["id"] for node in result["nodes"]
+        if node.get("label") == "app.py"
+    )
+    module_targets = {
+        node["id"] for node in result["nodes"]
+        if node["id"].startswith(("a_src_pkg_mod", "b_src_pkg_mod"))
+    }
+    app_edges = [
+        edge for edge in result["edges"]
+        if edge.get("source", "").startswith("a_src_pkg_app")
+    ]
+
+    assert any(
+        edge.get("source") == app and edge.get("relation") == "imports_from"
+        for edge in app_edges
+    ), "keep the unresolved import evidence"
+    assert not any(
+        edge.get("target") in module_targets
+        and edge.get("relation") in ("imports", "imports_from", "calls", "uses")
+        for edge in app_edges
+    ), f"ambiguous module was resolved to one src tree: {app_edges}"
+
+
+def test_ambiguous_namespace_submodule_does_not_bind_calls(tmp_path):
+    """Namespace-package submodule imports must use the same ambiguity guard."""
+    def write_file(path: Path, content: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    paths = []
+    for sub in ("a", "b"):
+        paths.append(write_file(
+            tmp_path / sub / "src" / "pkg" / "mod.py",
+            "def run():\n    return 1\n",
+        ))
+    app = write_file(
+        tmp_path / "a" / "src" / "app.py",
+        "from pkg import mod\n\ndef invoke():\n    return mod.run()\n",
+    )
+    paths.append(app)
+
+    result = extract(
+        paths, cache_root=tmp_path / "cache", root=tmp_path, parallel=False
+    )
+    module_targets = {
+        node["id"] for node in result["nodes"]
+        if node["id"].startswith(("a_src_pkg_mod", "b_src_pkg_mod"))
+    }
+    app_edges = [
+        edge for edge in result["edges"]
+        if edge.get("source", "").startswith("a_src_app")
+    ]
+
+    assert not any(
+        edge.get("target") in module_targets
+        and edge.get("relation") in ("imports", "imports_from", "calls", "uses")
+        for edge in app_edges
+    ), f"namespace submodule was resolved to one src tree: {app_edges}"
+
+
+def test_ambiguous_star_import_does_not_bind_calls(tmp_path):
+    """An ambiguous wildcard import must not enable proximity-based call picks."""
+    def write_file(path: Path, content: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    paths = []
+    for sub in ("a", "b"):
+        pkg = tmp_path / sub / "src" / "pkg"
+        write_file(pkg / "__init__.py", "")
+        paths.append(write_file(
+            pkg / "mod.py", "def run():\n    return 1\n"
+        ))
+    app_path = write_file(
+        tmp_path / "a" / "src" / "pkg" / "app.py",
+        "from pkg.mod import *\n\ndef invoke():\n    return run()\n",
+    )
+    paths.append(app_path)
+
+    result = extract(
+        paths, cache_root=tmp_path / "cache", root=tmp_path, parallel=False
+    )
+    module_targets = {
+        node["id"] for node in result["nodes"]
+        if node["id"].startswith(("a_src_pkg_mod", "b_src_pkg_mod"))
+    }
+    app_edges = [
+        edge for edge in result["edges"]
+        if edge.get("source", "").startswith("a_src_pkg_app")
+    ]
+
+    assert not any(
+        edge.get("target") in module_targets
+        and edge.get("relation") in ("imports", "imports_from", "calls", "uses")
+        for edge in app_edges
+    ), f"ambiguous star import resolved to one src tree: {app_edges}"
+
+
+def test_incremental_ambiguous_import_uses_unchanged_python_context(tmp_path):
+    """Unchanged files in resolver context still participate in ambiguity checks."""
+    def write_file(path: Path, content: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    for sub in ("a", "b"):
+        write_file(
+            tmp_path / sub / "src" / "pkg" / "mod.py",
+            "class Thing:\n    pass\n\ndef run():\n    return 1\n",
+        )
+    app_path = write_file(
+        tmp_path / "a" / "src" / "pkg" / "app.py",
+        "from pkg.mod import Thing, run\n\n"
+        "def invoke():\n    return Thing(), run()\n",
+    )
+    context_nodes = []
+    for sub in ("a", "b"):
+        source_file = f"{sub}/src/pkg/mod.py"
+        prefix = f"{sub}_src_pkg_mod"
+        context_nodes.extend([
+            {"id": prefix, "label": "mod.py", "source_file": source_file,
+             "file_type": "code"},
+            {"id": f"{prefix}_thing", "label": "Thing",
+             "source_file": source_file, "file_type": "code"},
+            {"id": f"{prefix}_run", "label": "run()",
+             "source_file": source_file, "file_type": "code"},
+        ])
+
+    result = extract(
+        [app_path], cache_root=tmp_path / "cache", root=tmp_path, parallel=False,
+        resolution_context_nodes=context_nodes,
+    )
+    app_edges = [
+        edge for edge in result["edges"]
+        if edge.get("source", "").startswith("a_src_pkg_app")
+    ]
+    module_targets = {
+        node["id"] for node in context_nodes
+        if "_src_pkg_mod" in node["id"]
+    }
+
+    assert not any(
+        edge.get("target") in module_targets
+        and edge.get("relation") in ("imports", "imports_from", "calls", "uses")
+        for edge in app_edges
+    ), f"incremental import resolved to one unchanged src tree: {app_edges}"
+
+
 def test_non_python_import_edge_is_not_repointed(tmp_path):
     """#2072 review: the alias map is Python-only, but a non-Python import edge
     whose dangling target coincides with a Python alias must NOT be repointed
@@ -151,3 +365,111 @@ def test_non_python_import_edge_is_not_repointed(tmp_path):
     assert not any(v == "src_pkg_mod" and u == "app_cs" for _, u, v in _import_edges(G)), (
         "non-Python import edge was repointed onto a Python file (#2072 review)"
     )
+
+
+def _write_tree(base: Path, files: dict[str, str]) -> list[Path]:
+    written = []
+    for rel, body in files.items():
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+        written.append(p)
+    return written
+
+
+_NAMESPACE_BASE = (
+    "class DbApiHook:\n"
+    "    def strip_sql_string(self, sql):\n"
+    "        return sql\n\n"
+    "def free_fn():\n"
+    "    return 1\n"
+)
+_NAMESPACE_SUB = (
+    "from airflow.sql.hooks.sql import DbApiHook, free_fn\n\n"
+    "class PrestoHook(DbApiHook):\n"
+    "    def get_records(self, sql):\n"
+    "        free_fn()\n"
+    "        return self.strip_sql_string(sql)\n"
+)
+
+
+def _calls(result) -> set[tuple[str, str, str]]:
+    labels = {n["id"]: n.get("label", n["id"]) for n in result["nodes"]}
+    return {
+        (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]), e.get("confidence"))
+        for e in result["edges"] if e.get("relation") == "calls"
+    }
+
+
+def test_namespace_distributions_under_src_resolve_across_each_other(tmp_path):
+    """PEP 420: two distributions share the `airflow` namespace, each under its
+    own `src/`, and no directory has an `__init__.py`. The import across them
+    resolves, so the subclass's inherited `self.strip_sql_string()` call and the
+    imported `free_fn()` are extracted, not dropped or left as name guesses."""
+    paths = _write_tree(tmp_path, {
+        "pkgsql/src/airflow/sql/hooks/sql.py": _NAMESPACE_BASE,
+        "pkgpresto/src/airflow/presto/hooks/presto.py": _NAMESPACE_SUB,
+    })
+    calls = _calls(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False))
+    assert (".get_records()", ".strip_sql_string()", "EXTRACTED") in calls, calls
+    assert (".get_records()", "free_fn()", "EXTRACTED") in calls, calls
+
+
+def test_namespace_module_under_two_src_roots_stays_unresolved(tmp_path):
+    """The same namespace module under two `src/` roots is ambiguous: no call is
+    bound to either copy."""
+    paths = _write_tree(tmp_path, {
+        "a/src/airflow/sql/hooks/sql.py": _NAMESPACE_BASE,
+        "b/src/airflow/sql/hooks/sql.py": _NAMESPACE_BASE,
+        "c/src/airflow/presto/hooks/presto.py": _NAMESPACE_SUB,
+    })
+    calls = _calls(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False))
+    assert not any(t == ".strip_sql_string()" for _, t, _ in calls), calls
+    assert not any(t == "free_fn()" and c == "EXTRACTED" for _, t, c in calls), calls
+
+
+def test_loose_module_directly_under_src_is_not_aliased(tmp_path):
+    """`src/helpers.py` (no namespace dir) keeps its old handling: a bare
+    `import helpers` elsewhere may name a third-party module."""
+    from graphify.extract import _namespace_src_module_parts
+
+    assert _namespace_src_module_parts(("pkg", "src", "helpers.py")) is None
+    assert _namespace_src_module_parts(("pkg", "src", "logging", "handlers.py")) is None
+    assert _namespace_src_module_parts(("scripts", "tool.py")) is None
+    assert _namespace_src_module_parts(("d", "src", "airflow", "sql", "hooks", "sql.py")) == (
+        "airflow", "sql", "hooks", "sql.py",
+    )
+
+
+def test_ambiguous_import_placeholder_id_is_independent_of_checkout_path(tmp_path):
+    """#5044: the same tree built in two directories must mint the same
+    placeholder id for an ambiguous import. The id used to hash the absolute
+    source path and the absolute-path-derived importer id, so only the checkout
+    location changed it."""
+    files = {
+        "app/main.py": "from helper import f\n\n\ndef run():\n    return f()\n",
+        "one/helper.py": "def f():\n    return 1\n",
+        "two/helper.py": "def f():\n    return 2\n",
+    }
+
+    def placeholders(checkout: Path) -> list[tuple[str, str, str]]:
+        paths = []
+        for rel, body in files.items():
+            path = checkout / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+            paths.append(path)
+        result = extract(
+            paths, cache_root=checkout / "cache", root=checkout, parallel=False
+        )
+        return sorted(
+            (edge["source"], edge["target"], edge.get("source_file", ""))
+            for edge in result["edges"]
+            if str(edge.get("target", "")).startswith("ambiguous_python_import_")
+        )
+
+    first = placeholders(tmp_path / "checkout-aaa")
+    second = placeholders(tmp_path / "nested" / "checkout-bbbbbbbb")
+
+    assert first, "the ambiguous `helper` import should keep a placeholder edge"
+    assert first == second, f"placeholder ids depend on the checkout path: {first} != {second}"
