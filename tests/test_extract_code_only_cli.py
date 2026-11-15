@@ -242,7 +242,8 @@ def test_explicit_exclude_replaces_persisted_setting_with_custom_out(tmp_path):
     assert any(source.endswith("vendor/lib.py") for source in sources)
     assert not any(source.endswith("generated/gen.py") for source in sources)
     assert json.loads((graph_out / ".graphify_build.json").read_text()) == {
-        "excludes": ["generated"]
+        "excludes": ["generated"],
+        "code_only": True,
     }
 
 

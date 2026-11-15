@@ -356,3 +356,107 @@ def test_case_only_sibling_all_exported_are_both_extracted(tmp_path: Path) -> No
     run2 = _ids(result, label="RUN", suffix="a.go")
     assert len(run1) == 1 and len(run2) == 1, f"Run={run1} RUN={run2}"
     assert run1 != run2, "Run and RUN collapsed onto one node id"
+
+
+# The shape of gin's response_writer.go: an exported interface and the unexported
+# struct implementing it differ only by case, so both minted one type id.
+_GIN_IFACE = "type ResponseWriter interface {\n\tStatus() int\n\tWritten() bool\n}\n"
+_GIN_STRUCT = (
+    "type responseWriter struct {\n\tstatus int\n}\n"
+    "\n"
+    "func (w *responseWriter) Status() int {\n\treturn w.status\n}\n"
+    "\n"
+    "func (w *responseWriter) reset() {\n\tw.status = 0\n}\n"
+)
+_GIN_CONTEXT = "type Context struct {\n\twriterMem responseWriter\n\tWriter    ResponseWriter\n}\n"
+
+
+def _gin_corpus(tmp_path: Path, *blocks: str) -> dict:
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "gin"
+    pkg.mkdir(exist_ok=True)
+    (pkg / "response_writer.go").write_text("package gin\n\n" + "\n".join(blocks))
+    return _extract(tmp_path)
+
+
+def _by_label(result: dict, label: str) -> list[dict]:
+    return [n for n in result["nodes"] if n.get("label") == label]
+
+
+def _owners(result: dict, method: str) -> set[str]:
+    by_id = {n["id"]: n for n in result["nodes"]}
+    return {
+        by_id[e["source"]]["label"]
+        for e in result["edges"]
+        if e.get("relation") == "method"
+        and by_id.get(e.get("target"), {}).get("label") == f".{method}()"
+    }
+
+
+def test_case_only_sibling_types_are_both_extracted(tmp_path: Path) -> None:
+    """``type ResponseWriter`` and ``type responseWriter`` in one file are two
+    types (#2779 covered functions and methods, not ``type`` declarations)."""
+    result = _gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT)
+    iface, struct = _by_label(result, "ResponseWriter"), _by_label(result, "responseWriter")
+    assert [n["source_location"] for n in iface] == ["L3"], iface
+    assert [n["source_location"] for n in struct] == ["L8"], struct
+    assert iface[0]["id"] != struct[0]["id"]
+
+
+def test_case_only_sibling_type_keeps_its_own_methods(tmp_path: Path) -> None:
+    """The struct's methods hang off the struct, not off the interface, and a
+    method both declare is two nodes, one per type."""
+    result = _gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT)
+    assert _owners(result, "reset") == {"responseWriter"}
+    assert _owners(result, "Status") == {"ResponseWriter", "responseWriter"}
+    assert _owners(result, "Written") == {"ResponseWriter"}
+
+
+def test_case_only_sibling_type_field_reference_lands_on_the_struct(tmp_path: Path) -> None:
+    result = _gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    field_targets = {
+        by_id[e["target"]]["label"]
+        for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "field"
+        and by_id.get(e.get("source"), {}).get("label") == "Context"
+    }
+    assert field_targets == {"responseWriter", "ResponseWriter"}, field_targets
+
+
+def test_case_only_sibling_exported_type_keeps_stable_ids(tmp_path: Path) -> None:
+    """The exported type and its methods keep the ids they have with no
+    unexported sibling in the file, so stored edges to them never move."""
+
+    def interface_ids(result: dict) -> set[str]:
+        iface = _by_label(result, "ResponseWriter")[0]["id"]
+        return {iface} | {
+            e["target"] for e in result["edges"]
+            if e.get("relation") == "method" and e.get("source") == iface
+        }
+
+    solo = interface_ids(_gin_corpus(tmp_path, _GIN_IFACE))
+    assert len(solo) == 3
+    assert interface_ids(_gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT)) == solo
+
+
+def test_case_only_sibling_type_ids_do_not_depend_on_declaration_order(tmp_path: Path) -> None:
+    def ids(result: dict) -> set[tuple[str, str]]:
+        return {(n["label"], n["id"]) for n in result["nodes"] if n.get("source_file")}
+
+    forward = ids(_gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT))
+    backward = ids(_gin_corpus(tmp_path, _GIN_STRUCT, _GIN_IFACE, _GIN_CONTEXT))
+    assert forward == backward
+
+
+def test_non_colliding_types_keep_their_ids_beside_a_colliding_pair(tmp_path: Path) -> None:
+    """Only the members of a collision group can move: the other types in the
+    file, exported or not, keep the ids they have in a file without the pair."""
+    other = "type node struct {\n\tpath string\n}\n"
+
+    def ids(result: dict) -> dict[str, str]:
+        return {n["label"]: n["id"] for n in result["nodes"]
+                if n.get("label") in ("Context", "node")}
+
+    alone = ids(_gin_corpus(tmp_path, _GIN_CONTEXT, other))
+    assert ids(_gin_corpus(tmp_path, _GIN_IFACE, _GIN_STRUCT, _GIN_CONTEXT, other)) == alone

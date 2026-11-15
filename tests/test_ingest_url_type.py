@@ -161,6 +161,8 @@ def test_binary_captures_skip_existing_entries(entry_kind, numbered, tmp_path, m
             occupied.symlink_to(sentinel)
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"host cannot create symlinks: {exc}")
+        # Windows reads the target back as \\?\C:\..., which never equals `sentinel`.
+        link_target = occupied.readlink()
 
     monkeypatch.setattr(ingest_mod, "validate_url", lambda url: url)
     monkeypatch.setattr(ingest_mod, "safe_fetch", lambda url: b"new capture")
@@ -176,7 +178,7 @@ def test_binary_captures_skip_existing_entries(entry_kind, numbered, tmp_path, m
     elif entry_kind == "directory":
         assert occupied.is_dir() and not list(occupied.iterdir())
     else:
-        assert occupied.is_symlink() and occupied.readlink() == sentinel
+        assert occupied.is_symlink() and occupied.readlink() == link_target
         if entry_kind == "live_link":
             assert sentinel.read_bytes() == b"outside sentinel"
         else:
@@ -229,3 +231,31 @@ def test_binary_capture_fetch_failure_preserves_existing_file(tmp_path, monkeypa
         ingest_mod.ingest("https://example.org/report.pdf", tmp_path)
     assert retained.read_bytes() == b"retained capture"
     assert list(tmp_path.iterdir()) == [retained]
+
+
+@pytest.mark.parametrize("entry_kind", ["dangling_link", "file"])
+def test_text_captures_skip_existing_entries(entry_kind, tmp_path, monkeypatch):
+    """A webpage capture must not replace an existing entry either; a dangling
+    symlink in particular would otherwise be written through to its target."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    occupied = corpus / "example_org_page.md"
+    sentinel = tmp_path / "sentinel"
+    if entry_kind == "file":
+        occupied.write_text("retained file", encoding="utf-8")
+    else:
+        try:
+            occupied.symlink_to(sentinel)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"host cannot create symlinks: {exc}")
+
+    monkeypatch.setattr(ingest_mod, "validate_url", lambda url: url)
+    monkeypatch.setattr(ingest_mod, "safe_fetch_text", lambda url: "<title>T</title>body")
+    result = ingest_mod.ingest("https://example.org/page", corpus)
+
+    assert result == corpus / "example_org_page_1.md"
+    assert "body" in result.read_text(encoding="utf-8")
+    if entry_kind == "file":
+        assert occupied.read_text(encoding="utf-8") == "retained file"
+    else:
+        assert occupied.is_symlink() and not sentinel.exists()

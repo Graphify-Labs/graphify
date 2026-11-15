@@ -178,3 +178,39 @@ class Service {
         f"target() must attribute to the closure, not .run(): {callers}"
     )
     assert ".run()" not in callers
+
+
+def test_php_route_path_comes_only_from_arguments_before_the_closure(tmp_path):
+    """A string after the closure is not the route's path (#5135).
+
+    The path scan stops at the closure's own argument with ``sibling == curr``.
+    It used ``is``, which never matches because py-tree-sitter returns a new
+    Node object on every access, so the scan ran past the closure and turned
+    ``get(function () {...}, '/late')`` into a ``GET /late`` route.
+    """
+    (tmp_path / "__probe.php").write_bytes(b"<?php\n")
+    if not _php_grammar_available(tmp_path):
+        pytest.skip("PHP grammar not installed")
+    src = b"""<?php
+$app->get(function () { return 1; }, '/late');
+"""
+    (tmp_path / "late_path.php").write_bytes(src)
+    labels = {n["label"] for n in extract_php(tmp_path / "late_path.php")["nodes"]}
+    assert "{closure#1}()" in labels, f"expected an ordinal closure, got {sorted(labels)}"
+    assert not any(l.startswith("GET ") for l in labels), f"no route expected: {sorted(labels)}"
+
+
+def test_php_group_prefix_ignores_a_string_after_the_closure(tmp_path):
+    """An enclosing call's string argument after its closure is not a group prefix (#5135)."""
+    (tmp_path / "__probe.php").write_bytes(b"<?php\n")
+    if not _php_grammar_available(tmp_path):
+        pytest.skip("PHP grammar not installed")
+    src = b"""<?php
+$app->group(function ($group) {
+    $group->get('/users', function () { return 1; });
+}, '/late');
+"""
+    (tmp_path / "late_prefix.php").write_bytes(src)
+    labels = {n["label"] for n in extract_php(tmp_path / "late_prefix.php")["nodes"]}
+    assert "GET /users()" in labels, f"expected the route without a prefix, got {sorted(labels)}"
+    assert "GET /late/users()" not in labels

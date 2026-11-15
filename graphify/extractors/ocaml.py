@@ -193,11 +193,19 @@ def extract_ocaml(path: Path) -> dict:
             return
 
         if t == "module_definition":
-            binding = next((c for c in node.children if c.type == "module_binding"), None)
-            if binding is not None:
+            # `module A = ... and B = ...` (mutually recursive modules) nests
+            # every binding under the ONE module_definition node, so taking
+            # only the first `module_binding` silently dropped every module
+            # after it, along with everything defined inside it. Walk every
+            # binding, each with its own line (the node's own line is only
+            # the first binding's), matching how type_definition already
+            # walks every type_binding in a type ... and ... chain.
+            for binding in node.children:
+                if binding.type != "module_binding":
+                    continue
                 mname = named_child_text(binding, "module_name")
                 if mname:
-                    line = line_of(node)
+                    line = line_of(binding)
                     mnid = _make_id(stem, mname)
                     add_node(mnid, mname, line)
                     add_edge(container_nid, mnid,
@@ -206,7 +214,7 @@ def extract_ocaml(path: Path) -> dict:
                     local_modules.add(mname)
                     for child in binding.children:
                         walk(child, mnid, enclosing_value)
-                    return
+            return
 
         if t == "module_type_definition":  # .mli
             mname = named_child_text(node, "module_type_name")
@@ -273,51 +281,58 @@ def extract_ocaml(path: Path) -> dict:
             # tree-sitter nests the name and the `object` body under a
             # class_binding; the body is an `object_expression` in .ml and a
             # `class_body_type` in .mli.
-            binding = next((c for c in node.children
-                            if c.type == "class_binding"), None)
-            if binding is not None:
+            #
+            # `class a = ... and b = ...` (mutually recursive classes) nests
+            # every binding under the ONE class_definition node, so taking
+            # only the first `class_binding` silently dropped every class
+            # after it. Walk every binding, each with its own line (the
+            # node's own line is only the first binding's).
+            for binding in node.children:
+                if binding.type != "class_binding":
+                    continue
                 cname = named_child_text(binding, "class_name")
-                if cname:
-                    line = line_of(node)
-                    cnid = _make_id(stem, cname)
-                    add_node(cnid, cname, line)
-                    add_edge(container_nid, cnid,
-                             "defines" if container_nid == file_nid else "contains", line)
-                    register_def(cname, cnid)
-                    body = _find_object_body(binding)
-                    if body is not None:
-                        for member in body.children:
-                            if member.type in ("method_definition", "method_specification"):
-                                mname = named_child_text(member, "method_name")
-                                if not mname:
-                                    continue
-                                mline = line_of(member)
-                                mnid = _make_id(stem, cname, mname)
-                                add_node(mnid, mname, mline)
-                                # A method is a callable class member, so use the
-                                # "method" relation every other extractor emits
-                                # (an instance `val` stays "contains" - it's a
-                                # field). This keeps OCaml methods first-class in
-                                # the call-flow view and caller/callee index,
-                                # which key on "method" not "contains".
-                                add_edge(cnid, mnid, "method", mline)
-                                # Attribute calls in the method body to the
-                                # method. Methods are NOT registered as local
-                                # defs: they are only reachable through `obj#m`,
-                                # never as a bare `m ...`, so binding a bare call
-                                # to a same-named method would be a false edge.
-                                for child in member.children:
-                                    walk(child, cnid, mnid)
-                            elif member.type in ("instance_variable_definition",
-                                                 "instance_variable_specification"):
-                                vname = named_child_text(member, "instance_variable_name")
-                                if not vname:
-                                    continue
-                                vline = line_of(member)
-                                vnid = _make_id(stem, cname, vname)
-                                add_node(vnid, vname, vline)
-                                add_edge(cnid, vnid, "contains", vline)
-                    return
+                if not cname:
+                    continue
+                line = line_of(binding)
+                cnid = _make_id(stem, cname)
+                add_node(cnid, cname, line)
+                add_edge(container_nid, cnid,
+                         "defines" if container_nid == file_nid else "contains", line)
+                register_def(cname, cnid)
+                body = _find_object_body(binding)
+                if body is not None:
+                    for member in body.children:
+                        if member.type in ("method_definition", "method_specification"):
+                            mname = named_child_text(member, "method_name")
+                            if not mname:
+                                continue
+                            mline = line_of(member)
+                            mnid = _make_id(stem, cname, mname)
+                            add_node(mnid, mname, mline)
+                            # A method is a callable class member, so use the
+                            # "method" relation every other extractor emits
+                            # (an instance `val` stays "contains" - it's a
+                            # field). This keeps OCaml methods first-class in
+                            # the call-flow view and caller/callee index,
+                            # which key on "method" not "contains".
+                            add_edge(cnid, mnid, "method", mline)
+                            # Attribute calls in the method body to the
+                            # method. Methods are NOT registered as local
+                            # defs: they are only reachable through `obj#m`,
+                            # never as a bare `m ...`, so binding a bare call
+                            # to a same-named method would be a false edge.
+                            for child in member.children:
+                                walk(child, cnid, mnid)
+                        elif member.type in ("instance_variable_definition",
+                                             "instance_variable_specification"):
+                            vname = named_child_text(member, "instance_variable_name")
+                            if not vname:
+                                continue
+                            vline = line_of(member)
+                            vnid = _make_id(stem, cname, vname)
+                            add_node(vnid, vname, vline)
+                            add_edge(cnid, vnid, "contains", vline)
+            return
 
         if t == "application_expression":
             fn = node.named_children[0] if node.named_children else None
