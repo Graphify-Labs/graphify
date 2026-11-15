@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from graphify.extract import extract
 
 
@@ -69,10 +71,17 @@ def test_keyword_receiver_binds_system_type_extension(tmp_path):
     assert _call_targets(r, ".UseField()") == {"BoolExt.ToVis()"}
 
 
-def test_system_type_receiver_binds_keyword_extension(tmp_path):
+@pytest.mark.parametrize("type_name", ["System.Char", "global::System.Char"])
+def test_system_type_receiver_binds_keyword_extension(tmp_path, type_name):
     r = _extract(tmp_path, _host(
-        "        public void Use(System.Char c) { c.IsWs(); }\n"))
+        f"        public void Use({type_name} c) {{ c.IsWs(); }}\n"))
     assert _call_targets(r, ".Use()") == {"CharExt.IsWs()"}
+
+
+def test_system_alias_does_not_bind_a_keyword_extension(tmp_path):
+    files = _host("        public void Use(System.Char c) { c.IsWs(); }\n")
+    files["Host.cs"] = "using System = Missing;\n" + files["Host.cs"]
+    assert _call_targets(_extract(tmp_path, files), ".Use()") == set()
 
 
 def test_nullable_value_of_keyword_type_binds_extension(tmp_path):
