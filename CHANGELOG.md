@@ -10,8 +10,11 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **sql** a T-SQL procedure that parses structurally (rather than through ERROR recovery) keeps its INSERT/UPDATE/DELETE/SELECT INTO writes, and session temp objects (`#t`, `##t`, `@t`) are skipped (#5146, thanks @sunhouy).
 - Fix: **sql** an Oracle `CREATE PACKAGE`/`PACKAGE BODY`'s member procedures and functions, and their table reads and writes, are recovered instead of yielding only a file node (#5168, thanks @JaynouOliver).
 - Test: **llm** cover non-fragment array siblings and fragment-less arrays in the single-element-array unwrap (#5192 follow-up, thanks @rohanb123).
+- Fix: **extract** nested types get owner-qualified node ids, so same-named nested types under different owners (`Left.Builder` / `Right.Builder`) no longer collapse into one node, and a qualified call (`Outer.Inner.m()`, `Outer::Inner::m()`) resolves through the owner chain; affects C#, Java, Scala, C++ and TypeScript (#5185, thanks @y-src).
+- Fix: **query** a markdown heading can be read as its whole section body (the new `graphify section "<heading>"` command and `get_section` MCP tool), derived from the source file at read time, so the graph and cache are unchanged; paths outside the project are refused (#5166, thanks @nothariharan).
+- Perf: **resolution** Python parse trees are no longer memoized across resolution passes, cutting peak memory by ~1.6-2 GB on mid-size repos (and ~70% on large ones) in exchange for a small re-parse cost on repos under ~2000 files; graph output is byte-identical (thanks @rohit-jsfreaky).
 
-The AST cache schema is bumped to 47; warm caches re-run the affected JS/TS and SQL extractions.
+The AST cache schema is bumped to 47; warm caches re-run the affected JS/TS, SQL and nested-type (C#, Java, Scala, C++, TS) extractions.
 
 ## 0.9.109 (2026-11-13)
 
