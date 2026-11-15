@@ -841,7 +841,7 @@ def _run_cli() -> None:
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
     _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
-    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
+    _FREE_TEXT_CMDS = {"query", "explain", "section", "path", "save-result", "install", "uninstall"}
     _help_flags = {"-h", "--help", "-?"}
     # Version and help only report, so they leave installed files alone (#4545).
     _informational = (
@@ -885,6 +885,10 @@ def _run_cli() -> None:
         print("    --undirected            ignore edge direction")
         print("  explain \"X\"             plain-language explanation of a node and its neighbors")
         print("    --all                   list every connection (default: the 20 most connected)")
+        print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("  section \"X\"             print the text of a Markdown section (heading and subsections)")
+        print("                            \"docs/api.md#X\" picks X in one file when several share it")
+        print("    --max-chars N           cap on printed characters (default 8000)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  diagnose multigraph    report same-endpoint edge collapse risk in graph.json")
         print("    --graph <path>          path to graph/extraction JSON")
