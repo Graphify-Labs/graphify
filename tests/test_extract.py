@@ -5150,7 +5150,9 @@ def test_extract_json_large_file_skipped(tmp_path):
     # Write a JSON file just over 1 MiB
     big.write_bytes(b'{"x": "' + b"a" * (1_048_576) + b'"}')
     result = extract_json(big)
-    assert "error" in result
+    # Declined by design (#1224 size cap), so it is a skip, not a failed source.
+    assert "error" not in result
+    assert "skipped" in result
     assert result["nodes"] == []
 
 
