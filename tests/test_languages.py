@@ -6484,6 +6484,28 @@ def test_gdscript_signals_and_autoloads(tmp_path):
 
 
 @_needs_gdscript
+def test_gdscript_resolve_skips_receiver_without_type():
+    # A call fact whose receiver carries no type cannot be bound. It must be
+    # skipped on its own, not abort the pass and drop every other edge.
+    from graphify.extract import resolve_gdscript
+    paths = sorted(_GD_PROJECT.rglob("*.gd"))
+    per_file = [extract_gdscript(p) for p in paths]
+    arena = paths.index(_GD_PROJECT / "scripts" / "arena.gd")
+    per_file[arena]["gdscript_facts"]["calls"].insert(0, {
+        "owner": "", "caller": "spawn()", "caller_line": 1, "callee": "take_hit",
+        "receiver": "thing", "receiver_type": None, "line": 1,
+    })
+    all_nodes = [n for r in per_file for n in r["nodes"]]
+    all_edges = [e for r in per_file for e in r["edges"]]
+    labels = {n["id"]: n["label"] for n in all_nodes}
+    added = resolve_gdscript(per_file, paths, all_nodes, all_edges, _GD_PROJECT)
+    assert added > 0
+    triples = {(labels[e["source"]], e["relation"], labels[e["target"]]) for e in all_edges}
+    assert ("Slime", "inherits", "Creature") in triples
+    assert ("spawn()", "calls", ".take_hit()") in triples
+
+
+@_needs_gdscript
 def test_gdscript_does_not_bind_engine_calls_by_name(tmp_path):
     out, t = _gd_graph(tmp_path)
     # queue_free()/get_children() are engine API; nothing in the corpus may

@@ -208,32 +208,37 @@ def extract_gdscript(path: Path) -> dict:
             if p:
                 facts["loads"].append({"path": p, "line": line, "kind": name, "const": const_name})
 
-    def walk_members(container, owner_key: str) -> None:
+    def add_function(child, owner_key: str, line: int) -> None:
         owner = facts["owners"][owner_key]
         owner_nid = owner_nids[owner_key]
         is_method_owner = owner_nid != file_nid
+        name_node = child.child_by_field_name("name")
+        if name_node is None:
+            return
+        fname = _read_text(name_node, source)
+        label = f".{fname}()" if is_method_owner else f"{fname}()"
+        fnid = _make_id(owner_nid if is_method_owner else stem, fname)
+        add_node(fnid, label, line)
+        add_edge(owner_nid, fnid, "method" if is_method_owner else "contains", line)
+        owner["methods"][fname] = line
+        ptypes = param_types(child.child_by_field_name("parameters"))
+        for pt in ptypes.values():
+            note_type_ref(owner_key, pt, line)
+        note_type_ref(owner_key, _type_name(child.child_by_field_name("return_type"), source), line)
+        body = child.child_by_field_name("body")
+        if body is not None:
+            function_bodies.append((owner_key, fnid, label, line, body, ptypes))
+
+    def walk_members(container, owner_key: str) -> None:
+        owner = facts["owners"][owner_key]
+        owner_nid = owner_nids[owner_key]
         for child in container.children:
             t = child.type
             line = child.start_point[0] + 1
             if t == "extends_statement" and owner_key:
                 owner["extends"] = parse_extends(child)
             elif t == "function_definition":
-                name_node = child.child_by_field_name("name")
-                if name_node is None:
-                    continue
-                fname = _read_text(name_node, source)
-                label = f".{fname}()" if is_method_owner else f"{fname}()"
-                fnid = _make_id(owner_nid if is_method_owner else stem, fname)
-                add_node(fnid, label, line)
-                add_edge(owner_nid, fnid, "method" if is_method_owner else "contains", line)
-                owner["methods"][fname] = line
-                ptypes = param_types(child.child_by_field_name("parameters"))
-                for pt in ptypes.values():
-                    note_type_ref(owner_key, pt, line)
-                note_type_ref(owner_key, _type_name(child.child_by_field_name("return_type"), source), line)
-                body = child.child_by_field_name("body")
-                if body is not None:
-                    function_bodies.append((owner_key, fnid, label, line, body, ptypes))
+                add_function(child, owner_key, line)
             elif t == "signal_statement":
                 name_node = child.child_by_field_name("name")
                 if name_node is None:
@@ -317,6 +322,74 @@ def extract_gdscript(path: Path) -> dict:
         seen_pairs.add((caller_nid, tgt))
         add_edge(caller_nid, tgt, "calls", line)
 
+    def walk_attribute(node, owner_key: str, caller_nid: str, caller_label: str,
+                       caller_line: int, locals_: dict[str, str], line: int) -> None:
+        """`recv.m()`, `self.m()`, `super.m()`, `sig.emit()`, `obj.sig.connect(h)`."""
+        parts = [c for c in node.children if c.is_named]
+        # Only `recv.m(...)` and `recv.signal.connect/emit(...)` carry a
+        # receiver we can type; longer chains are left alone.
+        if len(parts) >= 2 and parts[1].type == "attribute_call":
+            recv_node, call = parts[0], parts[1]
+            meth_node = _first_child(call, "identifier")
+            meth = _read_text(meth_node, source) if meth_node is not None else None
+            recv = _read_text(recv_node, source) if recv_node.type == "identifier" else None
+            if meth and recv is not None:
+                owner_signals = facts["owners"][owner_key]["signals"]
+                if meth in ("emit", "connect") and recv in owner_signals or (
+                        meth in ("emit", "connect") and recv not in locals_
+                        and resolve_local_type(recv, owner_key, locals_) is None
+                        and not recv[:1].isupper() and recv not in _SELF_NAMES
+                        and recv != "super"):
+                    # `sig.emit()` / `sig.connect(h)` on a signal of this
+                    # script or of a base class (bound in the cross-file pass).
+                    if meth == "emit":
+                        facts["emits"].append({"owner": owner_key, "caller": caller_label,
+                                               "caller_line": caller_line, "signal": recv,
+                                               "line": line})
+                    else:
+                        record_connect(call, owner_key, recv, None, None, line)
+                elif recv in _SELF_NAMES:
+                    tgt = same_file_method(owner_key, meth)
+                    if tgt:
+                        emit_local(caller_nid, tgt, line)
+                    else:
+                        facts["calls"].append({"owner": owner_key, "caller": caller_label,
+                                               "caller_line": caller_line, "callee": meth,
+                                               "receiver": "self", "receiver_type": None,
+                                               "line": line})
+                elif recv == "super":
+                    facts["calls"].append({"owner": owner_key, "caller": caller_label,
+                                           "caller_line": caller_line, "callee": meth,
+                                           "receiver": "super", "receiver_type": None,
+                                           "line": line})
+                elif meth != "new":
+                    rtype = resolve_local_type(recv, owner_key, locals_)
+                    if rtype is None and recv[:1].isupper():
+                        rtype = recv  # ClassName.static_m() / Const.m()
+                    if rtype:
+                        facts["calls"].append({"owner": owner_key, "caller": caller_label,
+                                               "caller_line": caller_line, "callee": meth,
+                                               "receiver": recv, "receiver_type": rtype,
+                                               "line": line})
+        elif (len(parts) >= 3 and parts[0].type == "identifier"
+              and parts[1].type == "identifier" and parts[2].type == "attribute_call"):
+            # `obj.sig.connect(h)` / `obj.sig.emit()` with `obj` typed.
+            call = parts[2]
+            meth_node = _first_child(call, "identifier")
+            meth = _read_text(meth_node, source) if meth_node is not None else None
+            recv = _read_text(parts[0], source)
+            sig = _read_text(parts[1], source)
+            rtype = resolve_local_type(recv, owner_key, locals_)
+            if rtype is None and recv[:1].isupper():
+                rtype = recv
+            if meth == "connect" and rtype:
+                record_connect(call, owner_key, sig, recv, rtype, line)
+            elif meth == "emit" and rtype:
+                facts["emits"].append({"owner": owner_key, "caller": caller_label,
+                                       "caller_line": caller_line, "signal": sig,
+                                       "receiver": recv, "receiver_type": rtype,
+                                       "line": line})
+
     def walk_calls(node, owner_key: str, caller_nid: str, caller_label: str,
                    caller_line: int, locals_: dict[str, str]) -> None:
         t = node.type
@@ -358,70 +431,8 @@ def extract_gdscript(path: Path) -> dict:
                                            "caller_line": caller_line, "callee": name,
                                            "receiver": None, "receiver_type": None, "line": line})
         elif t == "attribute":
-            parts = [c for c in node.children if c.is_named]
-            # Only `recv.m(...)` and `recv.signal.connect/emit(...)` carry a
-            # receiver we can type; longer chains are left alone.
-            if len(parts) >= 2 and parts[1].type == "attribute_call":
-                recv_node, call = parts[0], parts[1]
-                meth_node = _first_child(call, "identifier")
-                meth = _read_text(meth_node, source) if meth_node is not None else None
-                recv = _read_text(recv_node, source) if recv_node.type == "identifier" else None
-                if meth and recv is not None:
-                    owner_signals = facts["owners"][owner_key]["signals"]
-                    if meth in ("emit", "connect") and recv in owner_signals or (
-                            meth in ("emit", "connect") and recv not in locals_
-                            and resolve_local_type(recv, owner_key, locals_) is None
-                            and not recv[:1].isupper() and recv not in _SELF_NAMES
-                            and recv != "super"):
-                        # `sig.emit()` / `sig.connect(h)` on a signal of this
-                        # script or of a base class (bound in the cross-file pass).
-                        if meth == "emit":
-                            facts["emits"].append({"owner": owner_key, "caller": caller_label,
-                                                   "caller_line": caller_line, "signal": recv,
-                                                   "line": line})
-                        else:
-                            record_connect(call, owner_key, recv, None, None, line)
-                    elif recv in _SELF_NAMES:
-                        tgt = same_file_method(owner_key, meth)
-                        if tgt:
-                            emit_local(caller_nid, tgt, line)
-                        else:
-                            facts["calls"].append({"owner": owner_key, "caller": caller_label,
-                                                   "caller_line": caller_line, "callee": meth,
-                                                   "receiver": "self", "receiver_type": None,
-                                                   "line": line})
-                    elif recv == "super":
-                        facts["calls"].append({"owner": owner_key, "caller": caller_label,
-                                               "caller_line": caller_line, "callee": meth,
-                                               "receiver": "super", "receiver_type": None,
-                                               "line": line})
-                    elif meth != "new":
-                        rtype = resolve_local_type(recv, owner_key, locals_)
-                        if rtype is None and recv[:1].isupper():
-                            rtype = recv  # ClassName.static_m() / Const.m()
-                        if rtype:
-                            facts["calls"].append({"owner": owner_key, "caller": caller_label,
-                                                   "caller_line": caller_line, "callee": meth,
-                                                   "receiver": recv, "receiver_type": rtype,
-                                                   "line": line})
-            elif (len(parts) >= 3 and parts[0].type == "identifier"
-                  and parts[1].type == "identifier" and parts[2].type == "attribute_call"):
-                # `obj.sig.connect(h)` / `obj.sig.emit()` with `obj` typed.
-                call = parts[2]
-                meth_node = _first_child(call, "identifier")
-                meth = _read_text(meth_node, source) if meth_node is not None else None
-                recv = _read_text(parts[0], source)
-                sig = _read_text(parts[1], source)
-                rtype = resolve_local_type(recv, owner_key, locals_)
-                if rtype is None and recv[:1].isupper():
-                    rtype = recv
-                if meth == "connect" and rtype:
-                    record_connect(call, owner_key, sig, recv, rtype, line)
-                elif meth == "emit" and rtype:
-                    facts["emits"].append({"owner": owner_key, "caller": caller_label,
-                                           "caller_line": caller_line, "signal": sig,
-                                           "receiver": recv, "receiver_type": rtype,
-                                           "line": line})
+            walk_attribute(node, owner_key, caller_nid, caller_label, caller_line,
+                           locals_, line)
         for c in node.children:
             walk_calls(c, owner_key, caller_nid, caller_label, caller_line, locals_)
 
@@ -685,7 +696,8 @@ def resolve_gdscript(per_file: list, paths: list, all_nodes: list, all_edges: li
         all_edges.append(e)
         added += 1
 
-    for fp, facts in facts_of.items():
+    def bind_links(fp: Path, facts: dict) -> None:
+        """extends -> inherits, preload/load -> imports_from, types -> references."""
         fnid = file_nid.get(fp)
 
         # extends -> inherits
@@ -715,6 +727,7 @@ def resolve_gdscript(per_file: list, paths: list, all_nodes: list, all_edges: li
             if tgt is not None and tgt != src_owner and tgt[0] != fp:
                 emit(owner_nid(src_owner), owner_nid(tgt), "references", fp, ref["line"])
 
+    def bind_calls(fp: Path, facts: dict) -> None:
         def caller_of(c: dict) -> str | None:
             return by_loc.get((fp, f"L{c['caller_line']}", c["caller"]))
 
@@ -726,14 +739,20 @@ def resolve_gdscript(per_file: list, paths: list, all_nodes: list, all_edges: li
             elif recv == "super":
                 tgt, conf = find_method(base_of(own), c["callee"]), "EXTRACTED"
             else:
-                t_owner = resolve_type(c["receiver_type"], own)
+                # A receiver with no inferred type (a stale cache entry, or a
+                # fact from a hand-built result) cannot be bound: skip it
+                # rather than abort the whole pass.
+                rtype = c.get("receiver_type")
+                t_owner = resolve_type(rtype, own) if rtype else None
                 tgt = find_method(t_owner, c["callee"]) if t_owner else None
                 # A static ClassName.m() names its class outright; a typed
                 # variable only says what the annotation claims.
-                conf = "EXTRACTED" if c["receiver"] == c["receiver_type"] else "INFERRED"
+                conf = "EXTRACTED" if recv == rtype else "INFERRED"
             if tgt:
                 emit(caller_of(c), tgt, "calls", fp, c["line"], confidence=conf)
 
+    def bind_signals(fp: Path, facts: dict) -> None:
+        """`sig.emit()` -> emits, `sig.connect(h)` -> listened_by."""
         for em in facts["emits"]:
             own = (fp, em["owner"])
             rtype = em.get("receiver_type")
@@ -746,15 +765,21 @@ def resolve_gdscript(per_file: list, paths: list, all_nodes: list, all_edges: li
 
         for cn in facts["connects"]:
             own = (fp, cn["owner"])
-            if cn["receiver_type"]:
-                t_owner = resolve_type(cn["receiver_type"], own)
+            rtype = cn.get("receiver_type")
+            if rtype:
+                t_owner = resolve_type(rtype, own)
                 sig = find_signal(t_owner, cn["signal"]) if t_owner else None
             else:
                 sig = find_signal(own, cn["signal"])
             handler = find_method(own, cn["handler"])
             if sig and handler:
-                static = not cn["receiver_type"] or cn["receiver"] == cn["receiver_type"]
+                static = not rtype or cn.get("receiver") == rtype
                 emit(sig, handler, "listened_by", fp, cn["line"],
                      confidence="EXTRACTED" if static else "INFERRED")
+
+    for fp, facts in facts_of.items():
+        bind_links(fp, facts)
+        bind_calls(fp, facts)
+        bind_signals(fp, facts)
 
     return added
