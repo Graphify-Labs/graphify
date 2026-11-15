@@ -91,6 +91,19 @@ def test_language_line_maps_an_extension_to_a_canonical_suffix(tmp_path):
     assert load_graphifyrc(tmp_path) == {"languages": {".inc": ".php"}}
 
 
+def test_a_utf8_bom_does_not_swallow_the_first_key(tmp_path):
+    """A .graphifyrc saved with a UTF-8 BOM (Windows PowerShell 5.1, older
+    Notepad) must not glue the BOM onto its first key, which then matched
+    nothing and was dropped without a warning."""
+    (tmp_path / ".graphifyrc").write_bytes(
+        "\ufefflanguage.inc=php\nviz_node_limit=500\n".encode("utf-8")
+    )
+    assert load_graphifyrc(tmp_path) == {
+        "languages": {".inc": ".php"},
+        "viz_node_limit": 500,
+    }
+
+
 @pytest.mark.parametrize("key", ["language.inc", "language..inc", "language.INC", "language. inc "])
 def test_the_extension_key_is_normalised(tmp_path, key):
     (tmp_path / ".graphifyrc").write_text(f"{key}=php\n", encoding="utf-8")
@@ -142,6 +155,33 @@ def test_the_existing_option_and_unknown_keys_still_behave(tmp_path):
     )
     cfg = load_graphifyrc(tmp_path)
     assert cfg == {"viz_node_limit": 0, "languages": {".tpl": ".ts"}}
+
+
+@pytest.mark.parametrize("content, expected", [
+    ("query_budget=4000\n", {"query_budget": 4000}),
+    ("query_depth=6\n", {"query_depth": 6}),
+    ("query_budget=3\nquery_budget=4000\nquery_depth=1\n", {"query_budget": 4000, "query_depth": 1}),
+    ("\ufeffquery_budget=4000\nquery_depth=3\nviz_node_limit=0\nlanguage.tpl=.ts\nfuture_key=ok\n",
+     {"query_budget": 4000, "query_depth": 3, "viz_node_limit": 0, "languages": {".tpl": ".ts"}}),
+])
+def test_query_defaults_are_optional_strict_project_settings(tmp_path, content, expected):
+    (tmp_path / ".graphifyrc").write_text(content, encoding="utf-8")
+    assert load_graphifyrc(tmp_path) == expected
+
+
+@pytest.mark.parametrize("key, value", [
+    ("query_budget", "no"), ("query_budget", "0"), ("query_budget", "-1"),
+    ("query_budget", ""), ("query_depth", "no"), ("query_depth", "0"),
+    ("query_depth", "-1"), ("query_depth", "7"), ("query_depth", ""),
+])
+def test_invalid_query_defaults_report_key_path_and_line(tmp_path, key, value):
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text(f"# project settings\n{key}={value}\n", encoding="utf-8")
+    with pytest.raises(ValueError) as error:
+        load_graphifyrc(tmp_path)
+    assert key in str(error.value)
+    assert str(rc) in str(error.value)
+    assert "line 2" in str(error.value)
 
 
 def test_hooks_still_reads_the_same_file_through_its_old_name(tmp_path):
@@ -323,6 +363,9 @@ def test_the_pool_hands_its_workers_the_overrides(php_pair, monkeypatch):
             super().__init__(max_workers=max_workers, initializer=initializer, initargs=initargs)
 
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", RecordingPool)
+    # 25 tiny files alone would run in one process (the pool is sized by work);
+    # ask for a pool explicitly so the initializer is exercised.
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
     for i in range(25):  # past _PARALLEL_THRESHOLD
         (php_pair / f"f{i}.inc").write_text(PHP_SOURCE, encoding="utf-8")
     (php_pair / ".graphifyrc").write_text("language.inc=php\n", encoding="utf-8")

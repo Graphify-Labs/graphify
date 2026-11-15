@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,29 @@ def _load_toml(path: Path) -> dict[str, Any]:
 
     with path.open("rb") as manifest:
         return tomllib.load(manifest)
+
+
+def package_name(manifest: Path) -> str | None:
+    """A Cargo.toml's `[package] name` as Rust spells it in a path (`-` -> `_`).
+
+    Returns None when the manifest has no package name, cannot be read, or
+    cannot be parsed. Callers that scope a Rust import to a crate treat "no
+    name" as "no crate", never as an error, so this stays silent.
+    """
+    try:
+        package = _load_toml(manifest).get("package")
+    except (OSError, ValueError):
+        return None
+    except ImportError:  # Python 3.10 without tomli: recover the one key we need
+        try:
+            text = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        match = re.search(r'^\[package\][^\[]*?^name\s*=\s*"([^"]+)"', text, re.M | re.S)
+        name = match.group(1) if match else None
+    else:
+        name = package.get("name") if isinstance(package, dict) else None
+    return name.replace("-", "_") if isinstance(name, str) and name else None
 
 
 def _discover_root_manifest(root: Path) -> Path | None:

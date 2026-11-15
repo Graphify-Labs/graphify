@@ -138,6 +138,7 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     )
     for src, tgt, attrs in edge_rows:
         stable.add_edge(src, tgt, **attrs)
+    del edge_rows  # `stable` holds the edges now
 
     native_result = _native_leiden(stable, resolution)
     if native_result is not None:

@@ -33,7 +33,7 @@ jobs:
               return;
             }
 
-            const discord = 'https://discord.gg/XDnKVpzdXB';
+            const discord = 'https://discord.gg/graphify';
             const discussions = 'https://github.com/Graphify-Labs/graphify/discussions';
 
             const body = isPR

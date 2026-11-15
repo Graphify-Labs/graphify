@@ -41,6 +41,9 @@ def _output_bytes(corpus: Path) -> dict[str, bytes]:
         if (
             not path.is_file()
             or path.name == ".pending_changes"
+            # Persisted CLI options (`--code-only`, #4923), written before
+            # extraction starts; not graph or manifest state.
+            or path.name == ".graphify_build.json"
             or relative.parts[0] == "cache"
         ):
             continue

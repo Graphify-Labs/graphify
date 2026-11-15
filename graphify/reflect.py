@@ -839,7 +839,8 @@ def write_learning_sidecar(agg: dict[str, Any], graph_path: Path,
 
 def load_learning_overlay(graph_path: Path) -> dict[str, dict[str, Any]]:
     """Load the sidecar next to ``graph_path`` and return ``{node_id -> entry}``
-    with a recomputed ``stale: bool`` per entry. Best-effort -> {} on any error.
+    with a recomputed ``stale: bool`` per entry. An unreadable or malformed
+    sidecar yields {}; malformed entries are ignored individually.
 
     Staleness: recompute ``file_hash(source_file)`` and compare to the entry's
     stored ``code_fingerprint``. Matching fingerprints -> not stale. Differing,
@@ -852,15 +853,22 @@ def load_learning_overlay(graph_path: Path) -> dict[str, dict[str, Any]]:
         data = json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    nodes = data.get("nodes")
+    nodes = data.get("nodes") if isinstance(data, dict) else None
     if not isinstance(nodes, dict):
         return {}
     out: dict[str, dict[str, Any]] = {}
     for nid, entry in nodes.items():
         if not isinstance(entry, dict):
             continue
+        source = entry.get("source_file")
+        if source is not None and not isinstance(source, str):
+            continue
         merged = dict(entry)
-        merged["stale"] = _is_stale(entry, graph_path)
+        try:
+            merged["stale"] = _is_stale(entry, graph_path)
+        except (OSError, ValueError):
+            # An inaccessible path has no verifiable fingerprint.
+            merged["stale"] = True
         out[str(nid)] = merged
     return out
 

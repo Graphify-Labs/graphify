@@ -1,11 +1,13 @@
-"""Incremental --update: hyperedge preservation (#1574) and root-less prune (#1571).
+"""Incremental --update: hyperedge preservation (#1574, #5081) and root-less prune (#1571).
 
-build_merge backs `graphify --update`. Two regressions covered here:
+build_merge backs `graphify --update`. The regressions covered here:
 
-- #1574: it read only nodes+edges from the existing graph.json, never hyperedges,
-  so every incremental update collapsed the graph's hyperedge set down to just the
-  re-extracted files'. Now existing hyperedges are carried forward, with
-  re-extracted files' replaced (by source_file) and deleted files' pruned.
+- #1574 / #5081: it read only nodes+edges from the existing graph.json, never
+  hyperedges, so every incremental update collapsed the graph's hyperedge set
+  down to just the re-extracted files'. Now existing hyperedges are carried
+  forward, with re-extracted files' replaced (by source_file) and deleted files'
+  pruned. The loader also folds the nested ``graph.hyperedges`` slot (#2485),
+  which node_link_data-only writers emit instead of the top-level key.
 - #1571: when a caller omits `root` (the skill's --update runbook does), absolute
   prune_sources never relativized to match the stored relative source_file keys, so
   deleted files' nodes survived as ghosts. build_merge now infers a fallback root.
@@ -18,7 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from graphify.build import build_merge, _infer_merge_root
+from graphify.build import build_merge, merge_raw_extraction, _infer_merge_root
+from graphify.export import to_json
 
 
 def _write_graph(graph_path: Path, nodes, edges, hyperedges) -> None:
@@ -138,6 +141,157 @@ def test_update_still_drops_a_hyperedge_the_new_chunk_re_emits(tmp_path):
     G = build_merge([new_chunk], graph_path, dedup=False, root=root)
     labels = sorted(h["label"] for h in G.graph["hyperedges"] if h["id"] in {"he_a", "he_global"})
     assert labels == ["cross-file flow v2", "flow A v2"]
+
+
+def _seed_full_graph(tmp_path, *, nested_only=False):
+    """The #5081 shape: three files, one hyperedge each, plus a cross-file one."""
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = root / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+    nodes = [
+        {"id": f"{f[0]}1", "label": f, "file_type": "document", "source_file": f}
+        for f in ("a.md", "b.md", "c.md")
+    ]
+    hyperedges = [
+        {"id": f"he_{f[0]}", "label": f"flow {f}", "source_file": f, "nodes": [f"{f[0]}1"]}
+        for f in ("a.md", "b.md", "c.md")
+    ]
+    hyperedges.append(
+        {"id": "he_global", "label": "cross-file flow", "nodes": ["a1", "b1", "c1"]}
+    )
+    data = {"nodes": nodes, "edges": [], "hyperedges": hyperedges}
+    if nested_only:
+        # node_link_data-only writer: hyperedges live in graph attrs only (#2485).
+        data.pop("hyperedges")
+        data["graph"] = {"hyperedges": hyperedges}
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    return root, graph_path
+
+
+def _update_after_editing_b(graph_path, root):
+    """Re-extract b.md semantically, delete c.md — the reporter's --update step."""
+    new_chunk = {
+        "nodes": [{"id": "b1", "label": "b.md", "file_type": "document", "source_file": "b.md"}],
+        "edges": [],
+        "hyperedges": [
+            {"id": "he_b_v2", "label": "flow b v2", "source_file": "b.md", "nodes": ["b1"]}
+        ],
+    }
+    return build_merge(
+        [new_chunk],
+        graph_path,
+        prune_sources=[str(root / "c.md")],
+        root=root,
+        dedup=False,
+    )
+
+
+def test_update_keeps_unchanged_hyperedges_in_written_graph_json(tmp_path):
+    """#5081 end to end, and the control arm for the nested-slot fix.
+
+    A full build wrote one hyperedge per unchanged file plus a cross-file one.
+    Re-extracting b.md and deleting c.md must leave a.md's, the cross-file
+    one, and b.md's fresh version — and write them to BOTH persistence slots.
+    The top-level shape already passes on v8 since #1574; this pins it (and the
+    dual-slot write) so the reported flow cannot regress.
+    """
+    root, graph_path = _seed_full_graph(tmp_path)
+    G = _update_after_editing_b(graph_path, root)
+    assert to_json(G, {}, str(graph_path), force=True) is True
+
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    ids = {h["id"] for h in data["hyperedges"]}
+    assert ids == {"he_a", "he_b_v2", "he_global"}
+    assert data["graph"]["hyperedges"] == data["hyperedges"]
+
+
+def test_deleted_file_member_is_pruned_from_surviving_hyperedges(tmp_path):
+    """#5081: a deleted file's node must not stay named by a hyperedge that
+    survives. The cross-file one keeps its live members; one left with no live
+    member is dropped."""
+    root, graph_path = _seed_full_graph(tmp_path)
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["hyperedges"].append({"id": "he_c_only", "label": "only c", "nodes": ["c1"]})
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    G = _update_after_editing_b(graph_path, root)  # deletes c.md
+    hes = {h["id"]: h for h in G.graph["hyperedges"]}
+    assert sorted(hes["he_global"]["nodes"]) == ["a1", "b1"]
+    assert "he_c_only" not in hes
+
+
+def test_update_reads_nested_only_hyperedge_slot(tmp_path):
+    """A graph.json written by a node_link_data-only writer stores its hyperedges
+    solely under ``graph.hyperedges``. The incremental loader must fold that slot
+    the way build_from_json does (#2485), or --update loses the whole set."""
+    root, graph_path = _seed_full_graph(tmp_path, nested_only=True)
+    G = _update_after_editing_b(graph_path, root)
+    ids = _he_ids(G)
+    assert {"he_a", "he_global", "he_b_v2"} <= ids
+    assert "he_b" not in ids
+    assert "he_c" not in ids
+
+
+def test_update_falls_back_to_nested_when_top_level_slot_is_malformed(tmp_path):
+    """A null top-level value must not mask a readable nested list, and the
+    loader must not raise on it either."""
+    root, graph_path = _seed_full_graph(tmp_path, nested_only=True)
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["hyperedges"] = None
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    G = _update_after_editing_b(graph_path, root)
+    ids = _he_ids(G)
+    assert {"he_a", "he_global", "he_b_v2"} <= ids
+    assert "he_b" not in ids
+    assert "he_c" not in ids
+
+
+def test_update_prefers_top_level_slot_over_stale_nested_copy(tmp_path):
+    """Both slots present: the canonical top-level key wins, so a stale nested
+    copy cannot resurrect hyperedges the graph already replaced."""
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+    nodes = [
+        {"id": "a1", "label": "a1", "file_type": "document", "source_file": "a.md"},
+        {"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"},
+    ]
+    data = {
+        "nodes": nodes,
+        "edges": [],
+        "hyperedges": [{"id": "he_top", "source_file": "a.md", "nodes": ["a1"]}],
+        "graph": {"hyperedges": [{"id": "he_stale", "source_file": "a.md", "nodes": ["a1"]}]},
+    }
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    new_chunk = {
+        "nodes": [{"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"}],
+        "edges": [],
+    }
+    G = build_merge([new_chunk], graph_path, dedup=False, root=root)
+    ids = _he_ids(G)
+    assert "he_top" in ids
+    assert "he_stale" not in ids
+
+
+def test_raw_merge_reads_nested_only_hyperedge_slot(tmp_path):
+    """The --no-cluster incremental path shares the loader, so it must keep a
+    nested-only graph's hyperedges too."""
+    root, graph_path = _seed_full_graph(tmp_path, nested_only=True)
+    new = {
+        "nodes": [{"id": "b1", "label": "b.md", "file_type": "document", "source_file": "b.md"}],
+        "edges": [],
+        "hyperedges": [
+            {"id": "he_b_v2", "label": "flow b v2", "source_file": "b.md", "nodes": ["b1"]}
+        ],
+    }
+    merged = merge_raw_extraction(
+        new, graph_path, prune_sources=[str(root / "c.md")], root=root
+    )
+    ids = {h["id"] for h in merged["hyperedges"]}
+    assert {"he_a", "he_global", "he_b_v2"} <= ids
+    assert "he_b" not in ids
+    assert "he_c" not in ids
 
 
 # ── #1571: root-less prune (absolute deleted paths vs relative node keys) ──────

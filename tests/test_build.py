@@ -312,6 +312,25 @@ def test_extraction_warning_breakdown_by_cause(capsys):
     assert "3x missing required field 'relation'" in err
 
 
+def test_build_drops_edge_still_missing_relation(capsys):
+    """#4809: after aliases are folded, an edge with no relation must not
+    enter the graph because the relationship semantics cannot be reconstructed."""
+    ext = {"nodes": [
+        {"id": "n1", "label": "A", "file_type": "document", "source_file": "a.md"},
+        {"id": "n2", "label": "B", "file_type": "document", "source_file": "b.md"},
+    ], "edges": [
+        # No relation, and no alias from which relation can be recovered.
+        {"source": "n1", "target": "n2", "confidence": "INFERRED", "source_file": "a.md"},
+    ], "input_tokens": 0, "output_tokens": 0}
+
+    G = build_from_json(ext)
+
+    assert not G.has_edge("n1", "n2")
+    err = capsys.readouterr().err
+    assert "missing required field 'relation'" in err
+    assert "dropped 1 schema-invalid edge(s)" in err
+
+
 def test_absolute_derived_semantic_ids_rekeyed(tmp_path):
     """#2197: a semantic fragment whose ids were derived from an ABSOLUTE
     source_file (Windows detect() emits them) must re-key to the canonical
@@ -610,6 +629,41 @@ def test_ghost_merge_wrong_source_file_resolved_by_label():
     assert "app" not in G.nodes() and "customer_app_index" not in G.nodes()
     assert G.has_edge("some_query_node", "apps_customer_app_app")
     assert G.has_edge("some_query_node", "apps_customer_app_index")
+
+
+def test_label_only_file_fold_preserves_distinct_semantic_evidence():
+    """#4896: two source documents can discuss the same file differently.
+
+    Their independent explanations must not disappear just because an AST file
+    with the same basename is present; ordinary evidence-free mentions still
+    fold as before.
+    """
+    ext = {
+        "nodes": [
+            {"id": "ast_file", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "ast",
+             "source_file": "src/validate_canonical_load.py", "source_location": "L1"},
+            {"id": "sem_a", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "memory/plan/archive/a.md", "rationale": "EVIDENCE_ALPHA"},
+            {"id": "sem_b", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "memory/plan/archive/b.yaml", "rationale": "EVIDENCE_BETA"},
+            {"id": "mention_only", "label": "validate_canonical_load.py",
+             "file_type": "code", "_origin": "semantic",
+             "source_file": "README.md"},
+        ],
+        "edges": [
+            {"source": "sem_a", "target": "sem_b", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "memory/plan/archive/a.md"},
+        ],
+    }
+    graph = build_from_json(ext)
+    assert {"ast_file", "sem_a", "sem_b"} <= set(graph.nodes())
+    assert "mention_only" not in graph
+    assert graph.nodes["sem_a"]["rationale"] == "EVIDENCE_ALPHA"
+    assert graph.nodes["sem_b"]["rationale"] == "EVIDENCE_BETA"
+    assert graph.has_edge("sem_a", "sem_b")
 
 
 def test_ghost_merge_wrong_source_file_ambiguous_basename_left_alone():
@@ -1065,6 +1119,44 @@ def test_build_from_json_unambiguous_old_stem_alias_still_resolves(tmp_path):
     assert G.has_edge("dev_poker_server", "dev_monitoring_utility")
 
 
+def test_build_from_json_unambiguous_old_stem_alias_still_needs_language_match(tmp_path):
+    """#4941: an unambiguous old-stem alias is not enough on its own — the
+    candidate must also be in the SAME language family as the edge naming it.
+
+    A Dart file at the corpus root has no directory prefix, so its old-stem
+    form is identical to its current id and never registers an alias; nest it
+    one directory deep (matching the real report) so it does. A bare `type`
+    reference inside it to a same-named `PunchType` enum, left dangling by the
+    extractor because the enum is declared in a DIFFERENT Dart file not shown
+    to the resolver here, must not ride the bare "punchtype" alias onto an
+    unrelated Java file of the same name just because that Java file is the
+    alias's only claimant — the alias is unambiguous, but the language is
+    wrong, and that must still block it from resolving."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "mobile_punch", "label": "punch.dart", "file_type": "code",
+             "source_file": "mobile/punch.dart"},
+            {
+                "id": "backend_src_main_java_ec_smartlocalizador_attendance_punchtype",
+                "label": "PunchType.java", "file_type": "code",
+                "source_file": "backend/src/main/java/ec/smartlocalizador/attendance/PunchType.java",
+            },
+        ],
+        "edges": [
+            {"source": "mobile_punch", "target": "punchtype", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "mobile/punch.dart",
+             "context": "variable_type"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge(
+        "mobile_punch",
+        "backend_src_main_java_ec_smartlocalizador_attendance_punchtype",
+    )
+
+
 def test_build_from_json_relative_source_file_unchanged(tmp_path):
     """Already-relative source_file paths must not be modified."""
     extraction = {
@@ -1436,6 +1528,67 @@ def test_graph_has_legacy_ids_detects_old_scheme():
     assert graph_has_legacy_ids(go_symbol, root=".") is False
 
 
+def test_graph_has_legacy_ids_honors_the_scan_root_prefix():
+    """A subfolder build run from its parent (`graphify update sub`) stores
+    source_file cwd-relative (#2603) but mints ids scan-root-relative. With the
+    marker's prefix the fresh graph is canonical; without it, `pkg_mod` reads as
+    the old one-parent form of `sub/pkg/mod.py` and every query warned."""
+    from graphify.build import graph_has_legacy_ids
+    fresh = [{"id": "pkg_mod", "source_file": "sub/pkg/mod.py", "type": "code", "source_location": "L1"}]
+    assert graph_has_legacy_ids(fresh, root=None) is True  # the false positive
+    assert graph_has_legacy_ids(fresh, root=None, source_prefix="sub") is False
+    assert graph_has_legacy_ids(fresh, root=None, source_prefix="sub/") is False
+    # A genuinely pre-#1504 id under the same prefix is still caught.
+    old = [{"id": "v1_readme", "source_file": "sub/docs/v1/README.md", "type": "document", "source_location": "L1"}]
+    assert graph_has_legacy_ids(old, root=None, source_prefix="sub") is True
+    # A source_file outside the prefix is judged as stored.
+    other = [{"id": "docs_v1_readme", "source_file": "docs/v1/README.md", "type": "document", "source_location": "L1"}]
+    assert graph_has_legacy_ids(other, root=None, source_prefix="sub") is False
+
+
+@pytest.mark.parametrize("marker, expected", [
+    ("sub", "sub"),
+    ("./a/b/", "a/b"),
+    ("a\\b", "a/b"),
+    (".", None),
+    ("", None),
+    ("../elsewhere", None),
+    ("/abs/scan/root", None),
+    ("C:\\scan\\root", None),
+])
+def test_legacy_id_source_prefix_reads_the_relative_marker(tmp_path, marker, expected):
+    from graphify.build import legacy_id_source_prefix
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(marker, encoding="utf-8")
+    assert legacy_id_source_prefix(out / "graph.json") == expected
+
+
+def test_legacy_id_source_prefix_without_marker(tmp_path):
+    from graphify.build import legacy_id_source_prefix
+    assert legacy_id_source_prefix(tmp_path / "graph.json") is None
+
+
+def test_subfolder_build_from_parent_is_not_flagged_legacy(tmp_path, monkeypatch):
+    """End to end: `graphify update proj` from proj's parent, then the same
+    probe the query/serve consumers run, must not call the fresh graph legacy."""
+    import json
+    from graphify.build import graph_has_legacy_ids, legacy_id_source_prefix
+    from graphify.watch import _rebuild_code
+    proj = tmp_path / "proj"
+    (proj / "pkg").mkdir(parents=True)
+    (proj / "pkg" / "mod.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    (proj / "main.py").write_text("from pkg.mod import a\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert _rebuild_code(Path("proj"), no_cluster=True)
+    gp = proj / "graphify-out" / "graph.json"
+    nodes = json.loads(gp.read_text(encoding="utf-8"))["nodes"]
+    files = {n["source_file"] for n in nodes if n.get("source_location") == "L1"}
+    assert "proj/pkg/mod.py" in files  # stored cwd-relative (#2603)
+    assert legacy_id_source_prefix(gp) == "proj"
+    assert graph_has_legacy_ids(nodes, source_prefix=legacy_id_source_prefix(gp)) is False
+
+
 # ── #2408: globally-scoped MCP node ids are not file-stem derived ──────────────
 
 @pytest.mark.parametrize("mcp_kind, nid", [
@@ -1597,6 +1750,46 @@ def test_doc_twin_merge_does_not_touch_code_symbols():
     }
     G = build_from_json(ext, directed=False)
     assert {"m_foo", "m_foo_doc"} <= set(G.nodes())
+
+
+def test_marked_cross_document_stubs_survive_issue_4738_collisions():
+    """The complete build keeps every marked reference stub and the definition.
+
+    This covers the three collision shapes reported in #4738, including a
+    stub whose ID also looks like an entity defined in its citing file.
+    """
+    logging = "specifications_20_architecture_operational_logging_document"
+    runtime = "functional_agent_runtime_doc"
+    license_schedule = "company_license_schedule_c"
+    stub = {"graphify_reference_stub": True}
+    extraction = {"nodes": [
+        {"id": logging, "label": "Logging", "file_type": "document",
+         "source_file": "specifications/20-architecture/delivery/change-policy.md",
+         "metadata": stub},
+        {"id": logging, "label": "Logging specification", "file_type": "document",
+         "source_file": ".github/instructions/rust.instructions.md",
+         "metadata": stub},
+        {"id": runtime, "label": "Agent runtime", "file_type": "document",
+         "source_file": "functional/agents/agent-operator.md", "metadata": stub},
+        {"id": runtime, "label": "Agent Runtime and Subagent Contract", "file_type": "document",
+         "source_file": "delivery/developer-interaction.md", "metadata": stub},
+        {"id": license_schedule, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license.md", "metadata": stub},
+        {"id": license_schedule, "label": "Schedule C - Support", "file_type": "document",
+         "source_file": "company/license-schedule-c.md"},
+    ], "edges": []}
+
+    graph = build([extraction])
+
+    assert graph.number_of_nodes() == 6
+    assert {data["source_file"] for _, data in graph.nodes(data=True)} == {
+        "specifications/20-architecture/delivery/change-policy.md",
+        ".github/instructions/rust.instructions.md",
+        "functional/agents/agent-operator.md",
+        "delivery/developer-interaction.md",
+        "company/license.md",
+        "company/license-schedule-c.md",
+    }
 
 
 def test_build_from_json_prunes_dangling_hyperedge_members(capsys):

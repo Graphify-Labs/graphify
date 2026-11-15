@@ -87,6 +87,38 @@ def test_an_address_of_composite_literal_types_the_receiver(tmp_path):
     assert _greet_edge(calls) is not None, calls
 
 
+def test_a_var_declaration_with_an_inferred_composite_literal_types_the_receiver(tmp_path):
+    # `var g = Greeter{}` is the same composite-literal binding as `g := Greeter{}`,
+    # spelled with `var` instead of `:=`. The table read a `var_spec`'s explicit
+    # `type` field only, so this type-less form (type inferred from the value)
+    # never bound `g` to `Greeter` and the call was left unresolved.
+    calls, _ = _calls(tmp_path, {
+        "svc/greeter.go": GREETER,
+        "svc/app.go": "package svc\n\nfunc Run() {\n\tvar g = Greeter{}\n\tg.Greet()\n}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_a_var_declaration_with_an_inferred_address_of_composite_literal_types_the_receiver(
+    tmp_path,
+):
+    calls, _ = _calls(tmp_path, {
+        "svc/greeter.go": GREETER,
+        "svc/app.go": "package svc\n\nfunc Run() {\n\tvar g = &Greeter{}\n\tg.Greet()\n}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_a_var_declaration_with_a_non_literal_value_resolves_to_nothing(tmp_path):
+    # Negative control: a type-less `var` bound to a call result (not a composite
+    # literal) carries no type evidence, same as the `:=` form already does not.
+    calls, _ = _calls(tmp_path, {
+        "svc/greeter.go": GREETER + "\nfunc NewGreeter() *Greeter { return &Greeter{} }\n",
+        "svc/app.go": "package svc\n\nfunc Run() {\n\tvar g = NewGreeter()\n\tg.Greet()\n}\n",
+    })
+    assert _greet_edge(calls) is None, calls
+
+
 def test_a_constructor_return_resolves_to_nothing(tmp_path):
     # `g := NewGreeter()` types `g` only by reading the constructor's return type, which
     # this pass does not do; nothing in the file writes `Greeter` next to `g`.
@@ -130,16 +162,14 @@ def test_two_packages_declaring_the_same_type_resolve_to_neither(tmp_path):
     assert _greet_edge(calls) is None, calls
 
 
-def test_a_same_file_method_call_keeps_its_extracted_edge(tmp_path):
-    # In-file resolution still happens by bare label before this pass, so the edge must
-    # stay EXTRACTED and must not be doubled.
+def test_a_same_file_method_call_resolves_once_through_its_receiver(tmp_path):
     calls, _ = _calls(tmp_path, {
         "svc/app.go": "package svc\n\ntype App struct{}\n\nfunc (a *App) Greet() {}\n\n"
                       "func Run(a *App) { a.Greet() }\n",
     })
     edges = [e for (src, tgt), e in calls.items() if src == "Run()" and tgt == ".Greet()"]
     assert len(edges) == 1, calls
-    assert edges[0]["confidence"] == "EXTRACTED"
+    assert edges[0]["confidence"] == "INFERRED"
 
 
 def test_a_type_from_another_language_never_answers_a_go_receiver(tmp_path):
@@ -150,8 +180,9 @@ def test_a_type_from_another_language_never_answers_a_go_receiver(tmp_path):
         "java/Greeter.java": "public class Greeter { public void Greet() {} }\n",
     })
     assert _greet_edge(calls) is None, calls
-    parked = [(n.get("metadata") or {}).get("unresolved_calls")
-              for n in result["nodes"] if n["label"] == "Run()"]
+    parked = [[{k: v for k, v in e.items() if k != "file"} for e in uc]
+              for n in result["nodes"] if n["label"] == "Run()"
+              for uc in [(n.get("metadata") or {}).get("unresolved_calls")] if uc]
     assert parked == [[{"callee": "Greet", "receiver_type": "Greeter",
                         "lang": "go", "line": "L3"}]], parked
 
@@ -184,3 +215,217 @@ def test_a_parameter_binds_only_inside_its_own_function(tmp_path):
             targets.setdefault(label_of.get(e["source"]), set()).add(source_of[e["target"]])
     assert len(targets["Run()"]) == 1 and targets["Run()"].pop().endswith("greeter.go"), targets
     assert len(targets["Also()"]) == 1 and targets["Also()"].pop().endswith("other.go"), targets
+
+
+# The struct in one file of the package and its methods in another is the usual Go
+# layout (`HTTPServer` declared in http_server.go, its handlers in datasources.go).
+SIBLING_FILES = {
+    "svc/greeter.go": GREETER,
+    "svc/types.go": "package svc\n\ntype App struct {\n\tgreeter *Greeter\n}\n",
+    "svc/run.go": "package svc\n\nfunc (a *App) Run() { a.greeter.Greet() }\n",
+}
+
+
+def test_a_struct_field_declared_in_a_sibling_file_types_the_receiver(tmp_path):
+    # run.go declares no `greeter`, so its own table cannot answer; the struct's can.
+    calls, _ = _calls(tmp_path, SIBLING_FILES)
+    edge = _greet_edge(calls)
+    assert edge is not None, calls
+    assert edge["confidence"] == "INFERRED"
+
+
+def test_a_sibling_files_struct_field_survives_a_rebuild_of_the_method_file_only(tmp_path):
+    # An update re-extracts only the changed file, and the struct's unchanged file reaches
+    # the resolver only as its graph.json nodes, so the field types must persist there.
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    for name, body in SIBLING_FILES.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    assert _rebuild_code(tmp_path, no_cluster=True, acquire_lock=False, force=True)
+    run = tmp_path / "svc" / "run.go"
+    run.write_text(run.read_text(encoding="utf-8") + "// touched\n", encoding="utf-8")
+    assert _rebuild_code(tmp_path, changed_paths=[run], no_cluster=True, acquire_lock=False)
+
+    g = json.loads((tmp_path / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    label = {n["id"]: n["label"] for n in g["nodes"]}
+    calls = {(label.get(e["source"]), label.get(e["target"]))
+             for e in g.get("links", g.get("edges", [])) if e["relation"] == "calls"}
+    assert (".Run()", ".Greet()") in calls, calls
+
+
+def test_a_sibling_files_field_of_another_struct_does_not_type_the_receiver(tmp_path):
+    # `greeter` is a field of `Other`, not of `App`: the owner decides, not the name.
+    calls, _ = _calls(tmp_path, {
+        **SIBLING_FILES,
+        "svc/types.go": "package svc\n\ntype App struct{}\n\n"
+                        "type Other struct {\n\tgreeter *Greeter\n}\n",
+    })
+    assert _greet_edge(calls) is None, calls
+
+
+# Package-qualified receiver types. Dependency injection in Go almost always crosses a
+# package: a field typed `*svc.Greeter` or `plugins.Client` held by a type in another
+# package. These resolve through the caller's import of the package, matched against the
+# import path each declaring file gets from go.mod.
+
+GO_MOD = "module example.com/app\n\ngo 1.22\n"
+SVC_IMPORT = "import \"example.com/app/svc\"\n\n"
+
+
+def _greet_targets(result) -> dict[str, set[str]]:
+    source_of = {n["id"]: str(n.get("source_file") or "") for n in result["nodes"]}
+    label_of = {n["id"]: n["label"] for n in result["nodes"]}
+    targets: dict[str, set[str]] = {}
+    for e in result["edges"]:
+        if e["relation"] == "calls" and label_of.get(e["target"]) == ".Greet()":
+            targets.setdefault(label_of.get(e["source"]), set()).add(
+                source_of[e["target"]].replace("\\", "/"))
+    return targets
+
+
+def test_a_qualified_struct_field_types_the_receiver(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\n" + SVC_IMPORT
+                      + "type App struct {\n\tgreeter *svc.Greeter\n}\n\n"
+                      "func (a *App) Run() { a.greeter.Greet() }\n",
+    })
+    edge = _greet_edge(calls)
+    assert edge is not None, calls
+    assert edge["confidence"] == "INFERRED"
+
+
+def test_a_qualified_parameter_types_the_receiver(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\n" + SVC_IMPORT + "func Run(g *svc.Greeter) { g.Greet() }\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+@pytest.mark.parametrize("binding", ["var g svc.Greeter", "g := &svc.Greeter{}"])
+def test_a_qualified_local_binding_types_the_receiver(tmp_path, binding):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\n" + SVC_IMPORT
+                      + f"func Run() {{\n\t{binding}\n\tg.Greet()\n}}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_an_aliased_import_types_the_receiver(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\nimport greet \"example.com/app/svc\"\n\n"
+                      "func Run(g *greet.Greeter) { g.Greet() }\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_a_qualified_interface_field_reaches_the_interface_method(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": "package svc\n\ntype Greeter interface {\n\tGreet()\n}\n",
+        "api/app.go": "package api\n\n" + SVC_IMPORT
+                      + "type App struct {\n\tgreeter svc.Greeter\n}\n\n"
+                      "func (a *App) Run() { a.greeter.Greet() }\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_the_import_picks_one_of_two_packages_declaring_the_type(tmp_path):
+    # Bare `Greeter` with two declarations stays unresolved (the single-definition guard);
+    # `b.Greeter` names one of them through the import, so it is exact.
+    _, result = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "a/greeter.go": GREETER.replace("package svc", "package a"),
+        "b/greeter.go": GREETER.replace("package svc", "package b"),
+        "api/app.go": "package api\n\nimport \"example.com/app/b\"\n\n"
+                      "func Run(g *b.Greeter) { g.Greet() }\n",
+    })
+    targets = _greet_targets(result)
+    assert targets.get("Run()") and all(t.endswith("b/greeter.go") for t in targets["Run()"]), targets
+
+
+def test_a_qualifier_never_binds_a_same_named_type_at_another_path(tmp_path):
+    # `other.Greeter` is imported from a module this corpus does not contain; the local
+    # `svc.Greeter` shares the name but not the path, so nothing binds and nothing is parked.
+    calls, result = _calls(tmp_path, {
+        "go.mod": GO_MOD,
+        "svc/greeter.go": GREETER,
+        "api/app.go": "package api\n\nimport \"example.org/other\"\n\n"
+                      "func Run(g *other.Greeter) { g.Greet() }\n",
+    })
+    assert _greet_edge(calls) is None, calls
+    assert not [n for n in result["nodes"] if n["label"] == "Run()"
+                and (n.get("metadata") or {}).get("unresolved_calls")], result["nodes"]
+
+
+# The Grafana shape of #3368: `HTTPServer` is declared in http_server.go with a field typed
+# `plugins.Client`, and the handler calling `hs.pluginClient.CheckHealth()` lives in a
+# sibling file that does not import `plugins` itself.
+XPKG_SIBLING_FILES = {
+    "go.mod": GO_MOD,
+    "svc/greeter.go": "package svc\n\ntype Greeter interface {\n\tGreet()\n}\n",
+    "api/server.go": "package api\n\n" + SVC_IMPORT
+                     + "type App struct {\n\tgreeter svc.Greeter\n}\n",
+    "api/run.go": "package api\n\nfunc (a *App) Run() { a.greeter.Greet() }\n",
+}
+
+
+def test_a_qualified_field_declared_in_a_sibling_file_types_the_receiver(tmp_path):
+    calls, result = _calls(tmp_path, XPKG_SIBLING_FILES)
+    edge = _greet_edge(calls)
+    assert edge is not None, calls
+    assert edge["confidence"] == "INFERRED"
+    targets = _greet_targets(result)
+    assert targets.get(".Run()") and all(t.endswith("svc/greeter.go") for t in targets[".Run()"]), targets
+
+
+def test_a_sibling_files_qualifier_is_read_from_the_declaring_files_imports(tmp_path):
+    # run.go imports a different package under the same name `svc`; the field's `svc` is
+    # the one server.go imports, so the caller's own import must not decide.
+    calls, _ = _calls(tmp_path, {
+        **XPKG_SIBLING_FILES,
+        "api/run.go": "package api\n\nimport svc \"example.org/other\"\n\nvar _ svc.X\n\n"
+                      "func (a *App) Run() { a.greeter.Greet() }\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+
+
+def test_a_sibling_files_qualified_field_from_outside_the_corpus_resolves_to_nothing(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        **XPKG_SIBLING_FILES,
+        "api/server.go": "package api\n\nimport svc \"example.org/other\"\n\n"
+                         "type App struct {\n\tgreeter svc.Greeter\n}\n",
+    })
+    assert _greet_edge(calls) is None, calls
+
+
+def test_a_sibling_files_qualified_field_survives_a_rebuild_of_the_method_file_only(tmp_path):
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    for name, body in XPKG_SIBLING_FILES.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    assert _rebuild_code(tmp_path, no_cluster=True, acquire_lock=False, force=True)
+    run = tmp_path / "api" / "run.go"
+    run.write_text(run.read_text(encoding="utf-8") + "// touched\n", encoding="utf-8")
+    assert _rebuild_code(tmp_path, changed_paths=[run], no_cluster=True, acquire_lock=False)
+
+    g = json.loads((tmp_path / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    label = {n["id"]: n["label"] for n in g["nodes"]}
+    calls = {(label.get(e["source"]), label.get(e["target"]))
+             for e in g.get("links", g.get("edges", [])) if e["relation"] == "calls"}
+    assert (".Run()", ".Greet()") in calls, calls
