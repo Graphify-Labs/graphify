@@ -1216,11 +1216,14 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
                 }
-                if child.type != "system_lib_string":
-                    edge_dict["metadata"] = sanitize_metadata({
-                        "raw_include": raw,
-                        "include_kind": "quoted",
-                    })
+                # Angle includes are tagged too (#5218): a directory-qualified
+                # one (`<liba/Bus.h>`) can then resolve to a corpus header in
+                # _resolve_c_include_edges, and an unresolved standard header
+                # (`<functional>`) stays out of the bare-stem alias index.
+                edge_dict["metadata"] = sanitize_metadata({
+                    "raw_include": raw,
+                    "include_kind": "quoted" if child.type != "system_lib_string" else "angle",
+                })
                 edges.append(edge_dict)
             break
 
@@ -8698,7 +8701,7 @@ def _resolve_c_include_edges(
     resolution_nodes: list[dict],
     root: Path | None = None,
 ) -> None:
-    """Resolve unresolved quoted C/C++/ObjC include edges to matching header file nodes (#4354).
+    """Resolve unresolved C/C++/ObjC include edges to matching header file nodes (#4354, #5218).
 
     When a quoted #include / #import is outside the including file's directory,
     _resolve_c_include_path cannot resolve it, so per-file extraction emits a
@@ -8707,8 +8710,10 @@ def _resolve_c_include_edges(
     established, but before import-evidence indexing.
 
     Resolution rules:
-    1. Only processes unresolved quoted includes (metadata.include_kind == "quoted"
-       and metadata.raw_include is present).
+    1. Only processes unresolved quoted or angle includes (metadata.include_kind
+       is "quoted" or "angle" and metadata.raw_include is present). An angle
+       include is considered only when it has a directory component
+       (`<liba/Bus.h>`); a bare `<name>` is left alone (#5218).
     2. Explicit relative (./ or ../) or absolute paths that failed sibling
        resolution are never resolved via corpus fallback.
     3. Matches the full include path as a path suffix, not merely the basename
@@ -8768,7 +8773,8 @@ def _resolve_c_include_edges(
         md = e.get("metadata")
         if not isinstance(md, dict):
             continue
-        if md.get("include_kind") != "quoted":
+        include_kind = md.get("include_kind")
+        if include_kind not in ("quoted", "angle"):
             continue
         raw = md.get("raw_include")
         if not raw or not isinstance(raw, str):
@@ -8776,6 +8782,11 @@ def _resolve_c_include_edges(
 
         raw_norm = raw.replace("\\", "/").strip()
         if not raw_norm:
+            continue
+        # An angle include without a directory (`<functional>`, `<config.h>`)
+        # names no path to match, so a same-named project header is not
+        # evidence for it (#5218).
+        if include_kind == "angle" and "/" not in raw_norm:
             continue
 
         if raw_norm.startswith(("./", "../", "/")):

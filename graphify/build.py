@@ -476,7 +476,7 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
                 continue
             norm = _normalize_id(endpoint)
             canonical = norm_to_id.get(norm)
-            if canonical is None:
+            if canonical is None and not (primary == "target" and _is_std_angle_include(e)):
                 alias_target = alias_to_id.get(norm)
                 if alias_target is not None and _alias_lang_compatible(
                     e.get("source_file"),
@@ -1339,6 +1339,24 @@ def _alias_index(nodes: "Iterable[tuple[str, dict]]") -> dict[str, str]:
     }
 
 
+def _is_std_angle_include(edge: dict) -> bool:
+    """True for an include edge written as `<name>` where name is a C/C++
+    standard header (`<functional>`, `<stdio.h>`), #5218.
+
+    Such an edge's bare-stem target (`functional`) must stay an external stub:
+    the alias index would otherwise bind it to any unique same-named project
+    header (`libc/include/libc/functional.h`), the C/C++ counterpart of the
+    Python stdlib guard in :func:`_alias_index` (#4261).
+    """
+    from graphify.extractors.resolution import C_STANDARD_INCLUDE_NAMES
+
+    md = edge.get("metadata")
+    if not isinstance(md, dict) or md.get("include_kind") != "angle":
+        return False
+    raw = md.get("raw_include")
+    return isinstance(raw, str) and raw.strip() in C_STANDARD_INCLUDE_NAMES
+
+
 def _alias_lang_compatible(edge_source_file: object, alias_source_file: object) -> bool:
     """True unless the edge's own file and the alias target's file are both in
     a KNOWN, DIFFERENT language family (#4941).
@@ -1999,11 +2017,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # normalized-id and ghost-remap entries norm_to_id already carries.
     alias_to_id = _alias_index((nid, G.nodes[nid]) for nid in node_set)
 
-    def _resolve_endpoint(raw_id: str, edge_source_file: object) -> str:
+    def _resolve_endpoint(raw_id: str, edge_source_file: object, allow_alias: bool = True) -> str:
         norm = _normalize_id(raw_id)
         resolved = norm_to_id.get(norm)
         if resolved is not None:
             return resolved
+        if not allow_alias:
+            return raw_id
         alias_target = alias_to_id.get(norm)
         if alias_target is not None and _alias_lang_compatible(
             edge_source_file, G.nodes[alias_target].get("source_file")
@@ -2048,7 +2068,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if src not in node_set:
             src = _resolve_endpoint(src, edge.get("source_file"))
         if tgt not in node_set:
-            tgt = _resolve_endpoint(tgt, edge.get("source_file"))
+            tgt = _resolve_endpoint(
+                tgt, edge.get("source_file"), allow_alias=not _is_std_angle_include(edge),
+            )
         if src not in node_set or tgt not in node_set:
             # An import/re-export whose target is not a declared node points at
             # an external module (stdlib / third-party / another repo). Mint a
