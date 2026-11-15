@@ -446,12 +446,14 @@ def _rank_path(source_file: str, root: Path | None) -> str:
 
 
 def _collision_rank(node: dict, root: Path | None = None,
-                    mentions: "frozenset | set" = frozenset()) -> tuple:
+                    mentions: "frozenset | set" = frozenset(),
+                    outranked: "frozenset | set" = frozenset()) -> tuple:
     """A total order for choosing the survivor of an ID collision, independent of
     the order the colliding nodes arrive in.
 
     The winner is the node with the SMALLEST rank. A node whose ``source_file``
-    defines the ID always outranks a mere reference; among equally-(non-)defining
+    defines the ID always outranks a mere reference, and a definer listed in
+    ``outranked`` ranks behind the other definers (#4859); among equally-(non-)defining
     nodes an active/in-progress path outranks an archived/done one (#2532); then
     it prefers the shorter, more canonical label over a longer qualified variant,
     then breaks any remaining tie lexically on label and finally on the REVERSED
@@ -460,22 +462,79 @@ def _collision_rank(node: dict, root: Path | None = None,
     repo-relative spellings of the same layout order identically — fully
     deterministic regardless of arrival order (#1851) or checkout location.
 
+    Neither side of the first key is exempt from the second: when the ID is
+    encoded by neither node's own file, both read as mere references and tie
+    there too, so a node with no ``source_file`` at all used to win purely on
+    an empty reversed path sorting before any real one — the sourced node was
+    the one actually telling us where the entity lives, and it was the one
+    getting dropped (#4492). A ``source_file`` beats none right after the
+    first key, mirroring the same rule ``_pick_winner`` already applies one
+    level up (#3775/#3786). It changes no collision between two sourced
+    nodes, since both sides of that key agree there.
+
+    ``outranked`` (see ``_outranked_by_ast``) holds the ``(id, file)`` of non-AST
+    definers that another file's AST node also defines. A doc whose own path
+    prefixes a code entity's id (``pkg.md`` beside ``pkg/test_x.py``) defines it
+    too, and used to take it on a shorter label, so its next re-extract deleted the
+    code node (#4859). Such a definer now ranks right behind the other definers;
+    same-file pairs (#2091), same-stem twins, and collisions with one definer
+    rank as before.
+
     ``mentions`` (see ``_mentions``) holds the ``(id, file)`` of nodes read as a
     mention of a document rather than the document itself. Such a node ranks as a
     reference even though its id is a path slice, so a real document outranks it
     whatever the label lengths are (#4281). The set only ever contains path-slice
-    ids, so the survivor of every other collision is chosen exactly as before.
+    ids, so the survivor of every other collision is chosen exactly as before. It
+    also holds a shorter path-slice id from a file that has its own page
+    (``_slice_references``), so a bare ``protocol`` inside docs/protocol.md cannot
+    outrank the real top-level protocol.md on label length.
     """
     label = node.get("label") or ""
     rank_path = _rank_path(node.get("source_file") or "", root)
+    key = (node.get("id"), rank_path)
     return (
-        # definers (False) sort before references (True)
-        not _defines_id(node) or (node.get("id"), rank_path) in mentions,
+        not _defines_id(node) or key in mentions,
+        key in outranked and node.get("_origin") != "ast",  # (#4859)
+        not node.get("source_file"),  # a located node beats a source-less one (#4492)
         _lifecycle_penalty(rank_path),  # active paths beat archived ones (#2532)
         len(label),             # shorter, more canonical label first
         label,                  # lexical tiebreak
         tuple(reversed([s for s in rank_path.split("/") if s and s != "."])),
     )
+
+
+def _outranked_by_ast(nodes: list[dict], root: Path | None,
+                      mentions: "frozenset | set") -> set[tuple[str, str]]:
+    """``(id, root-relative file)`` of non-AST definers that an AST node from
+    another file also defines, while their own file has no AST definer (#4859).
+
+    The AST node is extracted fact and the other is an inference about it, so the
+    AST node keeps the id. The check is strict on ``_origin == "ast"``, as in the
+    build ghost pass: fresh semantic chunks arrive unstamped. A file that has its
+    own AST definer (#2091 enrichment) is never listed, and an AST node with the
+    same full stem (an ``x.py``/``x.html`` twin, or a slug twin such as
+    ``pkg/service.py`` and ``pkg_service.py``) never counts against it.
+    """
+    ast_defs: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    others: list[tuple[str, str, str]] = []
+    for node in nodes:
+        nid = node.get("id") or ""
+        source_file = node.get("source_file") or ""
+        rank_path = _rank_path(source_file, root)
+        if not nid or not _defines_id(node) or (nid, rank_path) in mentions:
+            continue
+        entry = (rank_path, _full_stem(source_file))
+        if node.get("_origin") == "ast":
+            ast_defs[nid].append(entry)
+        else:
+            others.append((nid, *entry))
+    outranked = set()
+    for nid, rank_path, stem in others:
+        defs = ast_defs.get(nid, [])
+        if (defs and rank_path not in {rp for rp, _ in defs}
+                and any(ast_stem != stem for _, ast_stem in defs)):
+            outranked.add((nid, rank_path))
+    return outranked
 
 
 def _mentions(nodes: list[dict], edges: list[dict],
@@ -524,6 +583,43 @@ def _mentions(nodes: list[dict], edges: list[dict],
     return found
 
 
+def _own_page_files(nodes: list[dict], root: Path | None) -> set[str]:
+    """Root-relative files that have a node spelled with their own full stem (#4281).
+
+    Such a file already has its page, so a shorter path-slice id it also mints
+    (``protocol`` inside docs/protocol.md, next to ``docs_protocol``) may be a
+    reference to another file rather than that file's own page."""
+    from graphify.build import _is_abs  # local: build imports dedup
+
+    files: set[str] = set()
+    for node in nodes:
+        nid, sf = node.get("id"), node.get("source_file")
+        if not nid or not isinstance(nid, str) or not sf or not isinstance(sf, str):
+            continue
+        k = _rank_path(sf, root)
+        if _is_abs(k):
+            continue
+        full = _full_stem(k)
+        if nid == full or nid.startswith(f"{full}_"):
+            files.add(k)
+    return files
+
+
+def _slice_references(nodes: list[dict], root: Path | None) -> set[tuple[str, str]]:
+    """``(id, file)`` of nodes whose id is a SHORTER path slice of a file that has its
+    own page (#4281). They rank as references, like a ``_mentions`` entry."""
+    own_page = _own_page_files(nodes, root)
+    found: set[tuple[str, str]] = set()
+    for node in nodes:
+        nid, sf = node.get("id"), node.get("source_file")
+        if not nid or not isinstance(nid, str) or not sf or not isinstance(sf, str):
+            continue
+        k = _rank_path(sf, root)
+        if k in own_page and nid in _id_prefixes(k) and nid != _full_stem(k):
+            found.add((nid, k))
+    return found
+
+
 def _same_source_entity(survivor: dict, duplicate: dict) -> bool:
     """True when exact-ID records came from the same source file.
 
@@ -558,6 +654,9 @@ def _merge_missing_attributes(survivor: dict, duplicate: dict) -> dict:
     return merged
 
 
+_SHARED_ID_TYPES = ("module", "namespace")
+
+
 def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
     """Report an ID collision in proportion to what dropping the loser actually costs.
 
@@ -568,6 +667,18 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
     and one is genuinely lost — warn, and point at the extraction split that keeps them
     apart (#1504).
     """
+    # A module/namespace node (`import Foundation`) is one shared entity that every
+    # importing file legitimately mints — the same rule the extractors apply when
+    # they exempt these types from collision disambiguation. Only a group of one
+    # such type under one label is that shared entity; a module colliding with a
+    # namespace, or two differently named modules, is still a real collision.
+    group = (survivor, *losers)
+    if (
+        survivor.get("type") in _SHARED_ID_TYPES
+        and all(n.get("type") == survivor.get("type") for n in group)
+        and all(n.get("label") == survivor.get("label") for n in group)
+    ):
+        return
     keep_file = survivor.get("source_file") or ""
     keep_label = survivor.get("label") or ""
     for loser in losers:
@@ -709,10 +820,6 @@ def _path_qualify_dropped_collisions(
       location cannot leak into an id;
     - a group acts only when its files have at least two distinct full stems; a
       lone candidate is left to ``build_from_json``'s semantic id remap;
-    - a group is skipped when ANY node in the input comes from the file whose
-      full stem is the id's shorter prefix (``protocol`` while ``protocol.md``
-      exists): that file is the one the bare id names, so the id may be a genuine
-      reference to it and stays on the definer-wins collapse-and-warn path;
     - a node read as a MENTION of a document (``_mentions``: a path-slice id that
       another node of its own file ``references``) is not a candidate, so it is not
       renamed onto the mentioning file's own page. That reading is inferred from LLM
@@ -721,9 +828,15 @@ def _path_qualify_dropped_collisions(
       collapses as it did before. If two or more other files also mint the mention's
       id it cannot be pointed at any one of them, so it stays on the bare id and
       ``build_from_json`` then folds it into its own file's page;
-    - a top-level file that mints the same id (``protocol.md`` next to
-      ``docs/protocol.md``) is a separate collision this pass does not resolve: the
-      group is skipped and the label tiebreak drops one of the real documents;
+    - a file whose full stem IS the id (``protocol.md`` for ``protocol``) defines it,
+      keeps the bare id, and counts toward the collision, so ``docs/protocol.md``
+      next to it is still renamed. A candidate whose bare id names another input
+      file is renamed only if its own file has no other node spelled with its own
+      full stem. If it has one (``docs_protocol`` next to ``protocol``), the bare id
+      may be a reference, so it stays on the definer-wins collapse-and-warn path as
+      before. Known boundary: when the LLM drops the folder AND also emits another
+      node spelled with the file's full stem, the file counts as having its own page
+      and falls back to the collapse it got before this change (#4281);
     - a reference to the bare id from ANOTHER file cannot be attributed to one
       file, so it is left unresolved (one warning per id) rather than guessed;
     - if the new id is already used by a node of a different file, or two files
@@ -777,19 +890,31 @@ def _path_qualify_dropped_collisions(
         else:
             by_id[nid].append(node)
 
+    # Files with a node spelled with their own full stem: their page already exists,
+    # so a shorter-prefix id from such a file may be a reference to another file.
+    own_page = _own_page_files(nodes, root)
+
     renames: dict[tuple[str, str], str] = {}
     claimed: dict[str, str] = {}
     for nid in sorted(by_id):
         members = by_id[nid]
-        if len({key(m["source_file"]) for m in members}) < 2:
+        # The file whose full stem IS the id defines it; it keeps the bare id and
+        # counts toward the collision even though it is not a candidate.
+        definers = {o for o in owners[nid] if o and not _is_abs(o) and _full_stem(o) == nid}
+        files = {key(m["source_file"]) for m in members} | definers
+        if len(files) < 2:
             continue
-        if len({_full_stem(key(m["source_file"])) for m in members}) < 2:
-            continue
-        if any((qualified_id(m) or ("", ""))[1] in named_files for m in members):
+        if len({_full_stem(f) for f in files}) < 2:
             continue
         for m in sorted(members, key=lambda m: key(m["source_file"])):
             k = key(m["source_file"])
             if (nid, k) in renames or (nid, k) in kept_bare:
+                continue
+            # The bare id names another input file (``protocol`` while protocol.md
+            # exists). It is this file's own page only if the file has no other
+            # page node; otherwise it may be a reference, so leave it to collapse.
+            if (qualified_id(m) or ("", ""))[1] in named_files and k in own_page:
+                kept_bare.add((nid, k))
                 continue
             qualified = qualified_id(m)
             new_id = qualified[0] if qualified else None
@@ -837,6 +962,120 @@ def _path_qualify_dropped_collisions(
             f"could not be attributed and were left unresolved.",
             file=sys.stderr,
         )
+    return out_nodes, edges
+
+
+def _is_reference_stub(node: dict) -> bool:
+    """Whether semantic extraction marked a node as a cross-document stub."""
+    metadata = node.get("metadata")
+    return isinstance(metadata, dict) and metadata.get("graphify_reference_stub") is True
+
+
+def _namespace_reference_stub_collisions(
+    nodes: list[dict], edges: list[dict], hyperedges: list[dict] | None,
+    root: Path | None, *, preserve_saved_semantics: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    """Keep semantic references distinct from another file's defining node.
+
+    Semantic extraction marks a node it emitted solely for a referenced entity
+    with ``metadata.graphify_reference_stub``. Preserve every marked node under
+    ``<citing-file>__ref__<original-id>`` instead of silently dropping it when
+    its target ID collides with another file's node. Edges from the citing file
+    follow its namespaced endpoint.
+
+    The marker distinguishes reference stubs from two independent documents
+    that happen to share an ID. Path specificity cannot make that distinction:
+    it regresses genuine nested-path definitions.
+
+    With preserve_saved_semantics, AST-only updates retain saved semantic
+    evidence even when it predates the reference-stub marker. A scan root is
+    required to distinguish source files; full builds keep their definer rules.
+    """
+    def key(source_file: object) -> str:
+        return _rank_path(source_file, root) if isinstance(source_file, str) else ""
+
+    by_id: dict[str, list[dict]] = defaultdict(list)
+    for node in nodes:
+        nid = node.get("id")
+        if isinstance(nid, str) and nid:
+            by_id[nid].append(node)
+
+    taken = {node.get("id") for node in nodes if node.get("id")}
+    renames: dict[tuple[str, str], str] = {}
+    for nid, members in by_id.items():
+        if len({key(node.get("source_file")) for node in members}) < 2:
+            continue
+        ast_sources = {
+            key(node.get("source_file")) for node in members
+            if node.get("_origin") == "ast"
+        }
+        stubs = [
+            node for node in members
+            if _is_reference_stub(node) or (
+                preserve_saved_semantics
+                and root is not None
+                and node.get("_origin") == "semantic"
+                and key(node.get("source_file"))
+                and ast_sources
+                and key(node.get("source_file")) not in ast_sources
+            )
+        ]
+        if not stubs:
+            continue
+        source_keys = {key(node.get("source_file")) for node in stubs}
+        if "" in source_keys:
+            continue
+        candidates = {
+            source_key: f"{_full_stem(source_key)}__ref__{nid}"
+            for source_key in source_keys
+            if _full_stem(source_key)
+        }
+        if len(candidates) != len(source_keys):
+            continue
+        if len(set(candidates.values())) != len(candidates):
+            continue
+        if any(candidate in taken for candidate in candidates.values()):
+            if not preserve_saved_semantics:
+                continue
+            reserved = taken | set(candidates.values())
+            for source_key in sorted(candidates):
+                base = candidates[source_key]
+                candidate = base
+                suffix = 2
+                while candidate in taken or (candidate != base and candidate in reserved):
+                    candidate = f"{base}__{suffix}"
+                    suffix += 1
+                candidates[source_key] = candidate
+                reserved.add(candidate)
+        renames.update(((nid, source_key), candidate)
+                       for source_key, candidate in candidates.items())
+        taken.update(candidates.values())
+
+    if not renames:
+        return nodes, edges
+
+    out_nodes = [
+        dict(node, id=renames[(node["id"], key(node.get("source_file")))])
+        if (node.get("id"), key(node.get("source_file"))) in renames else node
+        for node in nodes
+    ]
+    for collection in (edges, hyperedges or []):
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            if preserve_saved_semantics and item.get("_origin") == "ast":
+                continue
+            source_key = key(item.get("source_file"))
+            for endpoint in ("source", "target"):
+                value = item.get(endpoint)
+                replacement = renames.get((value, source_key))
+                if replacement:
+                    item[endpoint] = replacement
+            members = item.get("nodes")
+            if isinstance(members, list):
+                item["nodes"] = [renames.get((member, source_key), member)
+                                 if isinstance(member, str) else member
+                                 for member in members]
     return out_nodes, edges
 
 
@@ -891,6 +1130,7 @@ def deduplicate_entities(
     root: str | Path | None = None,
     hyperedges: "list[dict] | None" = None,
     protected_ids: "set[str] | None" = None,
+    remap_out: "dict[str, str] | None" = None,
 ) -> tuple[list[dict], list[dict]]:
     """Deduplicate near-identical entities in a knowledge graph.
 
@@ -898,6 +1138,9 @@ def deduplicate_entities(
         nodes: list of node dicts with at minimum {"id": str, "label": str}
         edges: list of edge dicts with {"source": str, "target": str, ...}
         communities: mapping of node_id -> community_id (from cluster())
+        remap_out: if given, filled with ``{merged-away id: surviving id}`` for
+            every node this call dropped. Lets a caller tell a node that was
+            folded into a twin from one that was lost (#4940).
         dedup_llm_backend: if set, use LLM to resolve ambiguous pairs
         root: scan root; ID-collision ranking judges source paths relative to
             it so path form and checkout location cannot flip the survivor (#2532)
@@ -938,7 +1181,11 @@ def deduplicate_entities(
     # Genuine cross-file ID collisions stay isolated and are reported below (#1504).
     nodes, edges = _disambiguate_defining_collisions(nodes, edges, hyperedges, root_resolved)
     nodes, edges = _path_qualify_dropped_collisions(nodes, edges, hyperedges, root_resolved)
-    mentions = _mentions(nodes, edges, root_resolved)
+    nodes, edges = _namespace_reference_stub_collisions(
+        nodes, edges, hyperedges, root_resolved,
+    )
+    mentions = _mentions(nodes, edges, root_resolved) | _slice_references(nodes, root_resolved)
+    outranked = _outranked_by_ast(nodes, root_resolved, mentions)
     seen_ids: dict[str, dict] = {}
     dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
@@ -948,8 +1195,8 @@ def deduplicate_entities(
         incumbent = seen_ids.get(nid)
         if incumbent is None:
             seen_ids[nid] = node
-        elif (_collision_rank(node, root_resolved, mentions)
-              < _collision_rank(incumbent, root_resolved, mentions)):
+        elif (_collision_rank(node, root_resolved, mentions, outranked)
+              < _collision_rank(incumbent, root_resolved, mentions, outranked)):
             # Smallest-ranked node wins; the min over a total order is independent
             # of the order nodes arrive in, so the survivor no longer depends on
             # chunk ordering (#1851).
@@ -967,7 +1214,7 @@ def deduplicate_entities(
         survivor = seen_ids[nid]
         same_source = sorted(
             (l for l in losers if _same_source_entity(survivor, l)),
-            key=lambda l: _collision_rank(l, root_resolved, mentions),
+            key=lambda l: _collision_rank(l, root_resolved, mentions, outranked),
         )
         for loser in same_source:
             survivor = _merge_missing_attributes(survivor, loser)
@@ -1326,6 +1573,8 @@ def deduplicate_entities(
     if not remap:
         return unique_nodes, edges
 
+    if remap_out is not None:
+        remap_out.update(remap)
     total = len(remap)
     msg = f"[graphify] Deduplicated {total} node(s)"
     # Both counters are reported when non-zero. Previous form nested the fuzzy

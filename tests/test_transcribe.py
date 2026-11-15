@@ -1,6 +1,7 @@
 """Tests for graphify.transcribe — video/audio transcription support."""
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -98,6 +99,29 @@ def test_transcribe_force_reruns(tmp_path):
         result = transcribe(video, output_dir=out_dir, force=True)
 
     assert result.read_text() == "New transcript segment."
+
+
+def test_installed_pyav_accepts_metadata_errors():
+    """The PyAV that ``[video]`` installs must still take ``metadata_errors``.
+
+    faster-whisper 1.2.1's ``decode_audio`` always passes that keyword. PyAV
+    19 raises ``TypeError`` before it looks at the bytes; garbage input must
+    fail inside the demuxer instead. ``av.open`` is a Cython builtin, so this
+    calls it rather than reading ``inspect.signature``. Skipped where the
+    extra is not installed (Python 3.10).
+    """
+    av = pytest.importorskip("av")
+    major = int(av.__version__.split(".", 1)[0])
+    assert major < 19, av.__version__
+    try:
+        av.open(io.BytesIO(b"not a media file"), mode="r", metadata_errors="ignore")
+    except TypeError as exc:
+        raise AssertionError(
+            "av.open rejected metadata_errors; faster-whisper 1.2.1 always passes it"
+        ) from exc
+    except Exception:
+        return
+    raise AssertionError("garbage input unexpectedly decoded")
 
 
 def test_transcribe_missing_faster_whisper(tmp_path):

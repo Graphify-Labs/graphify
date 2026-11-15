@@ -17,7 +17,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_env_list_covers_every_variable_detect_backend_reads():
-    source = inspect.getsource(llm.detect_backend) + inspect.getsource(llm._resolve_ollama_base_url)
+    source = (
+        inspect.getsource(llm.detect_backend_with_source)
+        + inspect.getsource(llm._resolve_ollama_base_url)
+    )
     direct = set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', source))
     builtin_keys = {key for name in llm.BACKENDS for key in llm._backend_env_keys(name)}
     listed = set(llm.backend_detection_env_vars())

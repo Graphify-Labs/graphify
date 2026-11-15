@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from graphify.build import build_from_json
 from graphify.detect import FileType, classify_file
 from graphify.extract import extract
@@ -17,6 +19,79 @@ def _write(p: Path, text: str) -> Path:
     return p
 
 
+_POM_NS = "http://maven.apache.org/POM/4.0.0"
+_POM_NAMESPACE_FORMS = [
+    ("", ""),
+    (f' xmlns="{_POM_NS}"', ""),
+    (f" xmlns='{_POM_NS}'", ""),
+    (f' xmlns = "{_POM_NS}"', ""),
+    (f' xmlns:m="{_POM_NS}"', "m:"),
+]
+
+
+def _pom_namespace_fixture(declaration: str, prefix: str) -> str:
+    return '''<{p}project{decl} xmlns:x="urn:other">
+      <{p}parent><{p}groupId>com.acme</{p}groupId>
+        <{p}artifactId>parent</{p}artifactId><{p}version>1.2</{p}version></{p}parent>
+      <{p}artifactId>app</{p}artifactId>
+      <{p}properties><{p}core.name>core</{p}core.name></{p}properties>
+      <{p}dependencies><{p}dependency>
+        <{p}groupId>${{project.groupId}}</{p}groupId>
+        <{p}artifactId>${{core.name}}</{p}artifactId>
+      </{p}dependency><x:dependency>
+        <x:groupId>other</x:groupId><x:artifactId>foreign</x:artifactId>
+      </x:dependency></{p}dependencies>
+      <{p}profiles><{p}profile><{p}dependencies><{p}dependency>
+        <{p}groupId>com.acme</{p}groupId><{p}artifactId>profile</{p}artifactId>
+      </{p}dependency></{p}dependencies></{p}profile></{p}profiles>
+      <{p}dependencyManagement><{p}dependencies><{p}dependency>
+        <{p}groupId>com.acme</{p}groupId><{p}artifactId>managed</{p}artifactId>
+      </{p}dependency></{p}dependencies></{p}dependencyManagement>
+      <{p}build><{p}plugins><{p}plugin><{p}dependencies><{p}dependency>
+        <{p}groupId>com.acme</{p}groupId><{p}artifactId>plugin</{p}artifactId>
+      </{p}dependency></{p}dependencies></{p}plugin></{p}plugins></{p}build>
+    </{p}project>'''.format(p=prefix, decl=declaration)
+
+
+@pytest.mark.parametrize("declaration,prefix", _POM_NAMESPACE_FORMS)
+def test_pom_namespace_spellings_preserve_identity_properties_and_scopes(
+    tmp_path, declaration, prefix,
+):
+    path = _write(tmp_path / "pom.xml", _pom_namespace_fixture(declaration, prefix))
+
+    result = extract_package_manifest(path)
+
+    assert not result.get("error")
+    assert len(result["nodes"]) == 1
+    package = result["nodes"][0]
+    assert package["id"] == "pkg_com_acme_app"
+    assert package["label"] == "com.acme:app"
+    assert package["version"] == "1.2"
+    assert package["source_file"] == str(path)
+    assert {edge["target"] for edge in result["edges"]} == {
+        "pkg_com_acme_core", "pkg_com_acme_profile",
+    }
+    assert all(edge["source"] == package["id"] for edge in result["edges"])
+
+
+@pytest.mark.parametrize("declaration,prefix", _POM_NAMESPACE_FORMS[2::2])
+def test_namespaced_pom_dependencies_survive_extract_build_and_cache(
+    tmp_path, declaration, prefix,
+):
+    app = _write(tmp_path / "app/pom.xml", _pom_namespace_fixture(declaration, prefix))
+    core = _write(tmp_path / "core/pom.xml", '''<project>
+      <groupId>com.acme</groupId><artifactId>core</artifactId>
+    </project>''')
+
+    for _ in range(2):
+        result = extract([app, core], root=tmp_path, cache_root=tmp_path / "cache")
+        assert not result.get("failed_sources")
+        graph = build_from_json(result, directed=True, root=tmp_path)
+        assert graph.nodes["pkg_com_acme_app"]["label"] == "com.acme:app"
+        assert graph.has_edge("pkg_com_acme_app", "pkg_com_acme_core")
+        assert graph["pkg_com_acme_app"]["pkg_com_acme_core"]["relation"] == "depends_on"
+
+
 # ── routing: manifests are deterministic (CODE), not LLM documents ───────────
 
 def test_manifests_classify_as_code_not_document(tmp_path):
@@ -24,8 +99,8 @@ def test_manifests_classify_as_code_not_document(tmp_path):
         p = _write(tmp_path / name, "x")
         assert is_package_manifest_path(p)
         assert classify_file(p) is FileType.CODE, name
-    # a generic yaml stays a document
-    assert classify_file(_write(tmp_path / "config.yaml", "a: 1")) is FileType.DOCUMENT
+    # yaml is now structurally extracted like json (code path) (#2214)
+    assert classify_file(_write(tmp_path / "config.yaml", "a: 1")) is FileType.CODE
 
 
 # ── per-format parsing ───────────────────────────────────────────────────────
@@ -74,6 +149,29 @@ def test_pom_parses_artifact_and_deps(tmp_path):
     assert _pkg_nodes(r)[0]["label"] == "com.acme:widget"
     assert any(e["target"] == "pkg_org_lib_core" for e in r["edges"])
 
+
+
+def test_pom_deps_exclude_managed_and_plugin_dependencies(tmp_path):
+    # <dependencyManagement> only pins versions and a plugin's <dependencies> are
+    # the build tool's; neither is a dependency of the project. Profile
+    # dependencies are.
+    dep = "<dependency><groupId>{}</groupId><artifactId>{}</artifactId></dependency>"
+    p = _write(tmp_path / "pom.xml",
+               '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+               '  <groupId>com.acme</groupId><artifactId>service</artifactId><version>1.0</version>\n'
+               f'  <dependencyManagement><dependencies>{dep.format("com.google.guava", "guava")}'
+               '</dependencies></dependencyManagement>\n'
+               f'  <dependencies>{dep.format("org.slf4j", "slf4j-api")}</dependencies>\n'
+               '  <build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId>\n'
+               f'    <dependencies>{dep.format("org.junit.platform", "junit-platform-surefire-provider")}</dependencies>\n'
+               '  </plugin></plugins></build>\n'
+               f'  <profiles><profile><id>pg</id><dependencies>{dep.format("org.postgresql", "postgresql")}'
+               '</dependencies></profile></profiles>\n'
+               '</project>\n')
+    r = extract_package_manifest(p)
+    assert {e["target"] for e in r["edges"] if e["relation"] == "depends_on"} == {
+        "pkg_org_slf4j_slf4j_api", "pkg_org_postgresql_postgresql",
+    }
 
 # ── #1377: a package referenced by N manifests is ONE node ───────────────────
 

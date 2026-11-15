@@ -18,7 +18,10 @@ import hashlib
 import json
 import os
 import shutil
+import warnings
 from pathlib import Path
+
+import pytest
 
 from graphify import cache
 
@@ -221,6 +224,34 @@ def test_relative_key_wins_over_colliding_legacy_absolute(tmp_path):
 
     cache._ensure_stat_index(a)
     assert cache._stat_index[str(f1.resolve())]["hashes"]["f1.py"] == "fresh"
+
+
+def test_normalize_path_undoes_the_unc_long_path_prefix(monkeypatch):
+    r"""Since #4925 keys are normalized from the os_long_path() spelling, which
+    for a UNC share is ``\\?\UNC\server\share``. Stripping only ``\\?\`` left a
+    relative ``UNC\server\...`` key that the flush pruned as missing, so a
+    network or WSL share always wrote an empty stat-index.json."""
+    monkeypatch.setattr("sys.platform", "win32")
+    got = cache._normalize_path(Path("\\\\?\\UNC\\server\\share\\repo\\a.py"))
+    assert str(got) == "\\\\server\\share\\repo\\a.py"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length paths")
+def test_long_path_spelling_does_not_switch_the_root(tmp_path):
+    r"""Files are opened through os_long_path() (#4925), which spells the root
+    ``\\?\C:\...``. Binding the stat index to that spelling made the plain
+    cache_root that extract() passes look like a second root: a #3989 warning
+    and a mid-run flush on every Windows update."""
+    _reset_stat_index()
+    f1 = tmp_path / "f1.py"
+    f1.write_text("x = 1\n")
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="stat index switched")
+        cache.cached_word_count(f1, tmp_path, lambda p: 2)  # detect()
+        cache.file_hash(f1, tmp_path)
+        cache.load_cached(f1, tmp_path, cache_root=tmp_path)  # extract()
+    assert cache._stat_index_root == tmp_path.resolve()
 
 
 def test_semantic_cache_normalizes_absolute_source_file(tmp_path):

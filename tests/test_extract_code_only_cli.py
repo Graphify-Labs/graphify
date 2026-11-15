@@ -64,7 +64,7 @@ def test_clustered_extract_adopts_only_explicit_flat_settings(tmp_path):
     assert json.loads(config.read_text()) == {
         "excludes": ["vendor"], "gitignore": False, "future": {"keep": 1},
         "schema_version": 2, "clustering": {"exclude_hubs_percentile": 90},
-        "cluster_resolution": 2.5,
+        "cluster_resolution": 2.5, "code_only": True,
     }
     second = _run(repo, "--code-only")
     assert second.returncode == 0, second.stderr
@@ -86,11 +86,14 @@ def test_extract_custom_output_settings_do_not_leak_to_default(tmp_path):
     custom_config = custom / "graphify-out" / ".graphify_build.json"
     assert json.loads(custom_config.read_text()) == {
         "cluster_resolution": 2.5, "cluster_exclude_hubs_percentile": 90,
+        "code_only": True,
     }
     assert not (repo / "graphify-out").exists()
     default = _run_relative_out(repo, "--code-only")
     assert default.returncode == 0, default.stderr
-    assert not (repo / "graphify-out" / ".graphify_build.json").exists()
+    default_config = json.loads((repo / "graphify-out" / ".graphify_build.json").read_text())
+    assert "cluster_resolution" not in default_config
+    assert "cluster_exclude_hubs_percentile" not in default_config
 
 
 def test_no_cluster_does_not_adopt_clustering_flags(tmp_path):
@@ -98,7 +101,8 @@ def test_no_cluster_does_not_adopt_clustering_flags(tmp_path):
     result = _run(repo, "--code-only", "--no-cluster", "--resolution", "2.5")
     assert result.returncode == 0, result.stderr
     assert "not adopted" in result.stderr
-    assert not (repo / "graphify-out" / ".graphify_build.json").exists()
+    config = json.loads((repo / "graphify-out" / ".graphify_build.json").read_text())
+    assert "cluster_resolution" not in config
 
 
 @pytest.mark.parametrize("flag,value", [
@@ -306,7 +310,8 @@ def test_explicit_exclude_replaces_persisted_setting_with_custom_out(tmp_path):
     assert any(source.endswith("vendor/lib.py") for source in sources)
     assert not any(source.endswith("generated/gen.py") for source in sources)
     assert json.loads((graph_out / ".graphify_build.json").read_text()) == {
-        "excludes": ["generated"]
+        "excludes": ["generated"],
+        "code_only": True,
     }
 
 

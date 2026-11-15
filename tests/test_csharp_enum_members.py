@@ -76,15 +76,18 @@ def test_an_explicit_value_does_not_change_the_member(tmp_path):
 
 
 def test_case_only_sibling_members_do_not_duplicate_an_edge(tmp_path):
-    # Legal C#, and one id after normalization. The first declaration keeps the
-    # node rather than a second edge hanging off it.
+    # Legal C#, and one id after normalization. Each member gets its own node
+    # (#4415) with its own edge, rather than a second edge hanging off the
+    # first member's node.
     case_of, r = _extract(tmp_path, {"S.cs": (
         "public enum Odd {\n"
         "    Value,\n"
         "    value\n"
         "}\n"
     )})
-    assert len(case_of) == 1
+    odd = _find(r, "Odd")
+    assert case_of == {(odd, _find(r, "Value")), (odd, _find(r, "value"))}
+    assert _find(r, "Value") != _find(r, "value")
 
 
 def test_a_namespaced_enum_still_emits_members(tmp_path):
