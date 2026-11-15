@@ -43,6 +43,7 @@ dependencies = [
     "tree-sitter-swift>=0.7,<0.9",
     "tree-sitter-lua>=0.2,<0.6",
     "tree-sitter-zig>=1.0,<2.0",
+    "tree-sitter-gdscript>=6.0,<7.0",
     "tree-sitter-powershell>=0.26,<0.28",
     "tree-sitter-elixir>=0.3,<0.5",
     "tree-sitter-objc>=3.0,<4.0",

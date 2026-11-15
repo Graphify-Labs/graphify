@@ -6386,3 +6386,108 @@ def test_julia_qualified_functor_uses_type_not_variable(tmp_path):
     call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
     # Module-qualified receiver types resolve to the bare type, never the variable.
     assert [n["label"] for n in call_nodes] == ["(Box)()"]
+
+
+# ── GDScript ──────────────────────────────────────────────────────────────────
+from graphify.extract import extract_gdscript
+
+_needs_gdscript = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_gdscript") is None,
+    reason="tree-sitter-gdscript not installed",
+)
+
+_GD_PROJECT = FIXTURES / "gdscript_project"
+
+
+def _gd_graph(tmp_path):
+    from graphify.extract import extract
+    paths = sorted(_GD_PROJECT.rglob("*.gd"))
+    out = extract(paths, cache_root=tmp_path, root=_GD_PROJECT, parallel=False)
+    labels = {n["id"]: n["label"] for n in out["nodes"]}
+    files = {n["id"]: Path(n["source_file"]).name for n in out["nodes"]}
+    triples = {
+        (labels[e["source"]], e["relation"], labels[e["target"]], files[e["source"]])
+        for e in out["edges"]
+    }
+    return out, triples
+
+
+@_needs_gdscript
+def test_gdscript_class_name_script_owns_methods_and_signals():
+    r = extract_gdscript(_GD_PROJECT / "scripts" / "creature.gd")
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert {"creature.gd", "Creature", ".take_hit()", ".die()", "hurt"} <= labels
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    rels = {(by_id[e["source"]], e["relation"], by_id[e["target"]]) for e in r["edges"]}
+    assert ("Creature", "method", ".take_hit()") in rels
+    # Same-file bare call binds in the per-file pass.
+    assert (".take_hit()", "calls", ".die()") in rels
+    # Engine API calls (queue_free) are never recorded as raw calls.
+    assert "raw_calls" not in r or not r["raw_calls"]
+
+
+@_needs_gdscript
+def test_gdscript_script_without_class_name_contains_functions():
+    r = extract_gdscript(_GD_PROJECT / "scripts" / "arena_base.gd")
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    rels = {(by_id[e["source"]], e["relation"], by_id[e["target"]]) for e in r["edges"]}
+    assert ("arena_base.gd", "contains", "reset()") in rels
+
+
+@_needs_gdscript
+def test_gdscript_inner_class_methods_and_calls():
+    r = extract_gdscript(_GD_PROJECT / "scripts" / "arena.gd")
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    rels = {(by_id[e["source"]], e["relation"], by_id[e["target"]]) for e in r["edges"]}
+    assert ("arena.gd", "contains", "Wave") in rels
+    assert ("Wave", "method", ".grow()") in rels
+    assert (".grow()", "calls", "._clamp()") in rels
+
+
+@_needs_gdscript
+def test_gdscript_cross_file_inheritance_and_imports(tmp_path):
+    _, t = _gd_graph(tmp_path)
+    # extends ClassName
+    assert ("Slime", "inherits", "Creature", "slime.gd") in t
+    # extends "res://..." on a script without class_name
+    assert ("arena.gd", "inherits", "arena_base.gd", "arena.gd") in t
+    assert ("arena.gd", "imports_from", "arena_base.gd", "arena.gd") in t
+    # const X := preload("res://...")
+    assert ("slime.gd", "imports_from", "split_rules.gd", "slime.gd") in t
+
+
+@_needs_gdscript
+def test_gdscript_cross_file_calls(tmp_path):
+    _, t = _gd_graph(tmp_path)
+    # super.m() walks to the base class
+    assert (".die()", "calls", ".die()", "slime.gd") in t
+    # preload const receiver
+    assert (".die()", "calls", "spawn_children()", "slime.gd") in t
+    # inherited method via extends "res://..."
+    assert ("_ready()", "calls", "reset()", "arena.gd") in t
+    # `var s := Slime.new()` types the receiver; the method is inherited
+    assert ("spawn()", "calls", ".take_hit()", "arena.gd") in t
+    # typed for-loop variable
+    assert ("spawn()", "calls", ".die()", "arena.gd") in t
+
+
+@_needs_gdscript
+def test_gdscript_signals_and_autoloads(tmp_path):
+    _, t = _gd_graph(tmp_path)
+    assert (".take_hit()", "emits", "hurt", "creature.gd") in t
+    # autoload singleton from project.godot [autoload]
+    assert (".die()", "emits", "enemy_died", "creature.gd") in t
+    assert ("enemy_died", "listened_by", "_on_enemy_died()", "events.gd") in t
+    # member var typed by annotation
+    assert ("hurt", "listened_by", "_on_boss_hurt()", "creature.gd") in t
+
+
+@_needs_gdscript
+def test_gdscript_does_not_bind_engine_calls_by_name(tmp_path):
+    out, t = _gd_graph(tmp_path)
+    # queue_free()/get_children() are engine API; nothing in the corpus may
+    # become their target, and no edge may dangle.
+    ids = {n["id"] for n in out["nodes"]}
+    assert all(e["source"] in ids and e["target"] in ids for e in out["edges"])
+    assert not any(tgt in ("queue_free()", "get_children()") for _, _, tgt, _ in t)
