@@ -125,6 +125,15 @@ def extract_razor(path: Path) -> dict:
             _add_ref(m.group(1), "inherits", i)
             continue
 
+        # A component can list one @implements per line for each interface it
+        # satisfies (IDisposable, IAsyncDisposable, a custom one, ...), same as
+        # a C# class heritage clause. Only @inherits (the base class) was ever
+        # recorded; every @implements interface was silently invisible.
+        m = re.match(r'@implements\s+([\w.<>\[\]]+)', line)
+        if m:
+            _add_ref(m.group(1), "implements", i)
+            continue
+
         m = re.match(r'@model\s+([\w.<>\[\]]+)', line)
         if m:
             _add_ref(m.group(1), "references", i)

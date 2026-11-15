@@ -6,6 +6,7 @@ import ast
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from collections.abc import Sequence
 from typing import Any
@@ -325,6 +326,92 @@ def resolve_python_import_guided_calls(
     return resolved_edges
 
 
+@lru_cache(maxsize=4096)
+def _rust_crate_root(source_file: str) -> str | None:
+    """The crate a Rust file belongs to: the nearest directory holding a
+    ``Cargo.toml``, else the directory above the nearest ``src``. None when
+    neither is found (a flat layout this pass cannot place)."""
+    path = Path(source_file)
+    for parent in path.parents:
+        try:
+            if (parent / "Cargo.toml").is_file():
+                return str(parent)
+        except OSError:
+            break
+    parts = path.parts
+    if "src" in parts[:-1]:
+        idx = len(parts) - 1 - parts[::-1].index("src")
+        return str(Path(*parts[:idx])) if idx else ""
+    return None
+
+
+def rust_scoped_call_survivors(
+    qualifier: str,
+    candidates: Sequence[str],
+    nid_to_source_file: dict[str, str],
+    caller_file: str = "",
+    nid_to_label: "dict[str, str] | None" = None,
+) -> list[str]:
+    """Return the candidates a Rust ``module::function()`` qualifier verifies.
+
+    The qualifier is matched right-to-left against each candidate's file path:
+    the last segment must BE the defining module (``<seg>.rs`` or
+    ``<seg>/mod.rs``), and every remaining segment must match the successive
+    parent directory. Matching stops at ``crate``/``super``/``self`` — those
+    are root-relative, and resolving the root needs a module-tree model this
+    deliberately does not attempt; segments to their right are still verified.
+    Matching only the last segment let ``std::fs::read()`` bind to an
+    unrelated local ``fs.rs`` (shadowing std module names with wrapper modules
+    is common Rust); the directory walk fails that on ``std`` vs ``src``.
+    Candidates not defined in a ``.rs`` file are skipped — a bare stem match
+    let a Rust ``b::helper()`` bind to a Python ``b.py``.
+
+    A candidate must live in the caller's crate (see ``_rust_crate_root``):
+    ``crate::util::f()`` in crate_a never means crate_b's ``util.rs``. Methods
+    are skipped, since a module path names a free function, never an impl's.
+
+    Returns [] outright when the qualifier disqualifies resolution: a bare
+    ``crate``/``super``/``self`` names no module file, and an UpperCamelCase
+    segment is a type (``Type::method()`` / ``Enum::Variant`` — rustc enforces
+    the case convention), which keeps its pre-existing skipped behavior.
+    """
+    segments = [s.split("<", 1)[0].strip() for s in qualifier.split("::")]
+    segments = [s for s in segments if s]
+    if not segments:
+        return []
+    last = segments[-1]
+    if last in ("crate", "super", "self") or last[:1].isupper():
+        return []
+    caller_crate = _rust_crate_root(caller_file) if caller_file else None
+    survivors: list[str] = []
+    for cand in candidates:
+        cand_file = str(nid_to_source_file.get(cand, ""))
+        if not cand_file.endswith(".rs"):
+            continue
+        if nid_to_label is not None and nid_to_label.get(cand, "").startswith("."):
+            continue
+        if caller_file and _rust_crate_root(cand_file) != caller_crate:
+            continue
+        path = Path(cand_file)
+        if path.stem == last:
+            cursor = path.parent
+        elif path.stem == "mod" and path.parent.name == last:
+            cursor = path.parent.parent
+        else:
+            continue
+        matched = True
+        for seg in reversed(segments[:-1]):
+            if seg in ("crate", "super", "self"):
+                break
+            if cursor.name != seg:
+                matched = False
+                break
+            cursor = cursor.parent
+        if matched:
+            survivors.append(cand)
+    return survivors
+
+
 def resolve_cross_file_raw_calls(
     per_file: Sequence[dict[str, Any] | None],
     all_nodes: list[dict[str, Any]],
@@ -348,6 +435,7 @@ def resolve_cross_file_raw_calls(
         for n in all_nodes
         if n.get("id")
     }
+    nid_to_label = {str(n.get("id")): str(n.get("label", "")) for n in all_nodes if n.get("id")}
     resolved: list[dict[str, Any]] = []
 
     for raw_call in iter_raw_calls(per_file):
@@ -355,6 +443,51 @@ def resolve_cross_file_raw_calls(
         if not callee:
             continue
         if raw_call.get("is_member_call"):
+            continue
+        if raw_call.get("is_scoped_call"):
+            # Rust module-qualified call (`module::function()`), enqueued by
+            # extractors/rust.py with its qualifier path. These must NEVER fall
+            # through to the bare-name branch below — bare last-segment lookup
+            # across crate boundaries is exactly what produced the spurious
+            # INFERRED edges that motivated dropping scoped calls (#908).
+            # Instead the qualifier is verified against the candidate's file
+            # path (see rust_scoped_call_survivors); require exactly one
+            # survivor or bail (god-node guard preserved). Emitted as EXTRACTED
+            # because the source names the module explicitly — same reasoning
+            # as the Python qualified-class-method pass (#1446/#1533).
+            qualifier = str(raw_call.get("scope_qualifier", "")).strip()
+            survivors = rust_scoped_call_survivors(
+                qualifier, label_index.get(callee.lower(), []), nid_to_source_file,
+                caller_file=str(raw_call.get("source_file", "")),
+                nid_to_label=nid_to_label,
+            )
+            if len(survivors) != 1:
+                continue
+            target = survivors[0]
+            caller = str(raw_call.get("caller_nid", ""))
+            if not caller or target == caller:
+                continue
+            pair = (caller, target, "calls")
+            if pair in known_pairs:
+                continue
+            known_pairs.add(pair)
+            resolved.append(
+                {
+                    "source": caller,
+                    "target": target,
+                    "relation": "calls",
+                    "context": "call",
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
+                    "source_file": raw_call.get("source_file", ""),
+                    "source_location": raw_call.get("source_location"),
+                    "weight": 1.0,
+                    "metadata": sanitize_metadata({
+                        "resolver": "rust_scoped_module_call",
+                        "scope_qualifier": qualifier,
+                    }),
+                }
+            )
             continue
         candidates = label_index.get(callee.lower(), [])
         if not candidates:

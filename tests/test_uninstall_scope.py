@@ -118,6 +118,29 @@ import pytest as _pytest_posix
 
 @_pytest_posix.fixture(autouse=True)
 def _posix_skill_layout(monkeypatch):
-    """gemini and hermes install to different directories on Windows; these tests
+    """hermes installs to a different directory on Windows; these tests
     assert the POSIX layout, so pin it."""
     monkeypatch.setattr("platform.system", lambda: "Linux")
+
+
+def test_windows_gemini_install_and_uninstall_leave_the_agents_skill(tmp_path, monkeypatch, capsys):
+    """On Windows gemini used to install into ~/.agents/skills, the `agents`
+    platform's dir, so a gemini uninstall deleted the agents skill (#2800)."""
+    from graphify.install import gemini_install
+
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    agents_tree = _plant_skill_tree(Path.home(), ".agents")
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    monkeypatch.chdir(proj_dir)
+
+    gemini_install(proj_dir)
+    assert (Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (agents_tree / "SKILL.md").read_text(encoding="utf-8") == "# graphify skill\n"
+    assert "loads" in capsys.readouterr().out  # the ~/.agents copy shadows this install
+
+    gemini_uninstall()
+    assert not (Path.home() / ".gemini" / "skills" / "graphify").exists()
+    assert (agents_tree / "SKILL.md").exists()
+    assert (agents_tree / "references" / "x.md").exists()
+    assert (agents_tree / ".graphify_version").exists()
