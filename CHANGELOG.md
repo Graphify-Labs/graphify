@@ -6,6 +6,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 - Change: **packaging** the minimum Python is now 3.11 (was 3.10). Python 3.10 reached end of life in October 2026, and the patched releases of our optional and transitive dependencies no longer ship wheels for it. Raising the floor lets the lockfile move to those patched versions. Installs on Python 3.10 keep resolving to 0.9.110, the last 3.10-compatible release; everyone on 3.11 and up is unaffected.
 - Security: **deps** with 3.10 dropped, the committed lockfile resolves Pillow 13.0.0, filelock 4.2.4 and opentelemetry-api 1.45.2 for every supported interpreter, clearing the open Dependabot advisories against the older pins (Pillow is only pulled in by the optional `svg`/`all` extras, not the core install). This is a dependency and packaging change only; there is no change to extraction behaviour and the AST cache schema is unchanged.
+- Test: **skill** the backtick-substitution runtime tests now skip on bash older than 4.1 instead of running, since they capture `set -x` output through `BASH_XTRACEFD` (added in 4.1) and the trace file stays empty on the bash 3.2 that macOS ships, which both failed the unknown-command control and let the "nothing ran" assertion pass vacuously.
 
 ## 0.9.110 (2026-11-15)
 
