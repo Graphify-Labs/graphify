@@ -3273,6 +3273,38 @@ def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
                     _js_collect_pattern_idents(name, source, names)
     return frozenset(names)
 
+def _js_enclosing_bound_names(node, source: bytes) -> set[str]:
+    """Names bound by every scope that ENCLOSES ``node``, up to (not including)
+    the program: each enclosing function's params and `var`s, plus the
+    `let`/`const`, loop and `catch` bindings of each enclosing block.
+
+    A closure body that is tracked on its own (so `walk_calls` starts at that
+    body, not at the enclosing function's) never sees the bindings the
+    #2241/#2822 folds would have carried down to it. Without them a name
+    captured from an enclosing function (`function (item) { confirm({ action:
+    function () { del(item) } }) }`) reads as a free reference and resolves to
+    any same-named callable in the corpus (#5217). Mirrors exactly what
+    `walk_calls` folds into `extra_locals` on its way down.
+    """
+    bound: set[str] = set()
+    anc = node.parent
+    while anc is not None and anc.type != "program":
+        t = anc.type
+        if t in _JS_SCOPE_BOUNDARY and t not in ("class_declaration", "class"):
+            bound |= _js_local_bound_names(anc, source)
+        elif t in ("statement_block", "for_statement"):
+            bound |= _js_direct_lexical_names(anc, source)
+        elif t == "for_in_statement":
+            left = anc.child_by_field_name("left")
+            if left is not None:
+                _js_collect_pattern_idents(left, source, bound)
+        elif t == "catch_clause":
+            param = anc.child_by_field_name("parameter")
+            if param is not None:
+                _js_collect_pattern_idents(param, source, bound)
+        anc = anc.parent
+    return bound
+
 def _js_receiver_shadowed(node, name: str | None, source: bytes, bindings_by_scope: dict) -> bool:
     """Resolve the receiver binding along the full lexical ancestor chain from
     the call site, so a separately-tracked inner function still sees the outer
@@ -5513,9 +5545,14 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                     # body's extra_locals (as in the #2568 branch); otherwise
                     # `forEach(function (value) { s.on(value) })` resolves the
                     # parameter `value` to any same-named function in the corpus.
+                    # #5217: this branch also fires on a call statement nested
+                    # inside another function, and the closure body is then
+                    # walked from here rather than from the enclosing body, so
+                    # the enclosing scopes' bindings must ride along too.
                     if closure_locals_by_body is not None:
                         closure_locals_by_body[id(closure_body)] = (
-                            _js_local_bound_names(closure, source))
+                            _js_local_bound_names(closure, source)
+                            | _js_enclosing_bound_names(closure, source))
                     function_bodies.append((file_nid, closure_body))
         assign = next((c for c in node.children
                        if c.type == "assignment_expression"), None)
