@@ -29,7 +29,41 @@ def google_workspace_enabled(value: str | None = None) -> bool:
 
 
 def _safe_yaml_str(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+    """Escape a value for a YAML double-quoted scalar.
+
+    Same escaping as graphify.ingest._yaml_str (F-009): backslash, quote,
+    tab, NUL and other C0/DEL controls, plus the Unicode line breaks
+    U+2028, U+2029 and U+0085, so a hostile shortcut url or file id cannot
+    break out of the scalar and inject sibling frontmatter keys.
+    """
+    if value is None:
+        return ""
+    out: list[str] = []
+    for ch in str(value):
+        cp = ord(ch)
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\0":
+            out.append("\\0")
+        elif cp == 0x2028:
+            out.append("\\L")
+        elif cp == 0x2029:
+            out.append("\\P")
+        elif cp == 0x0085:
+            out.append("\\x85")
+        elif cp < 0x20 or cp == 0x7F:
+            out.append(f"\\x{cp:02x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _extract_file_id_from_url(url: str) -> str | None:

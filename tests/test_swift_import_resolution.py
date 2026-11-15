@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from graphify.build import build_from_json
+from graphify.dedup import deduplicate_entities
 from graphify.extract import extract
 
 
@@ -83,3 +84,73 @@ def test_swift_import_edges_survive_build(tmp_path: Path):
     assert len(import_edges) == 2
     # Both edges land on the same CoreKit module node.
     assert len({v for _, v in import_edges}) == 1
+
+
+def _foundation_nodes(tmp_path: Path) -> list[dict]:
+    a = _write(tmp_path / "Sources/AKit/AKit.swift", "import Foundation\n\npublic struct AKit {}\n")
+    b = _write(tmp_path / "Sources/BKit/BKit.swift", "import Foundation\n\npublic struct BKit {}\n")
+    result = extract([a, b], cache_root=tmp_path)
+    foundation = _module_nodes(result, "Foundation")
+    # Precondition: two files mint the same module id from different source files.
+    assert len(foundation) == 2
+    assert len({n["id"] for n in foundation}) == 1
+    assert len({n["source_file"] for n in foundation}) == 2
+    return result["nodes"]
+
+
+def test_shared_module_import_prints_no_collision_warning(tmp_path: Path, capsys):
+    # Every importing file mints the same module id by design, so
+    # deduplicate_entities must not report it as a lost-node ID collision.
+    # extract() never reaches deduplicate_entities (only build() does), so call it directly.
+    nodes = _foundation_nodes(tmp_path)
+    capsys.readouterr()
+
+    deduplicate_entities(nodes, [], communities={})
+
+    err = capsys.readouterr().err
+    assert "minted by two different files" not in err
+    assert "WARNING" not in err
+
+
+def test_mixed_module_collision_still_warns(tmp_path: Path, capsys):
+    # Control: a module node colliding with a non-module node is a real collision.
+    nodes = _foundation_nodes(tmp_path)
+    module_id = next(n["id"] for n in nodes if n.get("type") == "module")
+    nodes.append({
+        "id": module_id,
+        "label": "Foundation",
+        "type": "class",
+        "source_file": str(tmp_path / "Sources/CKit/CKit.swift"),
+    })
+    capsys.readouterr()
+
+    deduplicate_entities(nodes, [], communities={})
+
+    err = capsys.readouterr().err
+    assert f"node '{module_id}' is minted by two different files" in err
+
+
+def test_module_namespace_collision_still_warns(capsys):
+    # Regression: a module and a namespace sharing an id are distinct entities;
+    # only a group of one shared type under one label is exempt.
+    nodes = [
+        {"id": "shared_id", "type": "module", "label": "Foundation", "source_file": "a.swift"},
+        {"id": "shared_id", "type": "namespace", "label": "Other", "source_file": "b.cs"},
+    ]
+
+    deduplicate_entities(nodes, [], communities={})
+
+    err = capsys.readouterr().err
+    assert "node 'shared_id' is minted by two different files" in err
+
+
+def test_differently_named_modules_collision_still_warns(capsys):
+    nodes = [
+        {"id": "shared_id", "type": "module", "label": "Foundation", "source_file": "a.swift"},
+        {"id": "shared_id", "type": "module", "label": "Other", "source_file": "b.swift"},
+    ]
+
+    deduplicate_entities(nodes, [], communities={})
+
+    err = capsys.readouterr().err
+    assert "node 'shared_id' is minted by two different files" in err

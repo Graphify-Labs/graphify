@@ -237,14 +237,23 @@ def extract_fortran(path: Path) -> dict:
         t = node.type
         if t in ("subroutine", "function", "module", "program", "internal_procedures"):
             return
-        # call FOO(args) — tree-sitter-fortran uses subroutine_call
+        # call FOO(args) — tree-sitter-fortran uses subroutine_call. Unlike
+        # call_expression below, `call` is unambiguous: there is no array-index
+        # reading, so a callee defined in another file (reached through its own
+        # `use` statement) is resolved the same way a cross-file parameter/return
+        # type already is, through a sourceless stub the corpus rewire can
+        # collapse onto the real definition. Computing the target id directly
+        # (the previous behaviour) always salted it with THIS file's own stem,
+        # so a cross-file call target never matched the callee's real node and
+        # dangled permanently.
         if t == "subroutine_call":
             name_node = next((c for c in node.children if c.type == "identifier"), None)
             if name_node:
                 callee = _read_text(name_node, source).lower()
-                target_nid = _make_id(stem, callee)
-                add_edge(scope_nid, target_nid, "calls", node.start_point[0] + 1,
-                         confidence="EXTRACTED", context="call")
+                target_nid = ensure_named_node(callee, node.start_point[0] + 1)
+                if target_nid != scope_nid:
+                    add_edge(scope_nid, target_nid, "calls", node.start_point[0] + 1,
+                             confidence="EXTRACTED", context="call")
         # x = compute(args) — function invocations are `call_expression`, which
         # shares Fortran's `name(...)` syntax with array indexing. Only emit a
         # call edge when the callee resolves to a procedure defined in this file
@@ -305,6 +314,19 @@ def extract_fortran(path: Path) -> dict:
                     line = node.start_point[0] + 1
                     add_node(type_nid, type_name, line)
                     add_edge(scope_nid, type_nid, "defines", line)
+                    # `type, extends(base) :: derived` is Fortran's derived-type
+                    # inheritance syntax (the `type :: name` bare form has no base).
+                    # Without this, every extends() clause was silently dropped and
+                    # Fortran OOP hierarchies never got an inherits edge, unlike every
+                    # other OOP language extractor.
+                    base_spec = next((c for c in stmt.children if c.type == "base_type_specifier"), None)
+                    if base_spec is not None:
+                        base_name_node = next((c for c in base_spec.children if c.type == "identifier"), None)
+                        if base_name_node is not None:
+                            base_name = _read_text(base_name_node, source).lower()
+                            base_nid = ensure_named_node(base_name, line)
+                            if base_nid != type_nid:
+                                add_edge(type_nid, base_nid, "inherits", line)
                     # Type-bound procedures in the `contains` section bind the
                     # derived type to the module procedures that implement its
                     # methods. Without this the binding was dropped and the type

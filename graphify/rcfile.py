@@ -5,6 +5,10 @@ One ``key=value`` per line, ``#`` comments, blank lines ignored. Keys:
 ``viz_node_limit=<int>``
     Baked into the generated git hooks (see :mod:`graphify.hooks`).
 
+``query_budget=<positive int>`` and ``query_depth=<int 1-6>``
+    Project defaults for the public ``graphify query`` command. Explicit query
+    options override these values; absent settings retain budget 2000, depth 2.
+
 ``language.<ext>=<language | .ext>``
     Treat files with extension ``<ext>`` as the named language for
     classification, extractor dispatch and cross-file resolution (#2961).
@@ -112,7 +116,8 @@ def parse_language_value(value: str) -> str:
 def load_graphifyrc(root: Path) -> dict:
     """Parse ``<root>/.graphifyrc``. Returns ``{}`` when absent.
 
-    Returned keys: ``viz_node_limit`` (int) and ``languages``
+    Returned keys: ``viz_node_limit``, ``query_budget``, ``query_depth`` (ints),
+    and ``languages``
     (``{".inc": ".php", ...}``) — each present only when the file sets it.
     Unknown keys are ignored so a newer graphify's options do not break an
     older one. Malformed lines raise ``ValueError`` naming the line.
@@ -123,7 +128,10 @@ def load_graphifyrc(root: Path) -> dict:
 
     cfg: dict = {}
     languages: dict[str, str] = {}
-    content = rc_path.read_text(encoding="utf-8")
+    # utf-8-sig: Windows PowerShell 5.1 (`Set-Content -Encoding UTF8`) and older
+    # Notepad save UTF-8 with a BOM. Read as plain utf-8, the BOM became part of
+    # the first key, which then matched nothing and was ignored without a word.
+    content = rc_path.read_text(encoding="utf-8-sig")
     for line_num, raw in enumerate(content.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -143,6 +151,18 @@ def load_graphifyrc(root: Path) -> dict:
                 raise ValueError(
                     f"Invalid viz_node_limit in {rc_path} at line {line_num}: {val!r}. "
                     f"Must be a non-negative integer."
+                ) from exc
+        elif key in {"query_budget", "query_depth"}:
+            requirement = "a positive integer" if key == "query_budget" else "an integer from 1 to 6"
+            try:
+                parsed_val = int(val)
+                if parsed_val <= 0 or (key == "query_depth" and parsed_val > 6):
+                    raise ValueError(requirement)
+                cfg[key] = parsed_val
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid {key} in {rc_path} at line {line_num}: {val!r}. "
+                    f"Must be {requirement}."
                 ) from exc
         elif key.startswith("language."):
             ext_part = key[len("language."):].strip()

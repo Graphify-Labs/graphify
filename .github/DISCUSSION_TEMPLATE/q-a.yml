@@ -8,7 +8,7 @@ body:
         [discussions](https://github.com/Graphify-Labs/graphify/discussions)
         and [issues](https://github.com/Graphify-Labs/graphify/issues) — your
         question may already be answered. For real-time help, join the
-        [Discord](https://discord.gg/XDnKVpzdXB). If you have found a bug, please
+        [Discord](https://discord.gg/graphify). If you have found a bug, please
         open an issue instead so it can be tracked.
   - type: textarea
     id: question

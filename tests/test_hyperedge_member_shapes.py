@@ -91,3 +91,36 @@ def test_sanitize_fragment_coerces_dict_members_to_strings(capsys):
     members = out["hyperedges"][0]["nodes"]
     assert members == ["x", "y", "3"], "dict members collapse to their id"
     assert all(isinstance(m, str) for m in members)
+
+
+def test_numeric_members_coerced_via_aliases(capsys):
+    """A tolerated member alias must coerce numeric ids like the canonical key.
+
+    ``_coerce_non_string_ids`` (#2326) str-coerces numeric node ids and only the
+    ``nodes`` member list, so a hyperedge that spells its members ``members`` or
+    ``node_ids`` (#1561) kept bare ints while its nodes became ``"1"``/``"2"``.
+    Every member then matched no built node and the whole hyperedge was dropped,
+    while the same input under ``nodes`` survives.
+    """
+    for alias in ("nodes", "members", "node_ids"):
+        extraction = {
+            "nodes": [
+                {"id": 1, "label": "Alpha", "file_type": "concept", "source_file": "a.md"},
+                {"id": 2, "label": "Beta", "file_type": "concept", "source_file": "a.md"},
+                {"id": 3, "label": "Gamma", "file_type": "concept", "source_file": "a.md"},
+            ],
+            "edges": [],
+            "hyperedges": [
+                {"id": "h_num", "relation": "collab", alias: [1, 2, 3],
+                 "source_file": "a.md"},
+            ],
+        }
+        G = build_from_json(extraction, directed=True, dedup=False)
+        assert sorted(G.nodes()) == ["1", "2", "3"]
+        hyperedges = G.graph["hyperedges"]
+        assert [he["id"] for he in hyperedges] == ["h_num"], (
+            f"hyperedge dropped when members were keyed {alias!r}"
+        )
+        assert hyperedges[0]["nodes"] == ["1", "2", "3"], (
+            f"numeric members not coerced when keyed {alias!r}"
+        )

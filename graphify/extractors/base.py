@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 
-from graphify.ids import make_id
+from graphify.ids import _file_stem, make_id  # noqa: F401  (_file_stem re-exported)
 
 # Ambient scan root of the extraction in flight. extract.py's
 # _safe_extract_with_xaml_root sets it around every per-file extraction; the
@@ -15,15 +16,33 @@ from graphify.ids import make_id
 # function-local `import graphify.extract` + getattr(..., None) was a package ->
 # parent dependency that also failed silently if the module global were renamed
 # (#3666). None outside extract().
-_ACTIVE_SCAN_ROOT: "Path | None" = None
+#
+# A ContextVar rather than a module global: extraction runs concurrently
+# (ThreadPoolExecutor in tests, process pools in production), and a plain
+# global lets overlapping save/restore pairs interleave — the second call
+# saves the first one's root and restores it last, leaving the ambient root
+# set after extract() returns (#4602). ContextVar gives every thread (and
+# async task) its own value, so save/restore pairs nest correctly without a
+# lock.
+#
+# Semantic note: because the value is context-local, a root set on one
+# thread is NOT visible to worker threads spawned mid-extraction. Every
+# real call path sets and reads the root inside the same pool worker
+# (_safe_extract_with_xaml_root runs inside the worker; the scan root also
+# travels to workers as an explicit `root` parameter, not via this
+# global), so no production path crosses the boundary. If a future
+# extractor needs cross-thread visibility, propagate explicitly with
+# contextvars.copy_context() at the dispatch site.
+_ACTIVE_SCAN_ROOT: "ContextVar[Path | None]" = ContextVar(
+    "_ACTIVE_SCAN_ROOT", default=None
+)
 
 
 def set_active_scan_root(root: "Path | None") -> "Path | None":
     """Set the in-flight scan root, returning the previous value so the caller
     can restore it — extraction nests (a XAML shard re-enters extract())."""
-    global _ACTIVE_SCAN_ROOT
-    previous = _ACTIVE_SCAN_ROOT
-    _ACTIVE_SCAN_ROOT = root
+    previous = _ACTIVE_SCAN_ROOT.get()
+    _ACTIVE_SCAN_ROOT.set(root)
     return previous
 
 
@@ -32,7 +51,7 @@ def active_scan_root() -> "Path | None":
 
     A direct ``extract_markdown()`` / ``extract_xaml()`` call (no surrounding
     ``extract()``) sees None and the root-dependent behavior stays off."""
-    return _ACTIVE_SCAN_ROOT
+    return _ACTIVE_SCAN_ROOT.get()
 
 # Language built-in globals that AST may classify as call targets when used as
 # constructors or coercion functions (e.g. String(x), Number(x), Boolean(x)).
@@ -79,35 +98,49 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "View", "Color", "Font",
 })
 
+# Python's own builtin namespace, deliberately kept separate from
+# ``_LANGUAGE_BUILTIN_GLOBALS``. That set is consulted at extraction time for a
+# bare call, where dropping the raw call is correct for a true builtin but also
+# throws away the evidence needed to resolve a legitimate imported class that
+# merely shares a builtin's name (#4989). This set is only consulted after a
+# cross-file candidate has been found, and only to require a direct import
+# binding before accepting it: in Python a bare name resolves to the builtin
+# unless the module binds it itself, so `raise NotImplementedError` in a file
+# that never imports anything must not link to a package class named
+# ``NotImplementedError``. Fixed rather than derived from ``dir(builtins)`` so
+# extraction stays deterministic across interpreter versions.
+_PYTHON_BUILTIN_NAMES: frozenset[str] = frozenset({
+    "ArithmeticError", "AssertionError", "AttributeError", "BaseException",
+    "BaseExceptionGroup", "BlockingIOError", "BrokenPipeError", "BufferError",
+    "BytesWarning", "ChildProcessError", "ConnectionAbortedError", "ConnectionError",
+    "ConnectionRefusedError", "ConnectionResetError", "DeprecationWarning", "EOFError",
+    "Ellipsis", "EncodingWarning", "EnvironmentError", "Exception", "ExceptionGroup",
+    "False", "FileExistsError", "FileNotFoundError", "FloatingPointError",
+    "FutureWarning", "GeneratorExit", "IOError", "ImportError", "ImportWarning",
+    "IndentationError", "IndexError", "InterruptedError", "IsADirectoryError",
+    "KeyError", "KeyboardInterrupt", "LookupError", "MemoryError",
+    "ModuleNotFoundError", "NameError", "None", "NotADirectoryError", "NotImplemented",
+    "NotImplementedError", "OSError", "OverflowError", "PendingDeprecationWarning",
+    "PermissionError", "ProcessLookupError", "RecursionError", "ReferenceError",
+    "ResourceWarning", "RuntimeError", "RuntimeWarning", "StopAsyncIteration",
+    "StopIteration", "SyntaxError", "SyntaxWarning", "SystemError", "SystemExit",
+    "TabError", "TimeoutError", "True", "TypeError", "UnboundLocalError",
+    "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError", "UnicodeTranslateError",
+    "UnicodeWarning", "UserWarning", "ValueError", "Warning", "ZeroDivisionError",
+    "abs", "aiter", "all", "anext", "any", "ascii", "bin", "bool", "breakpoint",
+    "bytearray", "bytes", "callable", "chr", "classmethod", "compile", "complex",
+    "copyright", "credits", "delattr", "dict", "dir", "divmod", "enumerate", "eval",
+    "exec", "exit", "filter", "float", "format", "frozenset", "getattr", "globals",
+    "hasattr", "hash", "help", "hex", "id", "input", "int", "isinstance", "issubclass",
+    "iter", "len", "license", "list", "locals", "map", "max", "memoryview", "min",
+    "next", "object", "oct", "open", "ord", "pow", "print", "property", "quit", "range",
+    "repr", "reversed", "round", "set", "setattr", "slice", "sorted", "staticmethod",
+    "str", "sum", "super", "tuple", "type", "vars", "zip",
+})
+
 
 def _make_id(*parts: str) -> str:
     return make_id(*parts)
-
-
-def _file_stem(path: Path) -> str:
-    """Stem used as the node-ID prefix for a file and its symbols.
-
-    The full path (extension dropped) is preserved as path segments; ``make_id``
-    later collapses the separators to underscores. Using every segment — not just
-    the immediate parent dir (#1504) — means same-named files in different
-    directories get distinct IDs instead of colliding into one
-    last-writer-wins node:
-
-        docs/v1/api/README.md -> docs/v1/api/README -> docs_v1_api_readme
-        docs/v2/api/README.md -> docs/v2/api/README -> docs_v2_api_readme
-
-    Top-level files keep a bare stem (``setup.py`` -> ``setup``). When passed an
-    absolute path the whole path is encoded; the extract() id-remap post-pass
-    re-derives the canonical repo-relative form from ``source_file`` so the on-disk
-    location can't leak into the persisted IDs (#502).
-
-    Returns "" for a path with no name (``Path('.')`` — a source_file that equals
-    the scan root, so it has no per-file stem). Guarding here keeps
-    ``path.with_suffix("")`` from raising ``ValueError: '.' has an empty name`` and
-    protects every caller, not just ``_semantic_id_remap`` (#1618)."""
-    if not path.name:
-        return ""
-    return path.with_suffix("").as_posix()
 
 
 def _read_text(node, source: bytes) -> str:

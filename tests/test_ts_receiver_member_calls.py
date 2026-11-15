@@ -310,7 +310,11 @@ def test_a_pure_esm_corpus_still_activates_the_resolver(tmp_path):
 
 
 def _parked(r) -> list[dict]:
-    return [entry for n in r["nodes"]
+    # `file` (the parked call-site path, #3152 issue 3) is dropped: its exact
+    # value depends on the root these cases extract without, and they assert the
+    # receiver/callee/lang/line shape, not the location.
+    return [{k: v for k, v in entry.items() if k != "file"}
+            for n in r["nodes"]
             if isinstance(n.get("metadata"), dict)
             for entry in n["metadata"].get("unresolved_calls", [])]
 

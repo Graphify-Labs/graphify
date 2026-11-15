@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from graphify.ids import DeclIdRegistry
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -200,6 +201,48 @@ _RUST_PRIMITIVE_TYPES: frozenset[str] = frozenset({
 })
 
 
+# Macros whose arguments are ordinary Rust expressions. A DSL macro (`table!`,
+# `quote!`, `html!`, nom combinators) also writes `name(...)` but means
+# something else by it, so only these are scanned for calls.
+_RUST_EXPRESSION_MACROS = frozenset({
+    "assert", "assert_eq", "assert_ne", "debug_assert", "debug_assert_eq",
+    "debug_assert_ne", "dbg", "eprint", "eprintln", "format", "format_args",
+    "panic", "print", "println", "todo", "unimplemented", "unreachable", "vec",
+    "write", "writeln", "debug", "error", "info", "trace", "warn",
+})
+
+
+def _rust_macro_arg_calls(token_tree) -> list[tuple[str, int]]:
+    """Bare `f(...)` calls written inside a macro's arguments.
+
+    Tree-sitter keeps macro arguments as a flat token tree, so `println!("{}", f(x))`
+    has no call_expression: it is an `identifier` followed by a `(` token tree.
+    A name after `.` or `::` is a method or path call and is left out, as is a
+    name followed by `!` (a nested macro, which is its own macro_invocation).
+    """
+    found: list[tuple[str, int]] = []
+    stack = [token_tree]
+    while stack:
+        tree = stack.pop()
+        children = tree.children
+        for i, child in enumerate(children):
+            if child.type == "token_tree":
+                stack.append(child)
+                continue
+            if child.type != "identifier" or i + 1 >= len(children):
+                continue
+            nxt = children[i + 1]
+            if nxt.type != "token_tree" or not nxt.children or nxt.children[0].type != "(":
+                continue
+            if i > 0 and children[i - 1].type in (".", "::", "fn", "$", "#"):
+                continue
+            name = child.text.decode("utf-8", errors="replace") if child.text else ""
+            if name:
+                found.append((name, child.start_point[0] + 1))
+    found.sort(key=lambda item: item[1])
+    return found
+
+
 def _rust_qualifier_type(path_node, source: bytes) -> str | None:
     """The type a `Type::f()` call is qualified by, or None for a module path.
 
@@ -274,27 +317,48 @@ def extract_rust(path: Path) -> dict:
     _scan_local_types(root)
     local_type_names = frozenset(local_types)
 
+    # Where each imported name comes from: `crate` for this crate's own paths, otherwise
+    # the first path segment (`serde_json`, or a workspace crate's name). A sourceless
+    # stub under such a name carries it, so the corpus rewire can scope the binding.
+    use_roots: dict[str, set[str]] = {}
+
     # `macro_rules!` macros defined in this file, keyed by bare name. A macro and a
     # function can share a name in Rust (`vec!` vs `vec`), and a macro is invoked
     # as `name!(...)` (a `macro_invocation`, never a `call_expression`), so macros
     # are resolved through their own registry rather than the function/type
     # label_to_nid to avoid cross-binding.
     macro_nids_by_name: dict[str, str] = {}
+    # `mod m { .. }` blocks declared in this file, so a `m::f()` call can bind
+    # in-file; `mod m;` declares a module that lives in another file.
+    inline_mods: set[str] = set()
+    _mod_stack = [root]
+    while _mod_stack:
+        _n = _mod_stack.pop()
+        if _n.type == "mod_item" and _n.child_by_field_name("body") is not None:
+            _name = _n.child_by_field_name("name")
+            if _name is not None:
+                inline_mods.add(_read_text(_name, source))
+        _mod_stack.extend(_n.children)
 
     # (bare impl type, method name) -> the method nodes this file's `impl` blocks
     # define, so an in-file `Type::f()` / `self.f()` binds to a method of that type.
     impl_methods: dict[tuple[str, str], set[str]] = {}
 
+    # Nodes by id, so a declaration's node is found without scanning every node
+    # (once per declaration, that scan was quadratic in the file's size).
+    node_by_id: dict[str, dict] = {}
+
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({
+            node_by_id[nid] = {
                 "id": nid,
                 "label": label,
                 "file_type": "code",
                 "source_file": str_path,
                 "source_location": f"L{line}",
-            })
+            }
+            nodes.append(node_by_id[nid])
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -314,6 +378,7 @@ def extract_rust(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    decl_registry = DeclIdRegistry(reserved_ids=(file_nid,))
 
     # Pre-scan the struct/enum/trait names declared in this file so a type used
     # above its declaration resolves exactly as a use below it already does,
@@ -337,15 +402,15 @@ def extract_rust(path: Path) -> dict:
 
     def _scan_type_items(node) -> None:
         t = node.type
-        if t in ("struct_item", "enum_item", "trait_item", "function_item",
-                 "function_signature_item", "static_item", "const_item"):
+        if t in ("struct_item", "enum_item", "trait_item", "union_item", "type_item",
+                 "function_item", "function_signature_item", "static_item", "const_item"):
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _read_text(name_node, source)
                 if t in ("static_item", "const_item") and name == "_":
                     return
                 nid = _make_id(stem, name)
-                is_type = t in ("struct_item", "enum_item", "trait_item")
+                is_type = t in ("struct_item", "enum_item", "trait_item", "union_item", "type_item")
                 items_by_id.setdefault(nid, set()).add((is_type, name))
                 if is_type:
                     declared_type_names.setdefault(nid, set()).add(name)
@@ -385,13 +450,12 @@ def extract_rust(path: Path) -> dict:
     # outcome never depends on declaration order. Repeats of one name (`#[cfg]`
     # twins, an `impl` of a local type) are one member and still share a node.
     def file_item_nid(plain_nid: str, name: str) -> str:
+        nid = plain_nid
         names = {item_name for _is_type, item_name in items_by_id.get(plain_nid, ())}
-        if len(names) < 2 or name not in names:
-            return plain_nid
-        if declared_type_names.get(plain_nid) == {name}:
-            return plain_nid
-        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-        return _make_id(plain_nid, salt)
+        if len(names) >= 2 and name in names and declared_type_names.get(plain_nid) != {name}:
+            salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+            nid = _make_id(plain_nid, salt)
+        return decl_registry.resolve(nid, name, "type", seen_ids)
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = file_item_nid(_make_id(stem, name), name)
@@ -407,14 +471,15 @@ def extract_rust(path: Path) -> dict:
             # file's path (with extension) into the id and blocks the rewire, which is
             # the phantom-duplicate-node bug (#1402).
             seen_ids.add(nid)
-            nodes.append({
+            node_by_id[nid] = {
                 "id": nid,
                 "label": name,
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
                 "origin_file": str_path,
-            })
+            }
+            nodes.append(node_by_id[nid])
         return nid
 
     def emit_param_return_refs(func_node, func_nid: str, line: int) -> None:
@@ -514,14 +579,20 @@ def extract_rust(path: Path) -> dict:
                     macro_nids_by_name.setdefault(macro_name, macro_nid)
             return
 
-        if t in ("struct_item", "enum_item", "trait_item"):
+        # An associated type in an `impl` body (`type Output = Meters;`) is a
+        # type_item too, but not a file-level item: it would mint one colliding
+        # `Output` node per `impl Add`. Only an alias at module level is one.
+        if t == "type_item" and node.parent is not None and node.parent.parent is not None \
+                and node.parent.parent.type == "impl_item":
+            return
+        if t in ("struct_item", "enum_item", "trait_item", "union_item", "type_item"):
             name_node = node.child_by_field_name("name")
             if name_node:
                 item_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 item_nid = file_item_nid(_make_id(stem, item_name), item_name)
                 add_node(item_nid, item_name, line)
-                declaration_node = next(n for n in nodes if n["id"] == item_nid)
+                declaration_node = node_by_id[item_nid]
                 declaration_node["_rust_declaration_count"] = (
                     declaration_node.get("_rust_declaration_count", 0) + 1
                 )
@@ -545,7 +616,7 @@ def extract_rust(path: Path) -> dict:
                                 else:
                                     add_edge(item_nid, tgt, "references", line,
                                              context="generic_arg")
-                if t == "struct_item":
+                if t in ("struct_item", "union_item"):
                     for c in node.children:
                         if c.type != "field_declaration_list":
                             continue
@@ -729,7 +800,7 @@ def extract_rust(path: Path) -> dict:
                         impl_keys[impl_nid] = impl_key
                     elif impl_keys[impl_nid] != impl_key:
                         impl_keys[impl_nid] = None
-                    impl_node = next(n for n in nodes if n["id"] == impl_nid)
+                    impl_node = node_by_id[impl_nid]
                     if impl_keys[impl_nid]:
                         impl_node["_rust_impl_key"] = impl_keys[impl_nid]
                     else:
@@ -746,12 +817,48 @@ def extract_rust(path: Path) -> dict:
         if t == "use_declaration":
             arg = node.child_by_field_name("argument")
             if arg:
+                # The mods declared beside this `use`: an inline `mod` block is a scope of
+                # its own, so a `use serde::..` inside `mod tests { .. }` sees none of the
+                # file's top-level mods (#4564).
+                scope_mods = {
+                    _read_text(name_node, source)
+                    for sibling in (node.parent.children if node.parent is not None else ())
+                    if sibling.type == "mod_item"
+                    and (name_node := sibling.child_by_field_name("name")) is not None
+                }
+
+                # A plain `pub use` re-exports the named item from the crate its path
+                # starts with, so a later `use this_crate::Item` may reach a definition
+                # that lives in that crate (#4699). `pub(crate)` and `pub(super)` stay
+                # inside the re-exporting crate, so only a bare `pub` counts.
+                visibility = next(
+                    (child for child in node.children if child.type == "visibility_modifier"),
+                    None,
+                )
+                reexport = visibility is not None and _read_text(
+                    visibility, source).strip() == "pub"
+
                 def name_use(written: str, path: str) -> None:
                     # The name as written, for the corpus rewire (#4439): the id folds its
                     # case. Only for a path rooted in this crate: `serde::Serialize` or
-                    # `std::fs::File` is never the corpus's own `Serialize` or `File`.
-                    if path.lstrip(": ").split("::")[0].strip() in ("crate", "self", "super"):
+                    # `std::fs::File` is never the corpus's own `Serialize` or `File`. A
+                    # first segment that is a `mod` declared in this scope is this crate's
+                    # too (`mod item; pub use item::Invoice;`), unless the path starts with
+                    # `::`, which always names a crate (#4564).
+                    first = path.lstrip(": ").split("::")[0].strip()
+                    bound = written.split(" as ")[-1].strip()
+                    ident = re.match(r"[A-Za-z_][A-Za-z0-9_]*", first)  # `item as items` -> `item`
+                    if first in ("crate", "self", "super") or (
+                        ident is not None
+                        and ident.group() in scope_mods
+                        and not path.lstrip().startswith("::")
+                    ):
                         edges[-1]["_rust_use_name"] = written.split(" as ")[0].strip()
+                        use_roots.setdefault(bound, set()).add("crate")
+                    else:
+                        use_roots.setdefault(bound, set()).add(first)
+                        if reexport and bound.isidentifier():
+                            edges[-1]["_rust_pub_use"] = {"label": bound, "root": first}
                 module_name = _rust_use_module(_read_text(arg, source))
                 grouped = arg.type in ("use_list", "scoped_use_list")
                 if module_name:
@@ -797,6 +904,7 @@ def extract_rust(path: Path) -> dict:
 
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
+    macro_arg_edges: list[dict] = []
 
     def walk_calls(
         node,
@@ -830,10 +938,48 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-            # Fall through to the generic child recursion below rather than
-            # returning, preserving the prior traversal of the invocation's
-            # subtree (its arguments are a raw token tree, so this neither adds
-            # nor drops any nested edges relative to before).
+            # A call inside the arguments is only a token pattern, not a parsed
+            # call: bind it in-file as INFERRED, or hand it to the cross-file pass.
+            args = next((c for c in node.children if c.type == "token_tree"), None)
+            invoked = macro_node.child_by_field_name("name") if (
+                macro_node is not None and macro_node.type == "scoped_identifier") else macro_node
+            if args is None or invoked is None or (
+                    _read_text(invoked, source) not in _RUST_EXPRESSION_MACROS):
+                args = None
+            for callee_name, line in _rust_macro_arg_calls(args) if args is not None else ():
+                if (
+                    callee_name[:1].isupper()
+                    or callee_name in _LANGUAGE_BUILTIN_GLOBALS
+                    or callee_name in _RUST_BUILTIN_TYPES
+                    or callee_name.lower() in _RUST_TRAIT_METHOD_BLOCKLIST
+                ):
+                    continue
+                tgt_nid = label_to_nid.get(callee_name)
+                if tgt_nid in type_nids:
+                    continue
+                if tgt_nid:
+                    if tgt_nid != caller_nid:
+                        macro_arg_edges.append({
+                            "source": caller_nid,
+                            "target": tgt_nid,
+                            "relation": "calls",
+                            "context": "macro_argument_call",
+                            "confidence": "INFERRED",
+                            "confidence_score": 0.85,
+                            "source_file": str_path,
+                            "source_location": f"L{line}",
+                            "weight": 1.0,
+                        })
+                    continue
+                raw_calls.append({
+                    "caller_nid": caller_nid,
+                    "callee": callee_name,
+                    "is_member_call": False,
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                })
+            # Fall through to the generic child recursion below; the token tree
+            # holds no call_expression, so nothing is counted twice.
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
             callee_name: str | None = None
@@ -884,6 +1030,16 @@ def extract_rust(path: Path) -> dict:
                         tgt_nid = named if named in type_nids else None
                 elif is_member_call:
                     tgt_nid = method_label_to_nid.get(callee_name)
+                elif is_scoped_call:
+                    # `m::f()` names module m. It is in this file only for
+                    # `self::f()` or an inline `mod m { .. }` declared here; any
+                    # other module lives in another file, so the bare-name match
+                    # would bind `crate::b::helper()` to this file's own helper.
+                    path_node = func_node.child_by_field_name("path") if func_node else None
+                    qual = _read_text(path_node, source) if path_node is not None else ""
+                    head = qual.split("::")[-1].strip()
+                    tgt_nid = label_to_nid.get(callee_name) if (
+                        qual == "self" or head in inline_mods) else None
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
@@ -902,7 +1058,29 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-                elif not is_scoped_call and callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
+                elif is_scoped_call:
+                    # A module-qualified call (`crate::m::f()`, `m::f()`, `super::m::f()`)
+                    # goes to the cross-file pass with its qualifier, which binds it only
+                    # when the qualifier matches the candidate's module path and exactly
+                    # one candidate survives. Bare last-segment lookup stays off (#908).
+                    qual_node = func_node.child_by_field_name("path")
+                    qualifier = _read_text(qual_node, source) if qual_node else ""
+                    # `use std::fs; fs::read()` names std's fs, never a local `fs.rs`.
+                    first_seg = qualifier.split("::", 1)[0].split("<", 1)[0].strip()
+                    roots = use_roots.get(first_seg, {"crate"})
+                    if not roots <= {"crate", "super", "self"}:
+                        qualifier = ""
+                    if qualifier:
+                        raw_calls.append({
+                            "caller_nid": caller_nid,
+                            "callee": callee_name,
+                            "is_member_call": False,
+                            "is_scoped_call": True,
+                            "scope_qualifier": qualifier,
+                            "source_file": str_path,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                        })
+                elif callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
                     rc_entry = {
                         "caller_nid": caller_nid,
                         "callee": callee_name,
@@ -920,6 +1098,17 @@ def extract_rust(path: Path) -> dict:
 
     for caller_nid, body_node, impl_type, impl_key in function_bodies:
         walk_calls(body_node, caller_nid, impl_type, impl_key)
+    # Added last: a parsed call to the same target in the same function keeps
+    # its EXTRACTED edge instead of being deduped behind the token-pattern one.
+    for edge in macro_arg_edges:
+        pair = (edge["source"], edge["target"])
+        if pair not in seen_call_pairs:
+            seen_call_pairs.add(pair)
+            edges.append(edge)
+
+    for node in nodes:
+        if not node["source_file"] and node["label"] in use_roots:
+            node["_rust_use_roots"] = sorted(use_roots[node["label"]])
 
     valid_ids = seen_ids
     clean_edges = []

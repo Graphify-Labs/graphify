@@ -778,5 +778,93 @@ class TestDart(unittest.TestCase):
         self.assertEqual(loc[_make_id("conn_web.dart")], "L3")
         self.assertEqual(loc[_make_id("service_io.dart")], "L5")
 
+    def test_anonymous_extension_is_detected(self):
+        """An unnamed `extension on Type { ... }` must mint a node and an
+        `extends` edge, exactly like a named extension does; the fallback
+        label it already carried for this case never actually matched."""
+        code = textwrap.dedent("""
+        extension on String {
+          String shout() => toUpperCase();
+        }
+        """)
+        path = self.temp_path / "shout.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        ext_node = next((n for n in result["nodes"] if n["label"] == "Extension on String"), None)
+        self.assertIsNotNone(ext_node)
+
+        extends_string = next(
+            (e for e in result["edges"] if e["source"] == ext_node["id"] and e["relation"] == "extends"),
+            None,
+        )
+        self.assertIsNotNone(extends_string)
+        self.assertEqual(extends_string["target"], "string")
+
+    def test_named_extension_is_unaffected(self):
+        """A control for the fix above: a named extension must still resolve
+        exactly as before, not fall into the anonymous-fallback label."""
+        code = textwrap.dedent("""
+        extension StringExtensions on String {
+          String whisper() => toLowerCase();
+        }
+        """)
+        path = self.temp_path / "whisper.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        ext_node = next((n for n in result["nodes"] if n["label"] == "StringExtensions"), None)
+        self.assertIsNotNone(ext_node)
+        self.assertIsNone(next((n for n in result["nodes"] if "anonymous_extension" in n["id"]), None))
+
+    def test_mixin_on_clause_with_multiple_superclass_constraints(self):
+        """A mixin's `on` clause may list several superclass constraints,
+        comma-separated (`mixin Foo on A, B {}`); every one of them must get
+        an `inherits` edge, not just the first."""
+        code = textwrap.dedent("""
+        mixin Selectable on Comparable<Selectable>, State<WidgetState> {
+          void select() {}
+        }
+        """)
+        path = self.temp_path / "selectable.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        mixin_node = next((n for n in result["nodes"] if n["label"] == "Selectable"), None)
+        self.assertIsNotNone(mixin_node)
+
+        inherits_targets = {
+            e["target"] for e in result["edges"]
+            if e["source"] == mixin_node["id"] and e["relation"] == "inherits"
+        }
+        self.assertEqual(inherits_targets, {"comparable", "state"})
+
+        # The generic argument of the dropped second constraint must still
+        # surface as a reference, exactly like the first constraint's does.
+        ref_targets = {
+            e["target"] for e in result["edges"]
+            if e["source"] == mixin_node["id"] and e["relation"] == "references"
+        }
+        self.assertIn("widgetstate", ref_targets)
+
+    def test_mixin_on_clause_with_single_superclass_constraint_is_unaffected(self):
+        """A control for the fix above: a mixin with only one `on` superclass
+        constraint must still resolve exactly as before."""
+        code = textwrap.dedent("""
+        mixin AuthMixin on BaseWidget {}
+        """)
+        path = self.temp_path / "auth_mixin.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+
+        mixin_node = next((n for n in result["nodes"] if n["label"] == "AuthMixin"), None)
+        self.assertIsNotNone(mixin_node)
+
+        inherits = [
+            e for e in result["edges"]
+            if e["source"] == mixin_node["id"] and e["relation"] == "inherits"
+        ]
+        self.assertEqual([e["target"] for e in inherits], ["basewidget"])
+
 if __name__ == "__main__":
     unittest.main()
