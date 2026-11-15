@@ -592,6 +592,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     seen_ids: set[str] = {file_nid}
     table_nids: dict[str, str] = {}  # name → nid for reference resolution
     routine_nids: dict[str, str] = {}  # function/procedure name → nid, for trigger links
+    # Structured routine nid → 1-based line. On tree-sitter-sql 0.3.13 a package's
+    # first member partially parses as a top-level create_procedure, so the
+    # structured walk mints a plain node for it; the package recovery below uses
+    # this to drop that duplicate once it owns the package-qualified member.
+    structured_routine_lines: dict[str, int] = {}
 
     def _read(n) -> str:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
@@ -713,6 +718,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{_clean_ident(name)}()", line)
                 routine_nids[_norm_ident(name)] = nid
+                structured_routine_lines[nid] = line
                 _walk_from_refs(node, nid, line)
                 _walk_writes(node, nid)
 
@@ -722,6 +728,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{_clean_ident(name)}()", line)
                 routine_nids[_norm_ident(name)] = nid
+                structured_routine_lines[nid] = line
                 _walk_from_refs(node, nid, line)
                 _walk_writes(node, nid)
 
@@ -1248,10 +1255,25 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             _add_node(pkg_nid, _clean_ident(pkg_name), masked_src.count("\n", 0, m.start()) + 1)
             end = _BODY_END_RX.search(masked_src, m.end())
             limit = end.start() if end else len(masked_src)
+            pkg_line = masked_src.count("\n", 0, m.start()) + 1
+            limit_line = masked_src.count("\n", 0, limit) + 1
             for member, pos, span, is_def in _package_members(masked_src, m.end(), limit):
                 if m.group(1) and not is_def:
                     continue
                 member_nid = _make_id(stem, f"{pkg_name}.{member}")
+                # On tree-sitter-sql 0.3.13 this member may have partially parsed
+                # as a top-level routine, so the structured walk minted a plain
+                # `member` node inside this package's span. The recovery owns the
+                # correct package-qualified node and re-derives its refs, so drop
+                # that duplicate and its edges. A no-op on 0.3.11 (no such node).
+                plain_nid = _make_id(stem, member)
+                if (plain_nid != member_nid
+                        and pkg_line <= structured_routine_lines.get(plain_nid, -1) <= limit_line):
+                    nodes[:] = [n for n in nodes if n["id"] != plain_nid]
+                    edges[:] = [e for e in edges
+                                if e["source"] != plain_nid and e["target"] != plain_nid]
+                    structured_routine_lines.pop(plain_nid, None)
+                    seen_ids.discard(plain_nid)
                 # Overloads share one node.
                 if member_nid not in seen_ids:
                     member_line = masked_src.count("\n", 0, pos) + 1
