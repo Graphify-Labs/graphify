@@ -32,6 +32,18 @@ from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
 from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
+from .django_routes import resolve_django_routes
+from .http_fetch import resolve_http_fetch_calls
+from .http_endpoints import (
+    HTTP_CALL_SUFFIXES,
+    HTTP_GLOBAL_CALLEES,
+    KEY_ROUTE_KIND,
+    KEY_ROUTE_PATTERN,
+    KEY_ROUTE_TARGET,
+    ROUTE_KIND_INCLUDE,
+    ROUTE_KIND_PATH,
+    ROUTE_KIND_RE_PATH,
+)
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.rcfile import (
@@ -1446,6 +1458,7 @@ _JS_CONFIG = LanguageConfig(
     # `const f = function (…) {}` is tracked via its declarator and was already
     # fine; the inline/nested forms are what this covers.
     function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression", "generator_function"}),
+    http_callees=HTTP_GLOBAL_CALLEES,
     import_handler=_import_js,
 )
 
@@ -1473,6 +1486,7 @@ _TS_CONFIG = LanguageConfig(
     call_accessor_object_field="object",
     # `function_expression`: see the note on the JS config above.
     function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression", "generator_function"}),
+    http_callees=HTTP_GLOBAL_CALLEES,
     import_handler=_import_js,
 )
 
@@ -1494,6 +1508,7 @@ _TSX_CONFIG = LanguageConfig(
     call_accessor_object_field=_TS_CONFIG.call_accessor_object_field,
     function_boundary_types=_TS_CONFIG.function_boundary_types,
     import_handler=_TS_CONFIG.import_handler,
+    http_callees=HTTP_GLOBAL_CALLEES,
 )
 
 _JAVA_CONFIG = LanguageConfig(
@@ -2000,6 +2015,150 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
             _add_rationale(stripped, lineno, file_nid)
 
 
+# ── Django urls.py route stamping (consumed by graphify/django_routes.py) ─────
+# A Django urls.py declares routes purely at module level (`urlpatterns = [...]`),
+# a region the call walk never visits — it walks function bodies and property
+# initializers only — so `path()`/`re_path()`/`include()` calls mint no raw_calls
+# and every cross-file pass stays blind to the URL contracts that bind a view.
+# urls.py files get a dedicated tree walk here that mints raw_calls stamped with
+# the graphify.http_endpoints route keys (`route_pattern` = first string-literal
+# argument, `route_target` = second positional argument's source text, names
+# only, `route_kind` = path/re_path/include). The minted records deliberately
+# carry NO `callee` and NO `is_member_call`: the shared bare-name pass skips a
+# callee-less raw_call and every member-call resolver skips a non-member one, so
+# `resolve_django_routes` is their only consumer. The caller anchor is the
+# module-level file node id — the #2231 module-top-level convention — remapped
+# alongside the file node by the #2169 pass below.
+
+_DJANGO_URL_CALLEES = frozenset({"path", "re_path", "include"})
+
+
+def _plain_string_literal(node, source: bytes) -> "str | None":
+    """Decoded text of a plain string literal node, or None for anything else.
+
+    Fail-closed: f-strings/interpolations, byte literals, concatenated strings
+    and non-string expressions are not plain literals and stamp nothing.
+    """
+    if node is None or node.type != "string":
+        return None
+    if any(child.type == "interpolation" for child in node.children):
+        return None
+    import ast
+
+    try:
+        text = source[node.start_byte:node.end_byte].decode("utf-8", "replace")
+        value = ast.literal_eval(text)
+    except (ValueError, SyntaxError, UnicodeDecodeError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _positional_arguments(call_node) -> list:
+    """Named positional (non-keyword) arguments of a python call node."""
+    args_node = call_node.child_by_field_name("arguments")
+    if args_node is None:
+        return []
+    return [c for c in args_node.children if c.is_named and c.type != "keyword_argument"]
+
+
+def _route_target_text(node, source: bytes) -> "str | None":
+    """Source text for a view/module reference argument, names only, or None
+    when no second positional argument exists. A string literal argument is
+    decoded (``"views.devices"`` → ``views.devices``); every other expression
+    is captured as written (identifier, attribute chain, class-based view call)
+    so the resolver can park it verbatim when it cannot bind it."""
+    if node is None:
+        return None
+    as_string = _plain_string_literal(node, source)
+    if as_string is not None:
+        return as_string
+    text = re.sub(r"\s+", " ", source[node.start_byte:node.end_byte].decode("utf-8", "replace")).strip()
+    if not text or len(text) > 200:
+        return None
+    return text
+
+
+def _stamp_django_url_routes(path: Path, result: dict) -> None:
+    """Mint route-stamped raw_calls for one Django urls.py file (all others
+    untouched). ``path("api/", include("api.urls"))`` is stamped ONCE, on the
+    outer call, as kind ``include`` with the nested include's module literal as
+    target — the walk sees the inner call node too, so its span is marked
+    consumed to avoid double-stamping the same include. Adds to ``result`` in
+    place; a parse failure or non-urls.py name is a silent no-op (fail-closed,
+    same contract as `_extract_python_rationale`)."""
+    if path.name != "urls.py" or "error" in result:
+        return
+    try:
+        import tree_sitter_python as tspython
+        from tree_sitter import Language, Parser
+        language = Language(tspython.language())
+        parser = Parser(language)
+        source = _read_source_bytes(path, warn=False)
+        tree = parser.parse(source)
+    except Exception:
+        return
+
+    consumed_includes: set[tuple[int, int]] = set()
+    pending: list[dict] = []  # stamps collect here in source order, appended below
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        children = node.children
+        for child in reversed(children):
+            stack.append(child)
+        if node.type != "call":
+            continue
+        fn = node.child_by_field_name("function")
+        if fn is None or fn.type != "identifier":
+            continue  # `obj.path()` member calls are not Django's route tables
+        callee = _read_text(fn, source)
+        if callee not in _DJANGO_URL_CALLEES:
+            continue
+        if (node.start_byte, node.end_byte) in consumed_includes:
+            continue  # inner `include(...)` of a path() — already stamped there
+        positional = _positional_arguments(node)
+        pattern = _plain_string_literal(positional[0], source) if positional else None
+        second = positional[1] if len(positional) >= 2 else None
+        rc = {
+            "caller_nid": _make_id(str(path)),
+            "source_file": str(path),
+            "source_location": f"L{node.start_point[0] + 1}",
+            KEY_ROUTE_KIND: callee,
+        }
+        if callee in (ROUTE_KIND_PATH, ROUTE_KIND_RE_PATH) and pattern is not None:
+            rc[KEY_ROUTE_PATTERN] = pattern
+            target = _route_target_text(second, source)
+            if target is not None:
+                rc[KEY_ROUTE_TARGET] = target
+            # `path("api/", include("api.urls"))`: the include is a call INSIDE
+            # the call's arguments. The outer route owns the prefix, the nested
+            # literal names the module — stamp once as kind=include.
+            if second is not None and second.type == "call":
+                inner_fn = second.child_by_field_name("function")
+                if (inner_fn is not None and inner_fn.type == "identifier"
+                        and _read_text(inner_fn, source) == "include"):
+                    inner_positional = _positional_arguments(second)
+                    module = _plain_string_literal(inner_positional[0], source) if inner_positional else None
+                    consumed_includes.add((second.start_byte, second.end_byte))
+                    if module is None:
+                        rc.pop(KEY_ROUTE_TARGET, None)  # un-mappable include prefixes nothing
+                        continue
+                    rc[KEY_ROUTE_KIND] = ROUTE_KIND_INCLUDE
+                    rc[KEY_ROUTE_TARGET] = module
+            pending.append(rc)
+        elif callee == ROUTE_KIND_INCLUDE:
+            module = _plain_string_literal(positional[0], source) if positional else None
+            if module is None:
+                continue  # an include without a plain module literal prefixes nothing
+            # A bare `include("api.urls")` (not wrapped in path()) carries no
+            # prefix of its own — the module it pulls in composes from nothing.
+            rc[KEY_ROUTE_KIND] = ROUTE_KIND_INCLUDE
+            rc[KEY_ROUTE_PATTERN] = ""
+            rc[KEY_ROUTE_TARGET] = module
+            pending.append(rc)
+    result.setdefault("raw_calls", []).extend(pending)
+
+
 # ── TypeScript import type normalization (#3154) ──────────────────────────────
 # tree-sitter-typescript misparses `import(...)` types used inside explicit call-
 # expression type arguments (e.g. `f<typeof import("mod")>()` or
@@ -2280,6 +2439,7 @@ def extract_python(path: Path, *, root: Path | None = None) -> dict:
     result = _extract_generic(path, _PYTHON_CONFIG, scan_root=root)
     if "error" not in result:
         _extract_python_rationale(path, result)
+        _stamp_django_url_routes(path, result)
     return result
 
 
@@ -9939,6 +10099,20 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "markdown_mentions", MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
+    )
+)
+# HTTP endpoint linking: Django urls.py routes and frontend fetch()/axios call
+# sites mint shared http_endpoint nodes (graphify/http_endpoints.py), so a
+# frontend call and the backend view that serves it meet at one node instead of
+# a gap no static pass can hop. Routes run first: the backend is the endpoint's
+# source of record. Resolvers live in graphify.django_routes and
+# graphify.http_fetch.
+register_language_resolver(
+    LanguageResolver("django_routes", frozenset({".py"}), resolve_django_routes)
+)
+register_language_resolver(
+    LanguageResolver(
+        "http_fetch_calls", HTTP_CALL_SUFFIXES, resolve_http_fetch_calls
     )
 )
 
