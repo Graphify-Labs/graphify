@@ -38,6 +38,12 @@ class LanguageConfig:
     call_accessor_field: str = "attribute"          # field on accessor for method name
     call_accessor_object_field: str = ""            # field on accessor for the receiver/object
 
+    # HTTP call capture (graphify/http_endpoints.py): when non-empty, bare callees
+    # in this set get their first string argument stamped onto the raw_call as
+    # ``http_url`` (fetch, ...). Member-call capture (axios.get, ...) is keyed off
+    # HTTP_MEMBER_RECEIVERS/HTTP_MEMBER_CALLEES regardless of this field.
+    http_callees: frozenset = frozenset()
+
     # Stop recursion at these types in walk_calls
     function_boundary_types: frozenset = frozenset()
 

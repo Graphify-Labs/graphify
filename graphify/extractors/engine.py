@@ -12,6 +12,12 @@ from graphify.extractors.base import (
     _read_source_bytes,
     _read_text,
 )
+from graphify.http_endpoints import (
+    HTTP_MEMBER_CALLEES,
+    HTTP_MEMBER_RECEIVERS,
+    KEY_HTTP_METHOD,
+    KEY_HTTP_URL,
+)
 from graphify.ids import DeclIdRegistry, normalize_id
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
@@ -11771,6 +11777,66 @@ def _extract_generic(
                                 node, member_receiver, source, js_receiver_bindings,
                             )
                             rc_entry["_js_construct"] = node.type == "new_expression"
+                        # JS-family HTTP call sites (``fetch('/api/devices')``,
+                        # ``axios.get('/api/y')``) name a literal URL no call
+                        # graph can express. The config-gated ``http_callees``
+                        # key opts a language into the scan (plain JS/TS/Svelte
+                        # configs only); the shared contract lives in
+                        # graphify/http_endpoints.py so the frontend resolver
+                        # and the Django route side mint one endpoint per
+                        # pattern. Additive raw_call keys — the markdown
+                        # raw_calls' ``language``/``path`` precedent. Fail
+                        # closed: only a string or template_string first
+                        # argument carries a URL (a template keeps its
+                        # ``${...}`` substitutions as written — the resolver
+                        # unifies them with route parameters); an identifier,
+                        # binary_expression, or call with a computed URL
+                        # stamps nothing, as does a second-arg init object
+                        # whose ``method`` value is not a string literal.
+                        _http_callees = getattr(config, "http_callees", None) or frozenset()
+                        if _http_callees:
+                            _recv = swift_receiver or member_receiver
+                            _is_http_call = (
+                                (not is_member_call and callee_name in _http_callees)
+                                or (
+                                    is_member_call
+                                    and _recv in HTTP_MEMBER_RECEIVERS
+                                    and callee_name in HTTP_MEMBER_CALLEES
+                                )
+                            )
+                            if _is_http_call:
+                                _args = node.child_by_field_name("arguments")
+                                _pos = (
+                                    [c for c in _args.children if c.is_named]
+                                    if _args is not None else []
+                                )
+                                _url = None
+                                if _pos:
+                                    if _pos[0].type == "string":
+                                        _url = _read_text(_pos[0], source).strip("'\" ")
+                                    elif _pos[0].type == "template_string":
+                                        _url = _read_text(_pos[0], source).strip("`")
+                                if _url:
+                                    rc_entry[KEY_HTTP_URL] = _url
+                                    if len(_pos) > 1 and _pos[1].type == "object":
+                                        for _pair in _pos[1].children:
+                                            if _pair.type != "pair":
+                                                continue
+                                            _pkey = _pair.child_by_field_name("key")
+                                            _pval = _pair.child_by_field_name("value")
+                                            if (
+                                                _pkey is not None
+                                                and _pval is not None
+                                                and _pval.type == "string"
+                                                and _read_text(_pkey, source).strip("'\" ")
+                                                == "method"
+                                            ):
+                                                _verb = _read_text(
+                                                    _pval, source,
+                                                ).strip("'\" ").upper()
+                                                if _verb:
+                                                    rc_entry[KEY_HTTP_METHOD] = _verb
+                                                break
                         if python_receiver_shadowed is not None and is_member_call:
                             rc_entry["_python_receiver_shadowed"] = python_receiver_shadowed(
                                 node, member_receiver or ""
