@@ -206,7 +206,11 @@ def test_forward_declaration_and_initialization_block(tmp_path):
     )
     assert line["pkg.late()"] == "L7"
     assert "pkg.after_pkg()" not in line
-    assert [e for e in edges if e[1] != "contains"] == [("pkg.late()", "writes_to", "t_late")]
+    # `early` calls the forward-declared `late` (#5170); `after_pkg;` sits in an anonymous block.
+    assert [e for e in edges if e[1] != "contains"] == [
+        ("pkg.early()", "calls", "pkg.late()"),
+        ("pkg.late()", "writes_to", "t_late"),
+    ]
 
 
 def test_scan_stops_at_the_package_end(tmp_path):

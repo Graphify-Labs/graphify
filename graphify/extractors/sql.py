@@ -393,6 +393,52 @@ def _routine_body_refs(masked: str, *, plsql: bool = False) -> list[tuple[str, s
     return [(relation, name, pos) for pos, relation, name in sorted(refs)]
 
 
+# A routine called from a PL/SQL body (#5170): `name(`, `pkg.f(x)`, `s.f@link(x)`,
+# `CALL|EXEC|EXECUTE|PERFORM name`, or a bare `name;` statement. Name-based and
+# scope-blind, so every resulting edge is INFERRED. Heuristic limits: a bare
+# name is kept only when it matches a routine defined in the same file (built-in
+# function lists are dialect-specific, so an unresolved bare name is dropped,
+# not stubbed); a qualified name that is not defined here becomes a sourceless
+# stub, unless it is an Oracle-supplied package (`DBMS_*`, `UTL_*`, `SYS.`) or a
+# collection method (`arr.EXISTS(i)`); a local record or object variable called
+# like a routine (`obj.method(x)`) is indistinguishable from `pkg.f(x)`.
+_BODY_CALL_RX = re.compile(
+    r"(?<![\w$#.@:\"\]])(" + _BODY_TABLE_IDENT + r")\s*(?:\(|(;))"
+    r"|\b(?:CALL|EXEC(?:UTE)?|PERFORM)\s+(" + _BODY_TABLE_IDENT + r")",
+    re.IGNORECASE,
+)
+# The word before a name that makes it a declaration or a write target, not a call
+# (`INSERT INTO t(a, b)`, `PROCEDURE p(x NUMBER)`, `CREATE INDEX i ON t(c)`).
+_BODY_CALL_DECL_RX = re.compile(
+    r"\b(?:INTO|PROCEDURE|FUNCTION|CURSOR|TYPE|SUBTYPE|TABLE|VIEW|INDEX|ON|END|OF|REF)\s+$",
+    re.IGNORECASE,
+)
+_BODY_CALL_SKIP_PREFIX = ("dbms_", "utl_", "sys.")
+_BODY_COLLECTION_METHODS = frozenset({
+    "exists", "count", "delete", "extend", "trim", "first", "last", "next", "prior", "limit",
+})
+
+
+def _routine_call_refs(masked: str, known: dict[str, str]) -> list[tuple[str, int]]:
+    """(callee name as written, offset) for each routine a masked PL/SQL body
+    calls, in source order. `known` maps a normalized routine name to its node id."""
+    calls: list[tuple[str, int]] = []
+    for m in _BODY_CALL_RX.finditer(masked):
+        name = m.group(1) or m.group(3)
+        if m.group(3) is None and _BODY_CALL_DECL_RX.search(masked[max(0, m.start() - 20):m.start()]):
+            continue
+        norm = _norm_ident(name)
+        if m.group(2) and norm not in known:
+            continue  # a bare `name;` is a call only when it names a known routine
+        if norm not in known:
+            if "." not in norm.split("@", 1)[0] or norm.startswith(_BODY_CALL_SKIP_PREFIX):
+                continue
+            if norm.split("@", 1)[0].rsplit(".", 1)[1] in _BODY_COLLECTION_METHODS:
+                continue
+        calls.append((name, m.start(1) if m.group(1) else m.start(3)))
+    return calls
+
+
 # `CREATE PACKAGE body IS` names a package called body.
 _PACKAGE_RECOVERY_RX = re.compile(
     r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?PACKAGE\s+"
@@ -616,12 +662,12 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                            "confidence": "EXTRACTED", "source_file": str_path,
                            "source_location": f"L{line}", "weight": 1.0})
 
-    def _add_edge(src: str, tgt: str, relation: str, line: int) -> None:
+    def _add_edge(src: str, tgt: str, relation: str, line: int, confidence: str = "EXTRACTED") -> None:
         edges.append({"source": src, "target": tgt, "relation": relation,
-                       "confidence": "EXTRACTED", "source_file": str_path,
+                       "confidence": confidence, "source_file": str_path,
                        "source_location": f"L{line}", "weight": 1.0})
 
-    def _ref_stub(name: str) -> str:
+    def _ref_stub(name: str, label: str | None = None, kind: str = "") -> str:
         """Sourceless bare-name stub for a table referenced but not defined here.
 
         SQL references are NAME-based, so a table defined in another file (e.g.
@@ -636,10 +682,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         sourced/contained stub would get the referencing file's path baked into
         its id by disambiguation, blocking the rewire.
         """
-        nid = _make_id(name)
+        nid = _make_id(kind, name)  # `kind` keeps a routine stub apart from a table of the same name
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": _clean_ident(name), "file_type": "code",
+            nodes.append({"id": nid, "label": label or _clean_ident(name), "file_type": "code",
                            "source_file": "", "source_location": "",
                            "origin_file": str_path})
         return nid
@@ -1223,6 +1269,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # name a genuine statement captures is allowed to be a delimited
         # identifier; its CREATE never is.
         masked_src, ident_spans = _scan_sql(src_text)
+        # Routines recovered below, by normalized name, and the bodies to scan for
+        # calls once every name is known: (caller id, owning package or None, offset, text).
+        known_routines: dict[str, str] = {}
+        call_bodies: list[tuple[str, str | None, int, str]] = []
         for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):
                 continue
@@ -1233,11 +1283,15 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # keeps its tree-based reads_from; scanning it too would double them.
             from_tree = fn_nid in seen_ids
             _add_node(fn_nid, f"{_clean_ident(fn_name)}()", fn_line)
+            known_routines[_norm_ident(fn_name)] = fn_nid
+            end = _BODY_END_RX.search(masked_src, m.end())
+            routine_body = masked_src[m.end():end.start() if end else len(masked_src)]
+            # Calls are not in the tree walk, so a tree-produced routine is scanned too.
+            call_bodies.append((fn_nid, None, m.end(), routine_body))
             if from_tree:
                 continue
-            end = _BODY_END_RX.search(masked_src, m.end())
             seen_refs: set[tuple[str, str]] = set()
-            for relation, tbl, pos in _routine_body_refs(masked_src[m.end():end.start() if end else len(masked_src)]):
+            for relation, tbl, pos in _routine_body_refs(routine_body):
                 tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
                 if (relation, tbl_nid) in seen_refs:
                     continue
@@ -1282,8 +1336,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                   "file_type": "code", "source_file": str_path,
                                   "source_location": f"L{member_line}"})
                     _add_edge(pkg_nid, member_nid, "contains", member_line)
+                known_routines[_norm_ident(f"{pkg_name}.{member}")] = member_nid
                 if span is None:
                     continue
+                call_bodies.append((member_nid, _norm_ident(pkg_name), span[0], masked_src[span[0]:span[1]]))
                 seen_refs = member_refs.setdefault(member_nid, set())
                 for relation, tbl, ref_pos in _routine_body_refs(masked_src[span[0]:span[1]], plsql=True):
                     tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
@@ -1291,6 +1347,24 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                         continue
                     seen_refs.add((relation, tbl_nid))
                     _add_edge(member_nid, tbl_nid, relation, masked_src.count("\n", 0, span[0] + ref_pos) + 1)
+
+        # Calls (#5170), after every routine above is registered so a call can
+        # resolve to a routine defined later in the file. A package member also
+        # sees its siblings by bare name.
+        seen_calls: set[tuple[str, str]] = set()
+        for caller_nid, pkg_norm, base, body in call_bodies:
+            scope = known_routines
+            if pkg_norm:
+                prefix = pkg_norm + "."
+                scope = {**known_routines, **{k[len(prefix):]: v for k, v in known_routines.items()
+                                              if k.startswith(prefix)}}
+            for callee, pos in _routine_call_refs(body, scope):
+                callee_nid = scope.get(_norm_ident(callee)) or _ref_stub(callee, f"{_clean_ident(callee)}()", "routine")
+                if callee_nid == caller_nid or (caller_nid, callee_nid) in seen_calls:
+                    continue
+                seen_calls.add((caller_nid, callee_nid))
+                _add_edge(caller_nid, callee_nid, "calls", masked_src.count("\n", 0, base + pos) + 1,
+                          confidence="INFERRED")
 
         for m in _TRIGGER_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):
