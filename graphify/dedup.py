@@ -165,9 +165,19 @@ def _same_word_variant(x: str, y: str) -> bool:
     the never-merge-two-distinct-entities bar: "colour"/"color" (5 chars,
     lengths differ) now reads as two words and stays unmerged -- a spelling
     variant kept separate beats a fabricated merge.
+
+    A token that is the other with letters prepended is a derived word, not a
+    typo: "synchronous"/"asynchronous" (JW 97.22), "cyclic"/"acyclic",
+    "reload"/"preload" name opposite or different things, so they never read
+    as variants. Appended letters ("handler"/"handlers") still fall through to
+    Jaro-Winkler. This is the token-level counterpart of the label-level
+    prefix-extension guard (#1201).
     """
     if len(x) == len(y) and DamerauLevenshtein.distance(x, y) <= 1:
         return True   # same-length 1-sub/transposition = typo, even at position 0
+    shorter, longer = sorted((x, y), key=len)
+    if len(shorter) < len(longer) and longer.endswith(shorter):
+        return False  # letters prepended: a derived word (a-synchronous), not a typo
     if min(len(x), len(y)) < 6:
         return False  # short tokens: JW can't separate pane/plane (94.0) from a typo
     return JaroWinkler.normalized_similarity(x, y) * 100 >= _MERGE_THRESHOLD
