@@ -1175,6 +1175,15 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
 # TypeScript graph would start losing edges from its other contexts.
 _HERITAGE_RELATIONS = frozenset({"inherits", "implements", "extends"})
 
+# Relations a `call` filter matches whatever their context. A `calls` edge's
+# context says where the call was found, not whether it is one:
+# `merge-graphs` finishes a member call into another repo as a `calls` edge
+# with `context="cross_repo"` (#3152), so a filter that only read `context`
+# dropped exactly the calls that cross a repository boundary from "who calls
+# X". The shared-type links carry the same context but another relation, so
+# they stay out.
+_CONTEXT_RELATIONS: dict[str, frozenset[str]] = {"call": frozenset({"calls"})}
+
 
 def _normalize_context_filters(filters: list[str] | None) -> list[str]:
     if not filters:
@@ -1218,7 +1227,9 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
-    relations = filters & _HERITAGE_RELATIONS
+    relations = set(filters & _HERITAGE_RELATIONS)
+    for context in filters:
+        relations |= _CONTEXT_RELATIONS.get(context, frozenset())
 
     def keep(data: dict) -> bool:
         if data.get("context") in filters:
