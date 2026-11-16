@@ -327,6 +327,12 @@ def existing_graph_node_counts_by_source(path: "str | Path"):
     shrink guard would need to protect (#5245): a source with zero saved
     nodes here has nothing to lose, so its permanent failure alone should not
     arm the guard against an otherwise complete, unrelated run.
+
+    Also used by the #3412 self-explained shrink exemption to check the
+    shrink per source rather than as one net total (#3412 review): a net
+    total can be masked by unrelated growth elsewhere, letting a genuine
+    unflagged loss slip through the very guard this exemption exists to
+    narrow, not weaken.
     """
     nodes = _load_existing_graph_nodes(path)
     if not isinstance(nodes, list):
