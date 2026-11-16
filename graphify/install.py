@@ -1757,6 +1757,26 @@ def _load_json_like(config_file: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
+def _read_json_like_for_merge(config_file: Path) -> dict:
+    """JSON/JSONC counterpart of ``_read_settings_for_merge`` (#2167).
+
+    A missing file yields ``{}``. An existing file that does not parse as a JSON
+    object aborts via ``_refuse_to_modify`` instead of falling back to ``{}`` -
+    that fallback made the installer rewrite the user's config with only
+    graphify's entry. Reads with ``utf-8-sig`` so a UTF-8 BOM is tolerated.
+    """
+    if not config_file.exists():
+        return {}
+    try:
+        raw = config_file.read_text(encoding="utf-8-sig")
+        if config_file.suffix == ".jsonc":
+            raw = _strip_json_comments(raw)
+        loaded = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        loaded = None
+    if not isinstance(loaded, dict):
+        _refuse_to_modify(config_file)
+    return loaded
 def _kilo_config_path(project_dir: Path) -> Path:
     kilo_dir = (project_dir or Path(".")) / ".kilo"
     json_path = kilo_dir / _KILO_CONFIG_JSON_PATH.name
@@ -1772,15 +1792,18 @@ def _kilo_config_write_path(project_dir: Path) -> Path:
     return kilo_dir / _KILO_CONFIG_JSON_PATH.name
 def _install_kilo_plugin(project_dir: Path) -> None:
     """Write graphify.js plugin and register it without rewriting user JSONC."""
+    config_file = _kilo_config_path(project_dir)
+    # Read (and refuse an unparseable config) before writing anything, so a
+    # refused install leaves no half-registered plugin behind.
+    config = _read_json_like_for_merge(config_file)
+
     plugin_file = project_dir / _KILO_PLUGIN_PATH
     plugin_file.parent.mkdir(parents=True, exist_ok=True)
     plugin_file.write_text(_KILO_PLUGIN_JS, encoding="utf-8")
     print(f"  {_KILO_PLUGIN_PATH}  ->  tool.execute.before hook written")
 
-    config_file = _kilo_config_path(project_dir)
     write_config_file = _kilo_config_write_path(project_dir)
     write_config_file.parent.mkdir(parents=True, exist_ok=True)
-    config = _load_json_like(config_file)
     plugins = config.get("plugin")
     if not isinstance(plugins, list):
         plugins = []
