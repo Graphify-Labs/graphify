@@ -5384,7 +5384,8 @@ def _drop_shadowed_csharp_partial_bases(all_nodes: list[dict], all_edges: list[d
     bail as ambiguous. A placeholder spelled with the bare name is the
     unresolved spelling of the resolved base, so it goes. One written
     qualified (`Other.IFoo`) or through a `using` alias of that name can be a
-    different type that only shares the simple name, so it stays.
+    different type that only shares the simple name, so it stays. When several
+    halves resolve the same real base, their edges collapse into one.
     """
     nodes_by_id = {str(n.get("id", "")): n for n in all_nodes}
 
@@ -5435,7 +5436,23 @@ def _drop_shadowed_csharp_partial_bases(all_nodes: list[dict], all_edges: list[d
             return False
         return label not in aliases_by_file.get(str(e.get("source_file", "")), set())
 
-    all_edges[:] = [e for e in all_edges if not _shadowed(e)]
+    # Halves that both resolve the base leave one edge each to the same real
+    # type; after the merge that is one base, so keep one edge.
+    seen_bases: set[tuple[str, str, str]] = set()
+
+    def _repeated(e: dict) -> bool:
+        if e.get("relation") not in ("inherits", "implements"):
+            return False
+        src = str(e.get("source", ""))
+        if src not in real_bases:
+            return False
+        key = (str(e.get("relation")), src, str(e.get("target", "")))
+        if key in seen_bases:
+            return True
+        seen_bases.add(key)
+        return False
+
+    all_edges[:] = [e for e in all_edges if not _shadowed(e) and not _repeated(e)]
 
 
 UNRESOLVED_CALLS_KEY = "unresolved_calls"
@@ -7265,10 +7282,19 @@ def _resolve_csharp_member_calls(
             # like `Type.M()` above, only not Pascal-cased. Bind only when it
             # resolves to exactly one declared type; never park it, since an
             # undeclared lowercase name is as likely a namespace or alias.
-            type_nid = _resolve_type_name_nid(receiver, caller_node, src_file)
-            if not type_nid:
-                continue
-            type_qualified = True
+            # A field or property inherited from a base class is not in this
+            # type's own table either (`_store.Write()` with `_store` declared
+            # on the base); member lookup comes before type lookup, so try the
+            # base chain first.
+            enclosing = enclosing_type.get(caller) or (caller if caller in type_nids else None)
+            type_nid = _field_type_nid(enclosing, receiver) if enclosing else None
+            if type_nid:
+                type_qualified = False
+            else:
+                type_nid = _resolve_type_name_nid(receiver, caller_node, src_file)
+                if not type_nid:
+                    continue
+                type_qualified = True
         else:
             continue
         method_nid = _method_on_type_or_bases(type_nid, _key(callee))
@@ -12963,6 +12989,9 @@ def extract(
         nid_to_file_nid[n["id"]] = _file_node_id(sf_rel)
 
     existing_pairs = {(e["source"], e["target"]) for e in all_edges}
+    existing_call_pairs = {
+        (e["source"], e["target"]) for e in all_edges if e.get("relation") == "calls"
+    }
     # nid -> label, so a resolved Rust call target can be told apart from a
     # constructor: a function/method node is labelled `name()` / `.name()`, a
     # data definition (struct/enum/trait) carries the bare name. A cross-file
@@ -13394,8 +13423,13 @@ def extract(
             continue
         if rc.get("via_stub") and not (has_import_evidence or stub_scope_hit):
             continue
-        if tgt != caller and (caller, tgt) not in existing_pairs:
+        # A C# `new X()` from a method that also names X in its signature
+        # already has a `references` edge to X; that is no call, so only an
+        # earlier `calls` edge makes this one redundant.
+        taken = existing_call_pairs if rc.get("csharp_new") else existing_pairs
+        if tgt != caller and (caller, tgt) not in taken:
             existing_pairs.add((caller, tgt))
+            existing_call_pairs.add((caller, tgt))
             # Promote to EXTRACTED when there's a direct import edge from the
             # caller's file pointing at either the callee symbol itself or the
             # file the callee lives in.
