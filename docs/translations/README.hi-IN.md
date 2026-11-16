@@ -47,7 +47,7 @@
   <em>graphify द्वारा मैप किया गया FastAPI कोडबेस। हर नोड एक अवधारणा है, रंग पहचाने गए समुदाय हैं, और पूरी चीज़ graph.html में क्लिक करने योग्य है।</em>
 </p>
 
-**शुरू करें** (30 सेकंड)। Python 3.10+ और uv (या pipx) चाहिए:
+**शुरू करें** (30 सेकंड)। Python 3.11+ और uv (या pipx) चाहिए:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | आवश्यकता | न्यूनतम | जांचें | इंस्टॉल करें |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(अनुशंसित)* | कोई भी | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(वैकल्पिक)* | कोई भी | `pipx --version` | `pip install pipx` |
 

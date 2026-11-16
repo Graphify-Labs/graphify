@@ -47,7 +47,7 @@ AI コーディングアシスタントで `/graphify` と入力すると、プ�
   <em>graphify がマッピングした FastAPI コードベース。すべてのノードは概念であり、色は検出されたコミュニティを表し、全体が graph.html でクリック可能です。</em>
 </p>
 
-**始め方**（30 seconds）。Python 3.10+ と uv（または pipx）が必要です。
+**始め方**（30 seconds）。Python 3.11+ と uv（または pipx）が必要です。
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | 要件 | 最小 | 確認 | インストール |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 

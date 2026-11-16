@@ -47,7 +47,7 @@ AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujj
   <em>graphify tomonidan xaritalangan FastAPI kod bazasi. Har bir tugun tushunchadir, ranglar aniqlangan jamoalardir, butun narsa esa graph.html da bosiladi.</em>
 </p>
 
-**Ishni boshlang** (30 soniya). Python 3.10+ va uv (yoki pipx) talab qilinadi:
+**Ishni boshlang** (30 soniya). Python 3.11+ va uv (yoki pipx) talab qilinadi:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ To'liq qo'llanmalar va ma'lumotnoma **[docs.graphify.com](https://docs.graphify.
 
 | Talab | Minimum | Tekshirish | O'rnatish |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(tavsiya etiladi)* | istalgan | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(muqobil)* | istalgan | `pipx --version` | `pip install pipx` |
 

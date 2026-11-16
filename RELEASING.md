@@ -14,7 +14,7 @@ manage.
    `CHANGELOG.md`, crediting each landed PR and its author.
 3. **Refresh the lock.** Run `uv lock` so `uv.lock` records the new version (and
    any dependency changes).
-4. **Test on both supported interpreters.** Run the full suite on Python 3.10 and
+4. **Test on both supported interpreters.** Run the full suite on Python 3.11 and
    3.13:
    ```bash
    uv run pytest

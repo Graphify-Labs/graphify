@@ -47,7 +47,7 @@ I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong pr
   <em>Ang FastAPI codebase na inimapa ng graphify. Bawat node ay isang konsepto, ang mga kulay ay mga natukoy na community, at ang buong bagay ay naki-click sa graph.html.</em>
 </p>
 
-**Magsimula** (30 segundo). Kailangan ng Python 3.10+ at uv (o pipx):
+**Magsimula** (30 segundo). Kailangan ng Python 3.11+ at uv (o pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Ang buong gabay at reference ay nasa **[docs.graphify.com](https://docs.graphify
 
 | Kinakailangan | Minimum | Suriin | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(inirerekomenda)* | kahit ano | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatibo)* | kahit ano | `pipx --version` | `pip install pipx` |
 

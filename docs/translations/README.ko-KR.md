@@ -47,7 +47,7 @@ AI 코딩 어시스턴트에서 `/graphify` 를 입력하면, 프로젝트 전�
   <em>graphify 가 매핑한 FastAPI 코드베이스. 모든 노드는 하나의 개념이고, 색상은 검출된 커뮤니티이며, 전체가 graph.html 에서 클릭 가능합니다.</em>
 </p>
 
-**시작하기**(30 seconds). Python 3.10+ 와 uv(또는 pipx)가 필요합니다.
+**시작하기**(30 seconds). Python 3.11+ 와 uv(또는 pipx)가 필요합니다.
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | 요구 사항 | 최소 | 확인 | 설치 |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 

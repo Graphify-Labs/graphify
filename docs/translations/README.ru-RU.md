@@ -47,7 +47,7 @@
   <em>Кодовая база FastAPI, отображённая graphify. Каждый узел: это концепция, цвета: обнаруженные сообщества, и всё это кликабельно в graph.html.</em>
 </p>
 
-**Начало работы** (30 секунд). Нужны Python 3.10+ и uv (или pipx):
+**Начало работы** (30 секунд). Нужны Python 3.11+ и uv (или pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | Требование | Минимум | Проверка | Установка |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(рекомендуется)* | любой | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(альтернатива)* | любой | `pipx --version` | `pip install pipx` |
 
