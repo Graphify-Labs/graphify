@@ -270,3 +270,64 @@ def test_construction_of_a_type_named_in_the_signature(tmp_path: Path):
     calls = _targets(result, make, "calls")
     assert _node(result, "Ticket", "B.cs", 3) in calls
     assert _node(result, ".Ticket()", "B.cs", 5) in calls
+
+
+def test_field_type_names_the_types_own_nested_type_first(tmp_path: Path):
+    # Inside `Inner`, `Node` is `Inner.Node`, not the outer `Outer.Node`.
+    result = _extract(tmp_path, {"A.cs": """namespace Demo
+{
+    public class Outer
+    {
+        public class Node { }
+        public class Inner
+        {
+            public class Node { }
+            private Node _head;
+        }
+    }
+}
+"""})
+    inner = _node(result, "Inner", "A.cs", 6)
+    refs = _targets(result, inner, "references")
+    assert _node(result, "Node", "A.cs", 8) in refs
+    assert _node(result, "Node", "A.cs", 5) not in refs
+
+
+def test_enclosing_nested_type_wins_over_using_alias(tmp_path: Path):
+    # A `using` alias belongs to the namespace lookup, which comes after the
+    # enclosing types.
+    result = _extract(tmp_path, {"A.cs": """using Store = Other.Remote;
+namespace Demo
+{
+    public class Outer
+    {
+        public class Store { public bool Write() { return true; } }
+        public class Derived
+        {
+            private Store _s;
+            public bool Save() { return _s.Write(); }
+        }
+    }
+}
+namespace Other { public class Remote { public bool Write() { return false; } } }
+"""})
+    save_calls = _targets(result, _node(result, ".Save()", "A.cs", 10), "calls")
+    assert _node(result, ".Write()", "A.cs", 6) in save_calls
+    assert _node(result, ".Write()", "A.cs", 14) not in save_calls
+
+
+def test_out_of_corpus_base_does_not_hide_outer_nested_types(tmp_path: Path):
+    result = _extract(tmp_path, {"A.cs": """namespace Demo
+{
+    public class Outer
+    {
+        public class Store { }
+        public class Inner : External.Base
+        {
+            public Store Get() { return null; }
+        }
+    }
+}
+"""})
+    get = _node(result, ".Get()", "A.cs", 8)
+    assert _node(result, "Store", "A.cs", 5) in _targets(result, get, "references")

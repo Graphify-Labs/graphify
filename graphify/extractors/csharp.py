@@ -521,19 +521,16 @@ class CsharpNameResolver:
     def _enclosing_type_chain(self, source_node: dict) -> list[str]:
         """The types lexically enclosing ``source_node``, innermost first.
 
-        For a member (method, constructor, ...) the chain starts at its owning type.
-        For a type it starts at the type that declares it: a type's own nested types
-        are not looked at, so its base list never resolves to one of its own members.
+        For a member (method, constructor, ...) the chain starts at its owning type,
+        for a type at the type itself: a field typed with the type's own nested type
+        names that nested type. (A base list that named one of the type's own nested
+        types would be a circular base, which C# rejects.)
         """
         nid = source_node.get("id")
         if not isinstance(nid, str):
             return []
-        chain: list[str] = []
-        current = self.owner_of_member.get(nid)
-        if current is not None:
-            chain.append(current)
-        else:
-            current = nid
+        current = self.owner_of_member.get(nid, nid)
+        chain = [current]
         seen = {current}
         while (holder := self.holder_of_type.get(current)) is not None and holder not in seen:
             chain.append(holder)
@@ -572,11 +569,15 @@ class CsharpNameResolver:
         from) before it looks at namespaces, innermost first. So inside ``Outer`` a
         sibling nested type ``Base`` wins over a namespace-level ``Base``. Same
         verdict shape as ``resolve_type_name``.
+
+        A level whose base chain leaves the corpus may declare the name out of
+        sight; it is skipped and the walk goes on outward, as the namespace lookup
+        after it would make the same assumption.
         """
         for holder_nid in self._enclosing_type_chain(source_node):
             hits = self._nested_type_hits(holder_nid, label)
             if hits is None:
-                return None, False
+                continue
             if len(hits) == 1:
                 return next(iter(hits)), True
             if hits:
@@ -642,11 +643,13 @@ class CsharpNameResolver:
             if qualified:
                 return qualified, True
             return (None if decisive else self._resolve_holder_nid(label)), True
-        if label in self.aliases_by_file.get(source_file, {}):
-            return self._resolve_alias(label, source_node, source_file), True
+        # Enclosing types come before anything a namespace declaration brings in,
+        # `using` aliases included.
         enclosing_hit, enclosing_decisive = self._resolve_in_enclosing_types(label, source_node)
         if enclosing_decisive:
             return enclosing_hit, True
+        if label in self.aliases_by_file.get(source_file, {}):
+            return self._resolve_alias(label, source_node, source_file), True
         candidates: list[str] = []
         for namespace in self._scopes_for(source_node, source_file):
             hit = self.type_def_index.get((namespace, label))

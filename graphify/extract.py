@@ -12989,9 +12989,6 @@ def extract(
         nid_to_file_nid[n["id"]] = _file_node_id(sf_rel)
 
     existing_pairs = {(e["source"], e["target"]) for e in all_edges}
-    existing_call_pairs = {
-        (e["source"], e["target"]) for e in all_edges if e.get("relation") == "calls"
-    }
     # nid -> label, so a resolved Rust call target can be told apart from a
     # constructor: a function/method node is labelled `name()` / `.name()`, a
     # data definition (struct/enum/trait) carries the bare name. A cross-file
@@ -13003,6 +13000,8 @@ def extract(
     # Call-like pairs only, for the indirect_call dedup: an `imports` edge from a
     # file to the symbol it imports is EXPECTED and must not suppress an
     # indirect_call to that same symbol (JS/TS named imports create such an edge).
+    # A C# `new X()` uses it too: a `references` edge from the caller's signature
+    # to X is no call and must not suppress it.
     call_like_pairs = {
         (e["source"], e["target"]) for e in all_edges
         if e.get("relation") in ("calls", "indirect_call")
@@ -13424,12 +13423,12 @@ def extract(
         if rc.get("via_stub") and not (has_import_evidence or stub_scope_hit):
             continue
         # A C# `new X()` from a method that also names X in its signature
-        # already has a `references` edge to X; that is no call, so only an
-        # earlier `calls` edge makes this one redundant.
-        taken = existing_call_pairs if rc.get("csharp_new") else existing_pairs
+        # already has a `references` edge to X; only a call-like edge makes
+        # this one redundant.
+        taken = call_like_pairs if rc.get("csharp_new") else existing_pairs
         if tgt != caller and (caller, tgt) not in taken:
             existing_pairs.add((caller, tgt))
-            existing_call_pairs.add((caller, tgt))
+            call_like_pairs.add((caller, tgt))
             # Promote to EXTRACTED when there's a direct import edge from the
             # caller's file pointing at either the callee symbol itself or the
             # file the callee lives in.
