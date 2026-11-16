@@ -47,7 +47,7 @@ Ketik `/graphify` di asisten pengkodean AI Anda dan ia akan memetakan seluruh pr
   <em>Codebase FastAPI yang dipetakan oleh graphify. Setiap node adalah sebuah konsep, warna adalah komunitas yang terdeteksi, dan semuanya dapat diklik di graph.html.</em>
 </p>
 
-**Mulai** (30 detik). Membutuhkan Python 3.10+ dan uv (atau pipx):
+**Mulai** (30 detik). Membutuhkan Python 3.11+ dan uv (atau pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Panduan lengkap dan referensi tersedia di **[docs.graphify.com](https://docs.gra
 
 | Persyaratan | Minimum | Periksa | Instal |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(disarankan)* | apa saja | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatif)* | apa saja | `pipx --version` | `pip install pipx` |
 

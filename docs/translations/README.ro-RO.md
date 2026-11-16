@@ -47,7 +47,7 @@ Tastați `/graphify` în asistentul AI de programare, iar acesta vă mapează î
   <em>Baza de cod FastAPI mapată de graphify. Fiecare nod este un concept, culorile sunt comunitățile detectate, iar totul este clicabil în graph.html.</em>
 </p>
 
-**Începeți** (30 de secunde). Necesită Python 3.10+ și uv (sau pipx):
+**Începeți** (30 de secunde). Necesită Python 3.11+ și uv (sau pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Ghidurile complete și referința se află la **[docs.graphify.com](https://docs
 
 | Cerință | Minim | Verificare | Instalare |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recomandat)* | oricare | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativă)* | oricare | `pipx --version` | `pip install pipx` |
 

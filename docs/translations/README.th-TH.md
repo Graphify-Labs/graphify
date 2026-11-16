@@ -47,7 +47,7 @@
   <em>ฐานโค้ด FastAPI ที่แมปโดย graphify โหนดทุกจุดคือแนวคิดหนึ่ง สีคือชุมชนที่ตรวจพบ และทั้งหมดคลิกได้ใน graph.html</em>
 </p>
 
-**เริ่มต้นใช้งาน** (30 seconds) ต้องมี Python 3.10+ และ uv (หรือ pipx):
+**เริ่มต้นใช้งาน** (30 seconds) ต้องมี Python 3.11+ และ uv (หรือ pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | ข้อกำหนด | ขั้นต่ำ | ตรวจสอบ | ติดตั้ง |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 

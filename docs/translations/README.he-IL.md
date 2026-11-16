@@ -47,7 +47,7 @@
   <em>בסיס הקוד של FastAPI ממופה על ידי graphify. כל צומת הוא מושג, הצבעים הם קהילות שזוהו, והכל ניתן ללחיצה ב-graph.html.</em>
 </p>
 
-**התחלה מהירה** (30 שניות). דורש Python 3.10+ ו-uv (או pipx):
+**התחלה מהירה** (30 שניות). דורש Python 3.11+ ו-uv (או pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | דרישה | מינימום | בדיקה | התקנה |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(מומלץ)* | כל גרסה | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(חלופה)* | כל גרסה | `pipx --version` | `pip install pipx` |
 
