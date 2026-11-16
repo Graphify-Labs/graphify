@@ -129,3 +129,7 @@ class _SymbolResolutionFacts:
     # is the binding introduced in the importing file: the alias when `from pkg
     # import submod as alias` is used, otherwise the submodule's own name (#2082).
     module_imports: list[tuple[Path, Path, int, str]] = field(default_factory=list)
+    # Python `from module import name` whose single-segment module resolves to no
+    # file in this corpus (#3744): (importing_file, local_name, module, imported_name,
+    # line). Parked by name for the cross-repo merge, never bound in this build.
+    unresolved_module_imports: list[tuple[Path, str, str, str, int]] = field(default_factory=list)
