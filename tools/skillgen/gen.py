@@ -1158,6 +1158,33 @@ def _is_uv_from_interpreter_fix_line(line: str) -> bool:
     return "uv tool run" in line and "graphifyy python" in line
 
 
+_UV_TOOL_DIR_PROBE_COMMENTS = frozenset({
+    "# 1. uv tool installs — most reliable on modern Mac/Linux",
+    "# 1. uv tool installs: the interpreter inside uv's own graphifyy tool env.",
+    "#    Never resolve it through uv's run command: when graphifyy is not a uv",
+    "#    tool, that builds a throwaway env from the latest PyPI release (#5182).",
+})
+
+
+def _is_uv_tool_dir_probe_fix_line(line: str) -> bool:
+    """Whether a line is part of the uv tool-dir interpreter probe (#5182).
+
+    Step 1 found a uv-installed interpreter with ``uv tool run --from graphifyy``.
+    When graphifyy is not installed as a uv tool (a pip or pipx install on a
+    machine that also has uv), that command resolves graphifyy from PyPI into a
+    throwaway env and Step 1 saved that interpreter over the user's own install.
+    The probe now reads the interpreter out of ``uv tool dir`` without any network
+    access, the way the PowerShell probe already did.
+    """
+    stripped = line.strip()
+    return (
+        "_graphify_uv_python" in stripped
+        or stripped.startswith(("_UV_DIR=", 'for _UV_PY in "$_UV_DIR/', '[ -x "$_UV_PY" ] && '))
+        or stripped == "done; return 1; }"
+        or stripped in _UV_TOOL_DIR_PROBE_COMMENTS
+    )
+
+
 def _is_semantic_cache_scope_fix_line(line: str) -> bool:
     """Whether a line scopes semantic cache writes to dispatched files (#1757).
 
@@ -1491,6 +1518,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_shebang_allowlist_fix_line,
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
+    _is_uv_tool_dir_probe_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
     _is_step1_root_marker_fix_line,

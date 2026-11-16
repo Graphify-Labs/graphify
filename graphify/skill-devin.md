@@ -77,9 +77,16 @@ Follow these steps in order unless the fast path above applies.
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
 PYTHON=""
 GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-# 1. uv tool installs — most reliable on modern Mac/Linux
+# 1. uv tool installs: the interpreter inside uv's own graphifyy tool env.
+#    Never resolve it through uv's run command: when graphifyy is not a uv
+#    tool, that builds a throwaway env from the latest PyPI release (#5182).
+_graphify_uv_python() {
+    _UV_DIR=$(uv tool dir 2>/dev/null) || return 1
+    for _UV_PY in "$_UV_DIR/graphifyy/bin/python" "$_UV_DIR/graphifyy/Scripts/python.exe"; do
+        [ -x "$_UV_PY" ] && "$_UV_PY" -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('graphify') is None)" 2>/dev/null && { echo "$_UV_PY"; return 0; }
+    done; return 1; }
 if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
-    _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+    _UV_PY=$(_graphify_uv_python)
     if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
 fi
 # 2. Read shebang from graphify binary (pipx and direct pip installs)
@@ -95,7 +102,7 @@ if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
 if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
     if command -v uv >/dev/null 2>&1; then
         uv tool install --upgrade graphifyy -q 2>&1 | tail -3
-        _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+        _UV_PY=$(_graphify_uv_python)
         if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
     else
         "$PYTHON" -m pip install graphifyy -q 2>/dev/null \
