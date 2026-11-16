@@ -4880,6 +4880,10 @@ def _rewire_unique_stub_nodes(
                     supertype_stub_ids.add(str(nid))
 
     remap: dict[str, str] = {}
+    # #5240: every crate's `use crate::…::X` points at the same bare stub id, but each
+    # stub resolves within its own file's crate. A Rust edge takes its own file's
+    # answer, so one crate's X is never handed to another crate.
+    file_remap: dict[tuple[str, str], str | None] = {}
     for stub in stubs:
         stub_id = str(stub.get("id", ""))
         if not stub_id:
@@ -4915,11 +4919,18 @@ def _rewire_unique_stub_nodes(
                 cand_fam = _lang_family(fcands[0].get("source_file"))
                 if not fams or cand_fam is None or cand_fam in fams:
                     candidates = fcands
-        if len(candidates) != 1:
-            continue
-        target_id = candidates[0].get("id")
-        if isinstance(target_id, str) and target_id and target_id != stub_id:
-            remap[stub_id] = target_id
+        resolved: str | None = None
+        if len(candidates) == 1:
+            target_id = candidates[0].get("id")
+            if isinstance(target_id, str) and target_id and target_id != stub_id:
+                resolved = target_id
+        origin = str(stub.get("origin_file", ""))
+        if origin.endswith(".rs"):
+            # Two stubs of one file that disagree leave that file's edges unbound.
+            key = (stub_id, origin)
+            file_remap[key] = resolved if file_remap.get(key, resolved) == resolved else None
+        if resolved is not None:
+            remap[stub_id] = resolved
 
     # SQL: a table no file defines is one table however many files read it, so the
     # per-file stubs of one name fold into a single node.
@@ -5017,8 +5028,12 @@ def _rewire_unique_stub_nodes(
             ) and not _cross_language_candidate(edge, remapped_source):
                 edge["source"] = remapped_source
         target = edge.get("target")
-        if target in remap:
-            remapped_target = remap[str(target)]
+        own_key = (str(target), str(edge.get("source_file", "")))
+        if own_key in file_remap:
+            remapped_target = file_remap[own_key]  # None: this file's stub found no match
+        else:
+            remapped_target = remap.get(str(target))
+        if remapped_target is not None:
             if not (
                 is_csharp_scoped_edge
                 and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
@@ -12720,14 +12735,19 @@ def extract(
     # #4439: a Rust `use` reached its declaration only when a type annotation had left
     # a sourceless node under the same id. Lend the rewire one for each imported name
     # that has none; they are not kept, so an unresolved import dangles as before.
+    # One per importing file, not per name (#5240). Another file's stub resolves
+    # within that file's crate, so it cannot answer for this one.
+    _real_ids = {n.get("id") for n in all_nodes if n.get("source_file")}
+    _stubbed = {(n.get("id"), n.get("origin_file")) for n in all_nodes if not n.get("source_file")}
     _use_stubs = {
-        e["target"]: {
+        (e["target"], e.get("source_file")): {
             "id": e["target"], "label": e["_rust_use_name"], "file_type": "code",
             "source_file": "", "origin_file": e.get("source_file"),
             "_rust_use_roots": ["crate"],
         }
         for e in all_edges
-        if e.get("_rust_use_name", "").isidentifier() and e["target"] not in _fresh_ids
+        if e.get("_rust_use_name", "").isidentifier() and e["target"] not in _real_ids
+        and (e["target"], e.get("source_file")) not in _stubbed
     }
     _rewire_view = all_nodes + list(_use_stubs.values()) + [
         n for n in resolution_context_nodes or [] if n.get("id") not in _fresh_ids]
