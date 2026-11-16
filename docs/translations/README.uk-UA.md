@@ -306,7 +306,7 @@ Pi не має хука `PreToolUse`, тож `graphify pi guard install` реє�
 
 `GRAPH_REPORT.md` досі доступний для широкого огляду архітектури.
 
-Які саме файли записує кожна платформа (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, нативний плагін Kilo `.kilo`, правило Cursor `alwaysApply` тощо) описано в **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Які саме файли записує кожна платформа (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, нативний плагін Kilo `.kilo`, правило Cursor `alwaysApply` тощо) описано в **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Щоб видалити graphify з усіх платформ одразу: `graphify uninstall` (додайте `--purge`, щоб також видалити `graphify-out/`). Або використайте команду для конкретної платформи (наприклад, `graphify claude uninstall`).
 

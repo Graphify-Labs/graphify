@@ -306,7 +306,7 @@ Asta scrie un mic fișier de configurare care îi spune asistentului vostru să 
 
 `GRAPH_REPORT.md` este în continuare disponibil pentru revizuirea amplă a arhitecturii.
 
-Exact ce fișiere scrie fiecare platformă (`CODEBUDDY.md` + hook-uri `PreToolUse` pentru CodeBuddy, `AGENTS.md` pentru Codex, pluginul nativ `.kilo` pentru Kilo, regula `alwaysApply` pentru Cursor și așa mai departe) este acoperit în **[Configurare mereu activă](https://docs.graphify.com/guides/always-on)**.
+Exact ce fișiere scrie fiecare platformă (`CODEBUDDY.md` + hook-uri `PreToolUse` pentru CodeBuddy, `AGENTS.md` pentru Codex, pluginul nativ `.kilo` pentru Kilo, regula `alwaysApply` pentru Cursor și așa mai departe) este acoperit în **[Configurare mereu activă](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Pentru a elimina graphify de pe toate platformele deodată: `graphify uninstall` (adăugați `--purge` pentru a șterge și `graphify-out/`). Sau folosiți comanda per platformă (de ex. `graphify claude uninstall`).
 

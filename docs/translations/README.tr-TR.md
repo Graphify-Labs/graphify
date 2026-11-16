@@ -306,7 +306,7 @@ Bu, asistanınıza kod tabanı soruları için bilgi grafiğine başvurmasını 
 
 `GRAPH_REPORT.md` geniş mimari inceleme için hâlâ kullanılabilir.
 
-Her platformun tam olarak hangi dosyaları yazdığı (CodeBuddy'nin `CODEBUDDY.md` + `PreToolUse` hook'ları, Codex'in `AGENTS.md`'si, Kilo'nun yerel `.kilo` eklentisi, Cursor'un `alwaysApply` kuralı vb.) şurada ele alınır: **[Daima açık kurulum](https://docs.graphify.com/guides/always-on)**.
+Her platformun tam olarak hangi dosyaları yazdığı (CodeBuddy'nin `CODEBUDDY.md` + `PreToolUse` hook'ları, Codex'in `AGENTS.md`'si, Kilo'nun yerel `.kilo` eklentisi, Cursor'un `alwaysApply` kuralı vb.) şurada ele alınır: **[Daima açık kurulum](https://docs.graphify.com/open-source/vibe-coding)**.
 
 graphify'ı tüm platformlardan aynı anda kaldırmak için: `graphify uninstall` (`graphify-out/` dizinini de silmek için `--purge` ekleyin). Veya platform bazlı komutu kullanın (ör. `graphify claude uninstall`).
 

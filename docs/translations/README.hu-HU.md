@@ -306,7 +306,7 @@ Ez egy kis konfigurációs fájlt ír ki, amely arra utasítja az asszisztensét
 
 A `GRAPH_REPORT.md` továbbra is elérhető a széles körű architektúra-áttekintéshez.
 
-Hogy pontosan mely fájlokat írja ki az egyes platformok (a CodeBuddy `CODEBUDDY.md` + `PreToolUse` hookjai, a Codex `AGENTS.md`-je, a Kilo natív `.kilo` beépülője, a Cursor `alwaysApply` szabálya és így tovább), azt a **[Always-on setup](https://docs.graphify.com/guides/always-on)** ismerteti.
+Hogy pontosan mely fájlokat írja ki az egyes platformok (a CodeBuddy `CODEBUDDY.md` + `PreToolUse` hookjai, a Codex `AGENTS.md`-je, a Kilo natív `.kilo` beépülője, a Cursor `alwaysApply` szabálya és így tovább), azt a **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** ismerteti.
 
 A graphify egyszerre minden platformról való eltávolításához: `graphify uninstall` (adja hozzá a `--purge` kapcsolót a `graphify-out/` törléséhez is). Vagy használja a platformspecifikus parancsot (pl. `graphify claude uninstall`).
 
