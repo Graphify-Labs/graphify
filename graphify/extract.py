@@ -9325,11 +9325,14 @@ def _resolve_go_member_calls(
         return
     package_vars_by_file: dict[str, dict[str, str | None]] = {}
     imports_by_file: dict[str, dict[str, str]] = {}
+    package_path_by_file: dict[str, str] = {}
     for result in per_file:
         tt = result.get("go_type_table")
         if tt and tt.get("path"):
             package_vars_by_file[tt["path"]] = tt.get("package_vars", {})
             imports_by_file[tt["path"]] = result.get("go_imports") or {}
+            if tt.get("package_path"):
+                package_path_by_file[tt["path"]] = tt["package_path"]
 
     def _key(label: object) -> str:
         return str(label or "").strip().removeprefix(".").removesuffix("()")
@@ -9402,7 +9405,18 @@ def _resolve_go_member_calls(
             if not type_defs:
                 continue
         else:
+            # A bare name is a same-package reference (Go requires a qualifier
+            # for anything else), so two packages that both declare a type of
+            # this name must not collide into one corpus-wide ambiguity (#5242):
+            # narrow to the caller's own package when that is known, the same
+            # import evidence the qualified branch above already insists on.
             type_defs = type_def_nids.get(_key(type_name), [])
+            caller_package = package_path_by_file.get(rc.get("source_file", ""))
+            if caller_package:
+                scoped = [nid for nid in type_defs
+                          if caller_package in package_paths_by_nid.get(nid, ())]
+                if scoped:
+                    type_defs = scoped
         if not type_defs:
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
