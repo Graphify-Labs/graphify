@@ -467,6 +467,86 @@ def _stamped_manifest_files(
     }
 
 
+def _node_counts_by_source(nodes) -> dict:
+    """Per-``source_file`` node counts from an iterable of node attribute dicts.
+
+    Accepts a plain list of node dicts (the raw ``--no-cluster`` path) or the
+    attribute dicts from ``G.nodes(data=True)`` (the clustered path) — both
+    expose ``source_file`` the same way, as a plain dict key. Builds the NEW
+    side of the #3412 self-explained shrink exemption's per-source comparison;
+    the OLD side comes from
+    :func:`graphify.export.existing_graph_node_counts_by_source` (#3412 review).
+    """
+    counts: dict[str, int] = {}
+    for n in nodes:
+        sf = (n.get("source_file") if isinstance(n, dict) else None) or ""
+        counts[sf] = counts.get(sf, 0) + 1
+    return counts
+
+
+def _shrink_is_self_explained(unverified_shrink, old_counts_by_source, new_counts_by_source) -> bool:
+    """Is every source whose node count went down one of the flagged files?
+
+    The #3203 guard exists because an unverified per-file drop could be
+    masking a loss somewhere else in the graph that the guard cannot see.
+    When nothing OUTSIDE the flagged files lost any nodes, there is nothing
+    left for the guard to be worried about, so a write that would otherwise
+    be refused can proceed (#3412).
+
+    Checked per source, not as one net total (#3412 review): comparing only
+    the graph's net shrink against the flagged files' own reported drop lets
+    unrelated growth elsewhere (a new file, more AST nodes) mask a genuine,
+    unflagged loss. Requiring that no unflagged source shrank at all closes
+    that gap regardless of what grew elsewhere, since growth can no longer
+    cancel out an unrelated loss in a per-source comparison the way it could
+    in a sum.
+
+    Requires at least one real, unflagged source to check: a corpus whose
+    ONLY tracked source is a flagged one gives this exemption nothing to
+    verify against, since the flagged files' own (already-distrusted) counts
+    would be the sole signal. Staying armed there matters most for a single
+    degraded semantic-cache entry (#5083): the guard marking it ``partial``
+    and keeping the existing graph untouched is what gets it freshly
+    re-extracted on the next run, instead of the degraded result being
+    written straight into the graph and then replayed from cache forever.
+    """
+    if not unverified_shrink or not isinstance(old_counts_by_source, dict):
+        return False
+    flagged = set(unverified_shrink)
+    unflagged = {source: old_n for source, old_n in old_counts_by_source.items()
+                 if source not in flagged}
+    if not unflagged:
+        return False
+    return all(new_counts_by_source.get(source, 0) >= old_n for source, old_n in unflagged.items())
+
+
+def _path_key_under(value, target) -> str:
+    p = Path(value)
+    if not p.is_absolute():
+        p = Path(target) / p
+    try:
+        return os.path.normcase(str(p.resolve()))
+    except (OSError, RuntimeError):
+        return os.path.normcase(os.path.abspath(str(p)))
+
+
+def _shrink_has_cached_replay(unverified_shrink, cached_semantic_files, target) -> bool:
+    """True if any flagged source's degraded content was replayed from the
+    semantic cache rather than freshly extracted this run.
+
+    The #3412 self-explained exemption must never cover a cached replay: the
+    identical degraded entry would otherwise be written straight into the
+    graph, and a later run with the same cache would just replay it again
+    (#5083) — exactly the outcome ``_handle_unverified_semantic_shrink``'s own
+    "Do NOT pass --allow-partial" warning exists to call out for an explicit
+    override, so an automatic exemption must not do it silently either.
+    """
+    if not unverified_shrink or not cached_semantic_files:
+        return False
+    cached_keys = {_path_key_under(p, target) for p in cached_semantic_files}
+    return any(_path_key_under(sf, target) in cached_keys for sf in unverified_shrink)
+
+
 def _handle_unverified_semantic_shrink(
     unverified_shrink,
     *,
@@ -522,21 +602,12 @@ def _handle_unverified_semantic_shrink(
         stamped = {f for _flist in manifest_files.values() for f in _flist}
         cleared_semantic = {str(p) for p in semantic_files} - stamped
 
-    def _path_key(value) -> str:
-        p = Path(value)
-        if not p.is_absolute():
-            p = Path(target) / p
-        try:
-            return os.path.normcase(str(p.resolve()))
-        except (OSError, RuntimeError):
-            return os.path.normcase(os.path.abspath(str(p)))
-
-    cached_keys = {_path_key(p) for p in (cached_semantic_files or [])}
+    cached_keys = {_path_key_under(p, target) for p in (cached_semantic_files or [])}
     cached_sources = sorted(
-        sf for sf in unverified_shrink if _path_key(sf) in cached_keys
+        sf for sf in unverified_shrink if _path_key_under(sf, target) in cached_keys
     )
     fresh_sources = sorted(
-        sf for sf in unverified_shrink if _path_key(sf) not in cached_keys
+        sf for sf in unverified_shrink if _path_key_under(sf, target) not in cached_keys
     )
 
     marked: list[Path] = []
@@ -5629,6 +5700,7 @@ def dispatch_command(cmd: str) -> None:
             from graphify.export import (
                 backup_if_protected as _backup,
                 existing_graph_node_count as _existing_graph_node_count,
+                existing_graph_node_counts_by_source as _existing_graph_node_counts_by_source,
             )
             if (
                 incremental_mode
@@ -5748,6 +5820,22 @@ def dispatch_command(cmd: str) -> None:
                 _existing_n = _existing_graph_node_count(graph_json_path)
                 _malformed = _existing_n is _MALFORMED_GRAPH
                 _shrinks = isinstance(_existing_n, int) and len(merged["nodes"]) < _existing_n
+                _unverified_shrink_detail = merged.get("_unverified_semantic_shrink")
+                if (
+                    _shrinks and not _malformed
+                    and not _shrink_has_cached_replay(
+                        _unverified_shrink_detail, _cached_semantic_paths, target,
+                    )
+                    and _shrink_is_self_explained(
+                        _unverified_shrink_detail,
+                        _existing_graph_node_counts_by_source(graph_json_path),
+                        _node_counts_by_source(merged["nodes"]),
+                    )
+                ):
+                    # #3412: the flagged files' own reported counts already
+                    # account for the entire net shrink, so nothing outside
+                    # them went unaccounted for; let the write through.
+                    _malformed = _shrinks = False
                 if _malformed or _shrinks:
                     _detail = (
                         f"the existing {graph_json_path} is present but unparseable "
@@ -5938,6 +6026,25 @@ def dispatch_command(cmd: str) -> None:
         from graphify.build import take_shrink_accounting as _take_shrink_accounting
         _dedup_collapsed, _pruned_nodes = _take_shrink_accounting(G)
         _force_write = cli_allow_partial or not _extraction_incomplete
+        if not _force_write:
+            from graphify.export import (
+                existing_graph_node_counts_by_source as _existing_graph_node_counts_by_source,
+            )
+            _unverified_shrink_detail = (
+                G.graph.get("_unverified_semantic_shrink") if hasattr(G, "graph") else None
+            )
+            if not _shrink_has_cached_replay(
+                _unverified_shrink_detail, _cached_semantic_paths, target,
+            ) and _shrink_is_self_explained(
+                _unverified_shrink_detail,
+                _existing_graph_node_counts_by_source(graph_json_path),
+                _node_counts_by_source(data for _, data in G.nodes(data=True)),
+            ):
+                # #3412: the flagged files' own reported counts already
+                # account for the entire net shrink, so nothing outside them
+                # went unaccounted for; let the write through instead of
+                # falling back to to_json's coarse node-count guard.
+                _force_write = True
         _dedup_shrink_counts: tuple[int, int] | None = None
         if (
             not _extraction_incomplete
