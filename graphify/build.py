@@ -557,6 +557,23 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".cxx": "c", ".hh": "c", ".hxx": "c",
     ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
     ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
+    # Everything else extract._LANG_FAMILY_BY_EXT knows (#5247): an extension
+    # missing here resolves to no family, so the guard silently never fires
+    # (e.g. a Python `from app import db` binding to a Dart `lib/app.dart`).
+    # tests/test_build.py checks that every extract extension stays covered.
+    ".vue": "js", ".svelte": "js", ".astro": "js", ".ejs": "js",
+    ".kts": "jvm", ".gradle": "jvm",
+    ".vb": "cs", ".razor": "cs", ".cshtml": "cs", ".xaml": "cs",
+    ".phtml": "php", ".php3": "php", ".php4": "php", ".php5": "php",
+    ".php7": "php", ".phps": "php",
+    ".luau": "lua",
+    ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".r": "r", ".sol": "solidity",
+    ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
+    ".zig": "zig", ".ex": "elixir", ".exs": "elixir", ".jl": "julia",
+    ".dart": "dart", ".sql": "sql",
+    ".sh": "shell", ".bash": "shell",
+    ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
 
 
