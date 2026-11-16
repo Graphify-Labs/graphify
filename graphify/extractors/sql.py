@@ -617,6 +617,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                            "source_location": f"L{line}", "weight": 1.0})
 
     def _add_edge(src: str, tgt: str, relation: str, line: int) -> None:
+        if not src or not tgt:
+            return  # an empty id is a name the grammar could not read (#5250), never a node
         edges.append({"source": src, "target": tgt, "relation": relation,
                        "confidence": "EXTRACTED", "source_file": str_path,
                        "source_location": f"L{line}", "weight": 1.0})
@@ -637,6 +639,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         its id by disambiguation, blocking the rewire.
         """
         nid = _make_id(name)
+        if not nid:
+            return nid  # `_` is all the grammar kept of a non-ASCII name (#5250): no node
         if nid not in seen_ids:
             seen_ids.add(nid)
             nodes.append({"id": nid, "label": _clean_ident(name), "file_type": "code",
