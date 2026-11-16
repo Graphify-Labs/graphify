@@ -1041,5 +1041,8 @@ def extract_go(path: Path) -> dict:
         "edges": clean_edges,
         "raw_calls": raw_calls,
         "go_imports": dict(go_imported_pkgs),
-        "go_type_table": {"path": str_path, "table": type_table, "package_vars": package_types},
+        "go_type_table": {
+            "path": str_path, "table": type_table, "package_vars": package_types,
+            "package_path": package_path,
+        },
     }
