@@ -40,7 +40,7 @@ jobs:
               ? `Thanks for the pull request, @${author}. A maintainer will review it soon.\n\n`
                 + `Want to talk it through while it is in review? Come join us on our [Discord server](${discord}). `
                 + `For longer-form discussion there is also [GitHub Discussions](${discussions}).\n\n`
-                + `A couple of things that speed up review: make sure the test suite passes on Python 3.10 and 3.13, `
+                + `A couple of things that speed up review: make sure the test suite passes on Python 3.11 and 3.13, `
                 + `and that the change keeps extraction deterministic.`
               : `Thanks for opening this issue, @${author}. A maintainer will take a look soon.\n\n`
                 + `If you would like to discuss it in real time, come say hi on our [Discord server](${discord}). `

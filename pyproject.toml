@@ -200,7 +200,7 @@ skips = ["B404"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # Keep the committed baseline conservative until upstream adopts a broader lint policy.
@@ -208,5 +208,5 @@ select = ["E9", "F63", "F7", "F82"]
 
 [tool.pyright]
 include = ["graphify", "tests"]
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 typeCheckingMode = "basic"

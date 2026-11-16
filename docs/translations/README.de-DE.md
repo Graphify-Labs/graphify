@@ -47,7 +47,7 @@ Geben Sie `/graphify` in Ihren KI-Coding-Assistenten ein, und er bildet Ihr gesa
   <em>Die FastAPI-Codebasis, abgebildet von graphify. Jeder Knoten ist ein Konzept, Farben sind erkannte Communities, und das Ganze ist in graph.html anklickbar.</em>
 </p>
 
-**Erste Schritte** (30 Sekunden). Benötigt Python 3.10+ und uv (oder pipx):
+**Erste Schritte** (30 Sekunden). Benötigt Python 3.11+ und uv (oder pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Vollständige Anleitungen und Referenz finden Sie unter **[docs.graphify.com](ht
 
 | Anforderung | Minimum | Prüfen | Installieren |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(empfohlen)* | beliebig | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(Alternative)* | beliebig | `pipx --version` | `pip install pipx` |
 

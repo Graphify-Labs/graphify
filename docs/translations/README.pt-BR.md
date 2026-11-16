@@ -47,7 +47,7 @@ Digite `/graphify` no seu assistente de programação com IA e ele mapeia o seu 
   <em>A base de código do FastAPI mapeada pelo graphify. Cada nó é um conceito, as cores são comunidades detectadas, e tudo é clicável em graph.html.</em>
 </p>
 
-**Comece agora** (30 segundos). Precisa de Python 3.10+ e uv (ou pipx):
+**Comece agora** (30 segundos). Precisa de Python 3.11+ e uv (ou pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Guias completos e referência ficam em **[docs.graphify.com](https://docs.graphi
 
 | Requisito | Mínimo | Verificar | Instalar |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recomendado)* | qualquer | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativa)* | qualquer | `pipx --version` | `pip install pipx` |
 

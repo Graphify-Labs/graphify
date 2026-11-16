@@ -49,7 +49,7 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
   <em>The FastAPI codebase mapped by graphify. Every node is a concept, colors are detected communities, and the whole thing is clickable in graph.html.</em>
 </p>
 
-**Get started** (30 seconds). Needs Python 3.10+ and uv (or pipx):
+**Get started** (30 seconds). Needs Python 3.11+ and uv (or pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -161,7 +161,7 @@ Full guides and reference live at **[docs.graphify.com](https://docs.graphify.co
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 

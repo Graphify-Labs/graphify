@@ -55,7 +55,7 @@ uv run ruff check .
 uv run pyright
 ```
 
-- **Python versions**: 3.10+
+- **Python versions**: 3.11+
 - **uv**: We use `uv` for dependency management.
 
 ## Working on the Codebase

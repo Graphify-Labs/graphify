@@ -47,7 +47,7 @@
   <em>کدبیس FastAPI که توسط graphify نگاشت شده است. هر گره یک مفهوم است، رنگ‌ها جامعه‌های شناسایی‌شده هستند، و همهٔ آن در graph.html قابل کلیک است.</em>
 </p>
 
-**شروع کنید** (30 ثانیه). به Python 3.10+ و uv (یا pipx) نیاز دارد:
+**شروع کنید** (30 ثانیه). به Python 3.11+ و uv (یا pipx) نیاز دارد:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
