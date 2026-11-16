@@ -4081,6 +4081,145 @@ def _normalize_csharp_verbatim_interpolation(source: bytes) -> bytes | None:
     return out
 
 
+# Contextual keywords tree-sitter-c-sharp 0.23.5 reads as a keyword where C#
+# reads a plain name (#5043).
+_CSHARP_CONTEXTUAL_NAMES = frozenset(
+    (b"partial", b"required", b"async", b"nint", b"nuint", b"with")
+)
+_CSHARP_ASSIGNMENT_OPERATORS = (
+    b"<<=", b">>=", b"??=", b"+=", b"-=", b"*=", b"/=", b"%=", b"&=", b"|=", b"^=", b"++", b"--",
+)
+# What can follow one of those words only when it is a name: an operator, a
+# member access, an index, or the end of an expression. As a keyword it is
+# followed by a declaration, a type, `(` (an async lambda) or `{` (`with`).
+_CSHARP_NAME_FOLLOWERS = frozenset(b"=+-*/%&|^<>!?.[;,)]}:")
+
+
+def _csharp_word_byte(b: int) -> bool:
+    return (
+        b >= 0x80 or b == 0x5F or b == 0x40
+        or 0x30 <= b <= 0x39 or 0x41 <= b <= 0x5A or 0x61 <= b <= 0x7A
+    )
+
+
+def _csharp_used_as_name(source: bytes, start: int, stop: int) -> bool:
+    """Whether the contextual keyword at ``source[start:stop]`` stands where only a name can."""
+    n = len(source)
+    j = stop
+    while j < n:
+        if source[j] in b" \t\r\n":
+            j += 1
+        elif source.startswith((b"//", b"/*"), j):
+            j = _csharp_token_end(source, j)
+        else:
+            break
+    if j >= n or source.startswith(b"=>", j):
+        return False
+    if source[start:stop] in (b"nint", b"nuint"):
+        # Also type keywords: `(nint)x`, `nint.MaxValue` and `List<nint>` are
+        # types, so only an assignment to the name qualifies.
+        return source.startswith(_CSHARP_ASSIGNMENT_OPERATORS, j) or source[j] == 0x3D
+    if source[j] not in _CSHARP_NAME_FOLLOWERS:
+        return False
+    k = start - 1
+    while k >= 0 and source[k] in b" \t\r\n":
+        k -= 1
+    # `obj.partial` is a member access the grammar already reads as a name.
+    return k < 0 or source[k] != 0x2E
+
+
+def _csharp_contextual_name_offsets(source: bytes) -> list[int]:
+    """Offsets of the contextual keywords in ``source`` that stand where only a name can.
+
+    The file is walked once, skipping comments, char literals and strings, so a
+    word inside one is never reported. An ``@``-escaped name is already read as
+    a name and is not reported either.
+    """
+    offsets: list[int] = []
+    n = len(source)
+    i = 0
+    while i < n:
+        end = _csharp_token_end(source, i)
+        if end > i:
+            i = end
+            continue
+        if not _csharp_word_byte(source[i]):
+            i += 1
+            continue
+        stop = i + 1
+        while stop < n and _csharp_word_byte(source[stop]):
+            stop += 1
+        if source[i:stop] in _CSHARP_CONTEXTUAL_NAMES and _csharp_used_as_name(source, i, stop):
+            offsets.append(i)
+        i = stop
+    return offsets
+
+
+def _escape_csharp_contextual_names(source: bytes) -> bytes | None:
+    """Escape the contextual-keyword names the C# grammar rejects, or None.
+
+    A local, parameter or field named ``partial``, ``required``, ``async``,
+    ``nint``, ``nuint`` or ``with`` is valid C# -- ``dotnet build`` accepts it --
+    but tree-sitter-c-sharp 0.23.5 reads the word as its keyword where a
+    statement starts with it (``partial |= x;``, ``required.Add(1);``,
+    ``async = 2;``, ``nint = 1;``) and ``with`` in ``var with = 1;`` (#5043).
+    The statement becomes an ERROR, and when it is the last statement of an
+    ``if`` block that an ``else`` block follows, the recovery takes the rest of
+    the file with it, leaving only the file node.
+
+    ``@name`` is the same identifier as ``name`` to the compiler, and the grammar
+    reads it as a name. The ``@`` takes the place of a blank next to the name
+    (the one after it, else the one before), so the rewrite is **byte-length
+    preserving**: no line break moves and every reported line and column still
+    points at the file on disk (the #2876 contract). An occurrence with no
+    blank next to it is left as it is.
+
+    The occurrences of one word are escaped together, so a local's declaration
+    and its uses keep one spelling and a call on it still binds through its
+    declared type. A word is left unescaped when the file parses without it, so
+    a word the grammar already reads correctly everywhere keeps its spelling.
+    Returns None unless the file has an error and the rewrite clears it; a file
+    that still fails keeps today's behaviour exactly.
+    """
+    try:
+        import tree_sitter_c_sharp as ts_c_sharp
+        from tree_sitter import Language, Parser
+
+        parser = Parser(Language(ts_c_sharp.language()))
+    except Exception:
+        return None
+    try:
+        if not parser.parse(source).root_node.has_error:
+            return None
+        by_word: dict[bytes, list[tuple[int, int, bytes]]] = {}
+        for start in _csharp_contextual_name_offsets(source):
+            stop = start
+            while stop < len(source) and 0x61 <= source[stop] <= 0x7A:
+                stop += 1
+            word = source[start:stop]
+            if source[stop:stop + 1] in (b" ", b"\t"):
+                by_word.setdefault(word, []).append((start, stop + 1, b"@" + word))
+            elif start and source[start - 1:start] in (b" ", b"\t"):
+                by_word.setdefault(word, []).append((start - 1, stop, b"@" + word))
+        if not by_word:
+            return None
+        out = bytearray(source)
+        for spans in by_word.values():
+            for lo, hi, escaped in spans:
+                out[lo:hi] = escaped
+        if parser.parse(bytes(out)).root_node.has_error:
+            return None
+        for spans in by_word.values():
+            for lo, hi, _escaped in spans:
+                out[lo:hi] = source[lo:hi]
+            if parser.parse(bytes(out)).root_node.has_error:
+                for lo, hi, escaped in spans:
+                    out[lo:hi] = escaped
+    except Exception:
+        return None
+    return bytes(out)
+
+
 # Maps every byte but CR and LF to a space: blanking keeps lines and columns.
 _CSHARP_BLANK_TABLE = bytes(b if b in (0x0A, 0x0D) else 0x20 for b in range(256))
 
@@ -4362,6 +4501,9 @@ def extract_csharp(path: Path) -> dict:
     if source is not None:
         source_override = _blank_csharp_preprocessor(source)
         source_override = _normalize_csharp_verbatim_interpolation(
+            source_override or source
+        ) or source_override
+        source_override = _escape_csharp_contextual_names(
             source_override or source
         ) or source_override
     return _extract_generic(path, _CSHARP_CONFIG, source_override=source_override)
