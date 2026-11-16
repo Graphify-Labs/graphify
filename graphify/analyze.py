@@ -818,6 +818,17 @@ def find_import_cycles(
     # enumerating all elementary cycles and post-filtering — avoids exponential
     # blowup on dense graphs with many long cycles (#1196).
     cycles: list[list[str]] = []
+    # Two-file cycles first, read straight off reciprocal edges in O(E). The
+    # capped enumeration below stops in networkx's yield order, not by length,
+    # so on a graph with many longer cycles it could fill the cap before ever
+    # reaching a two-file mutual import - the tightest coupling, which this
+    # function promises to list first.
+    if max_cycle_length >= 2:
+        for u, v in file_graph.edges():
+            if len(cycles) >= top_n * 10:
+                break
+            if u < v and file_graph.has_edge(v, u):
+                cycles.append([u, v])
     for cycle in nx.simple_cycles(file_graph, length_bound=max_cycle_length):
         if len(cycle) <= max_cycle_length:
             cycles.append(cycle)
