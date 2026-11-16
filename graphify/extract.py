@@ -706,6 +706,124 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
                 e["target"] = repointed
 
 
+def _repoint_python_sys_path_imports(per_file, all_nodes, all_edges, root) -> None:
+    """Repoint Python plain-import edges targeting modules in directories dynamically
+    added to sys.path via sys.path.insert / sys.path.append (#5253).
+
+    When a script in a subdirectory (e.g. `src/skills/s/scripts/c.py`) adds another
+    non-package directory to sys.path (`sys.path.insert(0, '../../bin')`), a subsequent
+    plain import (`import b`) resolves at runtime to `src/bin/b.py`. Repointing the
+    import edge here to the canonical file node ID ensures downstream member calls
+    (`b.f()`) bind to the function node (`b.f`) in `_resolve_python_member_calls`,
+    preventing callers from collapsing onto the file node itself.
+    """
+    if not per_file or not any(r and r.get("_python_sys_path_entries") for r in per_file):
+        return
+
+    node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
+    file_node_by_path: dict[Path, str] = {}
+    for n in all_nodes:
+        if not isinstance(n, dict):
+            continue
+        sf = n.get("source_file") or ""
+        if not sf or effective_suffix(sf).lower() not in (".py", ".pyi"):
+            continue
+        nid = n.get("id")
+        if not isinstance(nid, str):
+            continue
+        lbl = str(n.get("label", ""))
+        rel_name = Path(sf).name
+        if lbl != rel_name:
+            continue
+        try:
+            p = Path(sf)
+            if not p.is_absolute():
+                p = (root / p).resolve()
+            else:
+                p = p.resolve()
+            file_node_by_path[p] = nid
+        except (ValueError, OSError):
+            continue
+
+    try:
+        root_path = Path(root).resolve()
+    except OSError:
+        root_path = Path(root)
+
+    for r in per_file:
+        if not r or not r.get("_python_sys_path_entries"):
+            continue
+        sf = ""
+        for n in r.get("nodes", []):
+            if n.get("source_file"):
+                sf = str(n["source_file"])
+                break
+        if not sf:
+            continue
+        try:
+            sf_p = Path(sf)
+            if not sf_p.is_absolute():
+                sf_p = (root_path / sf_p).resolve()
+            else:
+                sf_p = sf_p.resolve()
+        except OSError:
+            continue
+
+        file_dir = sf_p.parent
+        target_dirs: list[Path] = []
+        for entry in r["_python_sys_path_entries"]:
+            curr = file_dir
+            while True:
+                try:
+                    cand_dir = (curr / entry).resolve()
+                    if cand_dir.is_dir() and cand_dir not in target_dirs:
+                        target_dirs.append(cand_dir)
+                except OSError:
+                    pass
+                if curr == root_path or curr == curr.parent:
+                    break
+                curr = curr.parent
+            try:
+                cand_dir = (root_path / entry).resolve()
+                if cand_dir.is_dir() and cand_dir not in target_dirs:
+                    target_dirs.append(cand_dir)
+            except OSError:
+                pass
+
+        if not target_dirs:
+            continue
+
+        for e in all_edges:
+            if not (
+                isinstance(e, dict)
+                and e.get("relation") in ("imports", "imports_from")
+                and str(e.get("source_file", "")) == sf
+            ):
+                continue
+            tgt = e.get("target")
+            if tgt in node_ids:
+                continue
+            if not isinstance(tgt, str):
+                continue
+            if tgt in _PYTHON_STDLIB_MODULE_NAMES:
+                continue
+
+            hits = set()
+            for td in target_dirs:
+                py_cand = td / f"{tgt}.py"
+                pyi_cand = td / f"{tgt}.pyi"
+                pkg_cand = td / tgt / "__init__.py"
+                hit_nid = (
+                    file_node_by_path.get(py_cand)
+                    or file_node_by_path.get(pyi_cand)
+                    or file_node_by_path.get(pkg_cand)
+                )
+                if hit_nid is not None and hit_nid != e.get("source"):
+                    hits.add(hit_nid)
+            if len(hits) == 1:
+                e["target"] = next(iter(hits))
+
+
 
 SEMANTIC_RELATIONS = frozenset({
     "inherits", "implements", "mixes_in", "embeds", "references",
@@ -1893,6 +2011,36 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
         root = tree.root_node
     except Exception:
         return
+
+    # Extract dynamic sys.path modifications (#5253): sys.path.insert / sys.path.append
+    sys_path_entries: list[str] = []
+    for stmt in root.children:
+        if stmt.type != "expression_statement":
+            continue
+        for child in stmt.children:
+            if child.type == "call":
+                fn = child.child_by_field_name("function")
+                if fn and fn.type == "attribute":
+                    attr = fn.child_by_field_name("attribute")
+                    obj = fn.child_by_field_name("object")
+                    if attr and obj and obj.type == "attribute":
+                        sub_attr = obj.child_by_field_name("attribute")
+                        sub_obj = obj.child_by_field_name("object")
+                        if (
+                            source[sub_obj.start_byte:sub_obj.end_byte] == b"sys"
+                            and source[sub_attr.start_byte:sub_attr.end_byte] == b"path"
+                            and source[attr.start_byte:attr.end_byte] in (b"insert", b"append")
+                        ):
+                            args = child.child_by_field_name("arguments")
+                            if args:
+                                for a in args.children:
+                                    if a.type in ("string", "concatenated_string"):
+                                        val = source[a.start_byte:a.end_byte].decode("utf-8", errors="replace")
+                                        val = val.strip("\"'")
+                                        if val:
+                                            sys_path_entries.append(val)
+    if sys_path_entries:
+        result["_python_sys_path_entries"] = sys_path_entries
 
     stem = _file_stem(path)
     str_path = str(path)
@@ -12643,6 +12791,7 @@ def extract(
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _repoint_python_sibling_imports(paths, all_nodes, all_edges, root)
+    _repoint_python_sys_path_imports(per_file, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     # Salt colliding ids apart BEFORE the C# partial merge. The merge rewires the
     # edges of every half onto the canonical half's id; if that id collides with

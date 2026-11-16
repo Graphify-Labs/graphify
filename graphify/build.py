@@ -482,7 +482,14 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
                     e.get("source_file"),
                     (node_by_id.get(alias_target) or {}).get("source_file"),
                 ):
-                    canonical = alias_target
+                    target_attrs = node_by_id.get(alias_target) or {}
+                    target_sf = target_attrs.get("source_file", "")
+                    is_file_node = (
+                        target_attrs.get("label") == Path(target_sf).name
+                        if target_sf else False
+                    )
+                    if not (e.get("relation") in ("calls", "indirect_call") and is_file_node):
+                        canonical = alias_target
             if canonical is not None:
                 e[field] = canonical
 
@@ -1982,7 +1989,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # normalized-id and ghost-remap entries norm_to_id already carries.
     alias_to_id = _alias_index((nid, G.nodes[nid]) for nid in node_set)
 
-    def _resolve_endpoint(raw_id: str, edge_source_file: object) -> str:
+    def _resolve_endpoint(raw_id: str, edge_source_file: object, relation: str = "") -> str:
         norm = _normalize_id(raw_id)
         resolved = norm_to_id.get(norm)
         if resolved is not None:
@@ -1991,7 +1998,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if alias_target is not None and _alias_lang_compatible(
             edge_source_file, G.nodes[alias_target].get("source_file")
         ):
-            return alias_target
+            target_attrs = G.nodes[alias_target]
+            target_sf = target_attrs.get("source_file", "")
+            is_file_node = (
+                target_attrs.get("label") == Path(target_sf).name
+                if target_sf else False
+            )
+            if not (relation in ("calls", "indirect_call") and is_file_node):
+                return alias_target
         return raw_id
 
     # Iterate edges in a deterministic order. The graph is undirected and stores
@@ -2028,10 +2042,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
             continue
         # Remap mismatched IDs via normalization before dropping the edge.
+        _edge_rel = str(edge.get("relation", ""))
         if src not in node_set:
-            src = _resolve_endpoint(src, edge.get("source_file"))
+            src = _resolve_endpoint(src, edge.get("source_file"), _edge_rel)
         if tgt not in node_set:
-            tgt = _resolve_endpoint(tgt, edge.get("source_file"))
+            tgt = _resolve_endpoint(tgt, edge.get("source_file"), _edge_rel)
         if src not in node_set or tgt not in node_set:
             # An import/re-export whose target is not a declared node points at
             # an external module (stdlib / third-party / another repo). Mint a
