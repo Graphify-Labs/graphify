@@ -306,7 +306,7 @@ Pi के पास कोई `PreToolUse` hook नहीं है, इसल�
 
 `GRAPH_REPORT.md` व्यापक आर्किटेक्चर समीक्षा के लिए अब भी उपलब्ध है।
 
-हर प्लेटफॉर्म वास्तव में कौन-सी फाइलें लिखता है (CodeBuddy की `CODEBUDDY.md` + `PreToolUse` hooks, Codex की `AGENTS.md`, Kilo का नेटिव `.kilo` प्लगइन, Cursor का `alwaysApply` नियम, इत्यादि) यह **[Always-on setup](https://docs.graphify.com/guides/always-on)** में शामिल है।
+हर प्लेटफॉर्म वास्तव में कौन-सी फाइलें लिखता है (CodeBuddy की `CODEBUDDY.md` + `PreToolUse` hooks, Codex की `AGENTS.md`, Kilo का नेटिव `.kilo` प्लगइन, Cursor का `alwaysApply` नियम, इत्यादि) यह **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** में शामिल है।
 
 सभी प्लेटफॉर्म से graphify को एक साथ हटाने के लिए: `graphify uninstall` (`graphify-out/` को भी हटाने के लिए `--purge` जोड़ें)। या प्रति-प्लेटफॉर्म कमांड उपयोग करें (उदा. `graphify claude uninstall`)।
 

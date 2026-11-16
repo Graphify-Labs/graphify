@@ -298,7 +298,7 @@ Pi ไม่มี `PreToolUse` hook ดังนั้น `graphify pi guard in
 
 `GRAPH_REPORT.md` ยังคงใช้ได้สำหรับการทบทวนสถาปัตยกรรมในวงกว้าง
 
-ไฟล์ที่แต่ละแพลตฟอร์มเขียนออกมาจริง ๆ (เช่น `CODEBUDDY.md` + `PreToolUse` hooks ของ CodeBuddy, `AGENTS.md` ของ Codex, ปลั๊กอิน `.kilo` แบบเนทีฟของ Kilo, กฎ `alwaysApply` ของ Cursor และอื่น ๆ) ครอบคลุมใน **[Always-on setup](https://docs.graphify.com/guides/always-on)**
+ไฟล์ที่แต่ละแพลตฟอร์มเขียนออกมาจริง ๆ (เช่น `CODEBUDDY.md` + `PreToolUse` hooks ของ CodeBuddy, `AGENTS.md` ของ Codex, ปลั๊กอิน `.kilo` แบบเนทีฟของ Kilo, กฎ `alwaysApply` ของ Cursor และอื่น ๆ) ครอบคลุมใน **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**
 
 หากต้องการนำ graphify ออกจากทุกแพลตฟอร์มในครั้งเดียว: `graphify uninstall` (เพิ่ม `--purge` เพื่อลบ `graphify-out/` ด้วย) หรือใช้คำสั่งเฉพาะแพลตฟอร์ม (เช่น `graphify claude uninstall`)
 

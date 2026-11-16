@@ -306,7 +306,7 @@ Nagsusulat ito ng maliit na config file na nagsasabi sa iyong assistant na kumon
 
 Ang `GRAPH_REPORT.md` ay magagamit pa rin para sa malawak na pagsusuri ng arkitektura.
 
-Kung aling mga file ang isinusulat ng bawat platform (ang `CODEBUDDY.md` + `PreToolUse` hook ng CodeBuddy, ang `AGENTS.md` ng Codex, ang native na `.kilo` plugin ng Kilo, ang `alwaysApply` na panuntunan ng Cursor, at iba pa) ay saklaw sa **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Kung aling mga file ang isinusulat ng bawat platform (ang `CODEBUDDY.md` + `PreToolUse` hook ng CodeBuddy, ang `AGENTS.md` ng Codex, ang native na `.kilo` plugin ng Kilo, ang `alwaysApply` na panuntunan ng Cursor, at iba pa) ay saklaw sa **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Upang alisin ang graphify sa lahat ng platform nang sabay-sabay: `graphify uninstall` (idagdag ang `--purge` upang tanggalin din ang `graphify-out/`). O gamitin ang per-platform na utos (hal. `graphify claude uninstall`).
 

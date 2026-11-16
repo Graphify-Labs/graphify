@@ -298,7 +298,7 @@ Việc này ghi một tệp cấu hình nhỏ bảo trợ lý của bạn tham k
 
 `GRAPH_REPORT.md` vẫn có sẵn cho việc rà soát kiến trúc trên diện rộng.
 
-Chính xác tệp nào mỗi nền tảng ghi ra (`CODEBUDDY.md` + `PreToolUse` hooks của CodeBuddy, `AGENTS.md` của Codex, plugin `.kilo` gốc của Kilo, quy tắc `alwaysApply` của Cursor, v.v.) được đề cập trong **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Chính xác tệp nào mỗi nền tảng ghi ra (`CODEBUDDY.md` + `PreToolUse` hooks của CodeBuddy, `AGENTS.md` của Codex, plugin `.kilo` gốc của Kilo, quy tắc `alwaysApply` của Cursor, v.v.) được đề cập trong **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Để gỡ graphify khỏi mọi nền tảng cùng lúc: `graphify uninstall` (thêm `--purge` để cũng xóa `graphify-out/`). Hoặc dùng lệnh theo từng nền tảng (ví dụ `graphify claude uninstall`).
 
