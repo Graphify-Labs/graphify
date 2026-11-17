@@ -31,6 +31,7 @@ from .go_dispatch import resolve_go_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_class_resolution import resolve_pascal_base_classes
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .pascal_singleton_resolution import resolve_pascal_singleton_calls
 from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
 
@@ -9972,6 +9973,20 @@ register_language_resolver(
         "pascal_inherited_calls",
         frozenset({".pas", ".pp", ".dpr", ".dpk", ".inc"}),
         resolve_pascal_inherited_calls,
+    )
+)
+# Pascal/Delphi global-singleton call resolution: `DM.Open`, where `DM` is a
+# unit-level `var` holding a data module or form -- the idiom most Delphi
+# applications are built on. The per-file pass drops the qualifier and looks
+# the member name up in the CALLER's scope, so the call is left unresolved (or
+# bound to a same-named method of the calling class). Lives in
+# graphify.pascal_singleton_resolution. Registered after the inherited-call
+# resolver so it walks an `inherits` chain any earlier pass has finished with.
+register_language_resolver(
+    LanguageResolver(
+        "pascal_singleton_calls",
+        frozenset({".pas", ".pp", ".dpr", ".dpk", ".inc"}),
+        resolve_pascal_singleton_calls,
     )
 )
 # Kotlin fully-qualified call resolution (#2550): `com.pkg.Fn()` /
