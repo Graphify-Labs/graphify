@@ -1965,6 +1965,54 @@ def _swift_member_nid(class_nid: str, member_node, name: str, source: bytes,
     return _underscore_salted_nid(_make_id(class_nid, name), name, groups)
 
 
+_RUBY_MEMBER_CALLABLE_TYPES = ("method", "singleton_method")
+
+
+def _ruby_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                     groups_cache: dict, sanitize) -> str:
+    """Node id for a Ruby method, salted when a sibling collides.
+
+    ``make_id`` drops a leading ``_`` and folds case, so ``_read_attribute`` /
+    ``read_attribute`` or ``_where!`` / ``where!`` of one class or module
+    minted one id: the second declaration vanished and its calls were credited
+    to the survivor. Group the methods of the enclosing class/module body (its
+    own ``def``s and those of a ``class << self`` in it) by the id they would
+    get, then apply ``_underscore_salted_nid``, the Python/C#/Solidity/Java
+    rule (#3302, #4415, #5058, #5151): a unique public name keeps the plain
+    id, every other colliding name is salted. ``name`` is the sanitized name
+    (``foo!`` -> ``foo_bang``, #3077), so ``foo`` / ``foo!`` / ``foo?`` never
+    collide. Members that collide with nothing keep their old id; an
+    instance and a singleton method of one name share one name, so they are
+    not a collision.
+    """
+    body = member_node.parent
+    if body is not None and body.parent is not None and body.parent.type == "singleton_class":
+        body = body.parent.parent
+    if body is None:
+        return _make_id(class_nid, name)
+    key = (class_nid, body.start_byte, body.end_byte)
+    groups = groups_cache.get(key)
+    if groups is None:
+        names: dict[str, set[str]] = {}
+        stack = list(body.children)
+        while stack:
+            c = stack.pop()
+            if c.type == "singleton_class":
+                inner = c.child_by_field_name("body")
+                if inner is not None:
+                    stack.extend(inner.children)
+                continue
+            if c.type not in _RUBY_MEMBER_CALLABLE_TYPES:
+                continue
+            name_node = c.child_by_field_name("name")
+            text = sanitize(_read_text(name_node, source)) if name_node is not None else ""
+            if text and normalize_id(text):
+                names.setdefault(_make_id(class_nid, text), set()).add(text)
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    return _underscore_salted_nid(_make_id(class_nid, name), name, groups)
+
+
 _CPP_PRIVATE_MEMBER_PREFIXES = ("_", "~")
 _CPP_PRIVATE_MEMBER_SUFFIXES = ("_",)
 
@@ -7718,6 +7766,8 @@ def _extract_generic(
     swift_member_groups: dict = {}
     # C++ class body -> member-function collision groups, filled lazily.
     cpp_member_groups: dict = {}
+    # Ruby class/module body -> method collision groups, filled lazily.
+    ruby_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
@@ -9698,6 +9748,12 @@ def _extract_generic(
                 elif config.ts_module == "tree_sitter_cpp" and t == "function_definition":
                     func_nid = _cpp_member_nid(
                         parent_class_nid, node, sanitized_name, source, cpp_member_groups
+                    )
+                elif (config.ts_module == "tree_sitter_ruby"
+                      and t in _RUBY_MEMBER_CALLABLE_TYPES):
+                    func_nid = _ruby_member_nid(
+                        parent_class_nid, node, sanitized_name, source, ruby_member_groups,
+                        config.sanitize_symbol_name_fn or (lambda n: n),
                     )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
