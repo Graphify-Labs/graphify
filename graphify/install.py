@@ -537,6 +537,9 @@ def _remove_skill_registration(target: Path, prefix: str, *, only_graphify_writt
 def _remove_claude_skill_registration(project_dir: Path) -> None:
     """Remove the project-scoped Claude skill registration file/section."""
     _remove_skill_registration(project_dir / ".claude" / "CLAUDE.md", "  CLAUDE.md        ->  ")
+    # `install --project` registers in AGENTS.md when Claude Code reads that file.
+    for name in _CLAUDE_AGENTS_MD_FILES:
+        _remove_skill_registration(project_dir / name, "  AGENTS.md        ->  ", only_graphify_written=True)
 def _claude_global_registration() -> "tuple[Path, str]":
     """The CLAUDE.md a global (non-project) Claude install registers the skill in,
     and the skill path that registration names: the same choice install() makes.
@@ -1097,7 +1100,11 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         # does for the skill copy path (#527) -- this always-on registration
         # path was missed by that fix (#2694).
         if project:
-            claude_md = project_dir / ".claude" / "CLAUDE.md"
+            # Never create .claude/CLAUDE.md beside an AGENTS.md Claude Code reads:
+            # it would hide that AGENTS.md. Register in the AGENTS.md instead.
+            claude_md = _claude_instructions_file(project_dir)
+            if claude_md.name != "AGENTS.md":
+                claude_md = project_dir / ".claude" / "CLAUDE.md"
             skill_ref = ".claude/skills/graphify/SKILL.md"
         elif os.environ.get("CLAUDE_CONFIG_DIR"):
             config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"])
@@ -2182,9 +2189,11 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     project_dir = project_dir or Path(".")
     platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
+        # Section first: the registration install() writes would otherwise be an
+        # existing .claude/CLAUDE.md that claude_install then picks over CLAUDE.md.
+        target = claude_install(project_dir, strict=strict, project=True)
         install(platform=platform_name, project=True, project_dir=project_dir)
-        claude_install(project_dir, strict=strict, project=True)
-        _print_project_git_add_hint([project_dir / ".claude", project_dir / "CLAUDE.md"])
+        _print_project_git_add_hint([project_dir / ".claude", target])
     elif platform_name == "gemini":
         gemini_install(project_dir, project=True)
     elif platform_name == "cursor":
@@ -2226,7 +2235,6 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
     platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
-        _remove_claude_skill_registration(project_dir)
         claude_uninstall(project_dir, project=True)
     elif platform_name == "gemini":
         gemini_uninstall(project_dir, project=True)
@@ -2341,18 +2349,53 @@ def _kilo_uninstall(project_dir: Path) -> None:
     _agents_uninstall(project_dir or Path("."), platform="kilo")
     removed = _kilo_uninstall_global()
     print("; ".join(removed) if removed else "nothing to remove")
-def claude_install(project_dir: Path | None = None, strict: bool = False, project: bool = False) -> None:
-    """Write the graphify section to the local CLAUDE.md."""
-    target = (project_dir or Path(".")) / "CLAUDE.md"
+# Claude Code's project instruction files, in the order it prefers them. Its
+# default instructionFiles mode ("claude-md-or-agents-md") reads AGENTS.md only
+# when no CLAUDE.md-style file exists in the project or any directory above it.
+_CLAUDE_MD_FILES = ("CLAUDE.md", ".claude/CLAUDE.md")
+_CLAUDE_MD_BLOCKERS = (*_CLAUDE_MD_FILES, "CLAUDE.local.md")
+_CLAUDE_AGENTS_MD_FILES = ("AGENTS.md", ".claude/AGENTS.md")
+
+
+def _claude_instructions_file(project_dir: Path) -> Path:
+    """The file Claude Code reads project instructions from, for `claude install`.
+
+    An existing CLAUDE.md (or .claude/CLAUDE.md) wins. With no CLAUDE.md-style
+    file in the project or any directory above it, Claude Code reads the
+    project's AGENTS.md instead, so that file is returned: creating a CLAUDE.md
+    beside it would hide it, and every AGENTS.md above it, from Claude Code.
+    Otherwise a new CLAUDE.md, as before. Claude Code's user-level CLAUDE.md
+    ($CLAUDE_CONFIG_DIR/CLAUDE.md, default ~/.claude/CLAUDE.md) is user memory
+    and blocks nothing, even when it sits in an ancestor. Claude Code's
+    non-default modes (settings `instructionFiles`) are not read: the default decides.
+    """
+    for name in _CLAUDE_MD_FILES:
+        if (project_dir / name).is_file():
+            return project_dir / name
+    user_md = (Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "CLAUDE.md").resolve()
+    resolved = project_dir.resolve()
+    blockers = (d / name for d in (resolved, *resolved.parents) for name in _CLAUDE_MD_BLOCKERS)
+    if not any(b.is_file() and b.resolve() != user_md for b in blockers):
+        for name in _CLAUDE_AGENTS_MD_FILES:
+            if (project_dir / name).is_file():
+                return project_dir / name
+    return project_dir / "CLAUDE.md"
+
+
+def claude_install(project_dir: Path | None = None, strict: bool = False, project: bool = False) -> Path:
+    """Write the graphify section to the file Claude Code reads: CLAUDE.md, or
+    the project's AGENTS.md when Claude Code reads that instead. Returns that file."""
+    target = _claude_instructions_file(project_dir or Path("."))
+    # AGENTS.md takes the AGENTS.md block, a superset of the CLAUDE.md one, so a
+    # Claude install never strips lines other AGENTS.md readers rely on.
+    block = _always_on("agents-md" if target.name == "AGENTS.md" else "claude-md")
 
     if target.exists():
         content, newline = _read_keep_newline(target)
-        new_content = _replace_or_append_section(
-            content, _CLAUDE_MD_MARKER, _always_on("claude-md")
-        )
+        new_content = _replace_or_append_section(content, _CLAUDE_MD_MARKER, block)
     else:
         content, newline = "", "\n"
-        new_content = _always_on("claude-md")
+        new_content = block
 
     if target.exists() and new_content == content:
         print(f"graphify already configured in {target.resolve()} (no change)")
@@ -2371,6 +2414,7 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
         print("Strict mode: Read and dedicated Grep share one block per session")
         print("unless recently oriented with `graphify query`; Bash/Glob stay advisory.")
         print("Toggle with GRAPHIFY_HOOK_STRICT=0.")
+    return target
 def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool = False) -> None:
     """Add graphify PreToolUse hook to .claude/settings.json.
 
@@ -2540,6 +2584,8 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         remove_user_skill = not project and not explicit_dir
     if project or (explicit_dir and not remove_user_skill):
         _remove_skill_file("claude", project=True, project_dir=project_dir)
+        # The registration names the project skill just removed.
+        _remove_claude_skill_registration(project_dir)
     if remove_user_skill:
         _remove_skill_file("claude", project=False)
         # Without the skill, the global registration names a file that no longer
@@ -2550,6 +2596,7 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
 
     md_targets = [
         project_dir / "CLAUDE.md",
+        project_dir / ".claude" / "CLAUDE.md",
         project_dir / "CLAUDE.local.md",
         project_dir / ".claude" / "CLAUDE.local.md",
     ]
@@ -2560,7 +2607,21 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         if _strip_graphify_md_section(target):
             removed_any = True
 
-    if not existing:
+    # `claude install` writes AGENTS.md when Claude Code reads it, but Codex and
+    # other agents read the same section there: leave it, and say how to remove it.
+    kept = []
+    for name in _CLAUDE_AGENTS_MD_FILES:
+        try:
+            if _CLAUDE_MD_MARKER in (project_dir / name).read_text(encoding="utf-8", errors="replace"):
+                kept.append(project_dir / name)
+        except OSError:
+            continue
+
+    if kept:
+        for agents_md in kept:
+            print(f"graphify section in {agents_md} left in place: other agents read it too "
+                  f"(`graphify codex uninstall` removes it)")
+    elif not existing:
         print("No CLAUDE.md found in current directory - nothing to do")
     elif not removed_any:
         print("graphify section not found in CLAUDE.md - nothing to do")
