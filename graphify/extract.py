@@ -7899,6 +7899,33 @@ def _resolve_java_member_calls(
         enclosing_type.setdefault(method, owner)
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
+    def _one(hits: set[str] | list[str], argc: object) -> str | None:
+        """The single method ``hits`` name, else None. Several overloads of one
+        class are one method when the call's argument count fits exactly one
+        (#5251); two that both fit, or overloads in different classes, stay
+        ambiguous, as the same-name rule has always treated them."""
+        if len(hits) == 1:
+            return next(iter(hits))
+        owners = {enclosing_type.get(h) for h in hits}
+        if len(owners) != 1 or not isinstance(argc, int):
+            return None
+        def _line(h: str) -> int:
+            loc = str((node_by_id.get(h) or {}).get("source_location") or "")
+            return int(loc[1:]) if loc[1:].isdigit() else 0
+
+        fits = []
+        for h in hits:
+            meta = (node_by_id.get(h) or {}).get("metadata") or {}
+            arity = meta.get("arity")
+            if (isinstance(arity, int) and meta.get("min_arity", arity) <= argc
+                    and (argc <= arity or meta.get("variadic"))):
+                fits.append(h)
+        if len(fits) == 1:
+            return fits[0]
+        # Several fit (`run(String)` / `run(int)`) or none does: the first
+        # declared stands for the name, as it did when overloads were one node.
+        return min(fits or hits, key=lambda h: (_line(h), h))
+
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
     # Inherited fields (#3151): a field declared on a superclass - possibly in
     # another file - types a `this.<field>` receiver in the subclass. Safe
@@ -7944,7 +7971,7 @@ def _resolve_java_member_calls(
             queue.extend(bases.get(cls, []))
         return None
 
-    def _inherited_method(class_nid: str, callee_key: str) -> str | None:
+    def _inherited_method(class_nid: str, callee_key: str, argc: object = None) -> str | None:
         # Java's "class wins": a method declared up the superclass chain beats
         # an interface default, whatever the depth. Only then the interfaces,
         # level by level. The class itself was searched in-file.
@@ -7961,7 +7988,7 @@ def _resolve_java_member_calls(
                 return None
             declared = method_index.get((nid, callee_key))
             if declared:
-                return next(iter(declared)) if len(declared) == 1 else None
+                return _one(declared, argc)
         level = list(dict.fromkeys(
             base for nid in [class_nid, *chain] for base in supertypes.get(nid, []) if base not in seen
         ))
@@ -7974,7 +8001,7 @@ def _resolve_java_member_calls(
                     return None
                 hits |= method_index.get((nid, callee_key), set())
             if hits:
-                return next(iter(hits)) if len(hits) == 1 else None
+                return _one(hits, argc)
             level = list(dict.fromkeys(
                 base for nid in level for base in supertypes.get(nid, []) if base not in seen
             ))
@@ -8002,7 +8029,7 @@ def _resolve_java_member_calls(
                 return None
         return bases
 
-    def _method_on_type_or_bases(type_nid: str, callee_key: str) -> str | None:
+    def _method_on_type_or_bases(type_nid: str, callee_key: str, argc: object = None) -> str | None:
         hits: set[str] = set()
         seen: set[str] = set()
         frontier = [type_nid]
@@ -8019,7 +8046,7 @@ def _resolve_java_member_calls(
             if bases is None:
                 return None
             frontier.extend(bases)
-        return next(iter(hits)) if len(hits) == 1 else None
+        return _one(hits, argc)
 
     def _type_named(name: str, near: str | None) -> str | None:
         name = key(name)
@@ -8139,7 +8166,7 @@ def _resolve_java_member_calls(
             caller = raw_call.get("caller_nid")
             if not raw_call.get("is_member_call"):
                 class_nid = enclosing_type.get(caller)
-                method_nid = _inherited_method(class_nid, key(callee)) if class_nid and callee else None
+                method_nid = _inherited_method(class_nid, key(callee), raw_call.get("arity")) if class_nid and callee else None
                 # `new Base()` names a constructor, which is not inherited.
                 owner = node_by_id.get(enclosing_type.get(method_nid or ""), {})
                 if (method_nid and method_nid != caller and key(owner.get("label", "")) != key(callee)
@@ -8149,7 +8176,7 @@ def _resolve_java_member_calls(
             chain = raw_call.get("java_receiver_chain")
             if chain and not receiver and callee and caller:
                 type_nid = _chain_type(chain, caller)
-                method_nid = _method_on_type_or_bases(type_nid, key(callee)) if type_nid else None
+                method_nid = _method_on_type_or_bases(type_nid, key(callee), raw_call.get("arity")) if type_nid else None
                 if method_nid and method_nid != caller and (caller, method_nid) not in existing_pairs:
                     existing_pairs.add((caller, method_nid))
                     all_edges.append({
@@ -8217,7 +8244,7 @@ def _resolve_java_member_calls(
                 if not type_nid:
                     continue
 
-            method_nid = _method_on_type_or_bases(type_nid, key(callee))
+            method_nid = _method_on_type_or_bases(type_nid, key(callee), raw_call.get("arity"))
             if not method_nid or method_nid == caller or (caller, method_nid) in existing_pairs:
                 continue
             _emit(caller, method_nid, raw_call, exact)
@@ -9768,7 +9795,21 @@ def _resolve_kotlin_member_calls(
             m for m in methods_by_type.get(type_nids[0], [])
             if str(node_by_id.get(m, {}).get("label", "")).strip("()") == wanted
         ))
-        if len(candidates) != 1:
+        # Overloads of a Java method are one node each since #5251, and a Kotlin
+        # call site carries no argument count to choose between them. The first
+        # declared stands for the name, as it did when they were one node, but
+        # which overload runs is a guess, so the edge is INFERRED.
+        overloaded = len(candidates) > 1 and all(
+            isinstance((node_by_id.get(c, {}).get("metadata") or {}).get("arity"), int)
+            for c in candidates
+        )
+        if overloaded:
+            candidates.sort(key=lambda c: (
+                int(str(node_by_id[c].get("source_location") or "L0")[1:] or 0)
+                if str(node_by_id[c].get("source_location") or "L0")[1:].isdigit() else 0,
+                c,
+            ))
+        elif len(candidates) != 1:
             continue
         tgt = candidates[0]
         if tgt == caller or (caller, tgt) in existing_pairs:
@@ -9779,8 +9820,9 @@ def _resolve_kotlin_member_calls(
             "target": tgt,
             "relation": "calls",
             "context": "call",
-            "confidence": "EXTRACTED",  # the receiver names the type explicitly in source
-            "confidence_score": 1.0,
+            # the receiver names the type explicitly in source
+            "confidence": "INFERRED" if overloaded else "EXTRACTED",
+            "confidence_score": 0.85 if overloaded else 1.0,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
             "weight": 1.0,
@@ -13157,7 +13199,7 @@ def extract(
             candidates = [candidate for candidate in candidates if candidate not in _method_nids]
         if not candidates:
             continue
-        if rc.get("lang") == "csharp" and not rc.get("csharp_new") and len(candidates) > 1:
+        if rc.get("lang") in ("csharp", "java") and not rc.get("csharp_new") and len(candidates) > 1:
             if not _csharp_overload_cache:
                 _csharp_overload_cache.update(_csharp_overload_index(
                     resolution_nodes, all_edges + list(resolution_context_edges or [])
