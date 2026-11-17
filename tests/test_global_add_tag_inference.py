@@ -98,6 +98,44 @@ def test_explicit_as_tag_still_wins(monkeypatch, tmp_path, store):
     assert list(_manifest(store)) == ["chosen"]
 
 
+def test_several_sources_add_in_one_batch(monkeypatch, tmp_path, store):
+    """`global add a b` composes both in one global_add_many pass -- the whole-graph
+    load/link/save the batch path pays once -- so both land under their inferred tags."""
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_graph(a)
+    _write_graph(b)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(a), str(b)]) == 0
+
+    assert sorted(_manifest(store)) == ["alpha", "beta"]
+
+
+def test_several_same_named_repos_get_distinct_tags(monkeypatch, tmp_path, store):
+    """Naming the whole batch at once lets distinct_repo_tags widen a clash two sources
+    share; a per-source call would hand both the same tag and the second prune the first."""
+    a = tmp_path / "one" / "myrepo" / "graph.json"
+    b = tmp_path / "two" / "myrepo" / "graph.json"
+    _write_graph(a)
+    _write_graph(b)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(a), str(b)]) == 0
+
+    assert len(_manifest(store)) == 2
+
+
+def test_as_tag_is_rejected_for_several_sources(monkeypatch, tmp_path, store):
+    """One `--as` cannot name two sources; the batch is refused rather than guessed."""
+    a = tmp_path / "alpha" / "graph.json"
+    b = tmp_path / "beta" / "graph.json"
+    _write_graph(a)
+    _write_graph(b)
+
+    assert _run(monkeypatch, ["graphify", "global", "add", str(a), str(b), "--as", "x"]) == 1
+
+    assert not (store / "global-manifest.json").exists()
+
+
 def test_remove_without_a_tag_is_still_a_usage_error(monkeypatch, store):
     assert _run(monkeypatch, ["graphify", "global", "remove"]) == 1
 
