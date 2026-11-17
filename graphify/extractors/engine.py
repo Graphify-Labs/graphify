@@ -1577,7 +1577,8 @@ def _python_pre_scan_underscore_collisions(root_node, source: bytes, stem: str) 
 
 def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]],
                            private_prefixes: tuple[str, ...] = ("_",),
-                           private_suffixes: tuple[str, ...] = ()) -> str:
+                           private_suffixes: tuple[str, ...] = (),
+                           leaf=None) -> str:
     """Resolve a declaration's real node id against the collision map.
 
     Shared by the Python and C# pre-scans (#3302, #4415). A name with no
@@ -1594,12 +1595,15 @@ def _underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, set[str]
     members private with ``$`` and ``#`` (#4475).
     ``private_suffixes`` does the same for a trailing mark: C++ spells a
     private member ``find_`` as often as ``_find``.
+    ``leaf`` maps a name to the part whose spelling decides that (Lua judges
+    ``M._load`` by ``_load``).
     """
     names = groups.get(plain_nid)
     if not names or len(names) < 2:
         return plain_nid
     public = [n for n in names
-              if not n.startswith(private_prefixes) and not n.endswith(private_suffixes)]
+              for part in [leaf(n) if leaf is not None else n]
+              if not part.startswith(private_prefixes) and not part.endswith(private_suffixes)]
     if len(public) == 1 and name == public[0]:
         return plain_nid
     salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
@@ -1963,6 +1967,39 @@ def _swift_member_nid(class_nid: str, member_node, name: str, source: bytes,
         groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
         groups_cache[key] = groups
     return _underscore_salted_nid(_make_id(class_nid, name), name, groups)
+
+
+def _lua_field_name(name: str) -> str:
+    """``M:load`` and ``M.load`` name one table field; spell both with ``.``."""
+    return name.replace(":", ".")
+
+
+def _lua_field_leaf(name: str) -> str:
+    return name.rsplit(".", 1)[-1]
+
+
+def _lua_pre_scan_field_collisions(root, source: bytes, stem: str) -> dict[str, set[str]]:
+    """Group a Lua file's table-field functions by the id they would get.
+
+    ``make_id`` drops ``_`` and folds case, so ``function M._load()`` /
+    ``function M.load()`` (or ``Runner:_start()`` / ``Runner:start()``) in one
+    file minted one id: the second declaration vanished and its calls were
+    credited to its twin. Only dotted/colon names are grouped; a bare
+    ``_x`` / ``x`` pair is the module-level rule's (#2810).
+    """
+    names: dict[str, set[str]] = {}
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == "function_declaration":
+            name_node = n.child_by_field_name("name")
+            if name_node is not None and name_node.type in (
+                    "dot_index_expression", "method_index_expression"):
+                text = _lua_field_name(_read_text(name_node, source))
+                if normalize_id(_lua_field_leaf(text)):
+                    names.setdefault(_make_id(stem, text), set()).add(text)
+        stack.extend(n.children)
+    return {nid: ns for nid, ns in names.items() if len(ns) >= 2}
 
 
 _CPP_PRIVATE_MEMBER_PREFIXES = ("_", "~")
@@ -7722,6 +7759,9 @@ def _extract_generic(
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
         python_underscore_groups = _python_pre_scan_underscore_collisions(root, source, stem)
+    lua_field_groups: dict[str, set[str]] = {}
+    if config.ts_module == "tree_sitter_lua":
+        lua_field_groups = _lua_pre_scan_field_collisions(root, source, stem)
 
     def add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
                  metadata: dict | None = None) -> None:
@@ -9750,6 +9790,13 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
+                    )
+                elif lua_field_groups and func_nid in lua_field_groups:
+                    # `M._load` / `M.load`: the one public field keeps the plain
+                    # id, every other spelling is salted (#3302's rule).
+                    func_nid = _underscore_salted_nid(
+                        func_nid, _lua_field_name(sanitized_name), lua_field_groups,
+                        leaf=_lua_field_leaf,
                     )
                 if (config.ts_module == "tree_sitter_cpp" and "::" in func_name
                         and cpp_qualified_names.get(func_nid)
