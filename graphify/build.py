@@ -1582,7 +1582,9 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     splitting the file's edges across two disconnected nodes. Canonicalize to the
     semantic ``_doc`` node (it carries the richer references/hyperedges). Gated to
     ``file_type == "document"`` on BOTH twins with an identical ``source_file``,
-    so an unrelated code symbol ``foo`` and ``foo_doc`` never merge.
+    so an unrelated code symbol ``foo`` and ``foo_doc`` never merge. The bare
+    record must be a page/file node; an AST record or a heading at the `_doc`
+    ID is never a semantic twin. Legacy unmarked file twins remain supported.
     """
     by_id: dict[str, dict] = {}
     for n in nodes:
@@ -1599,6 +1601,14 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
         if not sf or bare.get("source_file") != sf:
             continue
         if node.get("file_type") != "document" or bare.get("file_type") != "document":
+            continue
+        if node.get("node_kind") == "heading" or node.get("_origin") == "ast":
+            continue
+        if bare.get("node_kind") == "heading":
+            continue
+        if bare.get("node_kind") != "page" and not _is_file_node_label(
+            bare.get("label"), sf
+        ):
             continue
         remap[nid[:-4]] = nid
     return remap
@@ -1747,6 +1757,15 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # touched it last (#1799).
     _doc_remap = _doc_twin_remap(extraction.get("nodes", []))
     if _doc_remap:
+        # Preserve structural metadata when the semantic document wins. Keep
+        # its own ID, label, location and tier: copying AST provenance would
+        # make an AST-only update delete the semantic layer.
+        _doc_nodes = {str(n["id"]): n for n in extraction.get("nodes", [])
+                      if isinstance(n, dict) and n.get("id")}
+        for bare_id, doc_id in _doc_remap.items():
+            for key, value in _doc_nodes[bare_id].items():
+                if key not in {"id", "label", "source_location", "_origin"}:
+                    _doc_nodes[doc_id].setdefault(key, value)
         extraction["nodes"] = [
             n for n in extraction.get("nodes", [])
             if not (isinstance(n, dict) and n.get("id") in _doc_remap)
