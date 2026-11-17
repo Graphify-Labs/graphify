@@ -291,12 +291,79 @@ def _overridden_members(graph: nx.DiGraph, node: str, cache: dict[str, list[str]
     found: list[str] = []
     for owner in owners:
         for base in _supertypes(graph, owner, cache):
-            for _s, member, data in graph.out_edges(base, data=True):
-                member = str(member)
-                if (str(data.get("relation", "")) == "method" and member != node
-                        and graph.nodes[member].get("label") == label):
-                    found.append(member)
+            same_name = [
+                str(member) for _s, member, data in graph.out_edges(base, data=True)
+                if str(data.get("relation", "")) == "method" and str(member) != node
+                and graph.nodes[member].get("label") == label
+            ]
+            found.extend(_overload_compatible(graph, node, same_name))
     return found
+
+
+_JAVA_PRIMITIVES = frozenset(
+    {"boolean", "byte", "char", "short", "int", "long", "float", "double"}
+)
+
+
+def _java_params(signature: object) -> list[str] | None:
+    """A recorded erased signature as its parameter list, ``T...`` as ``T[]``
+    (a variadic parameter is an array one, so it overrides ``T[]``)."""
+    if not isinstance(signature, str):
+        return None
+    return [p.replace("...", "[]") for p in signature.split(",")] if signature else []
+
+
+def _may_be_same_param(mine: str, theirs: str) -> bool:
+    """False only when two erased parameter types can never be one type: a
+    primitive differs from anything else, or two arrays differ in a primitive
+    element. Two different reference types may still match (a type variable
+    erases to its bound, `save(T)` overridden by `save(String)`)."""
+    if mine == theirs:
+        return True
+    if mine in _JAVA_PRIMITIVES or theirs in _JAVA_PRIMITIVES:
+        return False
+    if mine.endswith("[]") and theirs.endswith("[]"):
+        a, b = mine[:-2], theirs[:-2]
+        if a in _JAVA_PRIMITIVES or b in _JAVA_PRIMITIVES:
+            return a == b
+    return True
+
+
+def _overload_compatible(graph: nx.DiGraph, node: str, members: list[str]) -> list[str]:
+    """The ``members`` of one supertype that ``node`` can override (#5251).
+
+    Overloads of a name are separate nodes with one label, so the label alone
+    would tie ``run(int)`` to a supertype's ``run()``. An override has the same
+    declared parameter count (a ``T...`` parameter counts as one, like ``T[]``)
+    and parameter types that can be the same: a primitive never matches another
+    type, but two reference types may (a generic supertype's ``save(T)`` is
+    overridden by ``save(String)``), so those stay. A node without a recorded
+    arity (other languages) keeps the label-only match.
+    """
+    meta = graph.nodes[node].get("metadata") or {}
+    arity = meta.get("arity")
+    if not isinstance(arity, int):
+        return members
+    # The type comparison is Java's: C# generics take primitive type arguments
+    # (`IRepo<int>.Save(T)` is overridden by `Save(int)`), so there the parameter
+    # count alone decides.
+    is_java = str(graph.nodes[node].get("source_file") or "").endswith(".java")
+    mine = _java_params(meta.get("signature")) if is_java else None
+    compatible = []
+    for m in members:
+        other = graph.nodes[m].get("metadata") or {}
+        other_arity = other.get("arity")
+        if other_arity is None:
+            compatible.append(m)
+            continue
+        if other_arity != arity:
+            continue
+        theirs = _java_params(other.get("signature")) if is_java else None
+        if (mine is not None and theirs is not None and len(mine) == len(theirs)
+                and not all(_may_be_same_param(a, b) for a, b in zip(mine, theirs))):
+            continue
+        compatible.append(m)
+    return compatible
 
 
 def affected_nodes(

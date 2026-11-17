@@ -266,4 +266,4 @@ def test_overloads_in_struct_record_and_beside_other_members(tmp_path):
         "public record R { public void N() { } class Inner { public void N(int x) { } } public void N(int x) { } }\n"
     )})
     assert len([n for n in r["nodes"] if n["id"].startswith("l_st_m") and n["label"] == ".M()"]) == 2
-    assert {n["id"] for n in r["nodes"] if n["label"] == ".N()"} == {"l_r_n", "l_r_n_46f8ab", "l_inner_n"}
+    assert {n["id"] for n in r["nodes"] if n["label"] == ".N()"} == {"l_r_n", "l_r_n_46f8ab", "l_r_inner_n"}

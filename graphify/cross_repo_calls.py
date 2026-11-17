@@ -208,6 +208,37 @@ def _objc_union_definition(
     return defs[0] if len(defs) == 1 else None
 
 
+def _java_overload_target(merged: nx.Graph, targets: list[str], arity: object) -> str | None:
+    """The one Java overload in ``targets`` a call with ``arity`` arguments means.
+
+    ``targets`` are the same-named methods of one type, one node per overload
+    (#5251). Exactly one that accepts the count wins; when several do, or none
+    does, or the parked entry predates argument counts, the first declared
+    stands for the name, as it did when overloads were a single node. Anything
+    that is not a recorded overload (no ``arity``) stays ambiguous.
+    """
+    def meta(node: str) -> dict:
+        found = merged.nodes[node].get("metadata")
+        return found if isinstance(found, dict) else {}
+
+    def line(node: str) -> int:
+        loc = str(merged.nodes[node].get("source_location") or "")
+        return int(loc[1:]) if loc[1:].isdigit() else 0
+
+    if not all(isinstance(meta(t).get("arity"), int) for t in targets):
+        return None
+    fits = targets
+    if isinstance(arity, int) and not isinstance(arity, bool):
+        accepting = [
+            t for t in targets
+            if meta(t).get("min_arity", meta(t)["arity"]) <= arity
+            and (arity <= meta(t)["arity"] or meta(t).get("variadic"))
+        ]
+        if len(accepting) == 1:
+            return accepting[0]
+    return min(fits, key=lambda t: (line(t), t))
+
+
 def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
     """Emit `calls` edges for parked member calls another repo answers.
 
@@ -297,9 +328,18 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                         targets.extend(members.get((candidates[0], member_key), []))
                     if targets:
                         break
-                if len(targets) != 1:
+                if len(targets) > 1 and lang == "java":
+                    # Overloads of one method are a node each (#5251): the
+                    # parked call's argument count picks one, else the first
+                    # declared stands for the name.
+                    picked = _java_overload_target(merged, targets, entry.get("arity"))
+                    if picked is None:
+                        continue
+                    target = picked
+                elif len(targets) != 1:
                     continue
-                target = targets[0]
+                else:
+                    target = targets[0]
             if target == caller or merged.has_edge(caller, target):
                 continue
             metadata = entry.get("metadata")

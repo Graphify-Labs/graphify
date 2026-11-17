@@ -92,7 +92,22 @@ def test_copied_ast_cache_preserves_terraform_ids(
     cold = scan(clean)
     assert first["nodes"] == cold["nodes"]
     assert first["edges"] == cold["edges"]
-    assert pool_runs == ([True, True] if parallel else [])
+    # Both parallel scans must go through _extract_parallel. A host can refuse
+    # to start the pool: on macOS, sem_open fails with ENOSPC once leaked
+    # semaphores fill kern.posix.sem.max, which the full suite's many pools make
+    # likely. _extract_parallel then returns False and the scan falls back to
+    # sequential with a warning, which is documented behaviour, and the ids
+    # above are compared either way, so a pool that could not start must not
+    # fail this test (#5136). Each False must come from that warning: a pool
+    # that starts and then breaks, or gives up silently, still fails.
+    if parallel:
+        assert len(pool_runs) == 2, pool_runs
+        refused = pool_runs.count(False)
+        if refused:
+            out = capsys.readouterr().out
+            assert out.count("parallel extraction unavailable") == refused, (pool_runs, out)
+    else:
+        assert pool_runs == []
 
     def unexpected_parse(*args, **kwargs):
         raise AssertionError("copied AST cache should avoid parsing unchanged files")

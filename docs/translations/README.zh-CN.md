@@ -20,7 +20,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>将代理的 token 花费削减 80%。</b> Graphify Cloud 是常驻在线的记忆层，为你的代理提供治理、保持高代码质量，并以形式化验证证明正确性。<a href="https://app.graphify.com/login"><b>开始 14 天免费试用 &rarr;</b></a>
+  <b>将代理的 token 花费削减 80%。</b> Graphify Cloud 是常驻在线的记忆层，为你的代理提供治理、保持高代码质量，并以形式化验证证明正确性。<a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>免费开始，无需信用卡 &rarr;</b></a>
 </p>
 
 在你的 AI 编码助手中输入 `/graphify`，它就会把你的整个项目（代码、文档、PDF、图片、视频）映射成一张**知识图谱**，让你可以**用查询取代逐文件 grep**。
@@ -38,7 +38,7 @@
 - **不是向量索引。** 没有嵌入、没有向量存储：这是一张你可以真正遍历的图。问一个问题、追踪两个事物之间的路径，或解释某一个概念。
 
 > [!NOTE]
-> **想让它常驻在线吗？** [Graphify Cloud](https://app.graphify.com/login) 会在你整个 SDLC 中保持图谱实时更新：支持 monorepo 与跨 repo、形式化验证，以及以鸟瞰视角审视 SDLC 的代码审查，还有 Sentry、Jira 等连接器，让事故与工单和你的代码落在同一张图谱中。**[在 app.graphify.com 开始 14 天免费试用](https://app.graphify.com/login)**。
+> **想让它常驻在线吗？** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 会在你整个 SDLC 中保持图谱实时更新：支持 monorepo 与跨 repo、形式化验证，以及以鸟瞰视角审视 SDLC 的代码审查，还有 Sentry、Jira 等连接器，让事故与工单和你的代码落在同一张图谱中。**[免费开始，无需信用卡](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**。
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify 的交互式 graph.html，将 FastAPI 代码库显示为力导向知识图谱，并附上检测到的社区图例" width="900">
@@ -47,7 +47,7 @@
   <em>由 graphify 映射出的 FastAPI 代码库。每个节点都是一个概念，颜色代表检测到的社区，而整张图在 graph.html 中都可点击。</em>
 </p>
 
-**开始使用**（30 seconds）。需要 Python 3.10+ 与 uv（或 pipx）：
+**开始使用**（30 seconds）。需要 Python 3.11+ 与 uv（或 pipx）：
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **Local-first** | 代码在本地以 tree-sitter 解析（不使用 LLM，没有任何东西离开你的机器）；只有针对文档/媒体的语义处理会调用后端，而且仅在你有配置时 |
 
 > [!TIP]
-> 要在许多 repo 或 monorepo 上运行吗？[Graphify Cloud](https://app.graphify.com/login) 会持续不断地执行此事，并将代理的 token 花费削减 80%，提供跨 repo 链接、覆盖整个 SDLC 的代码审查、形式化验证，以及 Sentry/Jira 连接器。[开始 14 天免费试用 &rarr;](https://app.graphify.com/login)
+> 要在许多 repo 或 monorepo 上运行吗？[Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 会持续不断地执行此事，并将代理的 token 花费削减 80%，提供跨 repo 链接、覆盖整个 SDLC 的代码审查、形式化验证，以及 Sentry/Jira 连接器。[免费开始，无需信用卡 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | 需求 | 最低版本 | 检查 | 安装 |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ Pi 没有 `PreToolUse` hook，因此 `graphify pi guard install` 会注册一个
 
 `GRAPH_REPORT.md` 仍可用于广泛的架构审查。
 
-各平台究竟会写入哪些文件（CodeBuddy 的 `CODEBUDDY.md` + `PreToolUse` hooks、Codex 的 `AGENTS.md`、Kilo 的原生 `.kilo` 插件、Cursor 的 `alwaysApply` 规则等），在 **[Always-on setup](https://docs.graphify.com/guides/always-on)** 中有说明。
+各平台究竟会写入哪些文件（CodeBuddy 的 `CODEBUDDY.md` + `PreToolUse` hooks、Codex 的 `AGENTS.md`、Kilo 的原生 `.kilo` 插件、Cursor 的 `alwaysApply` 规则等），在 **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** 中有说明。
 
 若要一次从所有平台移除 graphify：`graphify uninstall`（加上 `--purge` 也会删除 `graphify-out/`）。或使用各平台的命令（例如 `graphify claude uninstall`）。
 
@@ -439,7 +439,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) 是构建在 graphify 之上、常驻在线的那一层。它不是一张你按文件夹、按需重建的图，而是在你整个软件开发生命周期中保持一张实时的图：
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 是构建在 graphify 之上、常驻在线的那一层。它不是一张你按文件夹、按需重建的图，而是在你整个软件开发生命周期中保持一张实时的图：
 
 - **减少 80% 的 token**：常驻在线的记忆层意味着你的代理不再在每个会话都重新读取与重新解释代码库。
 - **Monorepo 与跨 repo**：一张横跨每一个服务与仓库的连通图，而不是每个文件夹一张图。
@@ -448,7 +448,7 @@ viz_node_limit=0
 - **SDLC 连接器**：拉入 Sentry、Jira 等，让事故、工单与代码存在于同一张图中。
 - **常驻在线**：在后台横跨代码、文档与会议持续更新。
 
-**[在 app.graphify.com 开始 14 天免费试用 &rarr;](https://app.graphify.com/login)**
+**[免费开始，无需信用卡 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

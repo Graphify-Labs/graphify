@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Reduser agentenes tokenforbruk med 80%.</b> Graphify Cloud er et alltid-på-minne som styrer agentene dine, holder kodekvaliteten høy og beviser korrekthet med formell verifisering. <a href="https://app.graphify.com/login"><b>Start en gratis 14-dagers prøveperiode &rarr;</b></a>
+  <b>Reduser agentenes tokenforbruk med 80%.</b> Graphify Cloud er et alltid-på-minne som styrer agentene dine, holder kodekvaliteten høy og beviser korrekthet med formell verifisering. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Kom gratis i gang, uten kort &rarr;</b></a>
 </p>
 
 Skriv `/graphify` i AI-kodeassistenten din, så kartlegger den hele prosjektet ditt (kode, dokumenter, PDF-filer, bilder, videoer) til en **kunnskapsgraf** som du kan **spørre i stedet for å greppe** gjennom filer.
@@ -38,7 +38,7 @@ Skriv `/graphify` i AI-kodeassistenten din, så kartlegger den hele prosjektet d
 - **Ikke en vektorindeks.** Ingen embeddings, ingen vektorlagring: en ekte graf som du traverserer. Still et spørsmål, spor stien mellom to ting, eller forklar ett konsept.
 
 > [!NOTE]
-> **Vil du ha dette alltid på?** [Graphify Cloud](https://app.graphify.com/login) holder grafen levende gjennom hele SDLC-en din: støtte for monorepo og kryssrepo, formell verifisering og kodegjennomgang med fugleperspektiv over SDLC-en din, pluss koblinger for Sentry, Jira og mer, slik at hendelser og saker ligger i samme graf som koden din. **[Start en gratis 14-dagers prøveperiode på app.graphify.com](https://app.graphify.com/login)**.
+> **Vil du ha dette alltid på?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) holder grafen levende gjennom hele SDLC-en din: støtte for monorepo og kryssrepo, formell verifisering og kodegjennomgang med fugleperspektiv over SDLC-en din, pluss koblinger for Sentry, Jira og mer, slik at hendelser og saker ligger i samme graf som koden din. **[Kom gratis i gang, uten kort](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@ Skriv `/graphify` i AI-kodeassistenten din, så kartlegger den hele prosjektet d
   <em>FastAPI-kodebasen kartlagt av graphify. Hver node er et konsept, farger er detekterte fellesskap, og alt sammen er klikkbart i graph.html.</em>
 </p>
 
-**Kom i gang** (30 sekunder). Krever Python 3.10+ og uv (eller pipx):
+**Kom i gang** (30 sekunder). Krever Python 3.11+ og uv (eller pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Hva du får ut av boksen:
 | **Lokalt først** | Kode parses lokalt med tree-sitter (ingen LLM, ingenting forlater maskinen din); kun den semantiske gjennomgangen av dokumenter/medier kaller en backend, og kun hvis du konfigurerer en |
 
 > [!TIP]
-> Kjører du dette på tvers av mange repoer eller et monorepo? [Graphify Cloud](https://app.graphify.com/login) gjør det kontinuerlig og kutter agentenes tokenforbruk med 80%, med kryssrepolenker, kodegjennomgang på tvers av hele SDLC-en, formell verifisering og Sentry/Jira-koblinger. [Start en gratis 14-dagers prøveperiode &rarr;](https://app.graphify.com/login)
+> Kjører du dette på tvers av mange repoer eller et monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) gjør det kontinuerlig og kutter agentenes tokenforbruk med 80%, med kryssrepolenker, kodegjennomgang på tvers av hele SDLC-en, formell verifisering og Sentry/Jira-koblinger. [Kom gratis i gang, uten kort &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Fullstendige veiledninger og referanse finnes på **[docs.graphify.com](https://
 
 | Krav | Minimum | Sjekk | Installer |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(anbefalt)* | hvilken som helst | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativ)* | hvilken som helst | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Dette skriver en liten konfigurasjonsfil som forteller assistenten din at den sk
 
 `GRAPH_REPORT.md` er fortsatt tilgjengelig for bred arkitekturgjennomgang.
 
-Nøyaktig hvilke filer hver plattform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex' `AGENTS.md`, Kilos innebygde `.kilo`-plugin, Cursors `alwaysApply`-regel osv.) er dekket i **[Alltid-på-oppsett](https://docs.graphify.com/guides/always-on)**.
+Nøyaktig hvilke filer hver plattform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex' `AGENTS.md`, Kilos innebygde `.kilo`-plugin, Cursors `alwaysApply`-regel osv.) er dekket i **[Alltid-på-oppsett](https://docs.graphify.com/open-source/vibe-coding)**.
 
 For å fjerne graphify fra alle plattformer på én gang: `graphify uninstall` (legg til `--purge` for også å slette `graphify-out/`). Eller bruk kommandoen per plattform (f.eks. `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ Hver kommando og hvert flagg, med eksempler: **[CLI-referanse](https://docs.grap
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) er det alltid-på-laget bygget oppå graphify. I stedet for en graf du bygger på nytt ved behov per mappe, holder det én levende graf gjennom hele programvareutviklingslivssyklusen din:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) er det alltid-på-laget bygget oppå graphify. I stedet for en graf du bygger på nytt ved behov per mappe, holder det én levende graf gjennom hele programvareutviklingslivssyklusen din:
 
 - **80% færre tokens**: alltid-på-minne betyr at agentene dine slutter å lese om og forklare om kodebasen hver økt.
 - **Monorepo og kryssrepo**: én sammenkoblet graf på tvers av hver tjeneste og hvert repository, ikke en graf per mappe.
@@ -456,7 +456,7 @@ Hver kommando og hvert flagg, med eksempler: **[CLI-referanse](https://docs.grap
 - **SDLC-koblinger**: hent inn Sentry, Jira og mer, slik at hendelser, saker og kode lever i én graf.
 - **Alltid på**: oppdateres kontinuerlig i bakgrunnen på tvers av kode, dokumenter og møter.
 
-**[Start en gratis 14-dagers prøveperiode på app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Kom gratis i gang, uten kort &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

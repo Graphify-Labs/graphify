@@ -2756,7 +2756,7 @@ def _rebuild_code(
                         "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
                         "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                         "_rust_impl_key", "_rust_declaration_count",
-                        "_ts_public_twin", "_py_property", "_java_ret",
+                        "_ts_public_twin", "_py_property", "_java_ret", "_java_type",
                         "_ts_fields", "_ts_static_fields",
                         "_py_fixture", "_py_return_type", "_go_fields",
                         "_go_package_path",
@@ -2775,6 +2775,11 @@ def _rebuild_code(
                                 "cpp_conditions",
                                 "ruby_reopened",
                                 "ruby_external_method_owners",
+                                "type_path",
+                                "namespace",
+                                "scope_chain",
+                                "is_nested_type",
+                                "is_partial",
                                 # Erlang remote-call resolution keys (#3714): an
                                 # unchanged callee module must keep its
                                 # module/name/arity so `foo:bar()` still resolves
@@ -3280,8 +3285,9 @@ def _rebuild_code(
             )
         questions = suggest_questions(G, communities, labels)
         from graphify.report import load_learning_for_report as _llfr
+        from graphify.report import load_report_token_cost as _lrtc
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
-                          {"input": 0, "output": 0}, report_root, suggested_questions=questions,
+                          _lrtc(out), report_root, suggested_questions=questions,
                           built_at_commit=commit, learning=_llfr(out / "graph.json"))
         report_path = out / "GRAPH_REPORT.md"
         # Split back into the tracked (curated) file and the pending

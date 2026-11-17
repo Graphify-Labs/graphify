@@ -146,6 +146,10 @@ class _GraphContextCache:
         self._entries: OrderedDict[str, dict] = OrderedDict()
         self._pinned: dict[str, dict] = {}
         self._lock = threading.Lock()
+        # One in-flight build per (resolved_path, pinned); keyed separately
+        # from `_entries`/`_pinned` so a rebuild in progress for one path
+        # never blocks a lookup for another (#5177).
+        self._loading: dict[tuple[str, bool], threading.Event] = {}
 
     def _load_entry(self, resolved_path: str, key: tuple[int, int]) -> dict:
         """Build one entry for an already-resolved path and known file key.
@@ -177,27 +181,74 @@ class _GraphContextCache:
 
         ``pinned=True`` is reserved for the server's configured default graph;
         it remains warm without consuming a project-cache slot.
+
+        The actual rebuild (``_load_entry``, which parses graph.json and builds
+        its trigram index) runs outside ``_lock`` so a slow reload of one path
+        never blocks a request for another (#5177). While a rebuild for THIS
+        path is already in flight, a caller that still has an old entry for it
+        gets that stale entry back immediately rather than queuing behind the
+        rebuild; a caller with no entry yet (the path's first ever load) has
+        nothing stale to serve and waits for the one in-flight build instead
+        of starting a redundant second one.
         """
+        entries = self._pinned if pinned else self._entries
+        loading_key = (resolved_path, pinned)
         with self._lock:
             try:
                 stat_result = Path(resolved_path).stat()
             except FileNotFoundError:
                 raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
             key = (stat_result.st_mtime_ns, stat_result.st_size)
-            entries = self._pinned if pinned else self._entries
             entry = entries.get(resolved_path)
             if entry is not None and entry["key"] == key:
                 if not pinned:
                     self._entries.move_to_end(resolved_path)
                 return entry["G"], entry["communities"]
 
-            entry = self._load_entry(resolved_path, key)
-            entries[resolved_path] = entry
+            in_flight = self._loading.get(loading_key)
+            if entry is not None and in_flight is not None:
+                if not pinned:
+                    self._entries.move_to_end(resolved_path)
+                return entry["G"], entry["communities"]
+
+            if in_flight is not None:
+                wait_event, build_here = in_flight, False
+            else:
+                wait_event = threading.Event()
+                self._loading[loading_key] = wait_event
+                build_here = True
+
+        if not build_here:
+            wait_event.wait()
+            # The build this thread waited on may belong to a key that was
+            # already superseded by a newer write; recurse to either pick up
+            # its result or (if it failed, or was already stale on arrival)
+            # take a fresh run at loading/building it.
+            return self.load(resolved_path, pinned=pinned)
+
+        try:
+            new_entry = self._load_entry(resolved_path, key)
+        except BaseException:
+            # Build failed: clear the in-flight marker and wake waiters so one
+            # of them retries. The old entry (if any) is left untouched.
+            with self._lock:
+                self._loading.pop(loading_key, None)
+                wait_event.set()
+            raise
+
+        with self._lock:
+            entries[resolved_path] = new_entry
             if not pinned:
                 self._entries.move_to_end(resolved_path)
                 while len(self._entries) > self._max_contexts:
                     self._entries.popitem(last=False)
-            return entry["G"], entry["communities"]
+            # Clear the in-flight marker and wake waiters in the SAME lock block
+            # that stores the entry. If these ran in a separate block, a woken
+            # waiter could see neither a stored entry nor an in-flight marker in
+            # the gap and start a second full rebuild, defeating single flight.
+            self._loading.pop(loading_key, None)
+            wait_event.set()
+            return new_entry["G"], new_entry["communities"]
 
 
 def _node_arg(arguments: dict) -> str:
@@ -1102,7 +1153,27 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
     "modules": "import",
     "exports": "export",
     "exported": "export",
+    "inherit": "inherits",
+    "inherited": "inherits",
+    "inheritance": "inherits",
+    "subclass": "inherits",
+    "subclasses": "inherits",
+    "superclass": "inherits",
+    "implements": "implements",
+    "implemented": "implements",
+    "interface": "implements",
+    "interfaces": "implements",
+    "extends": "extends",
 }
+
+# Heritage relations, which a context filter matches by relation name as well as
+# by context. They are the one structural family the extractors disagree on:
+# TypeScript tags them `context="type"`, while C#, Java and Python emit them
+# with no context at all, so a filter that only read `context` could never
+# reach inheritance in those languages (#5178). `type` deliberately stays out
+# of this set — it means the TypeScript context and nothing more, or a
+# TypeScript graph would start losing edges from its other contexts.
+_HERITAGE_RELATIONS = frozenset({"inherits", "implements", "extends"})
 
 
 # Context names that have a 1:1 edge-relation counterpart. Used when a graph
@@ -1158,7 +1229,9 @@ def _edge_matches_context(data: dict, filters: set[str]) -> bool:
     Match the explicit ``context`` attribute first. When that is absent —
     LLM-built graphs almost never set it — also match ``relation`` against the
     filter name and the 1:1 ``call``/``calls`` (etc.) mapping so ``--context
-    call`` still keeps ``calls`` edges.
+    call`` still keeps ``calls`` edges. Matching ``relation`` by filter name is
+    also how a heritage filter (``_HERITAGE_RELATIONS``) reaches the
+    context-less inheritance edges C#, Java and Python emit (#5178).
     """
     ctx = data.get("context")
     if ctx in filters:
@@ -1802,7 +1875,12 @@ def _render_query(
     if discard_note:
         header_parts.append(discard_note)
     elif resolved_filters:
-        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
+        # A filter that selects nothing used to answer with the seed alone and
+        # no hint, which reads as "these symbols are unrelated" (#5178).
+        label = f"Context: {', '.join(resolved_filters)} ({filter_source}"
+        if not traversal_graph.number_of_edges():
+            label += ", matched 0 edges"
+        header_parts.append(label + ")")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
     # Pass the seeds so the queried symbol renders first and survives truncation
@@ -2651,15 +2729,38 @@ def _path_confidence_key(hop_datas: list[list[dict]]):
     return weakest[0] if weakest is not None else (-1, True, 0.0, 0)
 
 
+def _path_hub_penalty(G: nx.Graph, path_nodes: list[str]) -> int:
+    """Count of intermediate hops this path passes through a sourceless hub
+    node (#5153): a node with no `source_file`, almost always a stdlib/
+    third-party import stub that hundreds of unrelated files import. Such a
+    node carries no semantic claim about how the two endpoints relate, so a
+    route through it is a true shortest path but not a meaningful one — the
+    weakest-hop tiebreak alone cannot tell it apart from a route of plain
+    `imports`/`contains` edges between real files, since both can carry the
+    identical EXTRACTED confidence on every hop. Endpoints are never counted:
+    the caller explicitly asked about them, hub-ness or not.
+    """
+    penalty = 0
+    for nid in path_nodes[1:-1]:
+        if not G.nodes[nid].get("source_file"):
+            penalty += 1
+    return penalty
+
+
 def _weakest_shortest_path(search_graph: nx.Graph, G: nx.Graph, src_nid: str, tgt_nid: str):
     """Among all shortest paths `src_nid` -> `tgt_nid`, the most conservative one.
 
     A path is only as sure as its weakest hop, so when several routes tie on
     length the reported confidence should reflect the weakest of them, not an
-    arbitrary route networkx happens to return first (#4881). Enumeration is
-    bounded by `_MAX_SHORTEST_PATHS`. Raises `nx.NetworkXNoPath` /
-    `nx.NodeNotFound` exactly like `nx.shortest_path`, so callers keep their
-    existing error handling. Returns `(path_nodes, n_routes, capped)`.
+    arbitrary route networkx happens to return first (#4881). A route through
+    a sourceless import hub (`_path_hub_penalty`) is preferred away from
+    first, since it is "shortest" by accident of degree rather than by
+    carrying any claim about the two endpoints (#5153); the weakest-hop rule
+    then still breaks any further tie among the remaining, equally
+    hub-free routes. Enumeration is bounded by `_MAX_SHORTEST_PATHS`. Raises
+    `nx.NetworkXNoPath` / `nx.NodeNotFound` exactly like `nx.shortest_path`,
+    so callers keep their existing error handling. Returns `(path_nodes,
+    n_routes, capped)`.
     """
     paths: list[list[str]] = []
     for p in nx.all_shortest_paths(search_graph, src_nid, tgt_nid):
@@ -2669,7 +2770,10 @@ def _weakest_shortest_path(search_graph: nx.Graph, G: nx.Graph, src_nid: str, tg
     capped = len(paths) > _MAX_SHORTEST_PATHS
     if capped:
         paths = paths[:_MAX_SHORTEST_PATHS]
-    chosen = min(paths, key=lambda p: _path_confidence_key(_path_hop_datas(G, p)))
+    chosen = min(
+        paths,
+        key=lambda p: (_path_hub_penalty(G, p), _path_confidence_key(_path_hop_datas(G, p))),
+    )
     return chosen, len(paths), capped
 
 
@@ -2975,6 +3079,26 @@ def _build_server(graph_path: str):
                 },
             ),
             types.Tool(
+                name="get_section",
+                description=(
+                    "Return the text of a Markdown section (a heading node, with its "
+                    "subsections) or a whole Markdown page, read from the source "
+                    "file. Use it instead of opening the .md file after query_graph "
+                    "or get_node lands on a heading."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string",
+                                  "description": "Heading label, node ID, or 'path/file.md::Heading' "
+                                                 "when several files share the heading"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
+                        "max_chars": {"type": "integer", "default": 8000,
+                                      "description": "Cap on returned characters"},
+                    },
+                },
+            ),
+            types.Tool(
                 name="get_neighbors",
                 description="Get all direct neighbors of a node with edge details.",
                 inputSchema={
@@ -3134,6 +3258,8 @@ def _build_server(graph_path: str):
         return result
 
     def _tool_get_node(arguments: dict) -> str:
+        from graphify.sections import is_section_node as _is_section_node
+
         raw = _node_arg(arguments)
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
@@ -3160,11 +3286,35 @@ def _build_server(graph_path: str):
             *([f"  Defined in: {sanitize_label(str(d.get('definition_file', '')))} "
                f"{sanitize_label(str(d.get('definition_location', '')))}"]
               if d.get("definition_file") else []),
+            *(["  Section: get_section returns this Markdown section's text"]
+              if _is_section_node(d) else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
             *attrs_line,
         ])
+
+    def _tool_get_section(arguments: dict) -> str:
+        from graphify.sections import (
+            DEFAULT_MAX_CHARS,
+            format_section,
+            read_section,
+            resolve_section_query,
+            section_root,
+        )
+
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        nid, err = resolve_section_query(G, raw)
+        if nid is None:
+            return err
+        d = G.nodes[nid]
+        max_chars = max(1, int(arguments.get("max_chars", DEFAULT_MAX_CHARS)))
+        section, reason = read_section(d, section_root(Path(active_graph_path)), max_chars)
+        if section is None:
+            return sanitize_label(reason)
+        return format_section(section, sanitize_label(d.get("label", nid)))
 
     def _tool_get_neighbors(arguments: dict) -> str:
         raw = _node_arg(arguments)
@@ -3338,6 +3488,7 @@ def _build_server(graph_path: str):
     _handlers = {
         "query_graph": _tool_query_graph,
         "get_node": _tool_get_node,
+        "get_section": _tool_get_section,
         "get_neighbors": _tool_get_neighbors,
         "get_community": _tool_get_community,
         "god_nodes": _tool_god_nodes,

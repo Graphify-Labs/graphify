@@ -20,7 +20,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Agent token sarfini 80% ga qisqartiring.</b> Graphify Cloud sizning agentlaringizni boshqaradigan, kod sifatini yuqori saqlaydigan va to'g'rilikni rasmiy verifikatsiya bilan isbotlaydigan doimiy yoniq xotiradir. <a href="https://app.graphify.com/login"><b>Bepul 14 kunlik sinovni boshlang &rarr;</b></a>
+  <b>Agent token sarfini 80% ga qisqartiring.</b> Graphify Cloud sizning agentlaringizni boshqaradigan, kod sifatini yuqori saqlaydigan va to'g'rilikni rasmiy verifikatsiya bilan isbotlaydigan doimiy yoniq xotiradir. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bepul boshlang, karta shart emas &rarr;</b></a>
 </p>
 
 AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujjatlar, PDF-lar, rasmlar, videolar) **bilim grafiga** aylantiradi, uni fayllarni grep qilish o'rniga **so'rov qilishingiz mumkin**.
@@ -38,7 +38,7 @@ AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujj
 - **Vektor indeksi emas.** Embedding yo'q, vektor ombori yo'q: siz kezib chiqadigan haqiqiy graf. Savol bering, ikki narsa o'rtasidagi yo'lni kuzating yoki bitta tushunchani tushuntiring.
 
 > [!NOTE]
-> **Buni doimiy yoniq holda xohlaysizmi?** [Graphify Cloud](https://app.graphify.com/login) grafni butun SDLC bo'ylab jonli saqlaydi: monorepo va repolararo qo'llab-quvvatlash, rasmiy verifikatsiya hamda SDLC-ga qush nigohi bilan kod ko'rib chiqish, shuningdek Sentry, Jira va boshqalar uchun konnektorlar, shunda hodisalar va chiptalar kodingiz bilan bir xil grafda joylashadi. **[app.graphify.com da bepul 14 kunlik sinovni boshlang](https://app.graphify.com/login)**.
+> **Buni doimiy yoniq holda xohlaysizmi?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) grafni butun SDLC bo'ylab jonli saqlaydi: monorepo va repolararo qo'llab-quvvatlash, rasmiy verifikatsiya hamda SDLC-ga qush nigohi bilan kod ko'rib chiqish, shuningdek Sentry, Jira va boshqalar uchun konnektorlar, shunda hodisalar va chiptalar kodingiz bilan bir xil grafda joylashadi. **[Bepul boshlang, karta shart emas](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@ AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujj
   <em>graphify tomonidan xaritalangan FastAPI kod bazasi. Har bir tugun tushunchadir, ranglar aniqlangan jamoalardir, butun narsa esa graph.html da bosiladi.</em>
 </p>
 
-**Ishni boshlang** (30 soniya). Python 3.10+ va uv (yoki pipx) talab qilinadi:
+**Ishni boshlang** (30 soniya). Python 3.11+ va uv (yoki pipx) talab qilinadi:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Qutidan chiqib nima olasiz:
 | **Avval lokal** | Kod lokal tarzda tree-sitter bilan tahlil qilinadi (LLM yo'q, hech narsa qurilmangizdan chiqmaydi); faqat hujjatlar/media ustidagi semantik o'tish backendga murojaat qiladi, va faqat siz uni sozlasangiz |
 
 > [!TIP]
-> Buni ko'plab repolar yoki monorepo bo'ylab ishga tushiryapsizmi? [Graphify Cloud](https://app.graphify.com/login) buni uzluksiz bajaradi va agent token sarfini 80% ga qisqartiradi, repolararo bog'lanishlar, SDLC bo'ylab kod ko'rib chiqish, rasmiy verifikatsiya va Sentry/Jira konnektorlari bilan. [Bepul 14 kunlik sinovni boshlang &rarr;](https://app.graphify.com/login)
+> Buni ko'plab repolar yoki monorepo bo'ylab ishga tushiryapsizmi? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) buni uzluksiz bajaradi va agent token sarfini 80% ga qisqartiradi, repolararo bog'lanishlar, SDLC bo'ylab kod ko'rib chiqish, rasmiy verifikatsiya va Sentry/Jira konnektorlari bilan. [Bepul boshlang, karta shart emas &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ To'liq qo'llanmalar va ma'lumotnoma **[docs.graphify.com](https://docs.graphify.
 
 | Talab | Minimum | Tekshirish | O'rnatish |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(tavsiya etiladi)* | istalgan | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(muqobil)* | istalgan | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Bu yordamchingizga kod bazasi savollari uchun bilim grafiga murojaat qilishni ay
 
 `GRAPH_REPORT.md` keng arxitektura ko'rib chiqish uchun hamon mavjud.
 
-Har bir platforma aynan qaysi fayllarni yozishi (CodeBuddy ning `CODEBUDDY.md` + `PreToolUse` hooklari, Codex ning `AGENTS.md`, Kilo ning mahalliy `.kilo` plagini, Cursor ning `alwaysApply` qoidasi va hokazo) **[Doimiy yoniq sozlash](https://docs.graphify.com/guides/always-on)** da yoritilgan.
+Har bir platforma aynan qaysi fayllarni yozishi (CodeBuddy ning `CODEBUDDY.md` + `PreToolUse` hooklari, Codex ning `AGENTS.md`, Kilo ning mahalliy `.kilo` plagini, Cursor ning `alwaysApply` qoidasi va hokazo) **[Doimiy yoniq sozlash](https://docs.graphify.com/open-source/vibe-coding)** da yoritilgan.
 
 graphify ni barcha platformalardan bir vaqtning o'zida olib tashlash uchun: `graphify uninstall` (`graphify-out/` ni ham o'chirish uchun `--purge` qo'shing). Yoki har bir platforma buyrug'idan foydalaning (masalan `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ Har bir buyruq va bayroq, misollar bilan: **[CLI ma'lumotnomasi](https://docs.gr
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) bu graphify ustiga qurilgan doimiy yoniq qatlam. Har bir papka uchun talab bo'yicha qayta quriladigan graf o'rniga, u butun dasturiy ta'minot ishlab chiqish hayotiy sikli bo'ylab bitta jonli grafni saqlaydi:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) bu graphify ustiga qurilgan doimiy yoniq qatlam. Har bir papka uchun talab bo'yicha qayta quriladigan graf o'rniga, u butun dasturiy ta'minot ishlab chiqish hayotiy sikli bo'ylab bitta jonli grafni saqlaydi:
 
 - **80% kamroq token**: doimiy yoniq xotira sizning agentlaringiz har sessiyada kod bazasini qayta o'qish va qayta tushuntirishni to'xtatishini anglatadi.
 - **Monorepo va repolararo**: har bir xizmat va repozitoriy bo'ylab bitta bog'langan graf, papka uchun graf emas.
@@ -456,7 +456,7 @@ Har bir buyruq va bayroq, misollar bilan: **[CLI ma'lumotnomasi](https://docs.gr
 - **SDLC konnektorlari**: Sentry, Jira va boshqalarni jalb qiling, shunday qilib hodisalar, chiptalar va kod bitta grafda yashaydi.
 - **Doimiy yoniq**: kod, hujjatlar va uchrashuvlar bo'ylab fon rejimida uzluksiz yangilanadi.
 
-**[app.graphify.com da bepul 14 kunlik sinovni boshlang &rarr;](https://app.graphify.com/login)**
+**[Bepul boshlang, karta shart emas &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
