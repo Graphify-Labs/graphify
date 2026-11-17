@@ -1,6 +1,6 @@
 """tree_html — emit a D3 v7 collapsible-tree HTML view of a graph.
 
-A self-contained printable / browseable tree-of-modules view
+A self-contained printable / browsable tree-of-modules view
 intended to complement the existing force-directed ``graph.html``.
 Key visual elements:
 
