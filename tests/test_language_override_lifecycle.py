@@ -2,6 +2,7 @@
 import hashlib
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -158,10 +159,19 @@ def drive_watch(root, monkeypatch, actions, *, observed_roots=None):
         assert not worker.is_alive(), "STUCK: watcher event handler did not return"
         assert not errors, errors
 
+    # Script watch.py's own `time` only. Patching sleep on the shared time module
+    # also handed the script to every other sleeper in the process, e.g.
+    # subprocess waiting on `git rev-parse` mid-rebuild.
+    class WatchClock:
+        sleep = staticmethod(pump)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
     monkeypatch.setattr(observers, "Observer", Observer)
     monkeypatch.setattr(polling, "PollingObserver", Observer)
     monkeypatch.setattr(watch_mod, "_rebuild_code", rebuild)
-    monkeypatch.setattr(watch_mod.time, "sleep", pump)
+    monkeypatch.setattr(watch_mod, "time", WatchClock())
     watch_mod.watch(root, debounce=0)
 
 
@@ -182,6 +192,34 @@ def test_watch_declared_code_updates_graph_on_observer_thread(tmp_path, monkeypa
     drive_watch(tmp_path, monkeypatch, [change])
     assert "watched()" in graph_labels(tmp_path)
     assert not (tmp_path / "graphify-out" / "needs_update").exists()
+
+
+def test_drive_watch_scripts_only_the_watch_loop_sleep(tmp_path, monkeypatch):
+    """A sleep elsewhere in the process must not be taken for the watch loop's.
+
+    The rebuild runs `git rev-parse HEAD` (`_git_head`), and subprocess's wait
+    loop sleeps whenever git has closed its output but not yet been reaped. When
+    that sleep consumed the next scripted event (or the end-of-script
+    KeyboardInterrupt), the watcher stopped mid-rebuild and the last change
+    never reached graph.json.
+    """
+    events = pytest.importorskip("watchdog.events")
+    (tmp_path / ".graphifyrc").write_text("language.tpl=php\n")
+    source = tmp_path / "page.tpl"
+    git_head = watch_mod._git_head
+
+    def git_head_while_git_is_still_exiting(cwd=None):
+        time.sleep(0)
+        return git_head(cwd)
+
+    monkeypatch.setattr(watch_mod, "_git_head", git_head_while_git_is_still_exiting)
+
+    def change():
+        source.write_text("<?php function watched() {}\n")
+        return events.FileModifiedEvent(str(source))
+
+    drive_watch(tmp_path, monkeypatch, [change])
+    assert "watched()" in graph_labels(tmp_path)
 
 
 def test_watch_document_override_marks_semantic_work_instead_of_rebuilding(tmp_path, monkeypatch):
