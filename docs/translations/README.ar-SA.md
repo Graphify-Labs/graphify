@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>خفّض إنفاق وكلائك على الرموز بنسبة 80%.</b> Graphify Cloud ذاكرة دائمة التشغيل تحكم وكلاءك، وتحافظ على جودة عالية للكود، وتثبت الصحة عبر التحقق الصوري. <a href="https://app.graphify.com/login"><b>ابدأ تجربة مجانية لمدة 14 يومًا &rarr;</b></a>
+  <b>خفّض إنفاق وكلائك على الرموز بنسبة 80%.</b> Graphify Cloud ذاكرة دائمة التشغيل تحكم وكلاءك، وتحافظ على جودة عالية للكود، وتثبت الصحة عبر التحقق الصوري. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>ابدأ مجانًا، بدون بطاقة &rarr;</b></a>
 </p>
 
 اكتب `/graphify` في مساعد البرمجة بالذكاء الاصطناعي لديك فيرسم مشروعك بالكامل (الكود والمستندات وملفات PDF والصور والفيديو) في **رسم بياني معرفي** يمكنك **الاستعلام عنه بدلًا من البحث بـ grep** عبر الملفات.
@@ -38,7 +38,7 @@
 - **ليس فهرسًا شعاعيًا.** لا تضمينات، ولا مخزن شعاعي: رسم بياني حقيقي تجتازه. اطرح سؤالًا، أو تتبّع المسار بين شيئين، أو اشرح مفهومًا واحدًا.
 
 > [!NOTE]
-> **تريد هذا دائم التشغيل؟** يُبقي [Graphify Cloud](https://app.graphify.com/login) الرسم البياني حيًّا عبر دورة حياة تطوير البرمجيات بأكملها: دعم المستودعات الأحادية والعابرة للمستودعات، والتحقق الصوري، ومراجعة الكود بنظرة شاملة على دورة حياة التطوير، إضافة إلى موصّلات لـ Sentry وJira والمزيد لتجلس الحوادث والتذاكر في الرسم البياني ذاته مع الكود. **[ابدأ تجربة مجانية لمدة 14 يومًا على app.graphify.com](https://app.graphify.com/login)**.
+> **تريد هذا دائم التشغيل؟** يُبقي [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) الرسم البياني حيًّا عبر دورة حياة تطوير البرمجيات بأكملها: دعم المستودعات الأحادية والعابرة للمستودعات، والتحقق الصوري، ومراجعة الكود بنظرة شاملة على دورة حياة التطوير، إضافة إلى موصّلات لـ Sentry وJira والمزيد لتجلس الحوادث والتذاكر في الرسم البياني ذاته مع الكود. **[ابدأ مجانًا، بدون بطاقة](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@
   <em>قاعدة كود FastAPI مرسومة بواسطة graphify. كل عقدة مفهوم، والألوان مجتمعات مكتشفة، والكل قابل للنقر في graph.html.</em>
 </p>
 
-**ابدأ الآن** (30 ثانية). يتطلب Python 3.10+ وuv (أو pipx):
+**ابدأ الآن** (30 ثانية). يتطلب Python 3.11+ وuv (أو pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **Local-first** | يُحلَّل الكود محليًا بـ tree-sitter (بلا نموذج لغوي كبير، ولا شيء يغادر جهازك)؛ فقط التمريرة الدلالية على المستندات/الوسائط تستدعي خلفية، وفقط إذا هيّأت واحدة |
 
 > [!TIP]
-> تشغّل هذا عبر مستودعات كثيرة أو مستودع أحادي؟ يفعله [Graphify Cloud](https://app.graphify.com/login) باستمرار ويخفّض إنفاق الوكلاء على الرموز بنسبة 80%، مع روابط عابرة للمستودعات، ومراجعة كود على مستوى دورة حياة التطوير، وتحقق صوري، وموصّلات Sentry/Jira. [ابدأ تجربة مجانية لمدة 14 يومًا &rarr;](https://app.graphify.com/login)
+> تشغّل هذا عبر مستودعات كثيرة أو مستودع أحادي؟ يفعله [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) باستمرار ويخفّض إنفاق الوكلاء على الرموز بنسبة 80%، مع روابط عابرة للمستودعات، ومراجعة كود على مستوى دورة حياة التطوير، وتحقق صوري، وموصّلات Sentry/Jira. [ابدأ مجانًا، بدون بطاقة &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ graphify install --project --platform codex
 
 ما يزال `GRAPH_REPORT.md` متاحًا لمراجعة معمارية عامة.
 
-الملفات التي تكتبها كل منصة بالضبط (ملف CodeBuddy `CODEBUDDY.md` + خطافات `PreToolUse`، وملف Codex `AGENTS.md`، وإضافة Kilo الأصلية `.kilo`، وقاعدة Cursor `alwaysApply`، وهكذا) مشروحة في **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+الملفات التي تكتبها كل منصة بالضبط (ملف CodeBuddy `CODEBUDDY.md` + خطافات `PreToolUse`، وملف Codex `AGENTS.md`، وإضافة Kilo الأصلية `.kilo`، وقاعدة Cursor `alwaysApply`، وهكذا) مشروحة في **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 لإزالة graphify من كل المنصات دفعة واحدة: `graphify uninstall` (أضف `--purge` لحذف `graphify-out/` أيضًا). أو استخدم الأمر الخاص بكل منصة (مثل `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) هي الطبقة دائمة التشغيل المبنية فوق graphify. بدلًا من رسم بياني تعيد بناءه عند الطلب لكل مجلد، تُبقي رسمًا بيانيًا حيًّا واحدًا عبر دورة حياة تطوير برمجياتك بأكملها:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) هي الطبقة دائمة التشغيل المبنية فوق graphify. بدلًا من رسم بياني تعيد بناءه عند الطلب لكل مجلد، تُبقي رسمًا بيانيًا حيًّا واحدًا عبر دورة حياة تطوير برمجياتك بأكملها:
 
 - **رموز أقل بنسبة 80%**: الذاكرة دائمة التشغيل تعني أن وكلاءك يتوقفون عن إعادة قراءة قاعدة الكود وإعادة شرحها كل جلسة.
 - **المستودع الأحادي والعابر للمستودعات**: رسم بياني متصل واحد عبر كل خدمة ومستودع، لا رسم بياني لكل مجلد.
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **موصّلات دورة حياة التطوير**: اسحب Sentry وJira والمزيد، لتعيش الحوادث والتذاكر والكود في رسم بياني واحد.
 - **دائم التشغيل**: يُحدَّث باستمرار في الخلفية عبر الكود والمستندات والاجتماعات.
 
-**[ابدأ تجربة مجانية لمدة 14 يومًا على app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[ابدأ مجانًا، بدون بطاقة &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

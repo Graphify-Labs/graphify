@@ -32,8 +32,13 @@ from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
 # 'SELECT AUTOCREATE PROCEDURE x FROM t;' in an error-bearing file minted a
 # phantom routine x() (delimited identifiers are span-skipped at the scan
 # site, but a bare word has no span).
+# Oracle's default DDL export (DBMS_METADATA.GET_DDL, most IDEs) writes
+# CREATE OR REPLACE [NON]EDITIONABLE PROCEDURE|FUNCTION|TRIGGER, so the
+# optional edition keyword is accepted here and in _TRIGGER_RECOVERY_RX;
+# without it such files recovered no routine at all (#5167).
 _ROUTINE_RECOVERY_RX = re.compile(
-    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?"
+    r"(?:FUNCTION|PROC(?:EDURE)?)\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"((?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
     r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
@@ -52,7 +57,7 @@ _TRIGGER_IDENT = (
     r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*"
 )
 _TRIGGER_RECOVERY_RX = re.compile(
-    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?TRIGGER\s+"
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?TRIGGER\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"(" + _TRIGGER_IDENT + r")"
     r".*?\bON\s+(" + _TRIGGER_IDENT + r")",
@@ -289,15 +294,18 @@ _BODY_END_RX = re.compile(
     r"^[ \t]*(?:GO(?:[ \t]+\d+)?[ \t\r]*;?[ \t\r]*$|(?:CREATE|ALTER)\b(?!\s+TABLE\s+[#@]))",
     re.IGNORECASE | re.MULTILINE,
 )
-# `(?![\w$]|\s*\.)` stops the identifier atom from backtracking to a prefix of
-# a longer name (`tempdb..#x`, `dbo.fn(`) and matching that instead.
-_BODY_TAIL = r"(?![\w$]|\s*\.)"
-_BODY_READ_RX = re.compile(r"\b(?:FROM|JOIN)\s+(" + _TRIGGER_IDENT + r")" + _BODY_TAIL, re.IGNORECASE)
+# `(?![\w$@]|\s*\.)` stops the identifier atom from backtracking to a prefix of
+# a longer name (`tempdb..#x`, `dbo.fn(`, `tbl@link`) and matching that instead.
+_BODY_TAIL = r"(?![\w$@]|\s*\.)"
+_DBLINK_SUFFIX = r"(?:@(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$.]+))"
+_BODY_TABLE_IDENT = _TRIGGER_IDENT + r"(?:" + _DBLINK_SUFFIX + r")?"
+_BODY_READ_RX = re.compile(r"\b(?:FROM|JOIN)\s+(" + _BODY_TABLE_IDENT + r")" + _BODY_TAIL, re.IGNORECASE)
 _BODY_WRITE_RX = re.compile(
     r"\b(INSERT(?:\s+INTO)?|UPDATE(?:\s+TOP\s*\([^)]*\))?|DELETE(?:\s+TOP\s*\([^)]*\))?(?:\s+FROM)?"
-    r"|MERGE(?:\s+INTO)?|INTO)\s+(" + _TRIGGER_IDENT + r")" + _BODY_TAIL,
+    r"|MERGE(?:\s+INTO)?|INTO)\s+(" + _BODY_TABLE_IDENT + r")" + _BODY_TAIL,
     re.IGNORECASE,
 )
+_BODY_COMMA_TABLE_RX = re.compile(r"\s*,\s*(" + _BODY_TABLE_IDENT + r")" + _BODY_TAIL, re.IGNORECASE)
 _BODY_ALIAS_RX = re.compile(r"\s+(?:AS\s+)?([A-Za-z_][\w$]*)", re.IGNORECASE)
 _BODY_CTE_RX = re.compile(r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([\w$]+)\s*(?:\([^()]*\))?\s+AS\s*\(", re.IGNORECASE)
 # `ON DELETE`, `FOR UPDATE`, `AFTER INSERT, UPDATE`: an event or lock clause, not a statement.
@@ -321,12 +329,15 @@ _BODY_NON_TABLES = frozenset({
 })
 
 
-def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
+def _routine_body_refs(masked: str, *, plsql: bool = False) -> list[tuple[str, str, int]]:
     """(relation, table name as written, offset) for each table a masked
     routine body reads (`FROM`/`JOIN`) or writes (`INSERT`/`UPDATE`/`DELETE`/
     `MERGE`/`SELECT ... INTO`), in source order. Temp tables and variables never
     match the identifier atom; CTE names and keywords are dropped; the target of
-    `UPDATE o ... FROM dbo.Orders o` is resolved through the alias."""
+    `UPDATE o ... FROM dbo.Orders o` is resolved through the alias.
+
+    With ``plsql`` a bare `INTO` is not a write: PL/SQL's `SELECT`/`FETCH`/
+    `RETURNING ... INTO` name a variable, not the table T-SQL's creates."""
     non_tables = set(_BODY_NON_TABLES)
     for cm in _BODY_CTE_RX.finditer(masked):
         non_tables.add(_norm_ident(cm.group(1)))
@@ -336,6 +347,8 @@ def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
 
     writes: list[tuple[int, int, str, str]] = []  # (start, end, relation, name)
     for m in _BODY_WRITE_RX.finditer(masked):
+        if plsql and m.group(1).upper() == "INTO":
+            continue
         if m.group(1).upper() != "INTO" and _BODY_EVENT_RX.search(masked[max(0, m.start() - 30):m.start()]):
             continue
         if _usable(m.group(2)):
@@ -352,9 +365,25 @@ def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
         if not _usable(m.group(1)) or masked[m.end():].lstrip().startswith("("):
             continue
         reads.append((m.start(), m.group(1)))
-        am = _BODY_ALIAS_RX.match(masked, m.end())
+        curr_pos = m.end()
+        am = _BODY_ALIAS_RX.match(masked, curr_pos)
         if am and am.group(1).lower() not in non_tables:
             aliases.setdefault(am.group(1).lower(), m.group(1))
+            curr_pos = am.end()
+        if m.group(0).lstrip()[:4].upper() == "FROM":
+            while True:
+                cm = _BODY_COMMA_TABLE_RX.match(masked, curr_pos)
+                if not cm:
+                    break
+                c_tbl = cm.group(1)
+                if not _usable(c_tbl) or masked[cm.end():].lstrip().startswith("("):
+                    break
+                reads.append((cm.start(1), c_tbl))
+                curr_pos = cm.end()
+                cam = _BODY_ALIAS_RX.match(masked, curr_pos)
+                if cam and cam.group(1).lower() not in non_tables:
+                    aliases.setdefault(cam.group(1).lower(), c_tbl)
+                    curr_pos = cam.end()
 
     refs = [(pos, "reads_from", name) for pos, name in reads]
     for pos, _end, relation, name in writes:
@@ -362,6 +391,68 @@ def _routine_body_refs(masked: str) -> list[tuple[str, str, int]]:
             name = aliases.get(name.lower(), name)
         refs.append((pos, relation, name))
     return [(relation, name, pos) for pos, relation, name in sorted(refs)]
+
+
+# `CREATE PACKAGE body IS` names a package called body.
+_PACKAGE_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?PACKAGE\s+"
+    r"(BODY\s+(?!(?:IS|AS)\b))?(?:IF\s+NOT\s+EXISTS\s+)?(" + _TRIGGER_IDENT + r")",
+    re.IGNORECASE,
+)
+# `END IF` / `END LOOP` close openers that are not tracked; `END CASE` is
+# consumed whole so its CASE is not an opener. The lookarounds exclude `$END`,
+# `rec.end`, `:new.end` and a quoted `"END"`.
+_PLSQL_BLOCK_RX = re.compile(
+    r"(?<![\w$#.:\"])(?:(?:PROCEDURE|FUNCTION)\s+(\"(?:[^\"\n]|\"\")+\"|[\w$#]+)"
+    r"|(BEGIN|CASE)|END(?:\s+(IF|LOOP)|\s+CASE)?)(?![\w$#\"])",
+    re.IGNORECASE,
+)
+_PLSQL_HEAD_END_RX = re.compile(r";|(?<![\w$#.])(?:IS|AS)(?![\w$#])", re.IGNORECASE)
+# `PROCEDURE p AS LANGUAGE JAVA NAME ...;` is a definition with no block.
+_PLSQL_CALL_SPEC_RX = re.compile(r"\s*(?:LANGUAGE|EXTERNAL)\b", re.IGNORECASE)
+
+
+def _package_members(masked: str, start: int, limit: int) -> list[tuple[str, int, tuple[int, int] | None, bool]]:
+    """(name, offset, body span or None, is_definition) for each subprogram
+    declared at package level between masked[start] (the end of the package
+    name) and masked[limit]. A member whose END is not found gets no span."""
+    pkg_head = _PLSQL_HEAD_END_RX.search(masked, start, limit)
+    if pkg_head is None or pkg_head.group() == ";":
+        return []
+    members: list[tuple[str, int, tuple[int, int] | None, bool]] = []
+    stack: list[bool] = []  # per open block: True while in a declarative part
+    open_member: tuple[int, int] | None = None
+    in_init = False
+    for tok in _PLSQL_BLOCK_RX.finditer(masked, pkg_head.end(), limit):
+        if tok.group(1):
+            if stack and not stack[-1]:
+                continue
+            head = _PLSQL_HEAD_END_RX.search(masked, tok.end(), limit)
+            is_def = head is not None and head.group() != ";"
+            if not stack:
+                members.append((tok.group(1), tok.start(), None, is_def))
+            if head is not None and is_def and not _PLSQL_CALL_SPEC_RX.match(masked, head.end(), limit):
+                if not stack:
+                    open_member = (len(members) - 1, head.end())
+                stack.append(True)
+        elif tok.group(2):
+            if tok.group(2).upper() == "BEGIN" and stack and stack[-1]:
+                stack[-1] = False
+            else:
+                in_init = in_init or (not stack and tok.group(2).upper() == "BEGIN")
+                stack.append(False)
+        elif not tok.group(3):
+            if not stack:
+                break
+            stack.pop()
+            if not stack and in_init:
+                break
+            if not stack and open_member is not None:
+                idx, body_start = open_member
+                name, pos, _span, is_def = members[idx]
+                members[idx] = (name, pos, (body_start, tok.start()), is_def)
+                open_member = None
+    return members
 
 
 # A `GO` batch separator is a client-tool command, not SQL: tree-sitter-sql reads it as an
@@ -421,6 +512,9 @@ def _clean_ident(name: str) -> str:
     Double-quoted parts keep their quotes. Labels only: node ids come from the
     text as written and are not touched.
     """
+    if "@" in name:
+        tbl, link = name.split("@", 1)
+        return f"{_clean_ident(tbl)}@{link}"
     if "[" not in name and "]" not in name:
         return name
     return ".".join(
@@ -439,6 +533,9 @@ def _norm_ident(name: str) -> str:
     `table_nids` keys and lookups — node ids and display labels keep the
     original text.
     """
+    if "@" in name:
+        tbl, link = name.split("@", 1)
+        return f"{_norm_ident(tbl)}@{_norm_ident(link)}"
     parts = []
     for part in name.split("."):
         p = part.strip()
@@ -495,6 +592,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     seen_ids: set[str] = {file_nid}
     table_nids: dict[str, str] = {}  # name → nid for reference resolution
     routine_nids: dict[str, str] = {}  # function/procedure name → nid, for trigger links
+    # Structured routine nid → 1-based line. On tree-sitter-sql 0.3.13 a package's
+    # first member partially parses as a top-level create_procedure, so the
+    # structured walk mints a plain node for it; the package recovery below uses
+    # this to drop that duplicate once it owns the package-qualified member.
+    structured_routine_lines: dict[str, int] = {}
 
     def _read(n) -> str:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
@@ -616,7 +718,9 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{_clean_ident(name)}()", line)
                 routine_nids[_norm_ident(name)] = nid
+                structured_routine_lines[nid] = line
                 _walk_from_refs(node, nid, line)
+                _walk_writes(node, nid)
 
         elif t == "create_procedure":
             name = _obj_name(node)
@@ -624,7 +728,9 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{_clean_ident(name)}()", line)
                 routine_nids[_norm_ident(name)] = nid
+                structured_routine_lines[nid] = line
                 _walk_from_refs(node, nid, line)
+                _walk_writes(node, nid)
 
         elif t == "alter_table":
             name = _obj_name(node)
@@ -783,6 +889,153 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for child in node.children:
             walk(child)
 
+    def _table_of(node) -> tuple[str | None, str | None]:
+        """(table as written, alias) of a `relation`, a bare `from`, or a naked
+        object_reference — the three places this grammar puts a table name.
+
+        Only `relation` (and the bare `from` of a DELETE) can carry an alias:
+        the bare identifier next to the object_reference is one (`dbo.Orders
+        o`). The identifiers INSIDE an object_reference are its name parts and
+        must not be read as an alias.
+        """
+        has_siblings = node.type in ("relation", "from")
+        obj = node
+        if has_siblings:
+            obj = next((c for c in node.children if c.type == "object_reference"), None)
+            if obj is None:
+                # `DELETE p FROM ...`: only the alias is named at this level.
+                alias_node = next(
+                    (c for c in node.children
+                     if c.type == "identifier" and not _read(c).startswith("@")),
+                    None,
+                )
+                return None, (_read(alias_node) if alias_node is not None else None)
+        elif node.type != "object_reference":
+            return None, None
+
+        name = _read(obj)
+        suffix = ""
+        alias = None
+        if has_siblings:
+            for c in node.children:
+                if c is obj or c.type != "identifier":
+                    continue
+                text = _read(c)
+                if text.startswith("@"):
+                    suffix = text      # dblink suffix, part of the name
+                else:
+                    alias = text       # `dbo.Orders o`
+            if alias is None and not _is_temp(name) and len(node.children) == 1:
+                # `UPDATE o SET ... FROM x o`: the relation is nothing but an
+                # alias. The DELETE shapes carry more text and stay names.
+                # A single-part bare name only: `dbo.Orders` is a table.
+                if len(obj.children) == 1 and obj.children[0].type == "identifier":
+                    return None, name
+        if suffix and name.startswith("@"):
+            return name, alias
+        return f"{name}{suffix}", alias
+
+    def _is_temp(tbl: str) -> bool:
+        """`#t` / `##t` / `@t`: a temp table or a table variable, i.e. session
+        state rather than a schema object."""
+        return tbl.lstrip("[").startswith(("#", "@"))
+
+    def _write_table(write_node) -> str | None:
+        """The table a DELETE/UPDATE/INSERT/MERGE writes, as written.
+
+        A session object (`#t`, `##t`, `@t`) is returned as-is; the caller drops
+        it, since `_is_temp` has to answer that for the earlier shapes too.
+        """
+        if write_node.type == "insert" and not any(
+            c.type == "keyword_into" for c in write_node.children
+        ):
+            return None
+        # 0.3.13 splits `INSERT INTO ##shared` into an ERROR `##` followed by
+        # an object_reference `shared`; the marker is a sibling, not in the name.
+        first = next(
+            (c for c in write_node.children if c.type in ("object_reference", "relation")),
+            None,
+        )
+        if first is not None:
+            marker = first.prev_sibling
+            while marker is not None and marker.type.startswith("keyword_"):
+                marker = marker.prev_sibling
+            if marker is not None and _read(marker).strip() in ("#", "##", "@"):
+                return f"#{_read(first).strip()}"
+        target = next(
+            (c for c in write_node.children
+             if c.type in ("relation", "object_reference", "from")),
+            None,
+        )
+        tbl, alias = _table_of(target) if target is not None else (None, None)
+        if tbl is not None:
+            return tbl
+        if target is None:
+            # `DELETE FROM dbo.T ...`: `delete` holds nothing but its keyword;
+            # the table is in the sibling FROM.
+            stmt = write_node.parent
+            for clause in (c for c in (stmt.children if stmt else []) if c.type == "from"):
+                for rel in clause.children:
+                    if rel.type in ("object_reference", "relation"):
+                        return _table_of(rel)[0]
+            return None
+        # Only an alias was named (`UPDATE o SET ... FROM x o`); the table is
+        # the FROM relation that declares it. The FROM lives inside `update`,
+        # or beside `delete` when the statement is a DELETE.
+        stmt = write_node.parent
+        if stmt is None:
+            return None
+        scopes = [write_node, stmt]
+        for scope in scopes:
+            for clause in (c for c in scope.children if c.type in ("from", "join")):
+                rels = (
+                    clause.children if clause.type == "from"
+                    else [cc for cc in clause.children if cc.type == "relation"]
+                )
+                for rel in rels:
+                    r_tbl, r_alias = _table_of(rel)
+                    if r_tbl and alias and r_alias and r_alias.lower() == alias.lower():
+                        return r_tbl
+        return None
+
+    def _walk_writes(node, caller_nid: str) -> None:
+        """Emit `writes_to` for the writes in a structurally parsed routine.
+
+        tree-sitter-sql 0.3.13 parses T-SQL `CREATE PROCEDURE ... AS BEGIN
+        ... END` into `procedure_body`, so its statements stay in the tree
+        instead of an ERROR node. The masked-text scan that reads writes only
+        runs when the parse failed, and `_walk_from_refs` only looked at
+        FROM/JOIN — so a DELETE/UPDATE/INSERT or `SELECT ... INTO` in such a
+        procedure silently lost its edge (#5146).
+
+        Deliberately separate from _walk_from_refs, whose CTE and derived-table
+        handling this does not need to touch.
+        """
+        if node.type in ("delete", "update", "insert", "merge"):
+            tbl = _write_table(node)
+            if tbl and not _is_temp(tbl):
+                tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
+                _add_edge(caller_nid, tbl_nid, "writes_to", node.start_point[0] + 1)
+        elif node.type == "statement":
+            # `SELECT ... INTO <table>`: the keyword and the target are
+            # siblings of `select`, so this is read at statement level.
+            for i, c in enumerate(node.children):
+                if c.type != "keyword_into":
+                    continue
+                target = next(
+                    (cc for cc in node.children[i + 1:] if cc.type == "select_expression"),
+                    None,
+                )
+                if target is not None:
+                    tbl = _read(target).strip()
+                    if tbl and not _is_temp(tbl):
+                        tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
+                        _add_edge(caller_nid, tbl_nid, "writes_to",
+                                  c.start_point[0] + 1)
+                break
+        for child in node.children:
+            _walk_writes(child, caller_nid)
+
     def _walk_from_refs(node, caller_nid: str, line: int,
                         cte_names: frozenset[str] = frozenset()) -> None:
         """Recursively find FROM/JOIN table references inside a node, skipping CTEs.
@@ -816,13 +1069,41 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         if own:
             cte_names = frozenset(cte_names | own)
         if node.type in ("from", "join"):
+            prev = None
             for c in node.children:
-                if c.type == "relation":
+                # A derived table the grammar cannot parse (tree-sitter-sql
+                # 0.3.13 fails on `LIMIT <expr> OFFSET <expr>` inside it) comes
+                # back as an ERROR node holding `( ... )` followed by a bare
+                # `relation` holding only the alias. That alias names the
+                # subquery, not a table, so it must not become a reads_from
+                # target (#5147).
+                after_failed_subquery = (
+                    prev is not None and prev.type == "ERROR"
+                    and _read(prev).lstrip().startswith("(")
+                    and _read(prev).rstrip().endswith(")")
+                )
+                prev = c
+                # `FROM #work` / `FROM @ids`: 0.3.13 splits the `#` (or `@`)
+                # into an ERROR node before the relation, so the name arrives
+                # without its marker and would be minted as a table. Session
+                # temp objects are not schema objects.
+                before = c.prev_sibling
+                marker = _read(before).strip() if before is not None else ""
+                if c.type == "relation" and marker in ("#", "##", "@"):
+                    continue
+                if c.type == "relation" and not after_failed_subquery:
+                    tbl_ref: str | None = None
+                    dblink: str | None = None
                     for cc in c.children:
                         if cc.type == "object_reference":
-                            tbl = _read(cc)
-                            if _norm_ident(tbl) in cte_names:
-                                continue
+                            tbl_ref = _read(cc)
+                        elif cc.type == "identifier" and _read(cc).startswith("@"):
+                            dblink = _read(cc)
+                    if tbl_ref:
+                        tbl = f"{tbl_ref}{dblink}" if dblink else tbl_ref
+                        if _is_temp(tbl):
+                            continue
+                        if _norm_ident(tbl) not in cte_names:
                             tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                             _add_edge(caller_nid, tbl_nid, "reads_from",
                                       c.start_point[0] + 1)
@@ -962,6 +1243,54 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     continue
                 seen_refs.add((relation, tbl_nid))
                 _add_edge(fn_nid, tbl_nid, relation, masked_src.count("\n", 0, m.end() + pos) + 1)
+
+        # Bodies before specs, so a member's node carries the line of its
+        # definition when a spec precedes the body in the same file.
+        member_refs: dict[str, set[tuple[str, str]]] = {}
+        for m in sorted(_PACKAGE_RECOVERY_RX.finditer(masked_src), key=lambda pm: not pm.group(1)):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            pkg_name = m.group(2)
+            pkg_nid = _make_id(stem, pkg_name)
+            _add_node(pkg_nid, _clean_ident(pkg_name), masked_src.count("\n", 0, m.start()) + 1)
+            end = _BODY_END_RX.search(masked_src, m.end())
+            limit = end.start() if end else len(masked_src)
+            pkg_line = masked_src.count("\n", 0, m.start()) + 1
+            limit_line = masked_src.count("\n", 0, limit) + 1
+            for member, pos, span, is_def in _package_members(masked_src, m.end(), limit):
+                if m.group(1) and not is_def:
+                    continue
+                member_nid = _make_id(stem, f"{pkg_name}.{member}")
+                # On tree-sitter-sql 0.3.13 this member may have partially parsed
+                # as a top-level routine, so the structured walk minted a plain
+                # `member` node inside this package's span. The recovery owns the
+                # correct package-qualified node and re-derives its refs, so drop
+                # that duplicate and its edges. A no-op on 0.3.11 (no such node).
+                plain_nid = _make_id(stem, member)
+                if (plain_nid != member_nid
+                        and pkg_line <= structured_routine_lines.get(plain_nid, -1) <= limit_line):
+                    nodes[:] = [n for n in nodes if n["id"] != plain_nid]
+                    edges[:] = [e for e in edges
+                                if e["source"] != plain_nid and e["target"] != plain_nid]
+                    structured_routine_lines.pop(plain_nid, None)
+                    seen_ids.discard(plain_nid)
+                # Overloads share one node.
+                if member_nid not in seen_ids:
+                    member_line = masked_src.count("\n", 0, pos) + 1
+                    seen_ids.add(member_nid)
+                    nodes.append({"id": member_nid, "label": f"{_clean_ident(pkg_name)}.{member}()",
+                                  "file_type": "code", "source_file": str_path,
+                                  "source_location": f"L{member_line}"})
+                    _add_edge(pkg_nid, member_nid, "contains", member_line)
+                if span is None:
+                    continue
+                seen_refs = member_refs.setdefault(member_nid, set())
+                for relation, tbl, ref_pos in _routine_body_refs(masked_src[span[0]:span[1]], plsql=True):
+                    tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
+                    if (relation, tbl_nid) in seen_refs:
+                        continue
+                    seen_refs.add((relation, tbl_nid))
+                    _add_edge(member_nid, tbl_nid, relation, masked_src.count("\n", 0, span[0] + ref_pos) + 1)
 
         for m in _TRIGGER_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):

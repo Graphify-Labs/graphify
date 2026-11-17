@@ -104,3 +104,24 @@ def test_leiden_extra_installs_a_working_backend_on_every_supported_python():
 def test_all_extra_gates_leiden_the_same_way():
     extras = _extras()
     assert set(extras["leiden"]) <= set(extras["all"]), "[all] must carry both leiden arms"
+
+
+def test_requires_python_is_capped_below_an_unsupported_interpreter():
+    """requires-python must keep an upper bound so uv/pip never auto-select a
+    Python newer than our C-extension deps ship wheels for (#5134).
+
+    Without the cap, `uv tool install graphifyy` on a fresh machine installs the
+    newest cpython (e.g. 3.15), tree-sitter has no wheel for it, pip falls back to
+    a source build, and the install dies with `No such file or directory: 'cc'`.
+    The cap makes uv/pip pick a wheel-having interpreter (3.14) by default.
+    """
+    from packaging.specifiers import SpecifierSet
+
+    spec = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["requires-python"]
+    assert "<" in spec, f"requires-python must keep an upper bound (#5134): {spec!r}"
+    allowed = SpecifierSet(spec)
+    assert "3.14" in allowed, f"requires-python must still allow 3.14: {spec!r}"
+    assert "3.15" not in allowed, (
+        f"requires-python must exclude 3.15 — tree-sitter has no cp315 wheel, so a "
+        f"fresh install would source-build and need a C compiler (#5134): {spec!r}"
+    )

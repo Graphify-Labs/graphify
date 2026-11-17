@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Verlaag het tokenverbruik van je agents met 80%.</b> Graphify Cloud is altijd-aan geheugen dat je agents aanstuurt, de codekwaliteit hoog houdt en correctheid bewijst met formele verificatie. <a href="https://app.graphify.com/login"><b>Start een gratis proefperiode van 14 dagen &rarr;</b></a>
+  <b>Verlaag het tokenverbruik van je agents met 80%.</b> Graphify Cloud is altijd-aan geheugen dat je agents aanstuurt, de codekwaliteit hoog houdt en correctheid bewijst met formele verificatie. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Begin gratis, geen kaart nodig &rarr;</b></a>
 </p>
 
 Typ `/graphify` in je AI-codeerassistent en die brengt je hele project (code, documentatie, PDF's, afbeeldingen, video's) in kaart als een **kennisgraaf** die je kunt **bevragen in plaats van door bestanden te grepen**.
@@ -38,7 +38,7 @@ Typ `/graphify` in je AI-codeerassistent en die brengt je hele project (code, do
 - **Geen vectorindex.** Geen embeddings, geen vectoropslag: een echte graaf die je doorloopt. Stel een vraag, traceer het pad tussen twee dingen, of laat één concept uitleggen.
 
 > [!NOTE]
-> **Wil je dit altijd-aan?** [Graphify Cloud](https://app.graphify.com/login) houdt de graaf live gedurende je hele SDLC: ondersteuning voor monorepo's en repo-overstijgende verbanden, formele verificatie en code review met een vogelvluchtperspectief op je SDLC, plus connectoren voor Sentry, Jira en meer, zodat incidenten en tickets in dezelfde graaf zitten als je code. **[Start een gratis proefperiode van 14 dagen op app.graphify.com](https://app.graphify.com/login)**.
+> **Wil je dit altijd-aan?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) houdt de graaf live gedurende je hele SDLC: ondersteuning voor monorepo's en repo-overstijgende verbanden, formele verificatie en code review met een vogelvluchtperspectief op je SDLC, plus connectoren voor Sentry, Jira en meer, zodat incidenten en tickets in dezelfde graaf zitten als je code. **[Begin gratis, geen kaart nodig](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@ Typ `/graphify` in je AI-codeerassistent en die brengt je hele project (code, do
   <em>De FastAPI-codebase in kaart gebracht door graphify. Elke node is een concept, kleuren zijn gedetecteerde communities, en het geheel is klikbaar in graph.html.</em>
 </p>
 
-**Aan de slag** (30 seconden). Vereist Python 3.10+ en uv (of pipx):
+**Aan de slag** (30 seconden). Vereist Python 3.11+ en uv (of pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Wat je meteen uit de doos krijgt:
 | **Local-first** | Code wordt lokaal geparset met tree-sitter (geen LLM, niets verlaat je machine); alleen de semantische verwerkingsslag over documentatie/media roept een backend aan, en alleen als je er een configureert |
 
 > [!TIP]
-> Draai je dit over veel repo's of een monorepo? [Graphify Cloud](https://app.graphify.com/login) doet het continu en verlaagt het tokenverbruik van agents met 80%, met repo-overstijgende verbanden, code review over je hele SDLC, formele verificatie en connectoren voor Sentry/Jira. [Start een gratis proefperiode van 14 dagen &rarr;](https://app.graphify.com/login)
+> Draai je dit over veel repo's of een monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) doet het continu en verlaagt het tokenverbruik van agents met 80%, met repo-overstijgende verbanden, code review over je hele SDLC, formele verificatie en connectoren voor Sentry/Jira. [Begin gratis, geen kaart nodig &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Volledige handleidingen en naslag staan op **[docs.graphify.com](https://docs.gr
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(aanbevolen)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatief)* | any | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Dit schrijft een klein configuratiebestand dat je assistent vertelt om de kennis
 
 `GRAPH_REPORT.md` blijft beschikbaar voor een brede architectuurbeoordeling.
 
-Precies welke bestanden elk platform schrijft (CodeBuddy's `CODEBUDDY.md` + `PreToolUse`-hooks, Codex's `AGENTS.md`, Kilo's native `.kilo`-plugin, Cursor's `alwaysApply`-regel, enzovoort) wordt behandeld in **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Precies welke bestanden elk platform schrijft (CodeBuddy's `CODEBUDDY.md` + `PreToolUse`-hooks, Codex's `AGENTS.md`, Kilo's native `.kilo`-plugin, Cursor's `alwaysApply`-regel, enzovoort) wordt behandeld in **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Om graphify in één keer van alle platforms te verwijderen: `graphify uninstall` (voeg `--purge` toe om ook `graphify-out/` te verwijderen). Of gebruik het per-platform commando (bijv. `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ Elk commando en elke flag, met voorbeelden: **[CLI reference](https://docs.graph
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) is de altijd-aan laag bovenop graphify. In plaats van een graaf die je per map op aanvraag opnieuw bouwt, houdt het één live graaf bij over je hele softwareontwikkelingslevenscyclus:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) is de altijd-aan laag bovenop graphify. In plaats van een graaf die je per map op aanvraag opnieuw bouwt, houdt het één live graaf bij over je hele softwareontwikkelingslevenscyclus:
 
 - **80% minder tokens**: altijd-aan geheugen betekent dat je agents stoppen met het telkens opnieuw lezen en uitleggen van de codebase elke sessie.
 - **Monorepo en repo-overstijgend**: één verbonden graaf over elke service en repository, niet een graaf per map.
@@ -456,7 +456,7 @@ Elk commando en elke flag, met voorbeelden: **[CLI reference](https://docs.graph
 - **SDLC-connectoren**: haal Sentry, Jira en meer binnen, zodat incidenten, tickets en code in één graaf samenkomen.
 - **Altijd-aan**: werkt continu bij op de achtergrond over code, documentatie en meetings.
 
-**[Start een gratis proefperiode van 14 dagen op app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Begin gratis, geen kaart nodig &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

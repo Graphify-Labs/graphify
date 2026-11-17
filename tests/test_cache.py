@@ -1,4 +1,5 @@
 """Tests for graphify/cache.py."""
+import json
 import os
 import pytest
 from pathlib import Path
@@ -2073,3 +2074,74 @@ def test_scope_semantic_result_unscoped_is_a_no_op():
 
     assert (dropped_files, dropped_items) == (set(), 0)
     assert [n["id"] for n in result["nodes"]] == ["n"]
+
+
+# -- #5083: mark a degraded entry partial so the next run self-heals ----------
+
+def test_mark_semantic_cache_partial_forces_next_run_miss(tmp_path):
+    """A degraded entry stays on disk for inspection but stops being served."""
+    from graphify.cache import load_cached, mark_semantic_cache_partial, save_semantic_cache
+
+    _reset_stat_index()
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    save_semantic_cache([{"id": "doc", "source_file": "doc.md"}], [], root=tmp_path)
+    assert load_cached(doc, root=tmp_path, kind="semantic") is not None
+
+    marked = mark_semantic_cache_partial(["doc.md"], root=tmp_path)
+
+    assert len(marked) == 1
+    assert marked[0].exists()
+    assert load_cached(doc, root=tmp_path, kind="semantic") is None
+    assert load_cached(doc, root=tmp_path, kind="semantic", allow_partial=True)[
+        "partial"
+    ] is True
+    # A complete re-extraction overwrites the same content-hash key cleanly.
+    save_semantic_cache([{"id": "doc", "source_file": "doc.md"}], [], root=tmp_path)
+    assert load_cached(doc, root=tmp_path, kind="semantic") is not None
+
+
+def test_mark_semantic_cache_partial_marks_the_flat_entry_it_would_serve(tmp_path):
+    """A pre-fingerprint flat entry must be marked, not shadowed by a new one."""
+    from graphify.cache import (
+        cache_dir,
+        file_hash,
+        load_cached,
+        mark_semantic_cache_partial,
+    )
+
+    _reset_stat_index()
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    flat = cache_dir(tmp_path, "semantic") / f"{file_hash(doc, tmp_path)}.json"
+    flat.write_text(
+        json.dumps({"nodes": [{"id": "doc", "source_file": "doc.md"}]}),
+        encoding="utf-8",
+    )
+    prompt = "a prompt"
+    # The fingerprinted namespace misses, so the read path falls back to flat.
+    assert load_cached(doc, root=tmp_path, kind="semantic", prompt=prompt) is not None
+
+    marked = mark_semantic_cache_partial(["doc.md"], root=tmp_path, prompt=prompt)
+
+    assert marked == [flat]
+    assert load_cached(doc, root=tmp_path, kind="semantic", prompt=prompt) is None
+
+
+def test_mark_semantic_cache_partial_skips_missing_and_already_partial(tmp_path):
+    from graphify.cache import load_cached, mark_semantic_cache_partial, save_semantic_cache
+
+    _reset_stat_index()
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    save_semantic_cache(
+        [{"id": "doc", "source_file": "doc.md"}],
+        [],
+        root=tmp_path,
+        partial_source_files=[doc],
+    )
+
+    # Already partial -> nothing new to mark; a missing source is skipped.
+    assert mark_semantic_cache_partial(["doc.md"], root=tmp_path) == []
+    assert mark_semantic_cache_partial(["absent.md"], root=tmp_path) == []
+    assert load_cached(doc, root=tmp_path, kind="semantic") is None

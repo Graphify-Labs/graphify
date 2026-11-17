@@ -59,6 +59,46 @@ def test_question_about_tests_keeps_test_nodes_at_full_weight():
     assert weight(G.nodes["src"]) == 1.0
 
 
+def test_disabling_doc_demotion_preserves_full_weight_for_markdown():
+    # When demote_docs=False, markdown/docs nodes retain full 1.0 weight
+    # and are not penalized below code nodes with identical match strength.
+    G = _graph()
+    terms = _query_terms("validate_username validation")
+    weight_default = _query_path_weight(terms, demote_docs=True)
+    assert weight_default(G.nodes["doc"]) == _QUERY_DEMOTE_WEIGHT
+
+    weight_nodemote = _query_path_weight(terms, demote_docs=False)
+    assert weight_nodemote(G.nodes["doc"]) == 1.0
+    assert weight_nodemote(G.nodes["src"]) == 1.0
+    # Test nodes still get demoted when query is not about tests
+    assert weight_nodemote(G.nodes["tst"]) == _QUERY_DEMOTE_WEIGHT
+
+    # Scoring verification: with demote_docs=True, doc is penalized below src
+    q_terms = _query_terms("validate_username")
+    weighted_default = _score_query(
+        G, q_terms, collect_per_term_seeds=True, path_weight=_query_path_weight(q_terms, demote_docs=True)
+    )
+    scores_default = dict((n, s) for s, n in weighted_default.ranked)
+    assert scores_default["doc"] < scores_default["src"]
+
+    # With demote_docs=False, doc retains full multiplier and is not demoted below
+    # src. The demotion is carried entirely by path_weight; _score_query takes no
+    # demote_docs of its own.
+    weighted_nodemote = _score_query(
+        G,
+        q_terms,
+        collect_per_term_seeds=True,
+        path_weight=_query_path_weight(q_terms, demote_docs=False),
+    )
+    scores_nodemote = dict((n, s) for s, n in weighted_nodemote.ranked)
+    assert scores_nodemote["doc"] == scores_nodemote["src"]
+    assert scores_nodemote["doc"] > scores_nodemote["tst"]
+
+    # End-to-end query text with demote_docs=False keeps doc node as valid seed
+    text = _query_graph_text(G, "validate_username", depth=1, demote_docs=False)
+    assert "docs/auth.md" in text
+
+
 def test_docs_config_and_sourceless_nodes_are_weighted_down():
     G = _graph()
     weight = _query_path_weight(_query_terms("username validation"))

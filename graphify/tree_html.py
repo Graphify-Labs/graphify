@@ -49,7 +49,7 @@ DEFAULT_MAX_CHILDREN = 200
 def _common_root(paths: List[str]) -> str:
     if not paths:
         return ""
-    parts = [Path(p).parts for p in paths if p]
+    parts = [Path(p).parent.parts for p in paths if p]
     if not parts:
         return ""
     common = parts[0]

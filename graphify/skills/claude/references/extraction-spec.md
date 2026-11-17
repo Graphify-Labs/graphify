@@ -22,8 +22,13 @@ Report the coverage you actually achieved, so a short read is caught instead of 
 top-level "coverage" object mapping each FILE_LIST path you extracted to the number of lines you
 read, e.g. {"coverage": {"docs/plan.md": 452}}. If you could not reach a file's last line, still
 report the count you did read. A short count is recoverable - Step B3 warns, the entry is cached
-as partial, and the next --update retries the file - whereas a missing entry is indistinguishable
-from a complete read.
+as partial, and the next --update retries the file.
+
+Give EVERY FILE_LIST path a coverage entry, including a file you never opened: report 0 for it and
+emit NOTHING for it. Never derive a node or an edge from a file name, a path, or text you have not
+read. For a file the Read tool returns as pages rather than lines (a PDF), report the number of
+pages you read. A file with no entry, or 0, is treated as unread: whatever you emitted for it is
+dropped and the file is retried.
 
 Rules:
 - EXTRACTED: relationship explicit in source (import, call, citation, "see §3.2")

@@ -112,7 +112,10 @@ function convexHull(pts) {{
 }}
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
+        // Legend toggles only set `hidden` on nodes; getPositions() still
+        // returns them, so skip hidden members or their hull lingers.
         const positions = h.nodes
+            .filter(nid => {{ const n = nodesDS.get(nid); return n && n.hidden !== true; }})
             .map(nid => network.getPositions([nid])[nid])
             .filter(p => p !== undefined);
         if (positions.length < 2) return;

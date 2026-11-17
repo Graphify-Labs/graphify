@@ -657,3 +657,47 @@ def test_each_language_parks_the_call_and_the_merge_finishes_it(
     assert any(e.startswith("lib::") and callee.lower() in e.lower()
                for e in endpoints), endpoints
 
+
+@needs_cpp
+@pytest.mark.parametrize("guarded", [False, True])
+@pytest.mark.parametrize("explicit_template", [False, True])
+def test_cpp_call_conditions_survive_parking_and_merge(tmp_path, guarded, explicit_template):
+    expression = "g.greet<int>()" if explicit_template else "g.greet()"
+    body = f"{expression},\n{expression},\n"
+    if guarded:
+        body = "#if FEATURE\n" + body + "#else\n0,\n#endif\n"
+    app = _build(tmp_path, "app", "Run.cpp", "void run(Greeter& g) { int values[] = {\n" + body + "}; }")
+    lib = _build(tmp_path, "lib", "Greeter.hpp", "struct Greeter { "
+                 + ("template<class T> " if explicit_template else "")
+                 + "int greet() { return 1; } };")
+    parked = _parked(app)
+    assert len(parked) == 1  # Keep the existing callee/receiver pair deduplication.
+    assert parked[0]["line"] == ("L3" if guarded else "L2")
+    calls = _cross_repo_calls(_merge(tmp_path, app, lib))
+    assert len(calls) == 1
+    assert calls[0]["source_file"] == parked[0]["file"]
+    assert calls[0]["source_location"] == parked[0]["line"]
+    expected = {"cpp_conditions": [{"group_line": 2, "branch": 0}]} if guarded else {}
+    assert parked[0].get("metadata", {}) == expected
+    assert calls[0].get("metadata", {}) == expected
+
+
+@pytest.mark.parametrize("lang, suffix", [("cpp", ".hpp"), ("csharp", ".cs")])
+def test_cpp_condition_metadata_is_copied_selectively_and_relinks_stably(lang, suffix):
+    conditions = [{"group_line": 4, "branch": 1}]
+    parked = [{"callee": "greet", "receiver_type": "Greeter", "lang": lang,
+               "line": "L8", "metadata": {"cpp_conditions": conditions, "unrelated": "keep out"}}]
+    graph = _graph(
+        caller=_caller("app", parked, source_file="Run" + suffix),
+        declarations=[(_declaration("lib", "Greeter", source_file="Greeter" + suffix),
+                       _method("lib", source_file="Greeter" + suffix))],
+    )
+    for _, node in graph.nodes(data=True):
+        node["file_type"] = "code"
+    assert link_cross_repo_member_calls(graph) == 1
+    first = [dict(data) for _, _, data in graph.edges(data=True) if data.get(CROSS_REPO_CALL_MARKER)]
+    expected = {"cpp_conditions": conditions} if lang == "cpp" else {}
+    assert first[0].get("metadata", {}) == expected
+    assert link_cross_repo_member_calls(graph) == 1
+    assert [dict(data) for _, _, data in graph.edges(data=True) if data.get(CROSS_REPO_CALL_MARKER)] == first
+

@@ -20,7 +20,7 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Réduisez de 80 % les dépenses en tokens de vos agents.</b> Graphify Cloud est une mémoire toujours active qui gouverne vos agents, maintient une haute qualité de code et prouve la justesse par vérification formelle. <a href="https://app.graphify.com/login"><b>Commencez un essai gratuit de 14 jours &rarr;</b></a>
+  <b>Réduisez de 80 % les dépenses en tokens de vos agents.</b> Graphify Cloud est une mémoire toujours active qui gouverne vos agents, maintient une haute qualité de code et prouve la justesse par vérification formelle. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Commencez gratuitement, sans carte &rarr;</b></a>
 </p>
 
 Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemble de votre projet (code, documents, PDF, images, vidéos) dans un **graphe de connaissances** que vous pouvez **interroger au lieu de faire un grep** à travers les fichiers.
@@ -38,7 +38,7 @@ Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemb
 - **Pas un index vectoriel.** Pas d'embeddings, pas de magasin de vecteurs : un vrai graphe que vous parcourez. Posez une question, tracez le chemin entre deux choses, ou expliquez un concept.
 
 > [!NOTE]
-> **Vous voulez cela en permanence ?** [Graphify Cloud](https://app.graphify.com/login) maintient le graphe à jour sur l'ensemble de votre SDLC : prise en charge des monorepos et du multi-dépôt, vérification formelle et revue de code avec une vue d'ensemble de votre SDLC, plus des connecteurs pour Sentry, Jira et davantage, afin que les incidents et les tickets se trouvent dans le même graphe que votre code. **[Commencez un essai gratuit de 14 jours sur app.graphify.com](https://app.graphify.com/login)**.
+> **Vous voulez cela en permanence ?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) maintient le graphe à jour sur l'ensemble de votre SDLC : prise en charge des monorepos et du multi-dépôt, vérification formelle et revue de code avec une vue d'ensemble de votre SDLC, plus des connecteurs pour Sentry, Jira et davantage, afin que les incidents et les tickets se trouvent dans le même graphe que votre code. **[Commencez gratuitement, sans carte](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@ Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemb
   <em>La base de code FastAPI cartographiée par graphify. Chaque nœud est un concept, les couleurs sont des communautés détectées, et l'ensemble est cliquable dans graph.html.</em>
 </p>
 
-**Pour démarrer** (30 secondes). Nécessite Python 3.10+ et uv (ou pipx) :
+**Pour démarrer** (30 secondes). Nécessite Python 3.11+ et uv (ou pipx) :
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Ce que vous obtenez d'emblée :
 | **Local-first** | Le code est analysé localement avec tree-sitter (pas de LLM, rien ne quitte votre machine) ; seule la passe sémantique sur les documents/médias appelle un backend, et seulement si vous en configurez un |
 
 > [!TIP]
-> Vous exécutez cela sur de nombreux dépôts ou un monorepo ? [Graphify Cloud](https://app.graphify.com/login) le fait en continu et réduit de 80 % les dépenses en tokens des agents, avec des liens multi-dépôt, une revue de code à l'échelle du SDLC, la vérification formelle et des connecteurs Sentry/Jira. [Commencez un essai gratuit de 14 jours &rarr;](https://app.graphify.com/login)
+> Vous exécutez cela sur de nombreux dépôts ou un monorepo ? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) le fait en continu et réduit de 80 % les dépenses en tokens des agents, avec des liens multi-dépôt, une revue de code à l'échelle du SDLC, la vérification formelle et des connecteurs Sentry/Jira. [Commencez gratuitement, sans carte &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Guides complets et référence disponibles sur **[docs.graphify.com](https://doc
 
 | Exigence | Minimum | Vérifier | Installer |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommandé)* | toute version | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | toute version | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Cela écrit un petit fichier de configuration qui indique à votre assistant de 
 
 `GRAPH_REPORT.md` reste disponible pour une revue d'architecture globale.
 
-Exactement quels fichiers chaque plateforme écrit (le `CODEBUDDY.md` + les hooks `PreToolUse` de CodeBuddy, l'`AGENTS.md` de Codex, le plugin natif `.kilo` de Kilo, la règle `alwaysApply` de Cursor, et ainsi de suite) est couvert dans **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Exactement quels fichiers chaque plateforme écrit (le `CODEBUDDY.md` + les hooks `PreToolUse` de CodeBuddy, l'`AGENTS.md` de Codex, le plugin natif `.kilo` de Kilo, la règle `alwaysApply` de Cursor, et ainsi de suite) est couvert dans **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Pour retirer graphify de toutes les plateformes d'un coup : `graphify uninstall` (ajoutez `--purge` pour supprimer aussi `graphify-out/`). Ou utilisez la commande par plateforme (par ex. `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ Chaque commande et chaque option, avec des exemples : **[CLI reference](https://
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) est la couche toujours active construite au-dessus de graphify. Au lieu d'un graphe que vous reconstruisez à la demande par dossier, elle maintient un graphe vivant unique sur l'ensemble de votre cycle de vie de développement logiciel :
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) est la couche toujours active construite au-dessus de graphify. Au lieu d'un graphe que vous reconstruisez à la demande par dossier, elle maintient un graphe vivant unique sur l'ensemble de votre cycle de vie de développement logiciel :
 
 - **80 % de tokens en moins** : une mémoire toujours active signifie que vos agents cessent de relire et de ré-expliquer la base de code à chaque session.
 - **Monorepo et multi-dépôt** : un seul graphe connecté sur chaque service et dépôt, pas un graphe par dossier.
@@ -456,7 +456,7 @@ Chaque commande et chaque option, avec des exemples : **[CLI reference](https://
 - **Connecteurs SDLC** : intégrez Sentry, Jira et davantage, afin que les incidents, les tickets et le code vivent dans un seul graphe.
 - **Toujours actif** : se met à jour en continu en arrière-plan sur le code, les documents et les réunions.
 
-**[Commencez un essai gratuit de 14 jours sur app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Commencez gratuitement, sans carte &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

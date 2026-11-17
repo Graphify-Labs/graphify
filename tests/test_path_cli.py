@@ -560,3 +560,54 @@ def test_path_scoped_endpoint_honors_file_qualifier(monkeypatch, tmp_path, capsy
     gp = _cross_file_symbol_graph(tmp_path)
     out = _run(monkeypatch, gp, "src/billing/route.ts::readRoute", "chargeCard", capsys)
     assert "readRoute() --calls [EXTRACTED]--> chargeCard()" in out
+
+
+def _no_such_node_graph(tmp_path):
+    """#5079: `zzqqxx_no_such_symbol_9137` names nothing, but `no_such_symbol_helper()`
+    shares three of its `_`-split tokens and wins the score fallback, so `path` used
+    to print the helper's route and exit 0 while `explain` said "No node matching"."""
+    return _write_nodes(tmp_path, [
+        ("src_a_ts", "a.ts", "src/a.ts", "L1"),
+        ("src_a_ts_parse", "parse()", "src/a.ts", "L1"),
+        ("src_b_ts", "b.ts", "src/b.ts", "L1"),
+        ("src_b_ts_helper", "no_such_symbol_helper()", "src/b.ts", "L1"),
+        ("src_b_ts_format", "format()", "src/b.ts", "L1"),
+        ("src_c_ts", "c.ts", "src/c.ts", "L1"),
+        ("src_c_ts_format", "format()", "src/c.ts", "L1"),
+    ], [
+        ("src_a_ts", "src_a_ts_parse", "contains"),
+        ("src_a_ts_parse", "src_b_ts_helper", "calls"),
+        ("src_b_ts", "src_b_ts_helper", "contains"),
+        ("src_b_ts", "src_b_ts_format", "contains"),
+        ("src_c_ts", "src_c_ts_format", "contains"),
+        ("src_b_ts_helper", "src_b_ts_format", "calls"),
+    ])
+
+
+_NO_SUCH_NODE = "zzqqxx_no_such_symbol_9137"
+
+
+def test_path_refuses_endpoint_that_names_no_node(monkeypatch, tmp_path, capsys):
+    """An endpoint matching no node name at all must fail closed, like `explain`,
+    instead of routing from whichever node happened to share some tokens (#5079)."""
+    gp = _no_such_node_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "path", _NO_SUCH_NODE, "src/b.ts::format()", "--graph", str(gp)])
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == EXIT_NOT_FOUND
+    captured = capsys.readouterr()
+    assert "Shortest path" not in captured.out
+    assert _NO_SUCH_NODE in captured.err
+    assert "no_such_symbol_helper" not in captured.out
+
+
+def test_shortest_path_tool_refuses_endpoint_that_names_no_node(tmp_path):
+    """The MCP tool shares the resolver, so a bare name it cannot place is a miss too."""
+    from graphify.serve import _shortest_path_text
+    raw = json.loads(_no_such_node_graph(tmp_path).read_text())
+    G = json_graph.node_link_graph(raw, edges="links")
+    out = _shortest_path_text(G, {"source": _NO_SUCH_NODE, "target": "src/b.ts::format()"})
+    assert "Shortest path" not in out
+    assert f"No node matching source '{_NO_SUCH_NODE}' found." in out

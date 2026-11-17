@@ -302,6 +302,8 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 target = targets[0]
             if target == caller or merged.has_edge(caller, target):
                 continue
+            metadata = entry.get("metadata")
+            conditions = metadata.get("cpp_conditions") if lang == "cpp" and isinstance(metadata, dict) else None
             merged.add_edge(
                 caller,
                 target,
@@ -320,6 +322,7 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 _src=caller,
                 _tgt=target,
                 **{CROSS_REPO_CALL_MARKER: True},
+                **({"metadata": {"cpp_conditions": conditions}} if isinstance(conditions, list) and conditions else {}),
             )
             added += 1
     return added

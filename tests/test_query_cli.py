@@ -243,6 +243,19 @@ def test_query_settings_precedence_and_execution_log_agree(monkeypatch, tmp_path
     assert captured["execution"]["seed_root"] == project
 
 
+@pytest.mark.parametrize("flags, expected_demote", [
+    ([], True),
+    (["--no-doc-demotion"], False),
+    (["--no-demote-docs"], False),
+    (["--demote-docs"], True),
+])
+def test_query_cli_doc_demotion_flags(monkeypatch, tmp_path, flags, expected_demote):
+    graph_path = _write_graph(tmp_path)
+    captured = _capture_query_settings(monkeypatch, graph_path, flags)
+    assert captured["execution"]["demote_docs"] is expected_demote
+    assert captured["log"]["demote_docs"] is expected_demote
+
+
 @pytest.mark.parametrize("flags", [
     ["--depth"], ["--depth="], ["--depth", "no"], ["--depth=0"],
     ["--depth=-1"], ["--depth=7"], ["--depth", "1.5"],

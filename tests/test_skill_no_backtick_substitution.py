@@ -36,9 +36,30 @@ PART_C = "merged_edges = ast['edges'] + sem['edges']"
 UPDATE = "from graphify.build import build_merge"
 BASH = shutil.which("bash")
 CAT = shutil.which("cat")
+
+
+def _bash_has_xtracefd(bash: str | None) -> bool:
+    """The runtime tests capture `set -x` output through BASH_XTRACEFD, which was
+    added in bash 4.1. macOS ships bash 3.2, where the variable is ignored and the
+    trace file stays empty, so the tests cannot see what the shell ran (and the
+    "nothing ran" assertion would pass vacuously). Skip rather than lie on such a host.
+    """
+    if bash is None:
+        return False
+    try:
+        r = subprocess.run(
+            [bash, "-c", "printf %s.%s ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        major, minor = (int(part) for part in r.stdout.strip().split("."))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return (major, minor) >= (4, 1)
+
+
 needs_bash = pytest.mark.skipif(
-    BASH is None or CAT is None or sys.platform == "win32",
-    reason="needs bash and cat on a POSIX host",
+    BASH is None or CAT is None or sys.platform == "win32" or not _bash_has_xtracefd(BASH),
+    reason="needs bash 4.1+ (for BASH_XTRACEFD) and cat on a POSIX host",
 )
 
 

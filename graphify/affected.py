@@ -318,19 +318,23 @@ def affected_nodes(
     # otherwise. The member nodes are seeds only (not reported as hits), and
     # `method`/`contains` stay out of the general relation-filtered walk, so this
     # adds no forward noise anywhere else.
-    if hasattr(graph, "out_edges"):
-        member_edges = graph.out_edges(seed, data=True)
-    else:
-        member_edges = (
-            (s, t, d) for s, t, d in graph.edges(data=True) if s == seed
-        )
-    for _s, member, data in member_edges:
-        if str(data.get("relation", "")) not in ("method", "contains"):
-            continue
-        member = str(member)
-        if member not in seen:
-            seen.add(member)
-            queue.append((member, 0))
+    member_queue = deque([seed])
+    while member_queue:
+        parent = member_queue.popleft()
+        if hasattr(graph, "out_edges"):
+            member_edges = graph.out_edges(parent, data=True)
+        else:
+            member_edges = (
+                (s, t, d) for s, t, d in graph.edges(data=True) if s == parent
+            )
+        for _s, member, data in member_edges:
+            if str(data.get("relation", "")) not in ("method", "contains"):
+                continue
+            member = str(member)
+            if member not in seen:
+                seen.add(member)
+                queue.append((member, 0))
+                member_queue.append(member)
 
     supertype_cache: dict[str, list[str]] = {}
     # Overridden members walked without being reported; one that a real edge
