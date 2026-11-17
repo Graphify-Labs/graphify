@@ -76,3 +76,18 @@ def test_help_lists_project_query_defaults_and_depth_range():
     assert "query_budget" in result.stdout and "query_depth" in result.stdout
     assert "selected graph project's .graphifyrc" in result.stdout
     assert "Explicit options override project values" in result.stdout
+
+
+def test_help_describes_update_output_root_precedence():
+    result = subprocess.run(
+        [PYTHON, "-m", "graphify", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    update_help = result.stdout.split("  update [path]", 1)[1].split(
+        "  cluster-only", 1
+    )[0]
+    assert "--out DIR" in update_help
+    assert "relative DIR is from CWD" in update_help
+    assert "absolute GRAPHIFY_OUT keeps precedence" in update_help

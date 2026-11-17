@@ -506,7 +506,7 @@ def _report_root_label(watch_path: Path) -> str:
     return Path.cwd().name if watch_path == Path(".") else str(watch_path)
 
 
-def _graphify_root_marker_value(watch_path: Path) -> str:
+def _graphify_root_marker_value(watch_path: Path, *, out_dir: Path | None = None) -> str:
     """The value to write into ``.graphify_root``.
 
     Ordinarily preserves the caller-supplied path verbatim (relative or
@@ -525,8 +525,17 @@ def _graphify_root_marker_value(watch_path: Path) -> str:
     portability across clones is not the goal there to begin with, the
     output directory is already outside any one clone.
     """
-    if Path(_GRAPHIFY_OUT).is_absolute():
+    # An explicit external output root is shared in the same way. Preserve a
+    # portable marker when --out still selects the default artifact directory.
+    if Path(_GRAPHIFY_OUT).is_absolute() or (
+        out_dir is not None
+        and out_dir.resolve() != (watch_path / _GRAPHIFY_OUT).resolve()
+    ):
         return str(watch_path.resolve())
+    if out_dir is not None:
+        # Explicit same-root updates store scan-relative paths. A dot avoids
+        # confusing a nested source prefix with a legacy CWD-relative marker.
+        return "."
     return str(watch_path)
 
 
@@ -661,6 +670,8 @@ class _StoredSourcePaths:
                                 break
                         else:
                             self.existing_source_root = resolved
+                elif saved_root == Path("."):
+                    self.existing_source_root = watch_root
                 else:
                     invocation_root = Path.cwd().resolve()
                     if (invocation_root / saved_root).resolve() == watch_root:
@@ -2225,6 +2236,7 @@ def _rebuild_code(
     no_cluster: bool = False,
     acquire_lock: bool = True,
     block_on_lock: bool = False,
+    output_root: Path | None = None,
 ) -> bool:
     """Re-run AST extraction + build + optional cluster + report for code files. No LLM needed.
 
@@ -2254,12 +2266,17 @@ def _rebuild_code(
     ``no_cluster`` skips community detection and writes raw merged extraction
     JSON to graphify-out/graph.json (mirrors ``extract --no-cluster``).
 
+    ``output_root`` selects the artifact/cache root without changing the scan
+    root. An absolute GRAPHIFY_OUT retains precedence over this root.
+
     Returns True on success, False on error or skipped-due-to-lock.
     """
     if not _stabilize_rebuild_cwd(watch_path):
         return False
 
-    out = watch_path / _GRAPHIFY_OUT
+    out = (output_root or watch_path) / _GRAPHIFY_OUT
+    # Absolute GRAPHIFY_OUT ignores --out; keep the cache owner on the scan root.
+    cache_root = output_root if not Path(_GRAPHIFY_OUT).is_absolute() else None
     if acquire_lock:
         # #1059: a hook must not drop its request when another rebuild is
         # already running. Queue before attempting the lock so a non-blocking
@@ -2334,6 +2351,7 @@ def _rebuild_code(
                 force=force,
                 no_cluster=no_cluster,
                 acquire_lock=False,
+                output_root=output_root,
             )
             # Late-arrival drain: another hook may have queued work while we
             # were rebuilding — even a full rebuild only saw files as they were
@@ -2354,15 +2372,18 @@ def _rebuild_code(
                     force=force,
                     no_cluster=no_cluster,
                     acquire_lock=False,
+                    output_root=output_root,
                 ) and ok
             return ok
 
     watch_root = watch_path.resolve()
-    # project_root stays CWD-anchored for a relative invocation on purpose: the
-    # persisted graph rehomes source_file across invocation styles against it
-    # (tests/test_watch.py:1389, :1428). The manifest is a different artifact
-    # with a different anchor — see the save_manifest calls below.
-    project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
+    # Explicit output is reusable from another CWD: persisted source paths must
+    # stay scan-relative, aligned with the saved marker. Source-only callers
+    # retain the legacy CWD anchor for relative invocations.
+    project_root = (
+        watch_root if cache_root is not None or watch_path.is_absolute()
+        else Path.cwd().resolve()
+    )
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor
@@ -2392,6 +2413,7 @@ def _rebuild_code(
             watch_path, follow_symlinks=follow_symlinks,
             extra_excludes=_persisted_excludes or None,
             gitignore=_gitignore_enabled,
+            cache_root=cache_root,
         )
         code_files = [Path(f) for f in detected['files']['code']]
 
@@ -2436,9 +2458,29 @@ def _rebuild_code(
             code_only=_code_only,
         )
 
+        # The marker records how stored source paths are anchored: an explicit
+        # output root stores scan-relative paths (marker "."), a default run
+        # CWD-relative ones. Switching modes rewrites every stored path, so it
+        # needs the full path: neither the no-change exit nor a manifest-derived
+        # change set may skip it. Default runs keep their existing fast path.
+        try:
+            _saved_marker: str | None = (out / ".graphify_root").read_text(
+                encoding="utf-8-sig"
+            ).strip()
+        except OSError:
+            _saved_marker = None
+        _expected_marker = _graphify_root_marker_value(
+            watch_path, out_dir=out if cache_root is not None else None
+        )
+        _marker_matches = (
+            _saved_marker == _expected_marker if cache_root is not None
+            else _saved_marker != "." or _expected_marker == "."
+        )
+
         if changed_paths is None and not force:
             if (
-                _inputs_unchanged(detected, out / "manifest.json", watch_root)
+                _marker_matches
+                and _inputs_unchanged(detected, out / "manifest.json", watch_root)
                 and _build_state_matches(out, _build_state_now)
             ):
                 print(
@@ -2458,7 +2500,10 @@ def _rebuild_code(
         # None — the full path. "No rows" means the baseline is unknown, and the
         # only safe reading of unknown is "do the work"; `detect_incremental`
         # makes the same call for `graphify extract` (#1925).
-        if incremental and changed_paths is None and not force and (out / "graph.json").is_file():
+        if (
+            incremental and changed_paths is None and not force
+            and _marker_matches and (out / "graph.json").is_file()
+        ):
             manifest = load_manifest(str(out / "manifest.json"), root=watch_root)
             if manifest:
                 resolution_inputs = detected.get("resolution_inputs") or []
@@ -2865,7 +2910,8 @@ def _rebuild_code(
         commit = _git_head(cwd=watch_root)
         result = extract(
             extract_targets,
-            cache_root=watch_root,
+            cache_root=cache_root or watch_root,
+            root=watch_root,
             resolution_context_nodes=resolution_context_nodes or None,
             resolution_context_edges=resolution_context_edges or None,
         ) if extract_targets else {
@@ -3083,7 +3129,9 @@ def _rebuild_code(
             # _graphify_root_marker_value for why this isn't always the raw
             # caller-supplied value (#3375).
             (out / ".graphify_root").write_text(
-                _graphify_root_marker_value(watch_path), encoding="utf-8"
+                _graphify_root_marker_value(
+                    watch_path, out_dir=out if cache_root is not None else None
+                ), encoding="utf-8"
             )
 
             try:
@@ -3394,7 +3442,9 @@ def _rebuild_code(
         # See _graphify_root_marker_value for why this isn't always the raw
         # caller-supplied value (#3375).
         (out / ".graphify_root").write_text(
-            _graphify_root_marker_value(watch_path), encoding="utf-8"
+            _graphify_root_marker_value(
+                watch_path, out_dir=out if cache_root is not None else None
+            ), encoding="utf-8"
         )
 
         try:
