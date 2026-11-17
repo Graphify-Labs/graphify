@@ -257,3 +257,35 @@ class Sub : Base() {
     runs = _methods(r, ".run()")
     go = next(n["id"] for n in r["nodes"] if n["label"] == ".go()")
     assert (go, runs["L3"]["id"]) in _calls(r)
+
+
+def test_class_bounds_are_resolved_before_a_method_type_variable_shadows_them(tmp_path):
+    """`U extends T` names the class's `T` (a Number); the method's own
+    `<T extends CharSequence>` shadows `T` only for what the method declares
+    itself. `run(U)` therefore erases to `Number`, not `CharSequence`, and the two
+    overloads stay two nodes."""
+    src = """class G<T extends Number, U extends T> {
+  <T extends CharSequence> void run(U x) { a(); }
+  void run(CharSequence x) { b(); }
+  void a() {}
+  void b() {}
+}
+"""
+    r = _extract(tmp_path, {"G.java": src})
+    runs = _methods(r, ".run()")
+    assert sorted(runs) == ["L2", "L3"]
+    assert runs["L2"]["metadata"]["signature"] == "Number"
+    assert runs["L3"]["metadata"]["signature"] == "CharSequence"
+    by_label = {n["label"]: n["id"] for n in r["nodes"] if n.get("source_file")}
+    calls = _calls(r)
+    assert (runs["L2"]["id"], by_label[".a()"]) in calls
+    assert (runs["L3"]["id"], by_label[".b()"]) in calls
+
+
+def test_a_bound_may_name_a_later_variable_of_the_same_scope(tmp_path):
+    src = """class H {
+  <A extends B, B extends Number> void m(A a) {}
+}
+"""
+    r = _extract(tmp_path, {"H.java": src})
+    assert _methods(r, ".m()")["L2"]["metadata"]["signature"] == "Number"

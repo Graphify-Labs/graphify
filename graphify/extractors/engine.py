@@ -1762,10 +1762,11 @@ def _java_type_var_bounds(node, source: bytes) -> dict[str, str]:
             scopes.append(cur)
         cur = cur.parent
     bounds: dict[str, str] = {}
-    for owner in reversed(scopes):  # outermost first, so inner shadows outer
+    for owner in reversed(scopes):  # outermost first
         tparams = next((c for c in owner.children if c.type == "type_parameters"), None)
         if tparams is None:
             continue
+        local: dict[str, str] = {}
         for tp in tparams.children:
             if tp.type != "type_parameter":
                 continue
@@ -1775,14 +1776,20 @@ def _java_type_var_bounds(node, source: bytes) -> dict[str, str]:
             bound = next((c for c in tp.children if c.type == "type_bound"), None)
             first = next((c for c in bound.children if c.is_named), None) if bound is not None else None
             erased = _java_erase_type(_read_text(first, source)) if first is not None else "Object"
-            bounds[_read_text(name_node, source)] = erased or "Object"
-    # A bound may itself be a type variable (`<T, U extends T>`).
-    for name, erased in list(bounds.items()):
-        seen = {name}
-        while erased in bounds and erased not in seen:
-            seen.add(erased)
-            erased = bounds[erased]
-        bounds[name] = erased
+            local[_read_text(name_node, source)] = erased or "Object"
+        # Resolve this scope's bounds now, against this scope's own variables
+        # (a bound may name a later one: `<A extends B, B extends Number>`) and
+        # the enclosing scopes' already resolved ones, before an inner scope can
+        # shadow a name: `U extends T` in the class means the class's `T` even
+        # when a method declares its own `T`.
+        resolved: dict[str, str] = {}
+        for name in local:
+            erased, seen = local[name], {name}
+            while erased not in seen and (erased in local or erased in bounds):
+                seen.add(erased)
+                erased = local[erased] if erased in local else bounds[erased]
+            resolved[name] = erased
+        bounds.update(resolved)  # inner scopes shadow outer ones from here on
     return bounds
 
 
