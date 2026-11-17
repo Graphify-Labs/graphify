@@ -207,6 +207,9 @@ def test_lambda_shadowing_does_not_reuse_enclosing_receiver_type(tmp_path: Path)
 
 
 def test_overloaded_callers_keep_body_scoped_receiver_types(tmp_path: Path):
+    """Each overload of ``run`` is its own node (#5251); a local named the
+    same in two bodies (``service``) must still resolve to that body's own
+    declared type, never the sibling overload's."""
     calls, result = _calls(tmp_path, {
         **_AMBIGUOUS_METHODS,
         "Checkout.java": (
@@ -217,11 +220,21 @@ def test_overloaded_callers_keep_body_scoped_receiver_types(tmp_path: Path):
         ),
     })
 
-    run = _find(result, ".run()", "checkout")
+    def _run(signature: str) -> str:
+        return next(
+            node["id"] for node in result["nodes"]
+            if node.get("label") == ".run()" and "checkout" in node["id"]
+            and (node.get("metadata") or {}).get("signature") == signature
+        )
+
+    run_int = _run("int")
+    run_string = _run("String")
     gateway_charge = _find(result, ".charge()", "paymentgateway")
     audit_charge = _find(result, ".charge()", "auditlog")
-    assert (run, gateway_charge) in calls
-    assert (run, audit_charge) in calls
+    assert (run_int, gateway_charge) in calls
+    assert (run_string, audit_charge) in calls
+    assert (run_int, audit_charge) not in calls
+    assert (run_string, gateway_charge) not in calls
 
 
 def test_ambiguous_receiver_type_emits_no_edge(tmp_path: Path):
