@@ -20,8 +20,12 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **extract** the net-shrink guard is not armed for a source that has nothing to protect (one that never produced any saved nodes, e.g. a file whose optional grammar extra is not installed), so such a source no longer blocks a later extract that legitimately shrinks the graph; a source that did have saved records still arms the guard (#5245, thanks @ayushcodes10).
 - Fix: **build** folding a Markdown document twin preserves the survivor's structure: a real heading node is no longer mistaken for the page's semantic twin and the page node (with its frontmatter and `contains` edges) is kept, while genuine semantic twins still fold (#5272, thanks @sdivyanshu90).
 - Fix: **build** symlinked corpus aliases are pruned independently: excluding or deleting one symlink alias no longer also drops its target or a sibling alias that resolves to the same file, because prune matching now keys on the corpus path rather than the resolved physical target (#5273, thanks @sdivyanshu90).
+- Fix: **pascal** a unit the tree-sitter grammar cannot parse end to end (for example one with an escaped SQL string literal) is recovered through a byte-length-preserving masked retry, instead of yielding no nodes; the retry runs only when the normal parse errored and is accepted only if strictly healthier, so units that already parse are unchanged (#5264, thanks @patrykseksymfonia).
+- Fix: **pascal** a base class resolves to its real declaration in the unit it is declared in, instead of a stub matched by filename convention, so the `inherits` edge and the inherited calls through it resolve across files (#5280, thanks @patrykseksymfonia).
+- Fix: **pascal** a call through a global object variable (`DM.Open`, the Delphi data-module idiom) resolves to the variable's type member: the extractor records unit-level globals, per-class fields and per-routine shadows, and resolution binds the qualified call fail-closed through the uses-clause, leaving it unresolved when a field, local or array-typed global shadows the name (#3101, thanks @patrykseksymfonia).
+- Feat: **delphi** a form (`.dfm`/`.lfm`) is linked to the unit that implements it: the form class and each `OnClick = Handler` stub get an INFERRED `references` edge to the real class and method in the sibling `.pas`, paired by base name and a unique class/method lookup (#5281, thanks @patrykseksymfonia).
 
-The AST cache schema is bumped to 48; warm caches re-run the affected Go, Java, JS/TS, C/C++ and SQL extractions.
+The AST cache schema is bumped to 48; warm caches re-run the affected Go, Java, JS/TS, C/C++, SQL and Pascal extractions.
 
 ## 0.9.111 (2026-11-15)
 

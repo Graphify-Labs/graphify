@@ -48,8 +48,16 @@ def _is_pascal(source_file: object) -> bool:
     return isinstance(source_file, str) and source_file.lower().endswith(_PASCAL_SUFFIXES)
 
 
+def _basename(path: str) -> str:
+    # os.path.basename on POSIX does not split a Windows `\` separator, so a
+    # Windows-style source_file (`C:\proj\Unit.pas`) would keep the whole string
+    # as its "basename" and never match the relativised POSIX corpus path.
+    # Normalise separators first so the match works cross-platform (#5286).
+    return os.path.basename(path.replace("\\", "/"))
+
+
 def _unit_stem(source_file: str) -> str:
-    return os.path.basename(source_file).rsplit(".", 1)[0].lower()
+    return _basename(source_file).rsplit(".", 1)[0].lower()
 
 
 def _raw_path_of(result: dict) -> str | None:
@@ -82,10 +90,10 @@ def _corpus_path_matcher(corpus_files: set[str]):
     """
     by_name: dict[str, list[str]] = {}
     for source_file in corpus_files:
-        by_name.setdefault(os.path.basename(source_file).lower(), []).append(source_file)
+        by_name.setdefault(_basename(source_file).lower(), []).append(source_file)
 
     def match(raw_path: str) -> str | None:
-        candidates = by_name.get(os.path.basename(raw_path).lower())
+        candidates = by_name.get(_basename(raw_path).lower())
         if not candidates:
             return None
         if len(candidates) == 1:

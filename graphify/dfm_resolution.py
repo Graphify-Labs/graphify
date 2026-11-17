@@ -122,8 +122,12 @@ def resolve_dfm_handlers(
             "target": target,
             "relation": "references",
             "context": context,
-            "confidence": "EXTRACTED",
-            "confidence_score": 1.0,
+            # A .dfm names its form class and event handlers, but the link to the
+            # implementing .pas unit is resolved here (sibling pairing + a unique
+            # class/method lookup), not written as an edge in the source, so it is
+            # INFERRED at the standard resolved-binding score, not EXTRACTED.
+            "confidence": "INFERRED",
+            "confidence_score": 0.85,
             "source_file": form_file,
             "source_location": location,
             "weight": 1.0,

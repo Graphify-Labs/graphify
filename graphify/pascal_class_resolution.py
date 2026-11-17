@@ -47,10 +47,14 @@ def resolve_pascal_base_classes(
 ) -> None:
     """Point Pascal ``inherits`` edges at the class's real declaration.
 
-    Mutates ``all_edges`` in place (retargeting, then deduplicating) and drops
-    stub nodes left with no edges at all. Purely a repair: no new relation is
-    introduced and no edge is created between classes that were not already
-    related by an ``inherits`` the extractor emitted.
+    Mutates ``all_edges`` in place (retargeting, then deduplicating). The stub
+    node the extractor created in the inheriting file is left in place once its
+    ``inherits`` edge is retargeted; it becomes an orphan (at most one per
+    inheriting file), which is harmless graph noise. Keeping it avoids changing
+    the node-list length, which the incremental-rebuild scratch slice relies on.
+    Purely a repair: no new relation is introduced and no edge is created
+    between classes that were not already related by an ``inherits`` the
+    extractor emitted.
     """
     node_by_id = {n.get("id"): n for n in all_nodes}
 
