@@ -1808,6 +1808,30 @@ def test_checkout_hook_still_skips_when_no_graph_was_built(tmp_path):
 
 
 @_SH_ONLY
+@pytest.mark.parametrize("script", [_HOOK_SCRIPT, _CHECKOUT_SCRIPT, _MERGE_SCRIPT, _REWRITE_SCRIPT],
+                         ids=["post-commit", "post-checkout", "post-merge", "post-rewrite"])
+@pytest.mark.parametrize("xdg", ["absolute", "relative", "unset"])
+def test_hook_rebuild_log_honours_xdg_cache_home(tmp_path, script, xdg):
+    """The rebuild log follows $XDG_CACHE_HOME when it is absolute, and falls back
+    to ~/.cache when it is unset or relative (the XDG spec ignores a relative one)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "graphify-out").mkdir()
+    env = {"XDG_CACHE_HOME": {"absolute": str(tmp_path / "xdg-cache"), "relative": "rel-cache", "unset": ""}[xdg]}
+    if script is _HOOK_SCRIPT:
+        for name in ("a.py", "b.py"):
+            (repo / name).write_text("x = 1\n", encoding="utf-8")
+            _git(repo, "add", name)
+            _git(repo, "commit", "-q", "-m", name)
+    args = {_HOOK_SCRIPT: [], _CHECKOUT_SCRIPT: ["aaa", "bbb", "1"], _MERGE_SCRIPT: ["0"], _REWRITE_SCRIPT: ["rebase"]}[script]
+    result = _emitted_hook_run(repo, script, args, env)
+    assert result.returncode == 0, result.stderr
+    want = tmp_path / "xdg-cache" if xdg == "absolute" else repo.parent / "home" / ".cache"
+    assert f"(log: {want / 'graphify-rebuild.log'})" in result.stdout, result.stdout
+
+
+@_SH_ONLY
 def test_rewrite_hook_rebuilds_when_graphify_out_is_renamed(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

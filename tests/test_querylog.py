@@ -221,3 +221,11 @@ def test_log_query_writes_nothing_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     log_query(kind="query", question="secret internal ticket TICKET-123", corpus=".", result="1 node found")
     assert not (tmp_path / ".cache" / "graphify-queries.log").exists()
+
+
+def test_query_log_default_path_honours_xdg_cache_home(monkeypatch, tmp_path):
+    from graphify.querylog import _log_path
+    _clear_log_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_ENABLE", "1")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    assert _log_path() == tmp_path / "xdg-cache" / "graphify-queries.log"

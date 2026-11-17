@@ -144,3 +144,25 @@ def test_is_absolute_any_platform_is_host_independent():
     from graphify.paths import is_absolute_any_platform
     assert is_absolute_any_platform("/home/ci/x.md")
     assert is_absolute_any_platform("C:/Users/u/x.md")
+
+
+def test_cache_home_honours_an_absolute_xdg_cache_home(monkeypatch, tmp_path):
+    from graphify.paths import cache_home
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    assert cache_home() == tmp_path / "xdg-cache"
+
+
+@pytest.mark.parametrize("value", ["", "relative/cache"])
+def test_cache_home_falls_back_to_home_cache(monkeypatch, value):
+    """Unset, empty or relative: the XDG spec says to ignore a relative value."""
+    from pathlib import Path
+    from graphify.paths import cache_home
+    monkeypatch.setenv("XDG_CACHE_HOME", value)
+    assert cache_home() == Path.home() / ".cache"
+
+
+def test_skill_lock_lives_under_xdg_cache_home(monkeypatch, tmp_path):
+    from graphify.install import _skill_lock_path
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    lock = _skill_lock_path(tmp_path / "skill")
+    assert lock.parent == tmp_path / "xdg-cache" / "graphify" / "skill-locks"

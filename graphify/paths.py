@@ -456,6 +456,19 @@ def disambiguate_ambiguous_candidates(
 GRAPHIFY_OUT_NAME = os.path.basename(os.path.normpath(GRAPHIFY_OUT))
 
 
+def cache_home() -> Path:
+    """The user cache directory: ``$XDG_CACHE_HOME``, or ``~/.cache``.
+
+    The XDG Base Directory spec says a relative ``XDG_CACHE_HOME`` is invalid
+    and must be ignored, so only an absolute value is honoured. Read on every
+    call, not at import, so a value set after start-up still applies.
+    """
+    value = os.environ.get("XDG_CACHE_HOME", "")
+    if value and os.path.isabs(value):
+        return Path(value)
+    return Path.home() / ".cache"
+
+
 def out_path(*parts: str) -> Path:
     """A path inside the configured output dir, e.g. ``out_path("cache")``.
 

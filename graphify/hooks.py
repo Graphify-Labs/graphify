@@ -339,6 +339,18 @@ except Exception as exc:
     sys.exit(1)
 """
 
+# Where every hook writes the detached rebuild's output: $XDG_CACHE_HOME when it
+# is an absolute path (the XDG Base Directory spec ignores a relative one), else
+# ~/.cache - the same rule as graphify.paths.cache_home().
+_REBUILD_LOG = """\
+_GFY_CACHE="${XDG_CACHE_HOME:-}"
+case "$_GFY_CACHE" in
+    /*|[A-Za-z]:*) ;;
+    *) _GFY_CACHE="${HOME}/.cache" ;;
+esac
+_GRAPHIFY_LOG="$_GFY_CACHE/graphify-rebuild.log"
+"""
+
 # Cross-platform detached-launch shim (#1161). The hooks used to background the
 # rebuild with `nohup "$GRAPHIFY_PYTHON" -c "..." &`, but Git for Windows' bundled
 # MSYS shell ships no nohup (nor setsid), so that line died with
@@ -362,7 +374,9 @@ import os, subprocess, sys
 _src = '''
 __REBUILD_BODY__
 '''
-_log = os.environ.get('GRAPHIFY_REBUILD_LOG') or os.path.join(os.path.expanduser('~'), '.cache', 'graphify-rebuild.log')
+_xdg = os.environ.get('XDG_CACHE_HOME') or ''
+_cache = _xdg if os.path.isabs(_xdg) else os.path.join(os.path.expanduser('~'), '.cache')
+_log = os.environ.get('GRAPHIFY_REBUILD_LOG') or os.path.join(_cache, 'graphify-rebuild.log')
 try:
     os.makedirs(os.path.dirname(_log), exist_ok=True)
     _out = open(_log, 'a', buffering=1, encoding='utf-8', errors='replace')
@@ -541,7 +555,7 @@ export GRAPHIFY_CHANGED="$CHANGED"
 # can take hours; blocking the post-commit hook stalls the shell. The Python
 # launcher below detaches the child cross-platform, so it works on Git for
 # Windows' shell too (which lacks the coreutils backgrounding tools) (#1161).
-_GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
+""" + _REBUILD_LOG + """\
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify hook] launching background rebuild (log: $_GRAPHIFY_LOG)"
@@ -603,7 +617,7 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 """ + _WORKTREE_GUARD + _TOPLEVEL_ANCHOR + _PYTHON_DETECT + """
-_GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
+""" + _REBUILD_LOG + """\
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY_LOG)"
@@ -656,7 +670,7 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 """ + _WORKTREE_GUARD + _TOPLEVEL_ANCHOR + _PYTHON_DETECT + """
-_GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
+""" + _REBUILD_LOG + """\
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Merge completed - launching background rebuild (log: $_GRAPHIFY_LOG)"
@@ -708,7 +722,7 @@ fi
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 """ + _WORKTREE_GUARD + _TOPLEVEL_ANCHOR + _PYTHON_DETECT + """
-_GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
+""" + _REBUILD_LOG + """\
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Rebase completed - launching background rebuild (log: $_GRAPHIFY_LOG)"

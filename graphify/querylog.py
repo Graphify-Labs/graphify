@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from graphify.paths import cache_home
+
 _NODES_RE = re.compile(r"(\d+)\s+nodes?\s+found")
 
 
@@ -19,7 +21,8 @@ def _log_path() -> Path | None:
     # default-on record of proprietary queries contradicts graphify's on-device,
     # no-telemetry posture, so it is OFF unless explicitly enabled:
     #   GRAPHIFY_QUERY_LOG=<path>   log to that path, or
-    #   GRAPHIFY_QUERY_LOG_ENABLE=1 log to ~/.cache/graphify-queries.log.
+    #   GRAPHIFY_QUERY_LOG_ENABLE=1 log to $XDG_CACHE_HOME/graphify-queries.log
+    #                               (~/.cache when unset).
     # GRAPHIFY_QUERY_LOG_DISABLE=1 still forces it off (back-compat, wins).
     if os.environ.get("GRAPHIFY_QUERY_LOG_DISABLE", "").lower() in ("1", "true", "yes"):
         return None
@@ -27,7 +30,7 @@ def _log_path() -> Path | None:
     if override:
         return Path(override).expanduser()
     if os.environ.get("GRAPHIFY_QUERY_LOG_ENABLE", "").lower() in ("1", "true", "yes"):
-        return Path.home() / ".cache" / "graphify-queries.log"
+        return cache_home() / "graphify-queries.log"
     return None
 
 

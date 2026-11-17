@@ -43,6 +43,7 @@ except Exception:
     __version__ = "unknown"
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import cache_home as _cache_home
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 from graphify.paths import write_text_atomic as _write_text_atomic
 
@@ -59,7 +60,7 @@ def _skill_lock_path(skill_dir: Path) -> Path:
     except (OSError, RuntimeError):  # symlink loop
         real = skill_dir.absolute()
     digest = hashlib.sha256(os.path.normcase(str(real)).encode("utf-8")).hexdigest()[:16]
-    return Path.home() / ".cache" / "graphify" / "skill-locks" / f"{digest}.lock"
+    return _cache_home() / "graphify" / "skill-locks" / f"{digest}.lock"
 
 
 # Lock files this thread holds: the CLI's refresh takes the lock and then calls
