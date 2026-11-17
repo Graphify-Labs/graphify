@@ -16,17 +16,22 @@ from graphify.manifest_ingest import (
 )
 
 
-def test_load_toml_module_raises_when_tomli_missing(monkeypatch):
-    real_import = builtins.__import__
-
+def _make_missing_toml_importer(real_import):
     def fake_import(name, *args, **kwargs):
         if name in ("tomllib", "tomli"):
             raise ImportError(f"blocked {name}")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(ImportError, match="tomli"):
+    return fake_import
+
+
+def test_load_toml_module_raises_when_tomli_missing(monkeypatch):
+    monkeypatch.setattr(
+        builtins, "__import__", _make_missing_toml_importer(builtins.__import__),
+    )
+    with pytest.raises(ImportError) as exc_info:
         _load_toml_module()
+    assert str(exc_info.value) == _TOMLI_REQUIRED
 
 
 def test_parse_pyproject_surfaces_missing_parser(monkeypatch):
@@ -34,8 +39,9 @@ def test_parse_pyproject_surfaces_missing_parser(monkeypatch):
         "graphify.manifest_ingest._load_toml_module",
         lambda: (_ for _ in ()).throw(ImportError(_TOMLI_REQUIRED)),
     )
-    with pytest.raises(ImportError, match="tomli"):
+    with pytest.raises(ImportError) as exc_info:
         _parse_pyproject('[project]\nname = "x"\n')
+    assert str(exc_info.value) == _TOMLI_REQUIRED
 
 
 def test_parse_cargo_surfaces_missing_parser(monkeypatch):
@@ -43,8 +49,9 @@ def test_parse_cargo_surfaces_missing_parser(monkeypatch):
         "graphify.manifest_ingest._load_toml_module",
         lambda: (_ for _ in ()).throw(ImportError(_TOMLI_REQUIRED)),
     )
-    with pytest.raises(ImportError, match="tomli"):
+    with pytest.raises(ImportError) as exc_info:
         _parse_cargo('[package]\nname = "x"\nversion = "0.1.0"\n')
+    assert str(exc_info.value) == _TOMLI_REQUIRED
 
 
 def test_extract_package_manifest_reports_missing_tomli(tmp_path, monkeypatch):
@@ -61,4 +68,6 @@ def test_extract_package_manifest_reports_missing_tomli(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.version_info >= (3, 11), reason="stdlib tomllib present")
 def test_tomli_is_importable_on_py310():
-    import tomli  # noqa: F401
+    import tomli
+
+    assert callable(tomli.loads)

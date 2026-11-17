@@ -52,6 +52,48 @@ _ENVELOPE = {
 }
 
 
+@pytest.fixture
+def unicode_subprocess_result():
+    """Simulate a successful Claude CLI response."""
+    envelope = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": json.dumps({
+            "nodes": [
+                {
+                    "id": "u_chunk",
+                    "label": "Unicode Chunk",
+                    "file_type": "document",
+                    "source_file": "unicode_chunk.md",
+                }
+            ],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }),
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+        "modelUsage": {
+            "claude-opus-4-7": {
+                "inputTokens": 1,
+                "outputTokens": 1,
+            },
+        },
+    }
+
+    return MagicMock(
+        returncode=0,
+        stdout=json.dumps(envelope),
+        stderr="",
+    )
+
 # ── Test A: subprocess encoding ───────────────────────────────────────────────
 
 class TestSubprocessEncoding:
@@ -90,17 +132,21 @@ class TestSubprocessEncoding:
             llm._call_claude_cli(_UNICODE_CONTENT, max_tokens=8192)
         _args, kwargs = mock_run.call_args
         # If text=True is present, encoding must also be set to 'utf-8'.
-        if kwargs.get("text") is True:
-            assert kwargs.get("encoding") == "utf-8", (
-                "text=True without encoding='utf-8' will use the locale codec "
-                "(cp1252 on Windows), causing UnicodeEncodeError on → ✅ ≥"
-            )
-        else:
-            # input must be bytes, not str
-            inp = kwargs.get("input") or (mock_run.call_args[0][1:2] or [None])[0]
-            assert isinstance(inp, bytes), (
-                "Without text=True, input must be bytes pre-encoded to UTF-8."
-            )
+        input_data = kwargs.get("input")
+
+        uses_utf8_text = (
+            kwargs.get("text") is True
+            and kwargs.get("encoding") == "utf-8"
+        )
+        uses_binary_input = (
+            kwargs.get("text") is not True
+            and isinstance(input_data, bytes)
+        )
+
+        assert uses_utf8_text or uses_binary_input, (
+            "Subprocess must use text=True with UTF-8 encoding "
+            "or receive pre-encoded bytes."
+        )
 
     def test_unicode_chars_survive_subprocess_roundtrip(self, monkeypatch, tmp_path):
         """Writing a file with → ✅ ≥ then passing its content through
@@ -259,72 +305,43 @@ class TestSubstitutionValidation:
         prompt = llm._read_files([f], root=tmp_path)
 
         # UTF-8 must succeed (our fix)
-        try:
-            prompt.encode("utf-8")
-        except UnicodeEncodeError as e:
-            raise AssertionError(
-                f"UTF-8 encode must succeed but failed: {e}"
-            ) from e
+        encoded_utf8 = prompt.encode("utf-8")
+        assert len(encoded_utf8) > 0
 
-        # cp1252 must fail (confirming these chars are the failing surface)
-        try:
+        # cp1252 must fail (confirming these chars hit the pre-fix failure surface)
+        with pytest.raises(UnicodeEncodeError):
             prompt.encode("cp1252")
-            # If it doesn't fail, test content doesn't cover the issue —
-            # fail loudly so the test author knows to update _UNICODE_CHARS.
-            raise AssertionError(
-                "Expected cp1252 encode to fail for chars → ✅ ≥, but it "
-                "succeeded. Update _UNICODE_CHARS to include cp1252-incompatible "
-                "characters."
-            )
-        except UnicodeEncodeError:
-            pass  # Expected — confirms these chars hit the pre-fix failure surface
 
     def test_subprocess_encoding_kwarg_in_extract_files_direct(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, unicode_subprocess_result
     ):
-        """End-to-end path: write unicode file → extract_files_direct → subprocess.
-
-        Subprocess must receive encoding='utf-8', not the locale default.
-        """
+        """Subprocess must receive UTF-8 encoding and preserve Unicode input."""
         f = tmp_path / "unicode_chunk.md"
         f.write_text(self._UNICODE_CHARS, encoding="utf-8")
 
-        _ENVELOPE_SIMPLE = {
-            "type": "result", "subtype": "success", "is_error": False,
-            "result": json.dumps({
-                "nodes": [{"id": "u_chunk", "label": "Unicode Chunk",
-                           "file_type": "document",
-                           "source_file": "unicode_chunk.md"}],
-                "edges": [], "hyperedges": [],
-                "input_tokens": 1, "output_tokens": 1,
-            }),
-            "stop_reason": "end_turn",
-            "usage": {
-                "input_tokens": 1, "output_tokens": 1,
-                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
-            },
-            "modelUsage": {
-                "claude-opus-4-7": {"inputTokens": 1, "outputTokens": 1},
-            },
-        }
-        completed = MagicMock(
-            returncode=0, stdout=json.dumps(_ENVELOPE_SIMPLE), stderr=""
+        monkeypatch.setattr(
+            llm, "_response_is_hollow", lambda raw, parsed: False
         )
-        monkeypatch.setattr(llm, "_response_is_hollow", lambda raw, parsed: False)
 
         with patch("shutil.which", return_value="/fake/bin/claude"), \
-             patch("subprocess.run", return_value=completed) as mock_run:
+             patch(
+                 "subprocess.run",
+                 return_value=unicode_subprocess_result,
+             ) as mock_run:
             result = llm.extract_files_direct(
-                files=[f], backend="claude-cli", root=tmp_path
+                files=[f],
+                backend="claude-cli",
+                root=tmp_path,
             )
 
         assert mock_run.called
+
         _args, kwargs = mock_run.call_args
         assert kwargs.get("encoding") == "utf-8", (
             "subprocess.run must be called with encoding='utf-8'; "
             f"got {kwargs.get('encoding')!r}"
         )
-        # Confirm the unicode content was in the input (not truncated/replaced)
+
         inp = kwargs.get("input", "")
         assert "→" in inp or "✅" in inp or "≥" in inp
         assert len(result["nodes"]) >= 1

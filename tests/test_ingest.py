@@ -96,8 +96,10 @@ def test_no_outcome_means_no_outcome_section(tmp_path):
 
 
 def test_invalid_outcome_rejected(tmp_path):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outcome must be one of") as exc_info:
         save_query_result("q", "a", tmp_path / "memory", outcome="great")
+
+    assert "got 'great'" in str(exc_info.value)
 
 
 def test_concurrent_saves_of_the_same_question_do_not_overwrite(tmp_path):
