@@ -31,10 +31,12 @@ from graphify.extractors.powershell import extract_powershell, extract_powershel
 from graphify.extractors.r import extract_r
 from graphify.extractors.razor import extract_razor
 from graphify.extractors.rust import extract_rust
+from graphify.extractors.scss import extract_scss
 from graphify.extractors.sln import extract_sln
 from graphify.extractors.solidity import extract_solidity
 from graphify.extractors.sql import extract_sql
 from graphify.extractors.terraform import extract_terraform
+from graphify.extractors.twig import extract_twig
 from graphify.extractors.verilog import extract_verilog
 from graphify.extractors.vbnet import extract_vbnet
 from graphify.extractors.zig import extract_zig
@@ -66,10 +68,12 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "r": extract_r,
     "razor": extract_razor,
     "rust": extract_rust,
+    "scss": extract_scss,
     "sln": extract_sln,
     "solidity": extract_solidity,
     "sql": extract_sql,
     "terraform": extract_terraform,
+    "twig": extract_twig,
     "verilog": extract_verilog,
     "vbnet": extract_vbnet,
     "zig": extract_zig,
