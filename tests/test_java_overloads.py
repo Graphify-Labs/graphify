@@ -151,3 +151,52 @@ def test_non_overloaded_ids_are_unchanged(tmp_path):
     r = _extract(tmp_path, {"Svc.java": _SVC})
     ids = {n["label"]: n["id"] for n in r["nodes"] if n["label"] == ".helperOne()"}
     assert ids[".helperOne()"].endswith("svc_helperone")
+
+
+_FACTORY = """class Product { void ship() {} }
+class Factory {
+  static Product make() { return null; }
+  static Product make(int n) { return null; }
+}
+"""
+
+_CHAIN_CALLER = """class Shop {
+  void one() { Factory.make(1).ship(); }
+  void none() { Factory.make().ship(); }
+}
+"""
+
+
+def test_chained_call_through_an_overloaded_method_keeps_its_edge(tmp_path):
+    """`Factory.make(1).ship()`: the intermediate `make` is picked by its own
+    argument count, so the chain still types `ship` to Product."""
+    r = _extract(tmp_path, {"Factory.java": _FACTORY, "Shop.java": _CHAIN_CALLER})
+    by_label = {n["label"]: n["id"] for n in r["nodes"] if n.get("source_file")}
+    calls = _calls(r)
+    assert (by_label[".one()"], by_label[".ship()"]) in calls
+    assert (by_label[".none()"], by_label[".ship()"]) in calls
+
+
+_RUNNERS = """class Runner {
+  void run() {}
+  void run(String s) {}
+  void run(int i) {}
+}
+"""
+
+_RUN_CALLER = """class Use {
+  void go(Runner r) { r.run("x"); }
+}
+"""
+
+
+def test_ambiguous_member_call_binds_to_the_first_declared_overload(tmp_path):
+    """`run(String)` and `run(int)` both fit one argument: the first declared
+    overload (`run()`) stands for the name, the policy the same-file walk and the
+    bare-name fallback use, not the first of those that fit."""
+    r = _extract(tmp_path, {"Runner.java": _RUNNERS, "Use.java": _RUN_CALLER})
+    runs = _methods(r, ".run()")
+    go = next(n["id"] for n in r["nodes"] if n["label"] == ".go()")
+    calls = _calls(r)
+    assert (go, runs["L2"]["id"]) in calls
+    assert (go, runs["L3"]["id"]) not in calls
