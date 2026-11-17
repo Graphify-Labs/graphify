@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.112 (unreleased)
 
+- Fix: **skill** `npx skills add` can see a skill named graphify again. The skills CLI requires a file named exactly `SKILL.md` (case-sensitive) with `name` and `description` frontmatter, and this repo only had the packaged `graphify/skill.md` after `skills/graphify/skill.md` was removed. A full skillgen render now also writes `skills/graphify/SKILL.md` and its `references/` sidecar from the same render as the packaged body, so `graphify install` still reads `graphify/skill.md`.
 - Docs: **python** the README, its translations, CONTRIBUTING, RELEASING, the bug-report template and the ruff/pyright targets now state Python 3.11 as the minimum, matching the floor that shipped in 0.9.111 (#5238, thanks @Deepanshu-Mehta; @Max17190 sent the same fix in #5237).
 - Docs: **links** the Always-on setup link in the README and all translations points straight at docs.graphify.com/open-source/vibe-coding instead of going through a redirect from the old guides/always-on path (#5261, thanks @SyedFahad7).
 

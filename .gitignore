@@ -17,12 +17,19 @@ graphify-out/
 .graphify_*.json
 .graphify_python
 .claude/
-skills/
+# Ignore the contents of any skills/ directory (install targets). The directory
+# itself stays visible so a specific child can be re-included: git will not
+# re-include a file whose parent directory is excluded.
+skills/*
+**/skills/*
 # The packaged skill bundles under graphify/skills/ are generated, committed
-# artifacts (rendered by tools/skillgen). Keep them tracked even though the
-# broad skills/ rule above ignores install-target skill dirs elsewhere.
-!graphify/skills/
+# artifacts (rendered by tools/skillgen).
 !graphify/skills/**
+# skills/graphify/SKILL.md is the skill the skills CLI discovers in this repo.
+# It is generated, not an install target. Un-ignore the directory first, then
+# its contents; a negated file rule cannot see inside an excluded directory.
+!/skills/graphify/
+!/skills/graphify/**
 # The skillgen core fragments are the human-edited source of the lean SKILL.md.
 # A global "core" ignore (for core dumps) would otherwise drop them.
 !tools/skillgen/fragments/core/
