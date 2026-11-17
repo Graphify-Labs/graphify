@@ -4854,6 +4854,8 @@ def _rewire_unique_stub_nodes(
             elif _is_top_level_function_definition(node):
                 func_by_label.setdefault(key, []).append(node)
             continue
+        if node.get("_cpp_std"):
+            continue  # the standard library's own type: never a project symbol (#5219)
         stubs.append(node)
 
     # Language families referencing each stub, for the function-merge guard (#1781):

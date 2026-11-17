@@ -2263,6 +2263,14 @@ def _cpp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     return frozenset(names)
 
 
+class _CppStdName(str):
+    """A type name that was written `std::`-qualified (`std::chrono::seconds` ->
+    ``seconds``). The reference keeps its tail as its label, but it names the
+    standard library, so ``ensure_named_node`` gives it a stub of its own that
+    the corpus-wide rewire never maps onto a project symbol (#5219)."""
+    __slots__ = ()
+
+
 def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]],
                            skip: frozenset[str] | None = None,
                            dialect_quals: frozenset[str] = frozenset()) -> None:
@@ -2289,6 +2297,31 @@ def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
         return
     if t == "qualified_identifier":
         name_node = node.child_by_field_name("name")
+        scope_node = node.child_by_field_name("scope")
+        if scope_node is not None and _read_text(scope_node, source) == "std":
+            # `std::chrono::seconds`, `std::vector<HttpClient>`: the name is the
+            # standard library's, never a project symbol; its template
+            # arguments are still the project's own types.
+            while name_node is not None and name_node.type == "qualified_identifier":
+                name_node = name_node.child_by_field_name("name")
+            if name_node is None:
+                return
+            role = "generic_arg" if generic else "type"
+            if name_node.type == "type_identifier":
+                text = _read_text(name_node, source)
+                if text and text not in dialect_quals:
+                    out.append((_CppStdName(text), role))
+            elif name_node.type == "template_type":
+                base = name_node.child_by_field_name("name")
+                text = _read_text(base, source) if base is not None else ""
+                if text and text not in dialect_quals:
+                    out.append((_CppStdName(text), role))
+                args_node = name_node.child_by_field_name("arguments")
+                if args_node is not None:
+                    for c in args_node.children:
+                        if c.is_named:
+                            _cpp_collect_type_refs(c, source, True, out, skip, dialect_quals)
+            return
         if name_node is not None:
             _cpp_collect_type_refs(name_node, source, generic, out, skip, dialect_quals)
         return
@@ -7627,6 +7660,24 @@ def _extract_generic(
         edges.append(edge)
 
     def ensure_named_node(name: str, line: int) -> str:
+        if isinstance(name, _CppStdName):
+            # A `std::`-qualified C++ type is the standard library's, not a name
+            # this file or the corpus declares: its own stub, which the rewire
+            # skips, so a project `seconds` never captures `std::chrono::seconds`
+            # (#5219). The label stays the tail.
+            std_nid = _make_id("std", str(name))
+            if std_nid not in seen_ids:
+                seen_ids.add(std_nid)
+                nodes.append({
+                    "id": std_nid,
+                    "label": str(name),
+                    "file_type": "code",
+                    "source_file": "",
+                    "source_location": "",
+                    "origin_file": str_path,
+                    "_cpp_std": True,
+                })
+            return std_nid
         declared = decl_registry.lookup(name)
         if declared is not None:
             return declared

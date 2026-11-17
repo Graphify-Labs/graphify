@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.112 (unreleased)
 
+- Fix: **cpp** a `std::`-qualified type (`std::chrono::seconds`, `std::vector<T>`) is no longer rewired onto a same-named project symbol: its reference keeps the tail as its label but gets a stub of its own that the corpus rewire skips, so the standard library's `seconds` is not captured by a `using seconds = ...` alias in another file. Template arguments of a std type are still references as before. Other qualifiers (`Clock::duration`) are unchanged (partly addresses #5219). The AST cache schema is bumped to 48; warm caches re-run C++ extraction.
 - Docs: **python** the README, its translations, CONTRIBUTING, RELEASING, the bug-report template and the ruff/pyright targets now state Python 3.11 as the minimum, matching the floor that shipped in 0.9.111 (#5238, thanks @Deepanshu-Mehta; @Max17190 sent the same fix in #5237).
 - Docs: **links** the Always-on setup link in the README and all translations points straight at docs.graphify.com/open-source/vibe-coding instead of going through a redirect from the old guides/always-on path (#5261, thanks @SyedFahad7).
 
