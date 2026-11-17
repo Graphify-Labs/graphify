@@ -1,0 +1,34 @@
+name: Workflow lint
+
+# actionlint on the triage workflows (pinned image so the gate is deterministic).
+# Scoped to the files this change adds so a pre-existing issue in an unrelated
+# workflow cannot block the change; widen the glob once the whole tree is clean.
+
+on:
+  push:
+    paths:
+      - ".github/workflows/issue-triage.yml"
+      - ".github/workflows/labels-sync.yml"
+      - ".github/workflows/workflow-lint.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/issue-triage.yml"
+      - ".github/workflows/labels-sync.yml"
+      - ".github/workflows/workflow-lint.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color \
+            .github/workflows/issue-triage.yml \
+            .github/workflows/labels-sync.yml \
+            .github/workflows/workflow-lint.yml
