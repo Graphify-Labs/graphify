@@ -228,6 +228,147 @@ def _resolve_pascal_callee_factory(
     return _resolve
 
 
+# tree-sitter-pascal 0.11.0 mis-lexes a string literal whose FIRST content
+# character is an escaped apostrophe -- `'''X'`, and the degenerate `''''`
+# (a literal apostrophe). The same escape in the middle (`'a''b'`) or at the
+# end (`'abc'''`) parses fine, so this is a lexer edge case, not missing
+# support for escapes. The grammar has no usable error recovery here: every
+# symbol from the offending literal to EOF is dropped, which on a Delphi
+# codebase that builds SQL by concatenation (`'where x='''+V+''' and'`)
+# routinely costs an entire unit.
+#
+# Same remedy as the C# verbatim-interpolated-string failure (#3376): mask
+# only the offending bytes, keep every byte offset identical, and discard the
+# rewrite unless it parses better. The mask is applied for PARSING only --
+# node text is still read from the untouched original source, so labels and
+# locations are byte-for-byte what the user wrote.
+def _pascal_parse_health(root) -> tuple[int, int]:
+    """Return ``(bytes inside ERROR nodes, -first error byte)``; lower is better.
+
+    Error COUNT is the wrong measure here: tree-sitter answers a failure in the
+    first declaration by wrapping the entire unit in one ERROR node, which by
+    count (1) would outrank a parse that recovered everything but a handful of
+    statements (68). Bytes swallowed by ERROR nodes tracks what the extractor
+    actually loses. Only the outermost ERROR is measured -- its children are
+    already inside it -- and the first error's position breaks ties, so a plain
+    ``<`` comparison means "parses better".
+    """
+    covered, first = 0, -1
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "ERROR" or node.is_missing:
+            covered += node.end_byte - node.start_byte
+            if first < 0 or node.start_byte < first:
+                first = node.start_byte
+            continue  # children are inside this span; do not double-count
+        stack.extend(node.children)
+    return (covered, 1) if covered == 0 else (covered, -first)
+
+
+def _normalize_pascal_escaped_string_literals(source: bytes) -> bytes | None:
+    """Blank the leading escaped apostrophe of Pascal string literals.
+
+    Returns ``None`` when the source holds no such literal. Each replacement is
+    the same byte length as what it replaces, so every downstream offset, line
+    and column is preserved.
+    """
+    out = bytearray(source)
+    i, n, changed = 0, len(source), False
+    while i < n:
+        byte = source[i:i + 1]
+        if byte == b"/" and source[i:i + 2] == b"//":
+            j = source.find(b"\n", i)
+            i = n if j < 0 else j + 1
+            continue
+        if byte == b"{":
+            j = source.find(b"}", i)
+            i = n if j < 0 else j + 1
+            continue
+        if byte == b"(" and source[i:i + 2] == b"(*":
+            j = source.find(b"*)", i)
+            i = n if j < 0 else j + 2
+            continue
+        if byte == b"'":
+            start = i
+            leading = source[i + 1:i + 3] == b"''"
+            i += 1
+            while i < n:
+                if source[i:i + 1] == b"'":
+                    if source[i + 1:i + 2] == b"'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                if source[i:i + 1] == b"\n":
+                    break
+                i += 1
+            # `i - start >= 4` keeps the empty literal `''` out of the rewrite.
+            if leading and i - start >= 4:
+                out[start + 1:start + 3] = b"xx"
+                changed = True
+            continue
+        i += 1
+    return bytes(out) if changed else None
+
+
+# A compiler directive between a routine header and its `begin` is rejected by
+# tree-sitter-pascal 0.11.0 -- even an empty `{$IFDEF X}{$ENDIF}` pair, while an
+# ordinary `{ comment }` in the same position parses fine, so the directive rule
+# simply is not allowed in the declaration-section position. Delphi code guards
+# a routine's `var` block this way routinely:
+#
+#     procedure TDM.CheckUserRights;
+#     {$IFDEF R2platnik}
+#     var
+#       i: integer;
+#     {$ENDIF}
+#     begin
+#
+# As with the string-literal mask, the whole unit is lost from that point on.
+# Blanking the `$` turns the directive into an ordinary comment the grammar
+# already accepts, at identical byte length. Directives do not contribute nodes
+# or edges to the Pascal graph, so nothing is lost by hiding them from the
+# parser -- and this runs only on the retry path, after the unmasked parse has
+# already failed.
+def _normalize_pascal_compiler_directives(source: bytes) -> bytes | None:
+    """Disguise ``{$...}`` compiler directives as ordinary ``{...}`` comments."""
+    out = bytearray(source)
+    i, n, changed = 0, len(source), False
+    while i < n:
+        byte = source[i:i + 1]
+        if byte == b"/" and source[i:i + 2] == b"//":
+            j = source.find(b"\n", i)
+            i = n if j < 0 else j + 1
+            continue
+        if byte == b"'":
+            i += 1
+            while i < n:
+                if source[i:i + 1] == b"'":
+                    if source[i + 1:i + 2] == b"'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                if source[i:i + 1] == b"\n":
+                    break
+                i += 1
+            continue
+        if byte == b"{":
+            j = source.find(b"}", i)
+            if source[i + 1:i + 2] == b"$":
+                out[i + 1:i + 2] = b" "
+                changed = True
+            i = n if j < 0 else j + 1
+            continue
+        if byte == b"(" and source[i:i + 2] == b"(*":
+            j = source.find(b"*)", i)
+            i = n if j < 0 else j + 2
+            continue
+        i += 1
+    return bytes(out) if changed else None
+
+
 def _extract_pascal_regex(path: Path) -> dict:
     """Regex fallback for Pascal/Delphi extraction when tree-sitter-pascal
     is unavailable. Produces the same node/edge schema as the tree-sitter pass.
@@ -460,6 +601,16 @@ def extract_pascal(path: Path) -> dict:
         source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
+        if root.has_error:
+            masked = _normalize_pascal_escaped_string_literals(source) or source
+            masked = _normalize_pascal_compiler_directives(masked) or masked
+            if masked != source:
+                retry = parser.parse(masked)
+                if _pascal_parse_health(retry.root_node) < _pascal_parse_health(root):
+                    # Parse the masked bytes but keep reading node text
+                    # from the original `source`: offsets are identical
+                    # and only string-literal interiors differ.
+                    tree, root = retry, retry.root_node
     except Exception:
         return _extract_pascal_regex(path)
 
