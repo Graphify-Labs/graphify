@@ -291,12 +291,41 @@ def _overridden_members(graph: nx.DiGraph, node: str, cache: dict[str, list[str]
     found: list[str] = []
     for owner in owners:
         for base in _supertypes(graph, owner, cache):
-            for _s, member, data in graph.out_edges(base, data=True):
-                member = str(member)
-                if (str(data.get("relation", "")) == "method" and member != node
-                        and graph.nodes[member].get("label") == label):
-                    found.append(member)
+            same_name = [
+                str(member) for _s, member, data in graph.out_edges(base, data=True)
+                if str(data.get("relation", "")) == "method" and str(member) != node
+                and graph.nodes[member].get("label") == label
+            ]
+            found.extend(_overload_compatible(graph, node, same_name))
     return found
+
+
+def _overload_compatible(graph: nx.DiGraph, node: str, members: list[str]) -> list[str]:
+    """The ``members`` of one supertype that ``node`` can override (#5251).
+
+    Overloads of a name are separate nodes with one label, so the label alone
+    would tie ``run(int)`` to a supertype's ``run()``. An override has the same
+    parameter count, and the same erased signature when the supertype declares
+    that exact one; a differing signature with the same count stays, because a
+    generic supertype (`save(T)` overridden by `save(String)`) erases
+    differently. A node without recorded arity (other languages) keeps the
+    label-only match.
+    """
+    meta = graph.nodes[node].get("metadata") or {}
+    arity = meta.get("arity")
+    if not isinstance(arity, int) or meta.get("variadic"):
+        return members
+    same_count = []
+    for m in members:
+        other = graph.nodes[m].get("metadata") or {}
+        other_arity = other.get("arity")
+        if other_arity is None or other.get("variadic") or other_arity == arity:
+            same_count.append(m)
+    signature = meta.get("signature")
+    exact = [m for m in same_count
+             if signature is not None
+             and (graph.nodes[m].get("metadata") or {}).get("signature") == signature]
+    return exact or same_count
 
 
 def affected_nodes(

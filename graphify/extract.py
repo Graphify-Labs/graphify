@@ -7923,8 +7923,9 @@ def _resolve_java_member_calls(
         if len(fits) == 1:
             return fits[0]
         # Several fit (`run(String)` / `run(int)`) or none does: the first
-        # declared stands for the name, as it did when overloads were one node.
-        return min(fits or hits, key=lambda h: (_line(h), h))
+        # declared overload stands for the name, as it did when overloads were
+        # one node, and as the same-file walk and the bare-name fallback pick.
+        return min(hits, key=lambda h: (_line(h), h))
 
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
     # Inherited fields (#3151): a field declared on a superclass - possibly in
@@ -8144,7 +8145,10 @@ def _resolve_java_member_calls(
         if kind == "call":
             owner = (enclosing_type.get(caller) if chain[2] is None
                      else _chain_type(chain[2], caller, depth + 1))
-            method_nid = _method_on_type_or_bases(owner, key(chain[1])) if owner else None
+            method_nid = (
+                _method_on_type_or_bases(owner, key(chain[1]), chain[3] if len(chain) > 3 else None)
+                if owner else None
+            )
             returned = node_by_id.get(method_nid or "", {}).get("_java_ret")
             return _type_named(returned, method_nid) if returned else None
         if kind == "field":

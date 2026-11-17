@@ -171,3 +171,40 @@ def test_python_base_method_caller_end_to_end(tmp_path: Path):
     })
     hits = _hits(g, _node(g, ".run()", "impl_impl_run"))
     assert _node(g, ".go()", "base_base_go") in hits
+
+
+def test_java_overloads_are_not_overrides_of_a_different_arity(tmp_path: Path):
+    """Overloads share a label, but `Impl.run(int)` overrides only `Api.run(int)`:
+    a caller of the zero-argument `Api.run()` is not affected (#5251)."""
+    g = _extract_graph(tmp_path, {
+        "Api.java": "interface Api { void run(); void run(int n); }\n",
+        "Impl.java": "class Impl implements Api { public void run() {} public void run(int n) {} }\n",
+        "Zero.java": "class Zero { void a(Api x) { x.run(); } }\n",
+        "One.java": "class One { void b(Api x) { x.run(1); } }\n",
+    })
+    impl_runs = sorted(
+        (n for n, a in g.nodes(data=True)
+         if a.get("label") == ".run()" and "impl" in n),
+        key=lambda n: g.nodes[n].get("metadata", {}).get("arity", 0),
+    )
+    run_int = impl_runs[-1]
+    assert g.nodes[run_int]["metadata"]["arity"] == 1
+    hits = _hits(g, run_int)
+    assert _node(g, ".b()", "one_b") in hits
+    assert _node(g, ".a()", "zero_a") not in hits
+    # the zero-argument override is reached by the zero-argument callers only
+    hits_zero = _hits(g, impl_runs[0])
+    assert _node(g, ".a()", "zero_a") in hits_zero
+    assert _node(g, ".b()", "one_b") not in hits_zero
+
+
+def test_a_generic_supertype_override_keeps_its_caller(tmp_path: Path):
+    """`save(T)` erases to `T`, its override `save(String)` to `String`: same
+    arity, so the override is still found and the caller is still affected."""
+    g = _extract_graph(tmp_path, {
+        "Repo.java": "interface Repo<T> { void save(T t); }\n",
+        "Names.java": "class Names implements Repo<String> { public void save(String s) {} }\n",
+        "Use.java": "class Use { void go(Repo<String> r) { r.save(\"x\"); } }\n",
+    })
+    hits = _hits(g, _node(g, ".save()", "names_save"))
+    assert _node(g, ".go()", "use_go") in hits

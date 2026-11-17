@@ -759,7 +759,7 @@ def _java_receiver_type_name(type_node, source: bytes) -> str | None:
 def _java_receiver_chain(node, source: bytes, depth: int = 0) -> list | None:
     """Describe a Java receiver that is itself an expression, for the resolver
     to type from declared return types: `new T()` / `(T) x` -> ["type", "T"],
-    `f()` -> ["call", "f", None], `x.f()` -> ["call", "f", <x>],
+    `f()` -> ["call", "f", None, argc], `x.f()` -> ["call", "f", <x>, argc],
     `T.FIELD` -> ["field", "FIELD", <T>], and the leaves
     ["this"], ["super"], ["name", "x"]. None when any part is something else."""
     if node is None or depth > 16:
@@ -797,7 +797,9 @@ def _java_receiver_chain(node, source: bytes, depth: int = 0) -> list | None:
             inner = _java_receiver_chain(receiver, source, depth + 1)
             if inner is None:
                 return None
-        return ["call", _read_text(name_node, source), inner]
+        # The argument count tells overloads apart when the resolver types
+        # the next step from this call's declared return type (#5251).
+        return ["call", _read_text(name_node, source), inner, _java_argc(node)]
     return None
 
 
@@ -819,7 +821,7 @@ def _java_type_chain_leaf(
         if chain[2] is None:
             return chain
         inner = _java_type_chain_leaf(chain[2], receiver_types, bound, field_names)
-        return ["call", chain[1], inner] if inner else None
+        return ["call", chain[1], inner, *chain[3:]] if inner else None
     if chain[0] == "field":
         owner = chain[2]
         if not owner or owner[0] != "name":
