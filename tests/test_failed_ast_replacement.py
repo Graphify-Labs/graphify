@@ -170,3 +170,107 @@ def test_cli_retains_failed_records_updates_healthy_source_and_retries(
     assert "added()" in labels and "leaf()" not in labels
     manifest = json.loads((root / "graphify-out/manifest.json").read_text())
     assert manifest["bad.py"]["ast_hash"]
+
+
+@pytest.mark.parametrize("raw", [False, True])
+def test_never_succeeded_failed_source_does_not_arm_the_shrink_guard(
+    tmp_path, monkeypatch, capsys, raw,
+):
+    """#5245: a source that has NEVER once produced a node (the shape of a
+    missing optional extra, which retrying can never heal) has no saved AST
+    records for the #479 shrink guard to protect. Its permanent failure alone
+    must not force the run incomplete and refuse an otherwise complete write
+    that is only smaller because an unrelated file was genuinely deleted."""
+    root = tmp_path / "project"
+    root.mkdir()
+    good = root / "good.py"
+    other = root / "other.py"
+    broken = root / "broken.py"
+    good.write_text("def alpha(): return beta()\n\ndef beta(): return 1\n")
+    other.write_text(
+        "class Gamma:\n    def one(self): return 1\n    def two(self): return 2\n\n"
+        "def delta(): return Gamma().one()\n"
+    )
+    broken.write_text("def never_parses(): return 1\n")
+
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "1")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = ["graphify", "extract", str(root), "--code-only"]
+    if raw:
+        argv.append("--no-cluster")
+
+    original = extractmod._DISPATCH[".py"]
+
+    def extractor(path):
+        if path == broken:
+            return {"nodes": [], "edges": [], "error": "simulated: optional extra missing"}
+        return original(path)
+
+    monkeypatch.setitem(extractmod._DISPATCH, ".py", extractor)
+
+    def run():
+        monkeypatch.setattr(mainmod.sys, "argv", argv)
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            return exc.code
+        return 0
+
+    graph_path = root / "graphify-out/graph.json"
+    assert run() == 0
+    before = json.loads(graph_path.read_text())
+    assert len(before["nodes"]) > 0
+    assert not any(n.get("source_file") == "broken.py" for n in before["nodes"])
+    capsys.readouterr()
+
+    other.unlink()
+    assert run() == 0
+    output = capsys.readouterr()
+    assert "AST extraction incomplete" in output.err
+    after = json.loads(graph_path.read_text())
+    assert not any(n.get("source_file") == "other.py" for n in after["nodes"])
+    assert len(after["nodes"]) < len(before["nodes"])
+
+
+def test_a_failed_source_with_saved_records_still_arms_the_shrink_guard(tmp_path, monkeypatch):
+    """Control: #5245's relaxation must stay narrow. A failed source that DID
+    produce nodes before (a parser regression, not a permanently missing
+    extra) still has saved records to protect, so the guard still refuses an
+    unrelated shrink exactly as before."""
+    root = tmp_path / "project"
+    root.mkdir()
+    good = root / "good.py"
+    regressed = root / "regressed.py"
+    good.write_text("def alpha(): return beta()\n\ndef beta(): return 1\n")
+    regressed.write_text("def one(): return 1\n\ndef two(): return 2\n")
+
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "1")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = ["graphify", "extract", str(root), "--code-only"]
+
+    def run():
+        monkeypatch.setattr(mainmod.sys, "argv", argv)
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            return exc.code
+        return 0
+
+    graph_path = root / "graphify-out/graph.json"
+    assert run() == 0
+    before = json.loads(graph_path.read_text())
+    assert any(n.get("source_file") == "regressed.py" for n in before["nodes"])
+
+    original = extractmod._DISPATCH[".py"]
+
+    def extractor(path):
+        if path == regressed:
+            return {"nodes": [], "edges": [], "error": "simulated parser regression"}
+        return original(path)
+
+    monkeypatch.setitem(extractmod._DISPATCH, ".py", extractor)
+    good.write_text("def alpha(): return 1\n")  # shrink: beta() is gone too
+    regressed.write_text("def one(): return 1\n\ndef two(): return 3\n")  # touched, so it re-dispatches
+    assert run() == 1
+    after = json.loads(graph_path.read_text())
+    assert after == before
