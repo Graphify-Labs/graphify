@@ -3786,7 +3786,13 @@ def _cpp_source_key(source_file: str | Path, root: Path) -> str:
     if not source_file:
         return ""
     try:
-        return os.path.relpath((root / source_file).resolve(), root.resolve()).replace("\\", "/")
+        path = (root / source_file).resolve()
+        try:
+            return os.path.relpath(path, root.resolve()).replace("\\", "/")
+        except ValueError:
+            # No relative path to a root on another Windows drive; the absolute
+            # path is still a distinct identity for the file.
+            return path.as_posix()
     except (OSError, RuntimeError, ValueError):
         return ""
 
