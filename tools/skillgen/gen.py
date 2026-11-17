@@ -67,6 +67,8 @@ def _v8_baseline_ref(platform_key: str) -> str:
         # amp's modulo the install/uninstall command wording (prose, not headings),
         # so amp's v8 body is the correct per-host coverage baseline.
         return f"{_V8_BASELINE_SHA}:graphify/skill-amp.md"
+    if platform_key in ("zcode", "dsh"):
+        return f"{_V8_BASELINE_SHA}:graphify/skill-claw.md"
     return f"{_V8_BASELINE_SHA}:graphify/skill-{platform_key}.md"
 
 # Immutable baseline for --always-on-roundtrip. The six always-on instruction
