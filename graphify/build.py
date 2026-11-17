@@ -476,7 +476,7 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
                 continue
             norm = _normalize_id(endpoint)
             canonical = norm_to_id.get(norm)
-            if canonical is None:
+            if canonical is None and not (primary == "target" and _is_std_angle_include(e)):
                 alias_target = alias_to_id.get(norm)
                 if alias_target is not None and _alias_lang_compatible(
                     e.get("source_file"),
@@ -557,6 +557,23 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".cxx": "c", ".hh": "c", ".hxx": "c",
     ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
     ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
+    # Everything else extract._LANG_FAMILY_BY_EXT knows (#5247): an extension
+    # missing here resolves to no family, so the guard silently never fires
+    # (e.g. a Python `from app import db` binding to a Dart `lib/app.dart`).
+    # tests/test_build.py checks that every extract extension stays covered.
+    ".vue": "js", ".svelte": "js", ".astro": "js", ".ejs": "js",
+    ".kts": "jvm", ".gradle": "jvm",
+    ".vb": "cs", ".razor": "cs", ".cshtml": "cs", ".xaml": "cs",
+    ".phtml": "php", ".php3": "php", ".php4": "php", ".php5": "php",
+    ".php7": "php", ".phps": "php",
+    ".luau": "lua",
+    ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".r": "r", ".sol": "solidity",
+    ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
+    ".zig": "zig", ".ex": "elixir", ".exs": "elixir", ".jl": "julia",
+    ".dart": "dart", ".sql": "sql",
+    ".sh": "shell", ".bash": "shell",
+    ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
 
 
@@ -887,6 +904,41 @@ def _abs_identity(p: str | None, root: str | None = None) -> str | None:
         return pp.as_posix()
 
 
+def _prune_identity(p: str | None, root: str | None = None) -> str | None:
+    """Match corpus paths without resolving aliases *inside* the scan root.
+
+    A scan-root symlink is an alternate spelling of the same corpus. A source
+    symlink within it is a distinct corpus entry and must not delete its target
+    when excluded. Resolve only the root prefix, retaining the lexical suffix.
+    """
+    if not p:
+        return None
+    q = p.replace("\\", "/")
+    path = Path(q)
+    if root:
+        base = Path(root).resolve()
+        if not _is_abs(q):
+            path = base / path
+        else:
+            # Prefer lexical containment; resolving the full path here would
+            # collapse an in-corpus alias onto its separately indexed target.
+            try:
+                suffix = path.relative_to(base)
+            except ValueError:
+                # An absolute source may use a symlinked scan-root prefix.
+                # Resolve ancestors, never the source entry itself.
+                for parent in path.parents:
+                    try:
+                        if parent.resolve() == base:
+                            path = base / path.relative_to(parent)
+                            break
+                    except OSError:
+                        continue
+            else:
+                path = base / suffix
+    return os.path.normpath(str(path)).replace("\\", "/")
+
+
 def _is_file_node_label(label: "str | None", source_file: "str | None") -> bool:
     """Whether *label* is a file node's label for *source_file* — the bare
     basename, OR a directory-qualified suffix produced by the disambiguation pass
@@ -1058,8 +1110,8 @@ def _build_prune_sets(
     """Prune match sets for build_merge / merge_raw_extraction.
 
     Returns ``(prune_set, prune_abs)`` mapping every match form of each prune
-    entry — the raw string, the :func:`_norm_source_file` relative form, and the
-    :func:`_abs_identity` absolute form — back to the ORIGINAL entry, so callers
+    entry — the raw string and the :func:`_prune_identity` absolute form —
+    back to the ORIGINAL entry, so callers
     can report which entries actually matched something (#2446). Membership
     tests read like the old set-based code (``sf in prune_set``).
 
@@ -1073,15 +1125,12 @@ def _build_prune_sets(
         if not p:
             continue
         prune_set.setdefault(p, p)
-        norm = _norm_source_file(p, eff_root)
-        if norm:
-            prune_set.setdefault(norm, p)
-        a = _abs_identity(p, eff_root)
+        a = _prune_identity(p, eff_root)
         if a:
             prune_abs.setdefault(a, p)
     for s in new_sources:
         prune_set.pop(s, None)
-        a = _abs_identity(s, eff_root)
+        a = _prune_identity(s, eff_root)
         if a:
             prune_abs.pop(a, None)
     return prune_set, prune_abs
@@ -1322,6 +1371,24 @@ def _alias_index(nodes: "Iterable[tuple[str, dict]]") -> dict[str, str]:
     }
 
 
+def _is_std_angle_include(edge: dict) -> bool:
+    """True for an include edge written as `<name>` where name is a C/C++
+    standard header (`<functional>`, `<stdio.h>`), #5218.
+
+    Such an edge's bare-stem target (`functional`) must stay an external stub:
+    the alias index would otherwise bind it to any unique same-named project
+    header (`libc/include/libc/functional.h`), the C/C++ counterpart of the
+    Python stdlib guard in :func:`_alias_index` (#4261).
+    """
+    from graphify.extractors.resolution import C_STANDARD_INCLUDE_NAMES
+
+    md = edge.get("metadata")
+    if not isinstance(md, dict) or md.get("include_kind") != "angle":
+        return False
+    raw = md.get("raw_include")
+    return isinstance(raw, str) and raw.strip() in C_STANDARD_INCLUDE_NAMES
+
+
 def _alias_lang_compatible(edge_source_file: object, alias_source_file: object) -> bool:
     """True unless the edge's own file and the alias target's file are both in
     a KNOWN, DIFFERENT language family (#4941).
@@ -1547,7 +1614,9 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     splitting the file's edges across two disconnected nodes. Canonicalize to the
     semantic ``_doc`` node (it carries the richer references/hyperedges). Gated to
     ``file_type == "document"`` on BOTH twins with an identical ``source_file``,
-    so an unrelated code symbol ``foo`` and ``foo_doc`` never merge.
+    so an unrelated code symbol ``foo`` and ``foo_doc`` never merge. The bare
+    record must be a page/file node; an AST record or a heading at the `_doc`
+    ID is never a semantic twin. Legacy unmarked file twins remain supported.
     """
     by_id: dict[str, dict] = {}
     for n in nodes:
@@ -1564,6 +1633,14 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
         if not sf or bare.get("source_file") != sf:
             continue
         if node.get("file_type") != "document" or bare.get("file_type") != "document":
+            continue
+        if node.get("node_kind") == "heading" or node.get("_origin") == "ast":
+            continue
+        if bare.get("node_kind") == "heading":
+            continue
+        if bare.get("node_kind") != "page" and not _is_file_node_label(
+            bare.get("label"), sf
+        ):
             continue
         remap[nid[:-4]] = nid
     return remap
@@ -1712,6 +1789,15 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # touched it last (#1799).
     _doc_remap = _doc_twin_remap(extraction.get("nodes", []))
     if _doc_remap:
+        # Preserve structural metadata when the semantic document wins. Keep
+        # its own ID, label, location and tier: copying AST provenance would
+        # make an AST-only update delete the semantic layer.
+        _doc_nodes = {str(n["id"]): n for n in extraction.get("nodes", [])
+                      if isinstance(n, dict) and n.get("id")}
+        for bare_id, doc_id in _doc_remap.items():
+            for key, value in _doc_nodes[bare_id].items():
+                if key not in {"id", "label", "source_location", "_origin"}:
+                    _doc_nodes[doc_id].setdefault(key, value)
         extraction["nodes"] = [
             n for n in extraction.get("nodes", [])
             if not (isinstance(n, dict) and n.get("id") in _doc_remap)
@@ -1982,11 +2068,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # normalized-id and ghost-remap entries norm_to_id already carries.
     alias_to_id = _alias_index((nid, G.nodes[nid]) for nid in node_set)
 
-    def _resolve_endpoint(raw_id: str, edge_source_file: object) -> str:
+    def _resolve_endpoint(raw_id: str, edge_source_file: object, allow_alias: bool = True) -> str:
         norm = _normalize_id(raw_id)
         resolved = norm_to_id.get(norm)
         if resolved is not None:
             return resolved
+        if not allow_alias:
+            return raw_id
         alias_target = alias_to_id.get(norm)
         if alias_target is not None and _alias_lang_compatible(
             edge_source_file, G.nodes[alias_target].get("source_file")
@@ -2031,7 +2119,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if src not in node_set:
             src = _resolve_endpoint(src, edge.get("source_file"))
         if tgt not in node_set:
-            tgt = _resolve_endpoint(tgt, edge.get("source_file"))
+            tgt = _resolve_endpoint(
+                tgt, edge.get("source_file"), allow_alias=not _is_std_angle_include(edge),
+            )
         if src not in node_set or tgt not in node_set:
             # An import/re-export whose target is not a declared node points at
             # an external module (stdlib / third-party / another repo). Mint a
@@ -2700,10 +2790,7 @@ def merge_raw_extraction(
             return False
         if sf in prune_set:
             return True
-        norm = _norm_source_file(sf, _prune_root)
-        if norm and norm in prune_set:
-            return True
-        a = _abs_identity(sf, _prune_root)
+        a = _prune_identity(sf, _prune_root)
         return bool(a) and a in prune_abs
 
     # #2446: when NONE of the prune entries match anything stored, the guessed
@@ -2952,19 +3039,15 @@ def build_merge(
 
     def _prune_match(sf: "str | None") -> bool:
         # Match a node/edge/hyperedge source_file against the prune set in a
-        # form-insensitive way: exact string, normalised-relative, then the
-        # absolute-identity fallback for the third-form case (#2012). Records
+        # form-insensitive way: exact string, then corpus-path identity for
+        # alternate root/absolute spellings (#2012). Records
         # WHICH prune entry matched, so the prune report can count only the
         # entries that actually hit something (#2446).
         if not sf:
             return False
         hit = prune_set.get(sf)
         if hit is None:
-            norm = _norm_source_file(sf, _prune_root)
-            if norm:
-                hit = prune_set.get(norm)
-        if hit is None:
-            a = _abs_identity(sf, _prune_root)
+            a = _prune_identity(sf, _prune_root)
             if a:
                 hit = prune_abs.get(a)
         if hit is None:

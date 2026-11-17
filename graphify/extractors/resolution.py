@@ -3156,6 +3156,43 @@ _PYTHON_STDLIB_MODULE_NAMES = frozenset({
 })
 
 
+# C and C++ standard library header names as written in an angle include
+# (`<functional>`, `<stdio.h>`, `<cstdio>`). An unresolved angle include of one
+# of these must not bind to a same-named project header through the bare-stem
+# alias index, mirroring _PYTHON_STDLIB_MODULE_NAMES for `import logging`
+# (#4261, #5218).
+_C_STD_HEADERS = frozenset({
+    "assert.h", "complex.h", "ctype.h", "errno.h", "fenv.h", "float.h",
+    "inttypes.h", "iso646.h", "limits.h", "locale.h", "math.h", "setjmp.h",
+    "signal.h", "stdalign.h", "stdarg.h", "stdatomic.h", "stdbit.h", "stdbool.h",
+    "stdckdint.h", "stddef.h", "stdint.h", "stdio.h", "stdlib.h", "stdnoreturn.h",
+    "string.h", "tgmath.h", "threads.h", "time.h", "uchar.h", "wchar.h", "wctype.h",
+})
+_CPP_STD_HEADERS = frozenset({
+    "algorithm", "any", "array", "atomic", "barrier", "bit", "bitset", "charconv",
+    "chrono", "codecvt", "compare", "complex", "concepts", "condition_variable",
+    "coroutine", "debugging", "deque", "exception", "execution", "expected",
+    "filesystem", "flat_map", "flat_set", "format", "forward_list", "fstream",
+    "functional", "future", "generator", "hazard_pointer", "initializer_list",
+    "inplace_vector", "iomanip", "ios", "iosfwd", "iostream", "istream", "iterator",
+    "latch", "limits", "linalg", "list", "locale", "map", "mdspan", "memory",
+    "memory_resource", "mutex", "new", "numbers", "numeric", "optional", "ostream",
+    "print", "queue", "random", "ranges", "ratio", "rcu", "regex", "scoped_allocator",
+    "semaphore", "set", "shared_mutex", "simd", "source_location", "span",
+    "spanstream", "sstream", "stack", "stacktrace", "stdexcept", "stdfloat",
+    "stop_token", "streambuf", "string", "string_view", "strstream", "syncstream",
+    "system_error", "text_encoding", "thread", "tuple", "type_traits", "typeindex",
+    "typeinfo", "unordered_map", "unordered_set", "utility", "valarray", "variant",
+    "vector", "version",
+    # <cxxx> forms of the C headers.
+    "cassert", "ccomplex", "cctype", "cerrno", "cfenv", "cfloat", "cinttypes",
+    "ciso646", "climits", "clocale", "cmath", "csetjmp", "csignal", "cstdalign",
+    "cstdarg", "cstdbool", "cstddef", "cstdint", "cstdio", "cstdlib", "cstring",
+    "ctgmath", "ctime", "cuchar", "cwchar", "cwctype",
+})
+C_STANDARD_INCLUDE_NAMES = _C_STD_HEADERS | _CPP_STD_HEADERS
+
+
 def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
     if level > 0:
         base = current_path.parent

@@ -53,6 +53,16 @@ result = extract(paths, root=Path(".").resolve())   # pass root explicitly
 
 Always pass `root`. Node ids and `source_file` values are derived relative to it; when it is omitted, `extract()` infers one from the paths you passed, which is the common parent of *that list* rather than your project root. A single-file call therefore anchors to that file's own directory, and ids can end up carrying path segments from the machine they were extracted on.
 
+Document twin reconciliation may fold a Markdown page/file node into its semantic
+`_doc` twin, carrying missing page metadata forward. A `_doc` suffix alone does
+not identify a twin: real headings and explicitly AST-origin records stay
+distinct, and the semantic survivor keeps its own provenance.
+
+Deletion/exclusion pruning matches corpus paths, not physical file targets.
+Absolute and relative spellings and symlinked scan roots identify the same
+corpus entry; distinct symlink aliases inside that root remain separate entries.
+Excluding one alias must preserve any still-included target or sibling alias.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions

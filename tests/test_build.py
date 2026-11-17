@@ -1687,6 +1687,53 @@ def test_cross_language_imports_references_are_dropped():
     assert G.has_edge("src_time_ts", "src_util_ts"), "same-family (TS->TS) import must survive"
 
 
+def test_edge_lang_family_mirrors_lang_family_by_ext():
+    """#5247: build's phantom-edge guard table must not drift from
+    extract._LANG_FAMILY_BY_EXT. An extension missing from _EDGE_LANG_FAMILY has
+    no family, so a cross-language edge from or to it is never dropped. The two
+    tables use different family names, so compare the grouping, not the names.
+
+    Note: this pins build to _LANG_FAMILY_BY_EXT, not to the full parser
+    registry. Languages dispatched by extract but absent from _LANG_FAMILY_BY_EXT
+    (Fortran, OCaml, Lisp, Verilog, Pascal, Terraform, Apex, ...) are still
+    unguarded; closing that is a separate follow-up on _LANG_FAMILY_BY_EXT."""
+    from graphify.build import _EDGE_LANG_FAMILY
+    from graphify.extract import _LANG_FAMILY_BY_EXT
+
+    missing = sorted(set(_LANG_FAMILY_BY_EXT) - set(_EDGE_LANG_FAMILY))
+    assert missing == [], f"extensions unguarded in build._EDGE_LANG_FAMILY: {missing}"
+    # Every build family must sit inside a single extract family, so the guard
+    # never drops an edge that call resolution treats as same-language. (Build
+    # is deliberately stricter for Swift vs C/ObjC, which this allows.)
+    for ext_a, fam_a in _EDGE_LANG_FAMILY.items():
+        for ext_b, fam_b in _EDGE_LANG_FAMILY.items():
+            if fam_a == fam_b and ext_a in _LANG_FAMILY_BY_EXT and ext_b in _LANG_FAMILY_BY_EXT:
+                assert _LANG_FAMILY_BY_EXT[ext_a] == _LANG_FAMILY_BY_EXT[ext_b], (ext_a, ext_b)
+
+
+def test_cross_language_import_into_dart_is_dropped():
+    """#5247: a Python `from app import db` must not bind to `lib/app.dart`."""
+    ext = {
+        "nodes": [
+            {"id": "app_controller", "label": "controller.py", "file_type": "code",
+             "source_file": "app/controller.py", "source_location": "L1", "_origin": "ast"},
+            {"id": "lib_app", "label": "app.dart", "file_type": "code",
+             "source_file": "lib/app.dart", "source_location": "L1", "_origin": "ast"},
+            {"id": "lib_main", "label": "main.dart", "file_type": "code",
+             "source_file": "lib/main.dart", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "app_controller", "target": "lib_app", "relation": "imports_from",
+             "confidence": "EXTRACTED", "source_file": "app/controller.py", "weight": 1.0},
+            {"source": "lib_main", "target": "lib_app", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "lib/main.dart", "weight": 1.0},
+        ],
+    }
+    G = build_from_json(ext, directed=False)
+    assert not G.has_edge("app_controller", "lib_app"), "py -> dart import must be dropped"
+    assert G.has_edge("lib_main", "lib_app"), "dart -> dart import must survive"
+
+
 def test_cross_family_reference_to_unknown_ext_is_kept():
     """The #1749 guard only drops when BOTH endpoints are known code languages,
     so a reference from a config/manifest (unknown ext) to a code file is kept."""
