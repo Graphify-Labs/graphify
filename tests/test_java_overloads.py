@@ -200,3 +200,60 @@ def test_ambiguous_member_call_binds_to_the_first_declared_overload(tmp_path):
     calls = _calls(r)
     assert (go, runs["L2"]["id"]) in calls
     assert (go, runs["L3"]["id"]) not in calls
+
+
+def test_overloads_with_differently_bounded_type_variables_are_distinct(tmp_path):
+    """`<T extends Number> run(T)` and `<T extends CharSequence> run(T)` erase to
+    `Number` and `CharSequence`, so they are two overloads, each owning its body."""
+    src = """class G {
+  <T extends Number> void run(T x) { a(); }
+  <T extends CharSequence> void run(T x) { b(); }
+  void a() {}
+  void b() {}
+}
+"""
+    r = _extract(tmp_path, {"G.java": src})
+    runs = _methods(r, ".run()")
+    assert sorted(runs) == ["L2", "L3"]
+    assert runs["L2"]["metadata"]["signature"] == "Number"
+    assert runs["L3"]["metadata"]["signature"] == "CharSequence"
+    by_label = {n["label"]: n["id"] for n in r["nodes"] if n.get("source_file")}
+    calls = _calls(r)
+    assert (runs["L2"]["id"], by_label[".a()"]) in calls
+    assert (runs["L3"]["id"], by_label[".b()"]) in calls
+
+
+def test_type_variable_erasure_rules(tmp_path):
+    src = """class Box<B extends Number> {
+  <T extends Number & Comparable<T>> void m(T x, B b, T[] ys, T... zs) {}
+  <U> void f(U u) {}
+  <A, C extends A> void g(C c) {}
+}
+"""
+    r = _extract(tmp_path, {"Box.java": src})
+    sigs = {n["label"] + n["source_location"]: n["metadata"]["signature"]
+            for n in r["nodes"] if n.get("source_file") and "signature" in (n.get("metadata") or {})}
+    assert sigs[".m()L2"] == "Number,Number,Number[],Number..."
+    assert sigs[".f()L3"] == "Object"      # no bound -> Object
+    assert sigs[".g()L4"] == "Object"      # C extends A, A unbounded
+
+
+def test_bare_kotlin_call_to_an_overloaded_java_method_keeps_its_edge(tmp_path):
+    """`run("x")` inside a Kotlin subclass of a Java class: the call has no
+    argument count, so the first declared overload stands for the name."""
+    base = """package p;
+public class Base {
+  public void run(String s) {}
+  public void run(int a, int b) {}
+}
+"""
+    sub = """package q
+import p.Base
+class Sub : Base() {
+  fun go() { run("x") }
+}
+"""
+    r = _extract(tmp_path, {"p/Base.java": base, "q/Sub.kt": sub})
+    runs = _methods(r, ".run()")
+    go = next(n["id"] for n in r["nodes"] if n["label"] == ".go()")
+    assert (go, runs["L3"]["id"]) in _calls(r)

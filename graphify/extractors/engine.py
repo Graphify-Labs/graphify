@@ -1740,13 +1740,68 @@ def _java_erase_type(text: str) -> str:
     return "".join(out)
 
 
+_JAVA_TYPE_PARAM_OWNERS = frozenset({
+    "class_declaration", "interface_declaration", "record_declaration",
+    "enum_declaration", "method_declaration", "constructor_declaration",
+})
+
+
+def _java_type_var_bounds(node, source: bytes) -> dict[str, str]:
+    """``{type variable: its erased bound}`` in scope at a Java method.
+
+    A type variable erases to its first bound (``<T extends Number & Comparable<T>>``
+    -> ``Number``) or ``Object`` when it has none, so ``<T extends Number> run(T)``
+    and ``<T extends CharSequence> run(T)`` are different overloads (#5251). The
+    method's own variables and those of every enclosing type count; an inner
+    declaration shadows an outer one.
+    """
+    scopes = []
+    cur = node
+    while cur is not None:
+        if cur.type in _JAVA_TYPE_PARAM_OWNERS:
+            scopes.append(cur)
+        cur = cur.parent
+    bounds: dict[str, str] = {}
+    for owner in reversed(scopes):  # outermost first, so inner shadows outer
+        tparams = next((c for c in owner.children if c.type == "type_parameters"), None)
+        if tparams is None:
+            continue
+        for tp in tparams.children:
+            if tp.type != "type_parameter":
+                continue
+            name_node = next((c for c in tp.children if c.type == "type_identifier"), None)
+            if name_node is None:
+                continue
+            bound = next((c for c in tp.children if c.type == "type_bound"), None)
+            first = next((c for c in bound.children if c.is_named), None) if bound is not None else None
+            erased = _java_erase_type(_read_text(first, source)) if first is not None else "Object"
+            bounds[_read_text(name_node, source)] = erased or "Object"
+    # A bound may itself be a type variable (`<T, U extends T>`).
+    for name, erased in list(bounds.items()):
+        seen = {name}
+        while erased in bounds and erased not in seen:
+            seen.add(erased)
+            erased = bounds[erased]
+        bounds[name] = erased
+    return bounds
+
+
+def _java_erase_type_var(text: str, bounds: dict[str, str]) -> str:
+    """``text`` with a type variable (or an array of one) replaced by its bound."""
+    base = text.rstrip("[].")
+    suffix = text[len(base):]
+    return bounds.get(base, base) + suffix
+
+
 def _java_method_signature(node, source: bytes) -> tuple[str, dict]:
     """A Java method's erased parameter signature and the argument counts it accepts.
 
-    The signature (``"String,int[]"``) tells overloads apart; the metadata
+    The signature (``"String,int[]"``) tells overloads apart; type variables are
+    replaced by their erased bounds, as the compiler does. The metadata
     (``arity``, plus ``min_arity`` and ``variadic`` for a ``T...`` parameter)
     lets a call site pick the overload its argument count fits (#5251).
     """
+    bounds = _java_type_var_bounds(node, source)
     params = node.child_by_field_name("parameters")
     parts: list[str] = []
     arity = 0
@@ -1758,7 +1813,7 @@ def _java_method_signature(node, source: bytes) -> tuple[str, dict]:
             dims = c.child_by_field_name("dimensions")
             if dims is not None:
                 text += "".join(_read_text(dims, source).split())
-            parts.append(text)
+            parts.append(_java_erase_type_var(text, bounds))
             arity += 1
         elif c.type == "spread_parameter":
             type_node = next(
@@ -1767,7 +1822,7 @@ def _java_method_signature(node, source: bytes) -> tuple[str, dict]:
                 None,
             )
             text = _java_erase_type(_read_text(type_node, source)) if type_node is not None else ""
-            parts.append(text + "...")
+            parts.append(_java_erase_type_var(text, bounds) + "...")
             arity += 1
             variadic = True
     meta: dict = {"arity": arity}

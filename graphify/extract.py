@@ -13210,7 +13210,14 @@ def extract(
             candidates = [candidate for candidate in candidates if candidate not in _method_nids]
         if not candidates:
             continue
-        if rc.get("lang") in ("csharp", "java") and not rc.get("csharp_new") and len(candidates) > 1:
+        # A bare Kotlin call has no `lang` tag and no argument count; it can still
+        # reach a Java class's overloads (a subclass calling `run(1)`), so the JVM
+        # family collapses them too and the first declared stands for the name.
+        if (
+            (rc.get("lang") in ("csharp", "java") or _lang_family(rc.get("source_file")) == "jvm")
+            and not rc.get("csharp_new")
+            and len(candidates) > 1
+        ):
             if not _csharp_overload_cache:
                 _csharp_overload_cache.update(_csharp_overload_index(
                     resolution_nodes, all_edges + list(resolution_context_edges or [])
