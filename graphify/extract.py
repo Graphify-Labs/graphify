@@ -197,7 +197,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
 
 from graphify.symbol_resolution import resolve_bash_source_edges, rust_scoped_call_survivors  # noqa: E402
 
-from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pick_overload, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
+from graphify.extractors.engine import PYTEST_FIXTURE_UNTYPED, REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pick_overload, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _pick_java_overload_by_types, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
@@ -7869,7 +7869,8 @@ def _resolve_java_member_calls(
         ):
             type_def_nids.setdefault(key(node.get("label", "")), []).append(node["id"])
 
-    method_index: dict[tuple[str, str], set[str]] = {}
+    method_index: dict[tuple[str, str], str] = {}
+    method_peers: dict[tuple[str, str], list[dict]] = {}
     enclosing_type: dict[str, str] = {}
     for edge in all_edges:
         if edge.get("relation") != "method":
@@ -7879,7 +7880,12 @@ def _resolve_java_member_calls(
         if method_node is None:
             continue
         enclosing_type.setdefault(method, owner)
-        method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
+        method_key = (owner, key(method_node.get("label", "")))
+        # Overloads share a key: the first declared one stands for the name,
+        # and the call's argument count picks among them below (#5251,
+        # mirroring C#'s #4584).
+        method_index.setdefault(method_key, method)
+        method_peers.setdefault(method_key, []).append(method_node)
 
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
     # Inherited fields (#3151): a field declared on a superclass - possibly in
@@ -7926,7 +7932,32 @@ def _resolve_java_member_calls(
             queue.extend(bases.get(cls, []))
         return None
 
-    def _inherited_method(class_nid: str, callee_key: str) -> str | None:
+    def _pick_declared(
+        nid: str, callee_key: str, argc: int | None, arg_types: list[str] | None = None,
+    ) -> str | None:
+        # ``nid`` declares exactly one name for ``callee_key``; when that name
+        # is overloaded, the call's argument count picks the one it means
+        # (falling back to a literal argument's type when two overloads
+        # share an arity, `run(String)` / `run(int)`), else the first
+        # declared stands for it, as it did when every overload was one
+        # node (#5251, mirroring C#'s #4584).
+        declared = method_index.get((nid, callee_key))
+        if declared is None:
+            return None
+        peers = method_peers.get((nid, callee_key), [])
+        if len(peers) > 1:
+            picked = (
+                _csharp_pick_overload(peers, argc)
+                or _pick_java_overload_by_types(peers, arg_types)
+            )
+            if picked is not None:
+                return picked["id"]
+        return declared
+
+    def _inherited_method(
+        class_nid: str, callee_key: str, argc: int | None = None,
+        arg_types: list[str] | None = None,
+    ) -> str | None:
         # Java's "class wins": a method declared up the superclass chain beats
         # an interface default, whatever the depth. Only then the interfaces,
         # level by level. The class itself was searched in-file.
@@ -7941,22 +7972,25 @@ def _resolve_java_member_calls(
             source_file = node_by_id.get(nid, {}).get("source_file")
             if source_file and _lang_family(source_file) != "jvm":
                 return None
-            declared = method_index.get((nid, callee_key))
-            if declared:
-                return next(iter(declared)) if len(declared) == 1 else None
+            if (nid, callee_key) in method_index:
+                return _pick_declared(nid, callee_key, argc, arg_types)
         level = list(dict.fromkeys(
             base for nid in [class_nid, *chain] for base in supertypes.get(nid, []) if base not in seen
         ))
         while level:
-            hits: set[str] = set()
+            declaring: set[str] = set()
             for nid in level:
                 seen.add(nid)
                 source_file = node_by_id.get(nid, {}).get("source_file")
                 if source_file and _lang_family(source_file) != "jvm":
                     return None
-                hits |= method_index.get((nid, callee_key), set())
-            if hits:
-                return next(iter(hits)) if len(hits) == 1 else None
+                if (nid, callee_key) in method_index:
+                    declaring.add(nid)
+            if declaring:
+                return (
+                    _pick_declared(next(iter(declaring)), callee_key, argc, arg_types)
+                    if len(declaring) == 1 else None
+                )
             level = list(dict.fromkeys(
                 base for nid in level for base in supertypes.get(nid, []) if base not in seen
             ))
@@ -7984,8 +8018,11 @@ def _resolve_java_member_calls(
                 return None
         return bases
 
-    def _method_on_type_or_bases(type_nid: str, callee_key: str) -> str | None:
-        hits: set[str] = set()
+    def _method_on_type_or_bases(
+        type_nid: str, callee_key: str, argc: int | None = None,
+        arg_types: list[str] | None = None,
+    ) -> str | None:
+        declaring: set[str] = set()
         seen: set[str] = set()
         frontier = [type_nid]
         while frontier:
@@ -7993,15 +8030,17 @@ def _resolve_java_member_calls(
             if nid in seen:
                 continue
             seen.add(nid)
-            declared = method_index.get((nid, callee_key))
-            if declared:
-                hits |= declared
+            if (nid, callee_key) in method_index:
+                declaring.add(nid)
                 continue
             bases = _jvm_bases(nid)
             if bases is None:
                 return None
             frontier.extend(bases)
-        return next(iter(hits)) if len(hits) == 1 else None
+        return (
+            _pick_declared(next(iter(declaring)), callee_key, argc, arg_types)
+            if len(declaring) == 1 else None
+        )
 
     def _type_named(name: str, near: str | None) -> str | None:
         name = key(name)
@@ -8121,7 +8160,12 @@ def _resolve_java_member_calls(
             caller = raw_call.get("caller_nid")
             if not raw_call.get("is_member_call"):
                 class_nid = enclosing_type.get(caller)
-                method_nid = _inherited_method(class_nid, key(callee)) if class_nid and callee else None
+                method_nid = (
+                    _inherited_method(
+                        class_nid, key(callee), raw_call.get("arity"), raw_call.get("arg_types"),
+                    )
+                    if class_nid and callee else None
+                )
                 # `new Base()` names a constructor, which is not inherited.
                 owner = node_by_id.get(enclosing_type.get(method_nid or ""), {})
                 if (method_nid and method_nid != caller and key(owner.get("label", "")) != key(callee)
@@ -8131,7 +8175,12 @@ def _resolve_java_member_calls(
             chain = raw_call.get("java_receiver_chain")
             if chain and not receiver and callee and caller:
                 type_nid = _chain_type(chain, caller)
-                method_nid = _method_on_type_or_bases(type_nid, key(callee)) if type_nid else None
+                method_nid = (
+                    _method_on_type_or_bases(
+                        type_nid, key(callee), raw_call.get("arity"), raw_call.get("arg_types"),
+                    )
+                    if type_nid else None
+                )
                 if method_nid and method_nid != caller and (caller, method_nid) not in existing_pairs:
                     existing_pairs.add((caller, method_nid))
                     all_edges.append({
@@ -8199,7 +8248,9 @@ def _resolve_java_member_calls(
                 if not type_nid:
                     continue
 
-            method_nid = _method_on_type_or_bases(type_nid, key(callee))
+            method_nid = _method_on_type_or_bases(
+                type_nid, key(callee), raw_call.get("arity"), raw_call.get("arg_types"),
+            )
             if not method_nid or method_nid == caller or (caller, method_nid) in existing_pairs:
                 continue
             _emit(caller, method_nid, raw_call, exact)
@@ -9649,12 +9700,15 @@ def _resolve_kotlin_member_calls(
     and Kotlin deliberately never stamps ``member_receiver`` for this shape
     either (see ``extractors/engine.py``), so nothing else can ever answer it.
 
-    Guarded by exactly-one-candidate at both steps, the same god-node guard
+    Guarded by exactly-one-candidate at the type step, the same god-node guard
     ``_resolve_kotlin_qualified_calls`` uses just above: a receiver name
-    matching 2+ declared types, or a method name matching 2+ methods of the
-    matched type, yields no edge. The receiver names the type explicitly in
-    source, so a unique match is EXTRACTED (mirrors the type-qualified case
-    in ``_resolve_swift_member_calls``, #1356).
+    matching 2+ declared types yields no edge. A method name matching 2+
+    methods of the matched type is a real overload set (#5251, each gets its
+    own node id); the call's argument count picks the one it means
+    (``_csharp_pick_overload``, #4584), else no edge, same as an unresolved
+    ambiguity. The receiver names the type explicitly in source, so a
+    resolved match is EXTRACTED (mirrors the type-qualified case in
+    ``_resolve_swift_member_calls``, #1356).
     """
     raw = [
         rc
@@ -9721,16 +9775,24 @@ def _resolve_kotlin_member_calls(
         if len(type_nids) != 1:
             continue
         wanted = f".{callee}"
-        # Overloads share one node id (the id has no parameter types), so the
-        # type holds one ``method`` edge per declaration to the same target.
-        # Count distinct ids, or an overloaded method reads as ambiguous (#4935).
         candidates = list(dict.fromkeys(
             m for m in methods_by_type.get(type_nids[0], [])
             if str(node_by_id.get(m, {}).get("label", "")).strip("()") == wanted
         ))
-        if len(candidates) != 1:
-            continue
-        tgt = candidates[0]
+        if len(candidates) == 1:
+            tgt = candidates[0]
+        else:
+            # Java now gives each overload of ``wanted`` its own node id
+            # (#5251), so more than one candidate is a real overload set,
+            # not the single-id-with-two-edges shape #4935 worked around.
+            # The call's argument count picks the one it means, else no
+            # edge (the same god-node guard as a genuine ambiguity).
+            picked = _csharp_pick_overload(
+                [node_by_id[c] for c in candidates if c in node_by_id], rc.get("arity"),
+            )
+            if picked is None:
+                continue
+            tgt = picked["id"]
         if tgt == caller or (caller, tgt) in existing_pairs:
             continue
         existing_pairs.add((caller, tgt))
