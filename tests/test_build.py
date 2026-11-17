@@ -1687,11 +1687,16 @@ def test_cross_language_imports_references_are_dropped():
     assert G.has_edge("src_time_ts", "src_util_ts"), "same-family (TS->TS) import must survive"
 
 
-def test_edge_lang_family_covers_every_extract_language():
+def test_edge_lang_family_mirrors_lang_family_by_ext():
     """#5247: build's phantom-edge guard table must not drift from
     extract._LANG_FAMILY_BY_EXT. An extension missing from _EDGE_LANG_FAMILY has
     no family, so a cross-language edge from or to it is never dropped. The two
-    tables use different family names, so compare the grouping, not the names."""
+    tables use different family names, so compare the grouping, not the names.
+
+    Note: this pins build to _LANG_FAMILY_BY_EXT, not to the full parser
+    registry. Languages dispatched by extract but absent from _LANG_FAMILY_BY_EXT
+    (Fortran, OCaml, Lisp, Verilog, Pascal, Terraform, Apex, ...) are still
+    unguarded; closing that is a separate follow-up on _LANG_FAMILY_BY_EXT."""
     from graphify.build import _EDGE_LANG_FAMILY
     from graphify.extract import _LANG_FAMILY_BY_EXT
 
