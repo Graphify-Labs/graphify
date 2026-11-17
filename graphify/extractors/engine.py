@@ -5392,6 +5392,7 @@ def _js_member_assignment_target(left, source: bytes):
 def _js_scan_member_assignments(
     body, this_owner_nid: str, source: bytes, *,
     this_as_method: bool, add_node_fn, add_edge_fn, function_bodies: list,
+    closure_locals_by_body: dict | None = None,
 ) -> None:
     """Materialize callable members assigned in ``body`` (#1322/#3408).
 
@@ -5460,6 +5461,12 @@ def _js_scan_member_assignments(
             add_edge_fn(owner_nid, m_nid, "contains", m_line)
         m_body = val.child_by_field_name("body")
         if m_body:
+            # #5241: the member body is walked on its own, so record its params
+            # and the names it captures from enclosing scopes as its locals.
+            if closure_locals_by_body is not None:
+                closure_locals_by_body[id(m_body)] = (
+                    _js_local_bound_names(val, source)
+                    | _js_enclosing_bound_names(val, source))
             function_bodies.append((m_nid, m_body))
 
 
@@ -5579,6 +5586,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         closure_body, file_nid, source, this_as_method=False,
                         add_node_fn=add_node_fn, add_edge_fn=add_edge_fn,
                         function_bodies=function_bodies,
+                        closure_locals_by_body=closure_locals_by_body,
                     )
                     # #3124: calls made directly inside this closure (not just
                     # `this.X = fn` member assignments) were dropped entirely,
@@ -5783,6 +5791,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                     body, func_nid, source, this_as_method=True,
                                     add_node_fn=add_node_fn, add_edge_fn=add_edge_fn,
                                     function_bodies=function_bodies,
+                                    closure_locals_by_body=closure_locals_by_body,
                                 )
                             arrow_found = True
                     elif (
@@ -10025,6 +10034,7 @@ def _extract_generic(
                     body, function_owner_nid, source, this_as_method=True,
                     add_node_fn=add_node, add_edge_fn=add_edge,
                     function_bodies=function_bodies,
+                    closure_locals_by_body=closure_locals_by_body,
                 )
             if body:
                 if config.ts_module == "tree_sitter_java" and parent_class_nid:
