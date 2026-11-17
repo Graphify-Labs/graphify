@@ -48,6 +48,29 @@ class MinHash:
         phv = np.bitwise_and((self._a * hv + self._b) % _MP, _MH)
         self.hashvalues = np.minimum(self.hashvalues, phv)
 
+    def update_batch(self, values: "list[bytes] | tuple[bytes, ...]") -> None:
+        """Fold many byte-strings into the sketch in one vectorized pass.
+
+        Equivalent to calling :meth:`update` once per element — the sketch is
+        the element-wise minimum of every element's permuted hash, and ``min``
+        is associative, so the order and the batching are irrelevant to the
+        result. But this does the 128-wide permutation arithmetic once on an
+        ``(S, 128)`` array instead of S times on ``(128,)`` arrays, which is
+        where the per-token loop spent almost all its time. The ``uint64``
+        multiply wraps mod 2**64 exactly as the scalar path does (a*hv reaches
+        ~2**93), and broadcasting preserves that wraparound element-wise, so the
+        hash values are bit-identical to the per-element loop.
+        """
+        if not values:
+            return
+        hvs = np.fromiter(
+            (struct.unpack("<I", hashlib.sha1(v).digest()[:4])[0] for v in values),
+            dtype=np.uint64,
+            count=len(values),
+        )
+        phv = np.bitwise_and((self._a * hvs[:, None] + self._b) % _MP, _MH)
+        self.hashvalues = np.minimum(self.hashvalues, phv.min(axis=0))
+
 
 def _lsh_integrate(f, lo: float, hi: float, n: int = 128) -> float:
     """Numerical integration — replaces scipy.integrate.quad for LSH param search."""
