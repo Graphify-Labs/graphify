@@ -11426,23 +11426,16 @@ def _get_extractor(path: Path, *, sniff_headers: bool = True) -> Any | None:
     return _DISPATCH.get(suffix)
 
 
-def _safe_extract_with_xaml_root(
-    extractor, path: Path, root: Path, corpus_paths: tuple[Path, ...] | None = None
-) -> dict:
+def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
     # Publish the in-flight scan root on extractors.base (the correct import
     # direction) so root-dependent extractors — Markdown link resolution, the
     # XAML C# project clamp — can read it without reaching back into this module
     # (#3666). Despite the XAML-era name this wraps every extractor.
     previous_root = set_active_scan_root(root.resolve())
-    pascal_corpus_token = (
-        set_active_pascal_corpus(corpus_paths) if corpus_paths is not None else None
-    )
     try:
         return _safe_extract(extractor, path, scan_root=root)
     finally:
         set_active_scan_root(previous_root)
-        if pascal_corpus_token is not None:
-            reset_active_pascal_corpus(pascal_corpus_token)
 
 
 def _worker_init(
@@ -11586,7 +11579,7 @@ def _extract_parallel(
     max_workers: int | None,
     total_files: int,
     cache_location: Path | None = None,
-    corpus_paths: tuple[Path, ...] = (),
+    corpus_paths: tuple[Path, ...] | None = None,
 ) -> bool:
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
@@ -11738,7 +11731,16 @@ def _extract_sequential(
             continue
         bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
-        result = _safe_extract_with_xaml_root(extractor, path, root, corpus_paths)
+        pascal_corpus_token = (
+            set_active_pascal_corpus(corpus_paths)
+            if corpus_paths is not None
+            else None
+        )
+        try:
+            result = _safe_extract_with_xaml_root(extractor, path, root)
+        finally:
+            if pascal_corpus_token is not None:
+                reset_active_pascal_corpus(pascal_corpus_token)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
         # but cache intentional declines/virtual manifests carrying `skipped` (#3910).
         if not bypass_cache and "error" not in result and (result.get("nodes") or result.get("skipped")):
