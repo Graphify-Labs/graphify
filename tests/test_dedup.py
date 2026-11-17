@@ -267,10 +267,10 @@ def test_prefix_extension_symbols_not_merged():
     ]
     for a, b in pairs:
         nodes = [
-            {"id": f"{a}_id", "label": a, "type": "CODE", "src_file": "api.py"},
-            {"id": f"{b}_id", "label": b, "type": "CODE", "src_file": "api.py"},
+            {"id": f"{a}_id", "label": a, "file_type": "code", "source_file": "api.py"},
+            {"id": f"{b}_id", "label": b, "file_type": "code", "source_file": "api.py"},
         ]
-        edges = [{"src": f"{a}_id", "tgt": f"{b}_id", "relation": "calls",
+        edges = [{"source": f"{a}_id", "target": f"{b}_id", "relation": "calls",
                   "c": 1.0, "weight": 1.0}]
         out_nodes, _ = deduplicate_entities(
             nodes, edges, communities={f"{a}_id": 0, f"{b}_id": 0}
@@ -279,6 +279,19 @@ def test_prefix_extension_symbols_not_merged():
         assert a in labels and b in labels, (
             f"#1201 regression: '{a}' and '{b}' were merged — they are distinct symbols"
         )
+
+
+def test_code_symbols_with_typo_are_not_fused():
+    """Code symbols are excluded from fuzzy matching (#1205). This pair is not a
+    prefix extension, so only the code exclusion keeps it apart."""
+    from graphify.dedup import deduplicate_entities
+
+    nodes = [
+        {"id": "validateUserCredentialsOnLogin_id", "label": "validateUserCredentialsOnLogin", "file_type": "code", "source_file": "api.py"},
+        {"id": "validateUserCredentialsOnLogn_id", "label": "validateUserCredentialsOnLogn", "file_type": "code", "source_file": "api.py"},
+    ]
+    out_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(out_nodes) == 2
 
 
 def test_pass2_winner_union_does_not_pull_in_uncompared_same_label_nodes():
