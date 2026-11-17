@@ -113,11 +113,17 @@ def parse_language_value(value: str) -> str:
         ) from None
 
 
+_BOOL_VALUES = {
+    "true": True, "1": True, "yes": True, "on": True,
+    "false": False, "0": False, "no": False, "off": False,
+}
+
+
 def load_graphifyrc(root: Path) -> dict:
     """Parse ``<root>/.graphifyrc``. Returns ``{}`` when absent.
 
     Returned keys: ``viz_node_limit``, ``query_budget``, ``query_depth`` (ints),
-    and ``languages``
+    ``demote_docs`` / ``query_demote_docs`` (bools), and ``languages``
     (``{".inc": ".php", ...}``) — each present only when the file sets it.
     Unknown keys are ignored so a newer graphify's options do not break an
     older one. Malformed lines raise ``ValueError`` naming the line.
@@ -164,6 +170,14 @@ def load_graphifyrc(root: Path) -> dict:
                     f"Invalid {key} in {rc_path} at line {line_num}: {val!r}. "
                     f"Must be {requirement}."
                 ) from exc
+        elif key in {"demote_docs", "query_demote_docs"}:
+            flag = _BOOL_VALUES.get(val.lower())
+            if flag is None:
+                raise ValueError(
+                    f"Invalid {key} in {rc_path} at line {line_num}: {val!r}. "
+                    f"Must be true or false."
+                )
+            cfg[key] = flag
         elif key.startswith("language."):
             ext_part = key[len("language."):].strip()
             if not ext_part or any(ch.isspace() for ch in ext_part):
