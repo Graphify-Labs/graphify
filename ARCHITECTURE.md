@@ -58,6 +58,11 @@ Document twin reconciliation may fold a Markdown page/file node into its semanti
 not identify a twin: real headings and explicitly AST-origin records stay
 distinct, and the semantic survivor keeps its own provenance.
 
+Deletion/exclusion pruning matches corpus paths, not physical file targets.
+Absolute and relative spellings and symlinked scan roots identify the same
+corpus entry; distinct symlink aliases inside that root remain separate entries.
+Excluding one alias must preserve any still-included target or sibling alias.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions

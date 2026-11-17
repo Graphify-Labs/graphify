@@ -904,6 +904,41 @@ def _abs_identity(p: str | None, root: str | None = None) -> str | None:
         return pp.as_posix()
 
 
+def _prune_identity(p: str | None, root: str | None = None) -> str | None:
+    """Match corpus paths without resolving aliases *inside* the scan root.
+
+    A scan-root symlink is an alternate spelling of the same corpus. A source
+    symlink within it is a distinct corpus entry and must not delete its target
+    when excluded. Resolve only the root prefix, retaining the lexical suffix.
+    """
+    if not p:
+        return None
+    q = p.replace("\\", "/")
+    path = Path(q)
+    if root:
+        base = Path(root).resolve()
+        if not _is_abs(q):
+            path = base / path
+        else:
+            # Prefer lexical containment; resolving the full path here would
+            # collapse an in-corpus alias onto its separately indexed target.
+            try:
+                suffix = path.relative_to(base)
+            except ValueError:
+                # An absolute source may use a symlinked scan-root prefix.
+                # Resolve ancestors, never the source entry itself.
+                for parent in path.parents:
+                    try:
+                        if parent.resolve() == base:
+                            path = base / path.relative_to(parent)
+                            break
+                    except OSError:
+                        continue
+            else:
+                path = base / suffix
+    return os.path.normpath(str(path)).replace("\\", "/")
+
+
 def _is_file_node_label(label: "str | None", source_file: "str | None") -> bool:
     """Whether *label* is a file node's label for *source_file* — the bare
     basename, OR a directory-qualified suffix produced by the disambiguation pass
@@ -1075,8 +1110,8 @@ def _build_prune_sets(
     """Prune match sets for build_merge / merge_raw_extraction.
 
     Returns ``(prune_set, prune_abs)`` mapping every match form of each prune
-    entry — the raw string, the :func:`_norm_source_file` relative form, and the
-    :func:`_abs_identity` absolute form — back to the ORIGINAL entry, so callers
+    entry — the raw string and the :func:`_prune_identity` absolute form —
+    back to the ORIGINAL entry, so callers
     can report which entries actually matched something (#2446). Membership
     tests read like the old set-based code (``sf in prune_set``).
 
@@ -1090,15 +1125,12 @@ def _build_prune_sets(
         if not p:
             continue
         prune_set.setdefault(p, p)
-        norm = _norm_source_file(p, eff_root)
-        if norm:
-            prune_set.setdefault(norm, p)
-        a = _abs_identity(p, eff_root)
+        a = _prune_identity(p, eff_root)
         if a:
             prune_abs.setdefault(a, p)
     for s in new_sources:
         prune_set.pop(s, None)
-        a = _abs_identity(s, eff_root)
+        a = _prune_identity(s, eff_root)
         if a:
             prune_abs.pop(a, None)
     return prune_set, prune_abs
@@ -2758,10 +2790,7 @@ def merge_raw_extraction(
             return False
         if sf in prune_set:
             return True
-        norm = _norm_source_file(sf, _prune_root)
-        if norm and norm in prune_set:
-            return True
-        a = _abs_identity(sf, _prune_root)
+        a = _prune_identity(sf, _prune_root)
         return bool(a) and a in prune_abs
 
     # #2446: when NONE of the prune entries match anything stored, the guessed
@@ -3010,19 +3039,15 @@ def build_merge(
 
     def _prune_match(sf: "str | None") -> bool:
         # Match a node/edge/hyperedge source_file against the prune set in a
-        # form-insensitive way: exact string, normalised-relative, then the
-        # absolute-identity fallback for the third-form case (#2012). Records
+        # form-insensitive way: exact string, then corpus-path identity for
+        # alternate root/absolute spellings (#2012). Records
         # WHICH prune entry matched, so the prune report can count only the
         # entries that actually hit something (#2446).
         if not sf:
             return False
         hit = prune_set.get(sf)
         if hit is None:
-            norm = _norm_source_file(sf, _prune_root)
-            if norm:
-                hit = prune_set.get(norm)
-        if hit is None:
-            a = _abs_identity(sf, _prune_root)
+            a = _prune_identity(sf, _prune_root)
             if a:
                 hit = prune_abs.get(a)
         if hit is None:
