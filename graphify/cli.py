@@ -5557,10 +5557,49 @@ def dispatch_command(cmd: str) -> None:
         # zero-node anomaly) so they are not frozen as up-to-date.
         _failed_ast_sources = list(ast_result.get("failed_sources") or [])
         if _failed_ast_sources:
-            _extraction_incomplete = True
+            # #5245: a failed source with no saved AST records in the existing
+            # graph (most commonly one whose optional extra was never
+            # installed, so it has NEVER once succeeded) has nothing for the
+            # #479 shrink guard to protect, so its failure alone must not arm
+            # that guard and refuse an otherwise complete, unrelated run —
+            # retrying can never heal a permanently missing extra anyway. A
+            # failed source that DID have saved records (a parser regression
+            # on a file that used to succeed) still arms the guard as before.
+            from graphify.export import (
+                existing_graph_node_counts_by_source as _existing_counts_by_source,
+                MALFORMED_GRAPH as _shrink_malformed,
+            )
+            _existing_counts = _existing_counts_by_source(graph_json_path)
+            if _existing_counts is _shrink_malformed:
+                # Can't verify which failed sources had saved records; stay
+                # fail safe and treat every one of them as protected.
+                _protected_failures = list(_failed_ast_sources)
+            else:
+                # failed_sources holds the resolved paths detect() dispatched
+                # (absolute), while an existing graph's source_file is written
+                # root-relative — normalize both to the same key before
+                # comparing, or every lookup here would miss.
+                def _shrink_path_key(value) -> str:
+                    p = Path(value)
+                    if not p.is_absolute():
+                        p = Path(target) / p
+                    try:
+                        return os.path.normcase(str(p.resolve()))
+                    except (OSError, RuntimeError):
+                        return os.path.normcase(os.path.abspath(str(p)))
+
+                _counts_by_key = {
+                    _shrink_path_key(sf): n for sf, n in (_existing_counts or {}).items() if n
+                }
+                _protected_failures = [
+                    sf for sf in _failed_ast_sources if _counts_by_key.get(_shrink_path_key(sf))
+                ]
+            if _protected_failures:
+                _extraction_incomplete = True
             print(
                 f"[graphify extract] AST extraction incomplete for "
-                f"{len(_failed_ast_sources)} source(s); failed sources will not "
+                f"{len(_failed_ast_sources)} source(s): "
+                f"{', '.join(sorted(_failed_ast_sources))}; failed sources will not "
                 "replace saved AST records and remain pending for retry.",
                 file=sys.stderr,
             )
