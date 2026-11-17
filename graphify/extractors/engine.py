@@ -7545,6 +7545,11 @@ def _extract_generic(
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
+    kotlin_facts, kotlin_local_calls = None, {}
+    if config.ts_module == "tree_sitter_kotlin":
+        from graphify.kotlin_constructor_locals import collect
+        kotlin_facts, kotlin_local_calls = collect(root, source)
+
     stem = _file_stem(path)
     str_path = str(path)
     # GPU C++ dialects (Metal .metal, CUDA .cu/.cuh) route through the C++
@@ -11101,6 +11106,7 @@ def _extract_generic(
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
             kotlin_object_receiver: str | None = None
+            kotlin_local = kotlin_local_calls.get(node.start_byte)
             csharp_qualified_prefix: str | None = None
             csharp_receiver_chain: list[str] | None = None
             java_receiver_chain: list | None = None
@@ -11644,6 +11650,10 @@ def _extract_generic(
                         # Try reading the node directly (e.g. Java name field is the callee)
                         callee_name = _read_text(func_node, source)
 
+            if kotlin_local is not None:
+                # A capitalized local is still a value, not an object/class.
+                kotlin_object_receiver = None
+                kotlin_qualified_prefix = None
             # Lua: a `self:other()` call in a method body is sugar for a call to a
             # sibling method on the same table. The receiver `self` carries no type
             # of its own, but the enclosing method's table name is known, so rewrite
@@ -11784,7 +11794,7 @@ def _extract_generic(
                          or (cpp_binding is None and member_receiver in cpp_unknown_fields.get(
                              method_owner.get(caller_nid, ""), ())))
                 )
-                if _python_defer or _java_defer or _csharp_defer or _swift_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                if kotlin_local is not None or _python_defer or _java_defer or _csharp_defer or _swift_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
@@ -12104,6 +12114,9 @@ def _extract_generic(
                         if kotlin_object_receiver:
                             rc_entry["lang"] = "kotlin"
                             rc_entry["kotlin_object_receiver"] = kotlin_object_receiver
+                        if kotlin_local is not None:
+                            rc_entry["lang"] = "kotlin"
+                            rc_entry["kotlin_constructor_local"] = kotlin_local
                         raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -12587,6 +12600,10 @@ def _extract_generic(
         ))
     raw_calls.extend(csharp_ctor_records)
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
+    if kotlin_facts is not None:
+        from graphify.kotlin_constructor_locals import FACTS, RESULT_MARKER, SCHEMA
+        result[FACTS] = kotlin_facts
+        result[RESULT_MARKER] = SCHEMA
     # Export the per-file field->type tables for the corpus member-call
     # resolvers (#3151): a field declared on a superclass in ANOTHER file can
     # only be typed once the whole graph is visible. Keyed by class label +
