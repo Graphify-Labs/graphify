@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.112 (unreleased)
 
+- Fix: **java** overloaded methods get a node each instead of collapsing into the first declaration, and a call binds to the overload its argument count fits (the first declared when several fit, as before); a Kotlin call to an overloaded Java method has no argument count, so its edge is `INFERRED` (#5251). The AST cache schema is bumped to 48; warm caches re-run Java extraction.
 - Docs: **python** the README, its translations, CONTRIBUTING, RELEASING, the bug-report template and the ruff/pyright targets now state Python 3.11 as the minimum, matching the floor that shipped in 0.9.111 (#5238, thanks @Deepanshu-Mehta; @Max17190 sent the same fix in #5237).
 - Docs: **links** the Always-on setup link in the README and all translations points straight at docs.graphify.com/open-source/vibe-coding instead of going through a redirect from the old guides/always-on path (#5261, thanks @SyedFahad7).
 

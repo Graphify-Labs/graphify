@@ -217,11 +217,20 @@ def test_overloaded_callers_keep_body_scoped_receiver_types(tmp_path: Path):
         ),
     })
 
-    run = _find(result, ".run()", "checkout")
+    # Each overload is its own node (#5251), so each keeps the call its own
+    # body makes, typed by the receiver declared in that body.
+    runs = {
+        node["source_location"]: node["id"]
+        for node in result["nodes"]
+        if node.get("label") == ".run()" and "checkout" in node["id"]
+    }
+    run_int, run_string = runs["L2"], runs["L3"]
     gateway_charge = _find(result, ".charge()", "paymentgateway")
     audit_charge = _find(result, ".charge()", "auditlog")
-    assert (run, gateway_charge) in calls
-    assert (run, audit_charge) in calls
+    assert (run_int, gateway_charge) in calls
+    assert (run_string, audit_charge) in calls
+    assert (run_int, audit_charge) not in calls
+    assert (run_string, gateway_charge) not in calls
 
 
 def test_ambiguous_receiver_type_emits_no_edge(tmp_path: Path):
