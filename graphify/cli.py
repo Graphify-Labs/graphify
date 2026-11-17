@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import graph_root_for as _graph_root_for
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -63,6 +64,17 @@ _READ_NUDGE_STALE = json.dumps({
             'changed after the last build). Prefer `graphify query "<question>"` for '
             'orientation, and run `graphify update` to refresh the graph. Reading the '
             'file directly is fine.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+_SEARCH_NUDGE_STALE = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            'graphify-out/graph.json exists but may be STALE (pending changes since '
+            'the last build). Prefer `graphify query "<question>"` for orientation '
+            'once the graph is current; run `graphify update` to refresh it. '
+            'Searching directly is fine.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -151,14 +163,38 @@ def _nudge_for_out(nudge: str) -> str:
     return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
-def _print_cloud_cta(out_dir: "Path") -> None:
-    """Nudge toward Graphify Cloud once after a successful local graph build.
+# Qualifying builds on which the post-build Cloud CTA is shown: the first, then
+# a couple of spaced reminders for returning users, then never again (A1). Keyed
+# off the count of qualifying builds, not elapsed time, so it does not nag.
+_CLOUD_CTA_SHOW_ON = (1, 5, 20)
 
-    Kept precise and shown only to humans running the CLI interactively:
-    suppressed in non-interactive/CI runs (stdout is not a TTY, which also
-    covers the AI-assistant pipeline), when the user opts out
-    (``GRAPHIFY_NO_TIPS``/``GRAPHIFY_NO_CTA``), and after the first time per
-    project (a marker under ``graphify-out/``) so repeat builds stay quiet.
+# Node count at or above which the CTA switches to a scale-specific line. This is
+# the Cloud free tier's hard cut-off of 25k nodes per repo: a graph this size no
+# longer fits the free plan, so the scale line sells Pro (large repos, kept
+# current, cross-repo search and PR review) and points at pricing, not the free
+# signup. Sending these users to the free plan would land them straight on the
+# limit. The gating cadence is unchanged (still builds 1/5/20); only the wording
+# and the utm_content tag branch on size, so analytics can tell the moments apart.
+_CLOUD_CTA_LARGE_GRAPH_NODES = 25_000
+
+
+def _print_cloud_cta(out_dir: "Path", node_count: int = 0) -> None:
+    """Nudge toward Graphify Cloud after a successful local graph build.
+
+    Shown only to humans running the CLI interactively: suppressed in
+    non-interactive/CI runs (stdout is not a TTY, which also covers the
+    AI-assistant pipeline) and when the user opts out
+    (``GRAPHIFY_NO_TIPS``/``GRAPHIFY_NO_CTA``). A per-project counter under
+    ``graphify-out/`` shows it on builds ``_CLOUD_CTA_SHOW_ON`` (1, 5, 20) so a
+    returning user gets a reminder without a nag on every build, then it stays
+    quiet for good.
+
+    ``node_count`` is the size of the graph just built. When it reaches
+    ``_CLOUD_CTA_LARGE_GRAPH_NODES`` the graph no longer fits the free plan, so
+    the message switches to a scale-specific line (``utm_content=scale``) that
+    sells Pro and links to pricing rather than the free signup: pointing these
+    users at the free plan would land them straight on its 25k limit. The show
+    cadence is the same either way, so this adds no extra nag.
     """
     if os.environ.get("GRAPHIFY_NO_TIPS") or os.environ.get("GRAPHIFY_NO_CTA"):
         return
@@ -169,48 +205,31 @@ def _print_cloud_cta(out_dir: "Path") -> None:
         return
     marker = out_dir / ".cloud-cta-shown"
     try:
-        if marker.exists():
-            return
+        count = int(marker.read_text(encoding="utf-8").strip()) if marker.exists() else 0
     except Exception:
-        return
-    print()
-    print("  Graphify Cloud: faster indexing, fewer tokens, cross-repo search,")
-    print("  and PR review, with your whole SDLC mapped and always current.")
-    print("  Connect a repo at https://app.graphify.com")
+        count = 0
+    # Advance the counter, capped one past the last show build so the file does
+    # not grow and that sentinel never re-triggers a show.
+    count = min(count + 1, max(_CLOUD_CTA_SHOW_ON) + 1)
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("1", encoding="utf-8")
+        marker.write_text(str(count), encoding="utf-8")
     except Exception:
         pass
+    if count not in _CLOUD_CTA_SHOW_ON:
+        return
+    print()
+    if node_count >= _CLOUD_CTA_LARGE_GRAPH_NODES:
+        print(f"  This graph has {node_count:,} nodes, past the free plan's 25k-per-repo limit.")
+        print("  Graphify Pro indexes large repos, keeps them current, and adds")
+        print("  cross-repo search and PR review. 14-day trial:")
+        print("  https://graphify.com/pricing?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=scale")
+    else:
+        print("  Graphify Cloud: faster indexing, fewer tokens, cross-repo search,")
+        print("  and PR review, with your whole SDLC mapped and always current.")
+        print("  Free plan, no card: https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=post-run")
 
 
-def _graph_root_for(gp: Path) -> Path:
-    """Resolve the selected graph's project without interpreting paths via CWD."""
-    from graphify.paths import GRAPHIFY_OUT
-
-    try:
-        text = (gp.parent / ".graphify_root").read_text(encoding="utf-8-sig").strip()
-        if text:
-            root = Path(text)
-            if root.is_absolute():
-                try:
-                    resolved = root.resolve()
-                except RuntimeError:
-                    pass  # Path resolution can report a symlink loop this way.
-                else:
-                    if resolved.is_dir():
-                        return resolved
-    except (OSError, UnicodeError, ValueError):
-        pass
-
-    # CLI-written absolute markers cover shared output. Otherwise strip only
-    # an exact, traversal-free relative output suffix, never a CWD-resolved one.
-    output = Path(GRAPHIFY_OUT)
-    parts = output.parts
-    if (parts and not output.is_absolute() and ".." not in parts
-            and gp.parent.parts[-len(parts):] == parts):
-        return gp.parent.parents[len(parts) - 1]
-    return gp.parent
 
 
 def _default_graph_path() -> str:
@@ -1087,6 +1106,28 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+def _load_cli_graph(gp: Path):
+    """Load graph.json as a directed graph for a node-lookup command, or exit 1.
+
+    Directed so stored caller->callee direction survives the load.
+    """
+    from networkx.readwrite import json_graph
+    from graphify.paths import consumed, read_graph_json
+
+    if not gp.exists():
+        print(f"error: graph file not found: {gp}", file=sys.stderr)
+        sys.exit(1)
+    _enforce_graph_size_cap_or_exit(gp)
+    raw = read_graph_json(gp)
+    if "links" not in raw and "edges" in raw:
+        raw = dict(raw, links=raw["edges"])
+    raw = {**raw, "directed": True}
+    raw = dict(raw, nodes=consumed(raw["nodes"]), links=consumed(raw["links"]))
+    return json_graph.node_link_graph(raw, edges="links")
+
+
 def _hook_strict_enabled(flag: bool) -> bool:
     """Resolve strict mode: GRAPHIFY_HOOK_STRICT env overrides the baked-in flag
     (truthy forces on without a reinstall, falsy is the kill switch); unset defers
@@ -1593,6 +1634,23 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
             if not (is_grep_tool or is_bash_search) or not out_path("graph.json").is_file():
                 return
+            # #5132: unlike Read, the search nudge never checked graph freshness
+            # at all, so an agent kept being pointed at a graph that had gone
+            # stale (e.g. after checking out a much newer commit) with no
+            # softening. needs_update applies corpus-wide, same as Read; a
+            # single-file Grep target additionally gets Read's own per-file
+            # mtime check, since that is exact where Read's isn't available
+            # (a directory target has no one mtime that proves staleness without
+            # a tree walk, which this fail-open, every-tool-call guard must not pay
+            # for). Gated on `indexed` (computed below) the same way the strict
+            # deny already is: an unindexed file has no graph knowledge to go
+            # stale in the first place, so it keeps the plain nudge, not this one.
+            search_stale = False
+            try:
+                if out_path("needs_update").exists():
+                    search_stale = True
+            except Exception:
+                pass
             if is_grep_tool:
                 path = t.get("path", ".")
                 if not isinstance(path, str):
@@ -1617,8 +1675,16 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                         and _mark_session_denied(str(d.get("session_id") or "")):
                     sys.stdout.write(_with_hint(_SEARCH_DENY, terms=_search_hint_terms(t)))
                     return
+                if not search_stale and target.is_file() and indexed:
+                    try:
+                        if os.stat(str(target)).st_mtime > os.stat(str(out_path("graph.json"))).st_mtime \
+                                and not _target_matches_manifest(str(target), root):
+                            search_stale = True
+                    except OSError:
+                        pass
             if not _search_is_outside_project(t) and _nudge_allowed(d):
-                sys.stdout.write(_with_hint(_nudge_for_out(_SEARCH_NUDGE), terms=_search_hint_terms(t)))
+                nudge = _SEARCH_NUDGE_STALE if search_stale else _SEARCH_NUDGE
+                sys.stdout.write(_with_hint(_nudge_for_out(nudge), terms=_search_hint_terms(t)))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             tails = [
@@ -2707,7 +2773,6 @@ def dispatch_command(cmd: str) -> None:
             print(_explain_usage)
             return
         from graphify.serve import _confidence_tag, _is_ambiguity_refusal, _resolve_single_node
-        from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
@@ -2717,18 +2782,7 @@ def dispatch_command(cmd: str) -> None:
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
         gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        from graphify.paths import consumed, read_graph_json
-        _raw = read_graph_json(gp)
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee direction.
-        _raw = {**_raw, "directed": True}
-        _raw = dict(_raw, nodes=consumed(_raw["nodes"]), links=consumed(_raw["links"]))
-        G = json_graph.node_link_graph(_raw, edges="links")
+        G = _load_cli_graph(gp)
         nid, refusal = _resolve_single_node(G, label)
         if nid is None:
             print(refusal)
@@ -2838,6 +2892,55 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             nodes_returned=len(connections),
         )
+        _touch_query_stamp(gp)
+
+    elif cmd == "section":
+        _section_usage = ('Usage: graphify section "<heading>" | "path/file.md#<heading>" '
+                          '[--max-chars N] [--graph path]')
+        if len(sys.argv) < 3:
+            print(_section_usage, file=sys.stderr)
+            sys.exit(1)
+        if len(sys.argv) == 3 and sys.argv[2] in ("--help", "-h"):
+            print(_section_usage)
+            return
+        from graphify.serve import _is_ambiguity_refusal
+        from graphify.sections import (
+            DEFAULT_MAX_CHARS,
+            format_section,
+            read_section,
+            resolve_section_query,
+            section_root,
+        )
+
+        label = sys.argv[2]
+        graph_path = _default_graph_path()
+        max_chars = DEFAULT_MAX_CHARS
+        args = sys.argv[3:]
+        for i, a in enumerate(args):
+            if a == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+            elif a == "--max-chars" and i + 1 < len(args):
+                try:
+                    max_chars = max(1, int(args[i + 1]))
+                except ValueError:
+                    print(f"error: --max-chars needs an integer, got {args[i + 1]!r}",
+                          file=sys.stderr)
+                    sys.exit(1)
+        gp = Path(graph_path).resolve()
+        G = _load_cli_graph(gp)
+        nid, refusal = resolve_section_query(G, label)
+        if nid is None:
+            print(refusal)
+            sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(refusal) else EXIT_NOT_FOUND)
+        d = G.nodes[nid]
+        section, reason = read_section(d, section_root(gp), max_chars)
+        if section is None:
+            print(reason, file=sys.stderr)
+            sys.exit(1)
+        print(format_section(section, str(d.get("label", nid))))
+        from graphify import querylog
+        querylog.log_query(kind="section", question=label, corpus=str(gp),
+                           nodes_returned=1)
         _touch_query_stamp(gp)
 
     elif cmd == "diagnose":
@@ -4957,8 +5060,7 @@ def dispatch_command(cmd: str) -> None:
             # graphify-out/ dir into a project that asked for external output.
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
-            # One extract() per process here, so free its parse memo when done.
-            ast_kwargs: dict = {"cache_root": out_root, "root": target, "release_parse_memo": True}
+            ast_kwargs: dict = {"cache_root": out_root, "root": target}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
@@ -5033,7 +5135,7 @@ def dispatch_command(cmd: str) -> None:
                             "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
                             "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                             "_rust_impl_key", "_rust_declaration_count",
-                            "_ts_public_twin", "_py_property", "_java_ret",
+                            "_ts_public_twin", "_py_property", "_java_ret", "_java_type",
                             "_ts_fields", "_ts_static_fields",
                             "_py_fixture", "_py_return_type", "_go_fields",
                             "_go_package_path",
@@ -5052,6 +5154,11 @@ def dispatch_command(cmd: str) -> None:
                                     "cpp_conditions",
                                     "ruby_reopened",
                                     "ruby_external_method_owners",
+                                    "type_path",
+                                    "namespace",
+                                    "scope_chain",
+                                    "is_nested_type",
+                                    "is_partial",
                                     # Erlang remote-call resolution keys (#3714):
                                     # an unchanged callee module must keep its
                                     # module/name/arity so `foo:bar()` still
@@ -5061,6 +5168,9 @@ def dispatch_command(cmd: str) -> None:
                                     "module",
                                     "name",
                                     "arity",
+                                    "min_arity",
+                                    "variadic",
+                                    "signature",
                                 )
                                 if key in _metadata
                             }
@@ -5442,6 +5552,7 @@ def dispatch_command(cmd: str) -> None:
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
             "extracted_sources": list(ast_result.get("extracted_sources", [])),
+            "failed_sources": list(ast_result.get("failed_sources", [])),
         }
 
         graph_json_path = graphify_out / "graph.json"
@@ -5457,6 +5568,53 @@ def dispatch_command(cmd: str) -> None:
         # #2543: also drop AST sources that failed (missing optional extra /
         # zero-node anomaly) so they are not frozen as up-to-date.
         _failed_ast_sources = list(ast_result.get("failed_sources") or [])
+        if _failed_ast_sources:
+            # #5245: a failed source with no saved AST records in the existing
+            # graph (most commonly one whose optional extra was never
+            # installed, so it has NEVER once succeeded) has nothing for the
+            # #479 shrink guard to protect, so its failure alone must not arm
+            # that guard and refuse an otherwise complete, unrelated run —
+            # retrying can never heal a permanently missing extra anyway. A
+            # failed source that DID have saved records (a parser regression
+            # on a file that used to succeed) still arms the guard as before.
+            from graphify.export import (
+                existing_graph_node_counts_by_source as _existing_counts_by_source,
+                MALFORMED_GRAPH as _shrink_malformed,
+            )
+            _existing_counts = _existing_counts_by_source(graph_json_path)
+            if _existing_counts is _shrink_malformed:
+                # Can't verify which failed sources had saved records; stay
+                # fail safe and treat every one of them as protected.
+                _protected_failures = list(_failed_ast_sources)
+            else:
+                # failed_sources holds the resolved paths detect() dispatched
+                # (absolute), while an existing graph's source_file is written
+                # root-relative — normalize both to the same key before
+                # comparing, or every lookup here would miss.
+                def _shrink_path_key(value) -> str:
+                    p = Path(value)
+                    if not p.is_absolute():
+                        p = Path(target) / p
+                    try:
+                        return os.path.normcase(str(p.resolve()))
+                    except (OSError, RuntimeError):
+                        return os.path.normcase(os.path.abspath(str(p)))
+
+                _counts_by_key = {
+                    _shrink_path_key(sf): n for sf, n in (_existing_counts or {}).items() if n
+                }
+                _protected_failures = [
+                    sf for sf in _failed_ast_sources if _counts_by_key.get(_shrink_path_key(sf))
+                ]
+            if _protected_failures:
+                _extraction_incomplete = True
+            print(
+                f"[graphify extract] AST extraction incomplete for "
+                f"{len(_failed_ast_sources)} source(s): "
+                f"{', '.join(sorted(_failed_ast_sources))}; failed sources will not "
+                "replace saved AST records and remain pending for retry.",
+                file=sys.stderr,
+            )
         # #2879: code files the extractor declined by design this run. They ARE
         # stamped (not failures) but have zero nodes, so the manifest marks the
         # emptiness intentional and the #2543 heal stops re-queuing them.
@@ -5961,7 +6119,7 @@ def dispatch_command(cmd: str) -> None:
             f"`graphify cluster-only {graphify_out.parent}` "
             "to generate GRAPH_REPORT.md and name communities"
         )
-        _print_cloud_cta(graphify_out)
+        _print_cloud_cta(graphify_out, G.number_of_nodes())
         stages.total()
 
     elif cmd == "cache-check":

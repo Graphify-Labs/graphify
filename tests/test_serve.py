@@ -2250,3 +2250,74 @@ def test_qualified_tail_split():
     assert _qualified_tail("HTTPClient") is None
     assert _qualified_tail("sweep_widget_state") is None
     assert _qualified_tail("") is None
+
+
+def _make_heritage_graph() -> nx.Graph:
+    """Square inherits Base and implements IShape.
+
+    Mirrors what the C#/Java/Python extractors emit: heritage edges with no
+    `context`. One TypeScript-style edge carries `context="type"`.
+    """
+    G = nx.Graph()
+    labels = {"square": "Square", "base": "Base", "ishape": "IShape", "helper": "Helper"}
+    for nid, label in labels.items():
+        G.add_node(nid, label=label, source_file="shapes.py", source_location="L1", community=0)
+    G.add_edge("square", "base", relation="inherits", confidence="EXTRACTED")
+    G.add_edge("square", "ishape", relation="implements", confidence="EXTRACTED")
+    G.add_edge("square", "helper", relation="calls", confidence="EXTRACTED", context="call")
+    G.add_edge("base", "helper", relation="imports", confidence="EXTRACTED", context="import")
+    return G
+
+
+def test_context_filter_inheritance_aliases_resolve():
+    from graphify.serve import _normalize_context_filters
+
+    assert _normalize_context_filters(["inheritance"]) == ["inherits"]
+    assert _normalize_context_filters(["superclass"]) == ["inherits"]
+    assert _normalize_context_filters(["implements"]) == ["implements"]
+    assert _normalize_context_filters(["interface"]) == ["implements"]
+
+
+def test_context_filter_reaches_heritage_edges_without_a_context():
+    G = _make_heritage_graph()
+    filtered = _filter_graph_by_context(G, ["inherits"])
+    assert set(filtered.edges()) == {("square", "base")}
+    # All nodes survive the filter, as before.
+    assert set(filtered.nodes()) == set(G.nodes())
+
+
+def test_context_filter_implements_is_not_folded_into_inherits():
+    G = _make_heritage_graph()
+    assert set(_filter_graph_by_context(G, ["implements"]).edges()) == {("square", "ishape")}
+
+
+def test_context_filter_type_still_means_the_typescript_context():
+    G = _make_heritage_graph()
+    assert _filter_graph_by_context(G, ["type"]).number_of_edges() == 0
+    G.add_edge("square", "base", relation="inherits", confidence="EXTRACTED", context="type")
+    assert _filter_graph_by_context(G, ["type"]).number_of_edges() == 1
+
+
+def test_context_filter_still_ignores_edges_without_a_context():
+    G = _make_heritage_graph()
+    G.add_edge("helper", "square", relation="uses")
+    assert set(_filter_graph_by_context(G, ["call"]).edges()) == {("square", "helper")}
+
+
+def test_query_graph_text_reports_a_filter_that_matches_no_edge():
+    G = _make_heritage_graph()
+    text = _query_graph_text(
+        G, "Square", mode="bfs", depth=2, token_budget=2000, context_filters=["return_type"]
+    )
+    assert "Context: return_type (explicit, matched 0 edges)" in text
+    assert "1 nodes found" in text
+
+
+def test_query_graph_text_inheritance_filter_walks_the_hierarchy():
+    G = _make_heritage_graph()
+    text = _query_graph_text(
+        G, "Square", mode="bfs", depth=2, token_budget=2000, context_filters=["inherits"]
+    )
+    assert "Context: inherits (explicit)" in text
+    assert "2 nodes found" in text
+    assert "helper" not in text

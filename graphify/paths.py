@@ -465,6 +465,33 @@ def out_path(*parts: str) -> Path:
     return Path(GRAPHIFY_OUT, *parts)
 
 
+def graph_root_for(gp: Path) -> Path:
+    """Resolve the selected graph's project without interpreting paths via CWD."""
+    try:
+        text = (gp.parent / ".graphify_root").read_text(encoding="utf-8-sig").strip()
+        if text:
+            root = Path(text)
+            if root.is_absolute():
+                try:
+                    resolved = root.resolve()
+                except RuntimeError:
+                    pass  # Path resolution can report a symlink loop this way.
+                else:
+                    if resolved.is_dir():
+                        return resolved
+    except (OSError, UnicodeError, ValueError):
+        pass
+
+    # CLI-written absolute markers cover shared output. Otherwise strip only
+    # an exact, traversal-free relative output suffix, never a CWD-resolved one.
+    output = Path(GRAPHIFY_OUT)
+    parts = output.parts
+    if (parts and not output.is_absolute() and ".." not in parts
+            and gp.parent.parts[-len(parts):] == parts):
+        return gp.parent.parents[len(parts) - 1]
+    return gp.parent
+
+
 def default_graph_json() -> str:
     """Default ``graph.json`` path under the configured output dir.
 
