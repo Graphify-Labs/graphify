@@ -345,3 +345,31 @@ def test_call_table_rows_without_whole_graph_params_unchanged(tmp_path):
     # semantics other call sites may rely on).
     export_node = [n for n in nodes if n["id"] == "export"]
     assert "External entry" in generate_call_table_rows(export_node, section_edges, "en")
+
+
+def test_table_cells_keep_labels_that_fit_the_render_width():
+    """Table cells are flowing HTML, not fixed-width Mermaid boxes, so a name
+    that fits the 42-char render width must not lose its leading words."""
+    from graphify.callflow_html import node_display_name
+
+    label = "api_list_non_ai_email_templates()"
+    assert len(label) <= 42
+    assert node_display_name({"label": label, "source_file": "api.py"}) == label
+
+
+def test_humanize_label_marks_compaction_as_truncated():
+    """Compaction drops leading words, which reverses meaning (non_ai -> ai),
+    so the result must not read as a complete identifier."""
+    from graphify.callflow_html import humanize_label
+
+    out = humanize_label("api_list_non_ai_email_templates()")
+    assert out.startswith("..."), out
+
+
+def test_humanize_label_keeps_diagram_width_unchanged():
+    """Mermaid node boxes keep the historical 28-char compaction threshold;
+    only the ellipsis is added."""
+    from graphify.callflow_html import humanize_label
+
+    out = humanize_label("skip_company_content_too_short()")
+    assert out == "...content too short()", out
