@@ -1035,7 +1035,7 @@ def _run_cli() -> None:
         print("  gemini uninstall        remove GEMINI.md section + BeforeTool hook")
         print("  cursor install          write .cursor/rules/graphify.mdc (Cursor)")
         print("  cursor uninstall        remove .cursor/rules/graphify.mdc")
-        print("  claude install          write graphify section to CLAUDE.md + PreToolUse hook (Claude Code)")
+        print("  claude install          write graphify section to CLAUDE.md (or the AGENTS.md Claude Code reads) + PreToolUse hook")
         print("  claude uninstall        remove graphify section from CLAUDE.md + PreToolUse hook")
         print("  codebuddy install       write graphify section to CODEBUDDY.md + PreToolUse hook (CodeBuddy)")
         print("  codebuddy uninstall     remove graphify section from CODEBUDDY.md + PreToolUse hook")
