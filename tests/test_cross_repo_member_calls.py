@@ -701,3 +701,80 @@ def test_cpp_condition_metadata_is_copied_selectively_and_relinks_stably(lang, s
     assert link_cross_repo_member_calls(graph) == 1
     assert [dict(data) for _, _, data in graph.edges(data=True) if data.get(CROSS_REPO_CALL_MARKER)] == first
 
+
+
+# ---------- overloaded Java methods across repos (#5251) ----------
+
+
+def _overload(repo: str, node_id: str, arity: int, line: int, *, variadic: bool = False):
+    meta: dict = {"arity": arity, "signature": "x"}
+    if variadic:
+        meta.update(variadic=True, min_arity=arity - 1)
+    return f"{repo}::{node_id}", {
+        "label": ".run()", "repo": repo, "source_file": "src/Svc.java",
+        "source_location": f"L{line}", "_callable": True, "metadata": meta,
+    }
+
+
+def _overload_graph(arity) -> nx.Graph:
+    parked = [{"callee": "run", "receiver_type": "Svc", "lang": "java", "line": "L3"}]
+    if arity is not None:
+        parked[0]["arity"] = arity
+    return _graph(
+        caller=_caller("a", parked),
+        declarations=[],
+    ), parked
+
+
+def _with_overloads(arity) -> nx.Graph:
+    G, _ = _overload_graph(arity)
+    decl = _declaration("b", "Svc", node_id="svc")
+    G.add_node(decl[0], **decl[1])
+    for node_id, n_args, line in (("svc_run", 0, 2), ("svc_run_1a2b3c", 1, 3), ("svc_run_4d5e6f", 2, 4)):
+        nid, data = _overload("b", node_id, n_args, line)
+        G.add_node(nid, **data)
+        G.add_edge(decl[0], nid, relation="method")
+    return G
+
+
+def test_a_parked_call_binds_to_the_overload_its_argument_count_fits():
+    G = _with_overloads(1)
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::svc_run_1a2b3c")}
+
+
+def test_a_parked_call_that_fits_several_overloads_binds_the_first_declared():
+    G = _with_overloads(5)  # no overload takes five: the first declared stands
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::svc_run")}
+
+
+def test_an_older_parked_entry_without_arity_binds_the_first_declared():
+    G = _with_overloads(None)
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::svc_run")}
+
+
+def test_two_same_named_methods_that_are_not_overloads_stay_ambiguous():
+    G = _graph(
+        caller=_caller("a", [{"callee": "greet", "receiver_type": "Greeter",
+                              "lang": "java", "arity": 1}]),
+        declarations=[(_declaration("b", "Greeter"), _method("b")),
+                      (_declaration("b", "Greeter"), _method("b", node_id="greeter_greet2"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+@needs_java
+def test_extraction_parks_the_argument_count(tmp_path: Path):
+    from graphify.extract import extract
+
+    src = tmp_path / "App.java"
+    src.write_text("class App { void go(Svc s) { s.run(1); s.run(1, 2); } }\n", encoding="utf-8")
+    result = extract([src], cache_root=tmp_path / "graphify-out")
+    parked = [
+        entry
+        for node in result["nodes"]
+        for entry in (node.get("metadata") or {}).get("unresolved_calls", [])
+    ]
+    assert sorted(e["arity"] for e in parked if e["callee"] == "run") == [1, 2]
