@@ -162,6 +162,8 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _pascal_project_root,
     _pascal_resolve_class,
     _pascal_resolve_unit,
+    set_active_pascal_corpus,
+    reset_active_pascal_corpus,
     _pascal_unit_cache,
     _pnpm_workspace_globs,
     _python_call_identifier,
@@ -11424,23 +11426,33 @@ def _get_extractor(path: Path, *, sniff_headers: bool = True) -> Any | None:
     return _DISPATCH.get(suffix)
 
 
-def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
+def _safe_extract_with_xaml_root(
+    extractor, path: Path, root: Path, corpus_paths: tuple[Path, ...] | None = None
+) -> dict:
     # Publish the in-flight scan root on extractors.base (the correct import
     # direction) so root-dependent extractors — Markdown link resolution, the
     # XAML C# project clamp — can read it without reaching back into this module
     # (#3666). Despite the XAML-era name this wraps every extractor.
     previous_root = set_active_scan_root(root.resolve())
+    pascal_corpus_token = (
+        set_active_pascal_corpus(corpus_paths) if corpus_paths is not None else None
+    )
     try:
         return _safe_extract(extractor, path, scan_root=root)
     finally:
         set_active_scan_root(previous_root)
+        if pascal_corpus_token is not None:
+            reset_active_pascal_corpus(pascal_corpus_token)
 
 
-def _worker_init(language_overrides: dict[str, str]) -> None:
+def _worker_init(
+    language_overrides: dict[str, str], corpus_paths: tuple[str, ...] = ()
+) -> None:
     """Pool initializer. Under ``spawn`` a worker re-imports the package and
     starts with no overrides; hand it the parent's so `_get_extractor` and the
     cache key agree across processes (#2961)."""
     set_language_overrides(language_overrides)
+    set_active_pascal_corpus(tuple(Path(path) for path in corpus_paths))
 
 
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
@@ -11574,6 +11586,7 @@ def _extract_parallel(
     max_workers: int | None,
     total_files: int,
     cache_location: Path | None = None,
+    corpus_paths: tuple[Path, ...] = (),
 ) -> bool:
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
@@ -11617,7 +11630,7 @@ def _extract_parallel(
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=max_workers,
             initializer=_worker_init,
-            initargs=(get_language_overrides(),),
+            initargs=(get_language_overrides(), tuple(map(str, corpus_paths))),
         ) as pool:
             futures = {
                 pool.submit(_extract_single_file, item): pos
@@ -11684,7 +11697,7 @@ def _extract_parallel(
         # a second failure into an error-carrying result.
         _extract_sequential(
             [uncached_work[pos] for pos in failed],
-            per_file, root, total_files, cache_location,
+            per_file, root, total_files, cache_location, corpus_paths,
         )
     if total_files >= _PROGRESS_INTERVAL:
         # Report the same denominator the intermediate lines used (uncached files
@@ -11705,6 +11718,7 @@ def _extract_sequential(
     root: Path,
     total_files: int,
     cache_location: Path | None = None,
+    corpus_paths: tuple[Path, ...] = (),
 ) -> None:
     """Extract uncached files sequentially (fallback for small batches)."""
     _PROGRESS_INTERVAL = 100
@@ -11724,7 +11738,7 @@ def _extract_sequential(
             continue
         bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
-        result = _safe_extract_with_xaml_root(extractor, path, root)
+        result = _safe_extract_with_xaml_root(extractor, path, root, corpus_paths)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
         # but cache intentional declines/virtual manifests carrying `skipped` (#3910).
         if not bypass_cache and "error" not in result and (result.get("nodes") or result.get("skipped")):
@@ -11953,7 +11967,8 @@ def extract(
         ran_parallel = False
         if parallel and len(uncached_work) >= _PARALLEL_THRESHOLD:
             ran_parallel = _extract_parallel(
-                uncached_work, per_file, root, max_workers, total, cache_location
+                uncached_work, per_file, root, max_workers, total, cache_location,
+                tuple(paths),
             )
         if not ran_parallel:
             # #2444: only re-extract what the pool didn't finish. A pool that
@@ -11961,7 +11976,7 @@ def extract(
             # the whole batch would throw that work away.
             _extract_sequential(
                 [(i, p) for (i, p) in uncached_work if per_file[i] is None],
-                per_file, root, total, cache_location,
+                per_file, root, total, cache_location, tuple(paths),
             )
 
     # Fill any remaining None slots. With the #2444/#2445 handling above this
