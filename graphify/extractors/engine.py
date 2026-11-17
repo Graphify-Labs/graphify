@@ -2050,6 +2050,64 @@ def _lua_pre_scan_field_collisions(root, source: bytes, stem: str) -> dict[str, 
     return {nid: ns for nid, ns in names.items() if len(ns) >= 2}
 
 
+_SCALA_OWNER_TYPES = ("class_definition", "object_definition", "trait_definition",
+                      "enum_definition", "given_definition")
+_SCALA_MEMBER_CALLABLE_TYPES = ("function_definition", "function_declaration")
+# A setter `def size_=(v)` is the companion of the getter `def size`: the
+# getter is the name callers read, so it keeps the plain id.
+_SCALA_PRIVATE_MEMBER_SUFFIXES = ("_=",)
+
+
+def _scala_member_nid(class_nid: str, member_node, name: str, source: bytes,
+                      groups_cache: dict) -> str:
+    """Node id for a Scala method, salted when a sibling collides.
+
+    ``make_id`` drops a leading ``_``, a trailing ``_=`` and folds case, so
+    ``_enter`` / ``enter``, a getter ``size`` / setter ``size_=`` or
+    ``forEach`` / ``foreach`` of one type minted one id: the second
+    declaration vanished and its calls were credited to the survivor. A class
+    and its companion object share one id, so group the methods of the
+    type's body and of its same-named companions in the same scope by the id
+    they would get, then apply ``_underscore_salted_nid``, the
+    Python/C#/Solidity/Java rule (#3302, #4415, #5058, #5151): a unique public
+    name keeps the plain id, every other colliding name is salted. Members
+    that collide with nothing keep their old id; overloads share one name, so
+    they are not a collision.
+    """
+    body = member_node.parent
+    owner = body.parent if body is not None else None
+    if owner is None or owner.type not in _SCALA_OWNER_TYPES or owner.parent is None:
+        return _make_id(class_nid, name)
+    name_node = owner.child_by_field_name("name")
+    owner_name = _read_text(name_node, source) if name_node is not None else ""
+    scope = owner.parent
+    key = (class_nid, scope.start_byte, scope.end_byte, owner_name)
+    groups = groups_cache.get(key)
+    if groups is None:
+        names: dict[str, set[str]] = {}
+        for decl in scope.children:
+            if decl.type not in _SCALA_OWNER_TYPES:
+                continue
+            decl_name = decl.child_by_field_name("name")
+            if decl is not owner and (
+                    decl_name is None or _read_text(decl_name, source) != owner_name):
+                continue
+            for b in decl.children:
+                if b.type not in ("template_body", "enum_body", "with_template_body"):
+                    continue
+                for c in b.children:
+                    if c.type not in _SCALA_MEMBER_CALLABLE_TYPES:
+                        continue
+                    member_name = c.child_by_field_name("name")
+                    text = _read_text(member_name, source) if member_name is not None else ""
+                    if text and normalize_id(text):
+                        names.setdefault(_make_id(class_nid, text), set()).add(text)
+        groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+        groups_cache[key] = groups
+    return _underscore_salted_nid(_make_id(class_nid, name), name, groups,
+                                  private_suffixes=_SCALA_PRIVATE_MEMBER_SUFFIXES)
+
+
 _CPP_PRIVATE_MEMBER_PREFIXES = ("_", "~")
 _CPP_PRIVATE_MEMBER_SUFFIXES = ("_",)
 
@@ -7805,6 +7863,8 @@ def _extract_generic(
     cpp_member_groups: dict = {}
     # Ruby class/module body -> method collision groups, filled lazily.
     ruby_member_groups: dict = {}
+    # Scala type (with its companions) -> method collision groups, filled lazily.
+    scala_member_groups: dict = {}
 
     python_underscore_groups: dict[str, set[str]] = {}
     if config.ts_module == "tree_sitter_python":
@@ -9794,6 +9854,11 @@ def _extract_generic(
                     func_nid = _ruby_member_nid(
                         parent_class_nid, node, sanitized_name, source, ruby_member_groups,
                         config.sanitize_symbol_name_fn or (lambda n: n),
+                    )
+                elif (config.ts_module == "tree_sitter_scala"
+                      and t in _SCALA_MEMBER_CALLABLE_TYPES):
+                    func_nid = _scala_member_nid(
+                        parent_class_nid, node, sanitized_name, source, scala_member_groups
                     )
                 ruby_method_metadata = None
                 if ruby_method_kind is not None:
