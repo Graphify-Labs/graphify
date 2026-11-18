@@ -2371,12 +2371,12 @@ def _normalize_ts_tag_and_import_annotations(source: bytes, *, tsx: bool = False
 
 
 def extract_js(path: Path) -> dict:
-    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
+    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts/.ets file."""
     suffix = effective_suffix(path).lower()
-    is_ts = suffix in (".ts", ".tsx", ".mts", ".cts")
+    is_ts = suffix in (".ts", ".tsx", ".mts", ".cts", ".ets")
     if suffix == ".tsx":
         config = _TSX_CONFIG
-    elif suffix in (".ts", ".mts", ".cts"):
+    elif suffix in (".ts", ".mts", ".cts", ".ets"):
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
