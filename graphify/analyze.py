@@ -2,6 +2,7 @@
 from __future__ import annotations
 import math
 import random
+import re
 from pathlib import Path
 import networkx as nx
 
@@ -482,6 +483,10 @@ def _cross_community_surprises(
     return deduped[:top_n]
 
 
+# networkx 3.5 changed how sampled betweenness scores are rescaled.
+_NETWORKX_RESCALES_SAMPLES_BY_SOURCE = tuple(int(p) for p in re.findall(r"\d+", nx.__version__)[:2]) >= (3, 5)
+
+
 def _betweenness_centrality(G: nx.Graph, k: int | None, seed: int) -> dict[str, float]:
     """The scores of ``nx.betweenness_centrality(G, k=k, seed=seed)``, bit for bit.
 
@@ -490,8 +495,11 @@ def _betweenness_centrality(G: nx.Graph, k: int | None, seed: int) -> dict[str, 
     predecessor lists over the whole graph for each source. This numbers the nodes
     once, keeps the same state in lists, and resets only the entries a source reached.
     The search order, the accumulation order and the rescale for sampled sources
-    follow networkx 3.5 and later, so the scores do not depend on the installed networkx.
+    follow networkx 3.5 and later. Older networkx rescaled sampled scores differently,
+    so there this returns networkx's own result.
     """
+    if not _NETWORKX_RESCALES_SAMPLES_BY_SOURCE:
+        return nx.betweenness_centrality(G, k=k, seed=seed)
     nodes = list(G)
     n = len(nodes)
     if k == n:
