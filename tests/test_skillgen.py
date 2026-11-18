@@ -772,11 +772,13 @@ def test_always_on_roundtrip_is_byte_faithful():
         "When the user types `/graphify`, use the installed graphify skill or instructions "
         "before doing anything else."
     )
-    # The registry holds the #1530 substitution plus the query-first and graph-diff rules.
+    # The registry holds the #1530 substitution plus the query-first, graph-diff
+    # and section-text rules.
     assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
         (old_instruction, new_instruction),
         gen._QUERY_FIRST_EDIT,
         gen._GRAPH_DIFF_EDIT,
+        gen._SECTION_EDIT,
     )
     baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
     # The ONLY divergences from the frozen baseline are the sanctioned edits —
@@ -784,7 +786,8 @@ def test_always_on_roundtrip_is_byte_faithful():
     assert old_instruction in baseline_agents
     baseline_agents = baseline_agents.replace(*gen._QUERY_FIRST_EDIT)
     old_rule, new_rule = gen._GRAPH_DIFF_EDIT
-    assert baseline_agents.replace(old_instruction, new_instruction).replace(old_rule, new_rule) == rendered_agents
+    replayed = baseline_agents.replace(old_instruction, new_instruction).replace(old_rule, new_rule)
+    assert replayed.replace(*gen._SECTION_EDIT) == rendered_agents
     assert "`skill` tool" not in rendered_agents
     assert 'skill: "graphify"' not in rendered_agents
 

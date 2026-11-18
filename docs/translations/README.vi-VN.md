@@ -47,7 +47,7 @@ Gõ `/graphify` trong trợ lý lập trình AI của bạn và nó ánh xạ to
   <em>Mã nguồn FastAPI được graphify ánh xạ. Mỗi nút là một khái niệm, màu sắc là các cộng đồng được phát hiện, và toàn bộ có thể nhấp được trong graph.html.</em>
 </p>
 
-**Bắt đầu** (30 seconds). Cần Python 3.10+ và uv (hoặc pipx):
+**Bắt đầu** (30 seconds). Cần Python 3.11+ và uv (hoặc pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Hướng dẫn và tài liệu tham khảo đầy đủ nằm tại **[docs.grap
 
 | Yêu cầu | Tối thiểu | Kiểm tra | Cài đặt |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ Việc này ghi một tệp cấu hình nhỏ bảo trợ lý của bạn tham k
 
 `GRAPH_REPORT.md` vẫn có sẵn cho việc rà soát kiến trúc trên diện rộng.
 
-Chính xác tệp nào mỗi nền tảng ghi ra (`CODEBUDDY.md` + `PreToolUse` hooks của CodeBuddy, `AGENTS.md` của Codex, plugin `.kilo` gốc của Kilo, quy tắc `alwaysApply` của Cursor, v.v.) được đề cập trong **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Chính xác tệp nào mỗi nền tảng ghi ra (`CODEBUDDY.md` + `PreToolUse` hooks của CodeBuddy, `AGENTS.md` của Codex, plugin `.kilo` gốc của Kilo, quy tắc `alwaysApply` của Cursor, v.v.) được đề cập trong **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Để gỡ graphify khỏi mọi nền tảng cùng lúc: `graphify uninstall` (thêm `--purge` để cũng xóa `graphify-out/`). Hoặc dùng lệnh theo từng nền tảng (ví dụ `graphify claude uninstall`).
 

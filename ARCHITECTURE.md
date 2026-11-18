@@ -53,6 +53,16 @@ result = extract(paths, root=Path(".").resolve())   # pass root explicitly
 
 Always pass `root`. Node ids and `source_file` values are derived relative to it; when it is omitted, `extract()` infers one from the paths you passed, which is the common parent of *that list* rather than your project root. A single-file call therefore anchors to that file's own directory, and ids can end up carrying path segments from the machine they were extracted on.
 
+Document twin reconciliation may fold a Markdown page/file node into its semantic
+`_doc` twin, carrying missing page metadata forward. A `_doc` suffix alone does
+not identify a twin: real headings and explicitly AST-origin records stay
+distinct, and the semantic survivor keeps its own provenance.
+
+Deletion/exclusion pruning matches corpus paths, not physical file targets.
+Absolute and relative spellings and symlinked scan roots identify the same
+corpus entry; distinct symlink aliases inside that root remain separate entries.
+Excluding one alias must preserve any still-included target or sibling alias.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
@@ -71,6 +81,40 @@ retains its bounded candidate scan. Older semantic cache entries cannot reveal
 whether their response contained discarded fragments. Regenerate affected cached
 output with `graphify extract <root> --force`; this bypasses the semantic cache
 read and replaces its entries with the new extraction.
+
+The shared extractor includes the enclosing type ID in nested declaration IDs,
+so `Left.Builder` and `Right.Builder` in one file remain distinct. Ruby retains
+its already-qualified class labels; TypeScript namespace paths qualify their
+contained type IDs. Type metadata records a label-based `type_path`, including
+C# generic arity. Exported field tables use this path and namespace, not raw
+node IDs, to survive cache relocation and corpus ID remapping.
+
+Java preserves package/import context for qualified receivers, typed
+locals/parameters/fields, casts, and declared factory returns. Nested member
+types inherited from resolved supertypes participate in lexical lookup; ambiguous
+inherited types stay unlinked. Qualified type paths bind their lexical prefix
+before following member types, without falling back to an unrelated owner.
+Inherited field types, including static-field chains, resolve in their declaring
+type's package/import and lexical context rather than the calling subclass's.
+C# passes the complete declared receiver name to
+its namespace/alias/nested-type resolver, honoring lexical shadowing before
+absolute namespace matches. Qualified member-type lookup includes resolved
+base classes, with directly declared nested types hiding inherited candidates.
+Kotlin declarations persist their package as namespace metadata so explicit
+singleton imports also resolve against unchanged files; import aliases constrain
+only their local binding name. Swift preserves qualified nested receiver names
+in static calls and parameter/property annotations and resolves names in
+the caller's lexical type scopes before module-level definitions; an unrelated
+nested declaration does not shadow a top-level type. Qualified constructor
+initializers retain their complete type path for local receiver typing without
+reintroducing bare-method fallback. Static calls do not require
+a local variable-type table. Ambiguous or absent
+explicit targets stay unlinked rather than falling back to an unrelated name.
+
+AST cache schema 47 retires flat nested IDs and incomplete scope facts.
+Unchanged type metadata is preserved by CLI/watch incremental resolution.
+Existing persisted graphs and source-evidence artifacts with old IDs require
+a full code rebuild: `graphify extract . --code-only --force`.
 
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
@@ -100,6 +144,15 @@ Every extractor returns:
 ```
 
 `validate.py` enforces this schema before `build()` consumes it.
+
+`graphify section` and the `get_section` MCP tool return the text of a Markdown
+heading's section (`graphify/sections.py`). The section's end is found at read
+time from the current file, not stored: it is the line before the next heading
+of the same or a shallower level, by the extractor's own heading, fence and
+frontmatter rules, so a section includes its subsections and an edit inside it
+never leaves a stale range. Reads are confined to the project root, the body
+goes through `redact_secrets`, and the text never enters graph.json, so graphs
+built before this existed work without a rebuild.
 
 Validation reports list/object enum values as schema errors. Graph assembly
 repairs structured `file_type` values to `concept` and structured `confidence`

@@ -47,7 +47,7 @@
   <em>A graphify által feltérképezett FastAPI-kódbázis. Minden csomópont egy fogalom, a színek az észlelt közösségek, és az egész kattintható a graph.html fájlban.</em>
 </p>
 
-**Kezdés** (30 másodperc). Python 3.10+ és uv (vagy pipx) szükséges:
+**Kezdés** (30 másodperc). Python 3.11+ és uv (vagy pipx) szükséges:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ A teljes útmutatók és a referencia itt található: **[docs.graphify.com](htt
 
 | Követelmény | Minimum | Ellenőrzés | Telepítés |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(ajánlott)* | bármely | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatíva)* | bármely | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Ez egy kis konfigurációs fájlt ír ki, amely arra utasítja az asszisztensét
 
 A `GRAPH_REPORT.md` továbbra is elérhető a széles körű architektúra-áttekintéshez.
 
-Hogy pontosan mely fájlokat írja ki az egyes platformok (a CodeBuddy `CODEBUDDY.md` + `PreToolUse` hookjai, a Codex `AGENTS.md`-je, a Kilo natív `.kilo` beépülője, a Cursor `alwaysApply` szabálya és így tovább), azt a **[Always-on setup](https://docs.graphify.com/guides/always-on)** ismerteti.
+Hogy pontosan mely fájlokat írja ki az egyes platformok (a CodeBuddy `CODEBUDDY.md` + `PreToolUse` hookjai, a Codex `AGENTS.md`-je, a Kilo natív `.kilo` beépülője, a Cursor `alwaysApply` szabálya és így tovább), azt a **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** ismerteti.
 
 A graphify egyszerre minden platformról való eltávolításához: `graphify uninstall` (adja hozzá a `--purge` kapcsolót a `graphify-out/` törléséhez is). Vagy használja a platformspecifikus parancsot (pl. `graphify claude uninstall`).
 

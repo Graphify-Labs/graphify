@@ -56,6 +56,33 @@ def test_single_element_array_with_one_valid_fragment_is_accepted(raw):
     assert llm._parse_llm_json(raw) == FIRST
 
 
+@pytest.mark.parametrize("raw", [
+    json.dumps([FIRST, EMPTY]),
+    json.dumps([FIRST, {"note": "done"}, "trailing prose"]),
+    "```json\n" + json.dumps([EMPTY, FIRST]) + "\n```",
+])
+def test_one_fragment_among_non_fragment_array_items_is_accepted(raw):
+    # Only fragment-bearing items count toward ambiguity; an empty fragment,
+    # a stray object or a string beside the one answer does not.
+    assert llm._parse_llm_json(raw) == FIRST
+
+
+@pytest.mark.parametrize("raw", ["[]", json.dumps([EMPTY]), json.dumps([{"note": "done"}])])
+def test_bare_array_without_a_fragment_is_refused(raw, capsys):
+    assert llm._parse_llm_json(raw) == EMPTY
+    assert "array" in capsys.readouterr().err.lower()
+
+
+def test_fenced_array_without_a_fragment_does_not_shadow_the_answer():
+    raw = "```json\n[]\n```\n" + json.dumps(FIRST)
+    assert llm._parse_llm_json(raw) == FIRST
+
+
+def test_unwrapped_single_element_array_still_counts_toward_ambiguity():
+    raw = "```json\n" + json.dumps([FIRST]) + "\n```\n" + json.dumps(SECOND)
+    assert llm._parse_llm_json(raw) == EMPTY
+
+
 def test_nested_graph_shaped_metadata_is_not_an_independent_answer():
     outer = {"nodes": [{"id": "outer", "metadata": {"nodes": [{"id": "inner"}]}}],
              "edges": [], "hyperedges": []}

@@ -47,7 +47,7 @@
   <em>Η βάση κώδικα του FastAPI χαρτογραφημένη από το graphify. Κάθε κόμβος είναι μια έννοια, τα χρώματα είναι εντοπισμένες κοινότητες, και το σύνολο είναι clickable στο graph.html.</em>
 </p>
 
-**Ξεκινήστε** (30 δευτερόλεπτα). Χρειάζεται Python 3.10+ και uv (ή pipx):
+**Ξεκινήστε** (30 δευτερόλεπτα). Χρειάζεται Python 3.11+ και uv (ή pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | Απαίτηση | Ελάχιστο | Έλεγχος | Εγκατάσταση |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(συνιστάται)* | οποιαδήποτε | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(εναλλακτικά)* | οποιαδήποτε | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ graphify install --project --platform codex
 
 Το `GRAPH_REPORT.md` παραμένει διαθέσιμο για ευρύ έλεγχο αρχιτεκτονικής.
 
-Ακριβώς ποια αρχεία γράφει κάθε πλατφόρμα (το `CODEBUDDY.md` + `PreToolUse` hooks του CodeBuddy, το `AGENTS.md` του Codex, το εγγενές plugin `.kilo` του Kilo, ο κανόνας `alwaysApply` του Cursor, κ.ο.κ.) καλύπτεται στο **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Ακριβώς ποια αρχεία γράφει κάθε πλατφόρμα (το `CODEBUDDY.md` + `PreToolUse` hooks του CodeBuddy, το `AGENTS.md` του Codex, το εγγενές plugin `.kilo` του Kilo, ο κανόνας `alwaysApply` του Cursor, κ.ο.κ.) καλύπτεται στο **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Για να αφαιρέσετε το graphify από όλες τις πλατφόρμες ταυτόχρονα: `graphify uninstall` (προσθέστε `--purge` για να διαγράψετε επίσης το `graphify-out/`). Ή χρησιμοποιήστε την εντολή ανά πλατφόρμα (π.χ. `graphify claude uninstall`).
 

@@ -47,7 +47,7 @@ Tastați `/graphify` în asistentul AI de programare, iar acesta vă mapează î
   <em>Baza de cod FastAPI mapată de graphify. Fiecare nod este un concept, culorile sunt comunitățile detectate, iar totul este clicabil în graph.html.</em>
 </p>
 
-**Începeți** (30 de secunde). Necesită Python 3.10+ și uv (sau pipx):
+**Începeți** (30 de secunde). Necesită Python 3.11+ și uv (sau pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Ghidurile complete și referința se află la **[docs.graphify.com](https://docs
 
 | Cerință | Minim | Verificare | Instalare |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recomandat)* | oricare | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativă)* | oricare | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Asta scrie un mic fișier de configurare care îi spune asistentului vostru să 
 
 `GRAPH_REPORT.md` este în continuare disponibil pentru revizuirea amplă a arhitecturii.
 
-Exact ce fișiere scrie fiecare platformă (`CODEBUDDY.md` + hook-uri `PreToolUse` pentru CodeBuddy, `AGENTS.md` pentru Codex, pluginul nativ `.kilo` pentru Kilo, regula `alwaysApply` pentru Cursor și așa mai departe) este acoperit în **[Configurare mereu activă](https://docs.graphify.com/guides/always-on)**.
+Exact ce fișiere scrie fiecare platformă (`CODEBUDDY.md` + hook-uri `PreToolUse` pentru CodeBuddy, `AGENTS.md` pentru Codex, pluginul nativ `.kilo` pentru Kilo, regula `alwaysApply` pentru Cursor și așa mai departe) este acoperit în **[Configurare mereu activă](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Pentru a elimina graphify de pe toate platformele deodată: `graphify uninstall` (adăugați `--purge` pentru a șterge și `graphify-out/`). Sau folosiți comanda per platformă (de ex. `graphify claude uninstall`).
 

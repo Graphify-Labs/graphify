@@ -121,6 +121,22 @@ _GRAPH_DIFF_EDIT = (
     " to it in a pull request is expected. Do not flag it as churn or suggest skipping the"
     " graph rebuild or its hooks.",
 )
+# Markdown headings carry their section's line range, and `graphify section` /
+# `get_section` return its text, so agents are told they need not open the .md.
+_SECTION_SENTENCE = (
+    " When the answer is under a Markdown heading, `graphify section \"<heading>\"`"
+    " prints that section's text, so the .md need not be opened."
+)
+_SECTION_EDIT = (
+    '`graphify explain "<concept>"` for focused concepts.',
+    '`graphify explain "<concept>"` for focused concepts.' + _SECTION_SENTENCE,
+)
+_ANTIGRAVITY_SECTION_EDIT = (
+    "/ `get_node` for focused concepts.",
+    "/ `get_node` for focused concepts. When the answer is under a Markdown heading,"
+    " `graphify section \"<heading>\"` / `get_section` returns that section's text,"
+    " so the .md need not be opened.",
+)
 ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
     # #1530: install guidance must stay host-generic — do not tell agents to
     # invoke a literal `skill` tool with `skill: "graphify"`, which is
@@ -134,9 +150,11 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
         ),
         _QUERY_FIRST_EDIT,
         _GRAPH_DIFF_EDIT,
+        _SECTION_EDIT,
     ),
-    "_CLAUDE_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT),
-    "_GEMINI_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT),
+    "_CLAUDE_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT, _SECTION_EDIT),
+    "_GEMINI_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT, _SECTION_EDIT),
+    "_ANTIGRAVITY_RULES": (_ANTIGRAVITY_SECTION_EDIT,),
 }
 
 # The full six-value file_type enum (Decision A). Every rendered platform — split
@@ -1438,6 +1456,21 @@ def _is_cloud_cta_section_line(line: str) -> bool:
     )
 
 
+_MCP_TOOLS_LINE = (
+    "This starts a stdio MCP server that exposes tools: {tools}. Add to Claude Desktop"
+    " or any MCP-compatible agent orchestrator so other agents can query the graph live."
+)
+
+
+def _is_get_section_tool_line(line: str) -> bool:
+    """Whether a line is the MCP tool list before or after `get_section` joined it."""
+    rest = "`get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`"
+    return line.strip() in {
+        _MCP_TOOLS_LINE.format(tools=f"`query_graph`, `get_node`, {rest}"),
+        _MCP_TOOLS_LINE.format(tools=f"`query_graph`, `get_node`, `get_section`, {rest}"),
+    }
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1472,6 +1505,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_skip_steps_clarification_line,
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
+    _is_get_section_tool_line,
 )
 
 

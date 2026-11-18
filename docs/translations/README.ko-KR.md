@@ -47,7 +47,7 @@ AI 코딩 어시스턴트에서 `/graphify` 를 입력하면, 프로젝트 전�
   <em>graphify 가 매핑한 FastAPI 코드베이스. 모든 노드는 하나의 개념이고, 색상은 검출된 커뮤니티이며, 전체가 graph.html 에서 클릭 가능합니다.</em>
 </p>
 
-**시작하기**(30 seconds). Python 3.10+ 와 uv(또는 pipx)가 필요합니다.
+**시작하기**(30 seconds). Python 3.11+ 와 uv(또는 pipx)가 필요합니다.
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | 요구 사항 | 최소 | 확인 | 설치 |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ Pi 에는 `PreToolUse` hook 이 없으므로, `graphify pi guard install` 은 (P
 
 `GRAPH_REPORT.md` 는 폭넓은 아키텍처 검토에 여전히 사용할 수 있습니다.
 
-각 플랫폼이 정확히 어떤 파일을 기록하는지(CodeBuddy 의 `CODEBUDDY.md` + `PreToolUse` hooks, Codex 의 `AGENTS.md`, Kilo 의 네이티브 `.kilo` 플러그인, Cursor 의 `alwaysApply` 규칙 등)는 **[Always-on setup](https://docs.graphify.com/guides/always-on)** 에서 다룹니다.
+각 플랫폼이 정확히 어떤 파일을 기록하는지(CodeBuddy 의 `CODEBUDDY.md` + `PreToolUse` hooks, Codex 의 `AGENTS.md`, Kilo 의 네이티브 `.kilo` 플러그인, Cursor 의 `alwaysApply` 규칙 등)는 **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** 에서 다룹니다.
 
 모든 플랫폼에서 graphify 를 한 번에 제거하려면: `graphify uninstall`(`--purge` 를 추가하면 `graphify-out/` 도 삭제). 또는 플랫폼별 명령(예: `graphify claude uninstall`)을 사용하세요.
 

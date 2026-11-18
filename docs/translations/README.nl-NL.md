@@ -47,7 +47,7 @@ Typ `/graphify` in je AI-codeerassistent en die brengt je hele project (code, do
   <em>De FastAPI-codebase in kaart gebracht door graphify. Elke node is een concept, kleuren zijn gedetecteerde communities, en het geheel is klikbaar in graph.html.</em>
 </p>
 
-**Aan de slag** (30 seconden). Vereist Python 3.10+ en uv (of pipx):
+**Aan de slag** (30 seconden). Vereist Python 3.11+ en uv (of pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Volledige handleidingen en naslag staan op **[docs.graphify.com](https://docs.gr
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(aanbevolen)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatief)* | any | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Dit schrijft een klein configuratiebestand dat je assistent vertelt om de kennis
 
 `GRAPH_REPORT.md` blijft beschikbaar voor een brede architectuurbeoordeling.
 
-Precies welke bestanden elk platform schrijft (CodeBuddy's `CODEBUDDY.md` + `PreToolUse`-hooks, Codex's `AGENTS.md`, Kilo's native `.kilo`-plugin, Cursor's `alwaysApply`-regel, enzovoort) wordt behandeld in **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Precies welke bestanden elk platform schrijft (CodeBuddy's `CODEBUDDY.md` + `PreToolUse`-hooks, Codex's `AGENTS.md`, Kilo's native `.kilo`-plugin, Cursor's `alwaysApply`-regel, enzovoort) wordt behandeld in **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Om graphify in één keer van alle platforms te verwijderen: `graphify uninstall` (voeg `--purge` toe om ook `graphify-out/` te verwijderen). Of gebruik het per-platform commando (bijv. `graphify claude uninstall`).
 

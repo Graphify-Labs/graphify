@@ -47,7 +47,7 @@
   <em>ฐานโค้ด FastAPI ที่แมปโดย graphify โหนดทุกจุดคือแนวคิดหนึ่ง สีคือชุมชนที่ตรวจพบ และทั้งหมดคลิกได้ใน graph.html</em>
 </p>
 
-**เริ่มต้นใช้งาน** (30 seconds) ต้องมี Python 3.10+ และ uv (หรือ pipx):
+**เริ่มต้นใช้งาน** (30 seconds) ต้องมี Python 3.11+ และ uv (หรือ pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | ข้อกำหนด | ขั้นต่ำ | ตรวจสอบ | ติดตั้ง |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ Pi ไม่มี `PreToolUse` hook ดังนั้น `graphify pi guard in
 
 `GRAPH_REPORT.md` ยังคงใช้ได้สำหรับการทบทวนสถาปัตยกรรมในวงกว้าง
 
-ไฟล์ที่แต่ละแพลตฟอร์มเขียนออกมาจริง ๆ (เช่น `CODEBUDDY.md` + `PreToolUse` hooks ของ CodeBuddy, `AGENTS.md` ของ Codex, ปลั๊กอิน `.kilo` แบบเนทีฟของ Kilo, กฎ `alwaysApply` ของ Cursor และอื่น ๆ) ครอบคลุมใน **[Always-on setup](https://docs.graphify.com/guides/always-on)**
+ไฟล์ที่แต่ละแพลตฟอร์มเขียนออกมาจริง ๆ (เช่น `CODEBUDDY.md` + `PreToolUse` hooks ของ CodeBuddy, `AGENTS.md` ของ Codex, ปลั๊กอิน `.kilo` แบบเนทีฟของ Kilo, กฎ `alwaysApply` ของ Cursor และอื่น ๆ) ครอบคลุมใน **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**
 
 หากต้องการนำ graphify ออกจากทุกแพลตฟอร์มในครั้งเดียว: `graphify uninstall` (เพิ่ม `--purge` เพื่อลบ `graphify-out/` ด้วย) หรือใช้คำสั่งเฉพาะแพลตฟอร์ม (เช่น `graphify claude uninstall`)
 

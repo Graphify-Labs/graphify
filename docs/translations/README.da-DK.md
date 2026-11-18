@@ -47,7 +47,7 @@ Skriv `/graphify` i din AI-kodeassistent, og den kortlægger hele dit projekt (k
   <em>FastAPI-kodebasen kortlagt af graphify. Hver knude er et begreb, farver er detekterede fællesskaber, og det hele er klikbart i graph.html.</em>
 </p>
 
-**Kom godt i gang** (30 sekunder). Kræver Python 3.10+ og uv (eller pipx):
+**Kom godt i gang** (30 sekunder). Kræver Python 3.11+ og uv (eller pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Fulde vejledninger og reference findes på **[docs.graphify.com](https://docs.gr
 
 | Krav | Minimum | Tjek | Installér |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(anbefalet)* | enhver | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativ)* | enhver | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Dette skriver en lille konfigurationsfil, der fortæller din assistent, at den s
 
 `GRAPH_REPORT.md` er stadig tilgængelig til bred arkitekturgennemgang.
 
-Præcis hvilke filer hver platform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex' `AGENTS.md`, Kilos indbyggede `.kilo`-plugin, Cursors `alwaysApply`-regel osv.) er dækket i **[Altid aktiv-opsætning](https://docs.graphify.com/guides/always-on)**.
+Præcis hvilke filer hver platform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex' `AGENTS.md`, Kilos indbyggede `.kilo`-plugin, Cursors `alwaysApply`-regel osv.) er dækket i **[Altid aktiv-opsætning](https://docs.graphify.com/open-source/vibe-coding)**.
 
 For at fjerne graphify fra alle platforme på én gang: `graphify uninstall` (tilføj `--purge` for også at slette `graphify-out/`). Eller brug kommandoen pr. platform (f.eks. `graphify claude uninstall`).
 

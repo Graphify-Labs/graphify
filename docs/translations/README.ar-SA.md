@@ -47,7 +47,7 @@
   <em>قاعدة كود FastAPI مرسومة بواسطة graphify. كل عقدة مفهوم، والألوان مجتمعات مكتشفة، والكل قابل للنقر في graph.html.</em>
 </p>
 
-**ابدأ الآن** (30 ثانية). يتطلب Python 3.10+ وuv (أو pipx):
+**ابدأ الآن** (30 ثانية). يتطلب Python 3.11+ وuv (أو pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ graphify install --project --platform codex
 
 ما يزال `GRAPH_REPORT.md` متاحًا لمراجعة معمارية عامة.
 
-الملفات التي تكتبها كل منصة بالضبط (ملف CodeBuddy `CODEBUDDY.md` + خطافات `PreToolUse`، وملف Codex `AGENTS.md`، وإضافة Kilo الأصلية `.kilo`، وقاعدة Cursor `alwaysApply`، وهكذا) مشروحة في **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+الملفات التي تكتبها كل منصة بالضبط (ملف CodeBuddy `CODEBUDDY.md` + خطافات `PreToolUse`، وملف Codex `AGENTS.md`، وإضافة Kilo الأصلية `.kilo`، وقاعدة Cursor `alwaysApply`، وهكذا) مشروحة في **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 لإزالة graphify من كل المنصات دفعة واحدة: `graphify uninstall` (أضف `--purge` لحذف `graphify-out/` أيضًا). أو استخدم الأمر الخاص بكل منصة (مثل `graphify claude uninstall`).
 

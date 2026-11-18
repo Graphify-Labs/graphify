@@ -47,7 +47,7 @@ Kirjoita `/graphify` AI-koodausavustajaasi, niin se kartoittaa koko projektisi (
   <em>FastAPI-koodikanta graphifyn kartoittamana. Jokainen solmu on käsite, värit ovat havaittuja yhteisöjä, ja koko juttu on klikattavissa tiedostossa graph.html.</em>
 </p>
 
-**Pääse alkuun** (30 sekuntia). Tarvitsee Python 3.10+ ja uv:n (tai pipx:n):
+**Pääse alkuun** (30 sekuntia). Tarvitsee Python 3.11+ ja uv:n (tai pipx:n):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Täydelliset oppaat ja viite löytyvät osoitteesta **[docs.graphify.com](https:
 
 | Vaatimus | Vähimmäis | Tarkista | Asenna |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(suositeltu)* | mikä tahansa | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(vaihtoehto)* | mikä tahansa | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Tämä kirjoittaa pienen konfiguraatiotiedoston, joka kehottaa avustajaasi konsu
 
 `GRAPH_REPORT.md` on edelleen käytettävissä laajaan arkkitehtuurikatselmointiin.
 
-Tarkalleen mitkä tiedostot kukin alusta kirjoittaa (CodeBuddyn `CODEBUDDY.md` + `PreToolUse`-hookit, Codexin `AGENTS.md`, Kilon natiivi `.kilo`-liitännäinen, Cursorin `alwaysApply`-sääntö ja niin edelleen) on käsitelty kohdassa **[Aina päällä -asetus](https://docs.graphify.com/guides/always-on)**.
+Tarkalleen mitkä tiedostot kukin alusta kirjoittaa (CodeBuddyn `CODEBUDDY.md` + `PreToolUse`-hookit, Codexin `AGENTS.md`, Kilon natiivi `.kilo`-liitännäinen, Cursorin `alwaysApply`-sääntö ja niin edelleen) on käsitelty kohdassa **[Aina päällä -asetus](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Poistaaksesi graphifyn kaikilta alustoilta kerralla: `graphify uninstall` (lisää `--purge` poistaaksesi myös `graphify-out/`). Tai käytä alustakohtaista komentoa (esim. `graphify claude uninstall`).
 

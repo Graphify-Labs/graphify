@@ -47,7 +47,7 @@
   <em>בסיס הקוד של FastAPI ממופה על ידי graphify. כל צומת הוא מושג, הצבעים הם קהילות שזוהו, והכל ניתן ללחיצה ב-graph.html.</em>
 </p>
 
-**התחלה מהירה** (30 שניות). דורש Python 3.10+ ו-uv (או pipx):
+**התחלה מהירה** (30 שניות). דורש Python 3.11+ ו-uv (או pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | דרישה | מינימום | בדיקה | התקנה |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(מומלץ)* | כל גרסה | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(חלופה)* | כל גרסה | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ graphify install --project --platform codex
 
 `GRAPH_REPORT.md` עדיין זמין לסקירת ארכיטקטורה רחבה.
 
-אילו קבצים בדיוק כל פלטפורמה כותבת (ה-`CODEBUDDY.md` + hooks של `PreToolUse` של CodeBuddy, ה-`AGENTS.md` של Codex, תוסף ה-`.kilo` המקורי של Kilo, כלל ה-`alwaysApply` של Cursor, וכן הלאה) מכוסה ב-**[הגדרה תמידית](https://docs.graphify.com/guides/always-on)**.
+אילו קבצים בדיוק כל פלטפורמה כותבת (ה-`CODEBUDDY.md` + hooks של `PreToolUse` של CodeBuddy, ה-`AGENTS.md` של Codex, תוסף ה-`.kilo` המקורי של Kilo, כלל ה-`alwaysApply` של Cursor, וכן הלאה) מכוסה ב-**[הגדרה תמידית](https://docs.graphify.com/open-source/vibe-coding)**.
 
 כדי להסיר את graphify מכל הפלטפורמות בבת אחת: `graphify uninstall` (הוסיפו `--purge` כדי למחוק גם את `graphify-out/`). או השתמשו בפקודה הספציפית לפלטפורמה (לדוגמה `graphify claude uninstall`).
 
