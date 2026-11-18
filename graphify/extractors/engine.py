@@ -10724,6 +10724,25 @@ def _extract_generic(
                 walk(child, parent_class_nid=parent_class_nid)
             return
 
+        # Ruby `private def x` / `private_class_method def self.x` pass the
+        # definition as a call argument. It is still a member of the class
+        # body it sits in, so keep the class link for those arguments only.
+        if (config.ts_module == "tree_sitter_ruby" and t == "call"
+                and parent_class_nid
+                and node.child_by_field_name("receiver") is None):
+            args = node.child_by_field_name("arguments")
+            if args is not None and any(
+                    c.type in config.function_types for c in args.children):
+                for child in node.children:
+                    if child == args:
+                        for arg in args.children:
+                            walk(arg, parent_class_nid=(
+                                parent_class_nid
+                                if arg.type in config.function_types else None))
+                    else:
+                        walk(child, parent_class_nid=None)
+                return
+
         # Default: recurse
         for child in node.children:
             walk(child, parent_class_nid=None)
