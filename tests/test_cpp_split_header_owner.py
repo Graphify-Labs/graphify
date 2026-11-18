@@ -43,7 +43,7 @@ def test_namespace_qualified_owner_is_not_a_same_named_included_type(tmp_path):
     cpp.write_text('#include "left.h"\n#include "right.h"\nvoid Left::Foo::run(){say();}\nvoid Left::Foo::say(){}', encoding="utf-8")
     r = extract([a, b, cpp], root=tmp_path, parallel=False, cache_root=tmp_path)
     nodes = {n["id"]: n for n in r["nodes"]}
-    caller = next(n["id"] for n in r["nodes"] if n["label"] == "Left::Foo::run()")
+    caller = next(n["id"] for n in r["nodes"] if n.get("_cpp_qualified") == "Left::Foo::run")
     calls = [e for e in r["edges"] if e["source"] == caller and e["relation"] == "calls"]
     assert calls
     assert all(nodes[e["target"]]["source_file"] == "left.h" for e in calls)

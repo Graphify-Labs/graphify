@@ -55,7 +55,7 @@ def test_namespace_members_still_extracted(tmp_path):
                "}\n")
     r = extract([f], cache_root=tmp_path)
     assert _has_node(r, "src/n.ts", "Shapes")
-    assert _has_node(r, "src/n.ts", "Circle")
+    assert _has_node(r, "src/n.ts", "Shapes.Circle")
     assert _has_node(r, "src/n.ts", "area")
 
 

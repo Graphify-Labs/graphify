@@ -258,11 +258,11 @@ def _git_head(cwd: "str | Path | None" = None) -> str | None:
 MALFORMED_GRAPH = object()
 
 
-def existing_graph_node_count(path: "str | Path"):
-    """Node count of an existing graph.json.
+def _load_existing_graph_nodes(path: "str | Path"):
+    """The raw ``nodes`` list of an existing graph.json, or a sentinel.
 
     Returns:
-      - an ``int`` node count when the file parses;
+      - a ``list`` of node dicts when the file parses;
       - ``None`` when there is verifiably nothing to protect — absent, empty, or
         over the size cap (matching how :func:`to_json` lets the new graph
         replace an empty/oversized file);
@@ -270,8 +270,9 @@ def existing_graph_node_count(path: "str | Path"):
         unparseable — the caller must treat this as fail-closed (refuse to
         overwrite), mirroring to_json's #479 handling of a corrupt/mid-write file.
 
-    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
-    guard that :func:`to_json` applies inline for the clustered path.
+    Shared loading logic for :func:`existing_graph_node_count` and
+    :func:`existing_graph_node_counts_by_source`, which differ only in how
+    they summarize this same list.
     """
     p = Path(path)
     if not p.exists():
@@ -297,7 +298,45 @@ def existing_graph_node_count(path: "str | Path"):
     except Exception:
         return MALFORMED_GRAPH
     nodes = data.get("nodes") if isinstance(data, dict) else None
-    return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
+    return nodes if isinstance(nodes, list) else MALFORMED_GRAPH
+
+
+def existing_graph_node_count(path: "str | Path"):
+    """Node count of an existing graph.json.
+
+    Returns an ``int``, ``None``, or :data:`MALFORMED_GRAPH` — see
+    :func:`_load_existing_graph_nodes` for what each means.
+
+    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
+    guard that :func:`to_json` applies inline for the clustered path.
+    """
+    nodes = _load_existing_graph_nodes(path)
+    if not isinstance(nodes, list):
+        return nodes
+    return len(nodes)
+
+
+def existing_graph_node_counts_by_source(path: "str | Path"):
+    """Per-``source_file`` node counts of an existing graph.json.
+
+    Returns a ``dict`` mapping ``source_file`` to its node count, or ``None``/
+    :data:`MALFORMED_GRAPH` under the same conditions as
+    :func:`existing_graph_node_count` — see :func:`_load_existing_graph_nodes`.
+
+    Used to tell whether a failed AST source ever had anything the #479
+    shrink guard would need to protect (#5245): a source with zero saved
+    nodes here has nothing to lose, so its permanent failure alone should not
+    arm the guard against an otherwise complete, unrelated run.
+    """
+    nodes = _load_existing_graph_nodes(path)
+    if not isinstance(nodes, list):
+        return nodes
+    counts: dict[str, int] = {}
+    for n in nodes:
+        if isinstance(n, dict):
+            sf = n.get("source_file") or ""
+            counts[sf] = counts.get(sf, 0) + 1
+    return counts
 
 
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
@@ -308,6 +347,9 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     # write it into graph.json (#4940).
     dedup_remap = take_dedup_remap(G)
     take_shrink_accounting(G)
+    # Sources build_merge replaced or pruned this run: their old semantic ids
+    # are not lost. Popped so it is never written into graph.json.
+    replaced_sources = set(G.graph.pop("_replaced_sources", None) or ())
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -334,7 +376,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             else:
                 try:
                     existing_data = json.loads(raw)
+                    del raw
                     existing_nodes = existing_data.get("nodes", [])
+                    # Only the node list is compared; let the links go now.
+                    del existing_data
                     if not isinstance(existing_nodes, list):
                         existing_nodes = []
                     existing_n = len(existing_nodes)
@@ -361,7 +406,7 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             ]
             folded: dict[str, str] = {}
             missing = _lost_saved_semantic_nodes(
-                existing_nodes, new_node_list, set(), folded, dedup_remap=dedup_remap,
+                existing_nodes, new_node_list, replaced_sources, folded, dedup_remap=dedup_remap,
             )
             if missing:
                 import sys as _sys
@@ -395,6 +440,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     file=_sys.stderr,
                 )
                 return False
+            # The guard passed; free its copies of both graphs before export.
+            del existing_nodes, new_node_list, existing_ids
 
     node_community = _node_community_map(communities)
     _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
@@ -468,8 +515,14 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         rest = sorted(k for k in item if k not in leading)
         return {k: item[k] for k in (*leading, *rest)}
 
-    data["nodes"] = [_canonical(n, ("id", "label")) for n in data["nodes"]]
-    data["links"] = [_canonical(link, ("source", "target", "relation")) for link in data["links"]]
+    def _canonicalize_in_place(items: list, lead: tuple[str, ...]) -> None:
+        # Replace each dict in place so the old one is freed at once, instead
+        # of holding two full copies of the node/link lists.
+        for i, item in enumerate(items):
+            items[i] = _canonical(item, lead)
+
+    _canonicalize_in_place(data["nodes"], ("id", "label"))
+    _canonicalize_in_place(data["links"], ("source", "target", "relation"))
     data["nodes"].sort(key=_json_sort_key)
     data["links"].sort(key=_json_sort_key)
     if "hyperedges" not in getattr(G, "graph", {}):
@@ -490,6 +543,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 _prev = json.loads(existing_path.read_text(encoding="utf-8"))
                 if isinstance(_prev, dict):
                     _prev_hyperedges = _prev.get("hyperedges")
+                # Only the hyperedges are read; do not hold the whole parse.
+                del _prev
         except Exception:
             _prev_hyperedges = None
         if _prev_hyperedges:

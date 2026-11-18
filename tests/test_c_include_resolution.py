@@ -514,3 +514,94 @@ def test_objc_quoted_include_and_import_parity(tmp_path: Path) -> None:
 
     foundation_edge = next(e for e in import_edges if e["target"] == "foundation")
     assert foundation_edge is not None
+
+
+def _write_angle_corpus(root: Path) -> list[Path]:
+    """The #5218 layout: a CMake-style public header plus a project header
+    that shares its name with a C++ standard header."""
+    bus_h = root / "liba" / "include" / "liba" / "Bus.h"
+    functional_h = root / "libc" / "include" / "libc" / "functional.h"
+    user_cc = root / "libb" / "src" / "user.cc"
+    for p in (bus_h, functional_h, user_cc):
+        p.parent.mkdir(parents=True, exist_ok=True)
+    bus_h.write_text("namespace a { class Bus { public: void send(); }; }\n", encoding="utf-8")
+    functional_h.write_text("namespace c { int compose(int x); }\n", encoding="utf-8")
+    user_cc.write_text(
+        "#include <functional>\n"
+        "#include <chrono>\n"
+        "#include <liba/Bus.h>\n"
+        "void use(a::Bus& bus) { bus.send(); }\n",
+        encoding="utf-8",
+    )
+    return [bus_h, functional_h, user_cc]
+
+
+def _user_import_targets(G: nx.DiGraph) -> set[str]:
+    return {
+        v for u, v, d in G.edges(data=True)
+        if d.get("relation") == "imports" and "user.cc" in str(d.get("source_file", ""))
+    }
+
+
+def test_angle_include_with_directory_resolves_to_corpus_header(tmp_path: Path) -> None:
+    """`#include <liba/Bus.h>` binds to liba/include/liba/Bus.h (#5218)."""
+    root = _real(tmp_path)
+    files = _write_angle_corpus(root)
+
+    result = extract(files, root=root, cache_root=root)
+    bus_file_id = next(
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "Bus.h" and str(n.get("source_file", "")).endswith("Bus.h")
+    )
+    angle_edges = [
+        e for e in result["edges"]
+        if e.get("relation") == "imports"
+        and (e.get("metadata") or {}).get("raw_include") == "liba/Bus.h"
+    ]
+    assert len(angle_edges) == 1
+    assert angle_edges[0]["metadata"]["include_kind"] == "angle"
+    assert angle_edges[0]["target"] == bus_file_id
+
+    G = build([result], directed=True, root=root)
+    assert bus_file_id in _user_import_targets(G)
+
+
+def test_angle_standard_header_not_bound_to_same_named_project_file(tmp_path: Path) -> None:
+    """`#include <functional>` stays an external stub even when the corpus has
+    exactly one `functional.h` that would claim the bare-stem alias (#5218)."""
+    root = _real(tmp_path)
+    files = _write_angle_corpus(root)
+
+    result = extract(files, root=root, cache_root=root)
+    project_functional_ids = {
+        n["id"] for n in result["nodes"]
+        if str(n.get("source_file", "")).endswith("functional.h")
+    }
+
+    G = build([result], directed=True, root=root)
+    targets = _user_import_targets(G)
+    assert not (targets & project_functional_ids)
+    assert "functional" in targets
+    assert G.nodes["functional"].get("external") is True
+    assert "chrono" in targets
+
+
+def test_angle_include_without_directory_is_not_path_resolved(tmp_path: Path) -> None:
+    """A bare `<name.h>` has no path to match, so the corpus resolver leaves
+    it alone even when one same-named header exists elsewhere (#5218)."""
+    root = _real(tmp_path)
+    cfg = root / "cfg" / "config.h"
+    main_c = root / "src" / "main.c"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    main_c.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("#define CFG 1\n", encoding="utf-8")
+    main_c.write_text("#include <config.h>\nint main(void) { return CFG; }\n", encoding="utf-8")
+
+    result = extract([main_c, cfg], root=root, cache_root=root)
+    edges = [
+        e for e in result["edges"]
+        if e.get("relation") == "imports" and "main.c" in str(e.get("source_file", ""))
+    ]
+    assert len(edges) == 1
+    assert edges[0]["target"] == "config"
+    assert edges[0]["metadata"] == {"raw_include": "config.h", "include_kind": "angle"}

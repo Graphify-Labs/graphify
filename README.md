@@ -20,7 +20,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
   <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -28,7 +28,9 @@
 </p>
 
 <p align="center">
-  <b>Cut agent token spend by 80%.</b> Graphify Cloud is always-on memory that governs your agents, keeps code quality high, and proves correctness with formal verification. <a href="https://app.graphify.com/login"><b>Start a free 14-day trial &rarr;</b></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Start free, no card required &rarr;</b></a>
+  <br/>
+  <b>Cut agent token spend by 80%.</b> Graphify Cloud is always-on memory that governs your agents, keeps code quality high, and proves correctness with formal verification.
 </p>
 
 Type `/graphify` in your AI coding assistant and it maps your entire project (code, docs, PDFs, images, videos) into a **knowledge graph** you can **query instead of grepping** through files.
@@ -38,7 +40,7 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
 - **Not a vector index.** No embeddings, no vector store: a real graph you traverse. Ask a question, trace the path between two things, or explain one concept.
 
 > [!NOTE]
-> **Want this always-on?** [Graphify Cloud](https://app.graphify.com/login) keeps the graph live across your entire SDLC: monorepo and cross-repo support, formal verification, and code review with a bird's-eye view of your SDLC, plus connectors for Sentry, Jira, and more so incidents and tickets sit in the same graph as your code. **[Start a free 14-day trial at app.graphify.com](https://app.graphify.com/login)**.
+> **Want this always-on?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) keeps the graph live across your entire SDLC: monorepo and cross-repo support, formal verification, and code review with a bird's-eye view of your SDLC, plus connectors for Sentry, Jira, and more so incidents and tickets sit in the same graph as your code. **[Start free, no card required](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +49,7 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
   <em>The FastAPI codebase mapped by graphify. Every node is a concept, colors are detected communities, and the whole thing is clickable in graph.html.</em>
 </p>
 
-**Get started** (30 seconds). Needs Python 3.10+ and uv (or pipx):
+**Get started** (30 seconds). Needs Python 3.11+ and uv (or pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +125,7 @@ What you get out of the box:
 | **Local-first** | Code is parsed locally with tree-sitter (no LLM, nothing leaves your machine); only the semantic pass over docs/media calls a backend, and only if you configure one |
 
 > [!TIP]
-> Running this across many repos or a monorepo? [Graphify Cloud](https://app.graphify.com/login) does it continuously and cuts agent token spend by 80%, with cross-repo links, SDLC-wide code review, formal verification, and Sentry/Jira connectors. [Start a free 14-day trial &rarr;](https://app.graphify.com/login)
+> Running this across many repos or a monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) does it continuously and cuts agent token spend by 80%, with cross-repo links, SDLC-wide code review, formal verification, and Sentry/Jira connectors. [Start free, no card required &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +161,7 @@ Full guides and reference live at **[docs.graphify.com](https://docs.graphify.co
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -175,9 +177,10 @@ winget install astral-sh.uv
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt install python3.12 python3-pip pipx
-# or install uv:
+# uv manages its own Python, so this is the only step you need:
 curl -LsSf https://astral.sh/uv/install.sh | sh
+# or use the system Python with pipx:
+sudo apt install python3 python3-pip pipx
 ```
 
 ---
@@ -253,7 +256,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 
 `--platform agents` (alias `--platform skills`) targets the generic cross-framework [Agent-Skills](https://github.com/anthropics/skills) locations: the spec's user-global `~/.agents/skills/` (read by `npx skills` and spec-compliant frameworks) for a global install, and `./.agents/skills/` for a project (`--project`) install. The bare `graphify install` stays single-platform (Claude Code) by design: use the named `agents` platform when you want the skill discoverable by any framework that reads `.agents/skills`.
 
-Claude Code's `graphify install --project --strict` makes Read and dedicated Grep share one denial per session unless a recent graph query has oriented the agent (default 30 minutes). A Grep over a directory needs no indexed-file match; a Grep pinned to a single file is denied only when the graph indexes that file, as with Read. External and graph-output Grep targets produce neither a deny nor a nudge, in soft mode as well as strict mode, matching Read's scope. A graph marked `needs_update` never triggers a Grep denial. Bash searches and Glob stay advisory. `GRAPHIFY_HOOK_STRICT=1` enables the policy without reinstalling; `GRAPHIFY_HOOK_STRICT=0` disables it even when installed with `--strict`. Existing strict installs need a reinstall to add the search hook's `--strict` flag, or the environment override.
+Claude Code's `graphify install --project --strict` makes Read and dedicated Grep share one denial per session unless a recent graph query has oriented the agent (default 30 minutes). A Grep over a directory needs no indexed-file match; a Grep pinned to a single file is denied only when the graph indexes that file, as with Read. External and graph-output Grep targets produce neither a deny nor a nudge, in soft mode as well as strict mode, matching Read's scope. A graph marked `needs_update` never triggers a Grep denial. Bash searches and Glob stay advisory. `GRAPHIFY_HOOK_STRICT=1` enables the policy without reinstalling; `GRAPHIFY_HOOK_STRICT=0` disables it even when installed with `--strict`. Existing strict installs need a reinstall to add the search hook's `--strict` flag, or the environment override. Soft nudges are capped per session (`GRAPHIFY_HOOK_NUDGE_CAP`, default 5). After a context compaction, a `SessionStart` hook (matcher `compact`) resets that budget, the subagents' budgets and the strict denial, since the compacted context no longer holds the earlier nudges.
 
 Pi has no `PreToolUse` hook, so `graphify pi guard install` registers a native Pi extension (via Pi's own `pi install <package directory>`) that runs the installed `graphify hook-guard` before Pi's `read`, `grep`, `find` and search-style `bash` calls. Fresh/stale graph decisions and the `GRAPHIFY_HOOK_STRICT=1` once-per-session denial shared by indexed Read and dedicated Grep come from that same policy, so Pi matches Claude Code's hook behavior; Bash and file listing remain advisory. Guidance arrives as a `<system-reminder source="graphify">` steering message. It needs Pi 0.58.4 or newer: earlier versions let a steering message skip the rest of a parallel tool-call batch. The package ships inside the Graphify installation, so install Graphify persistently (`uv tool install graphifyy` or `pipx install graphifyy`, not `uvx`), restart Pi after installing or upgrading, and remove it with `graphify pi guard uninstall`. Only local file targets are inspected; the hook needs `graphify` on an absolute `PATH` entry outside the project, is bounded to a two-second, 256 KiB-in/64 KiB-out call, and fails open. The same package also loads in [Oh My Pi](https://github.com/can1357/oh-my-pi): `omp plugin install "$(graphify pi guard path)"`. The registered path contains the Python version and venv, so re-run `graphify pi guard install` after changing either, and remove the old entry with `pi remove <old path>`.
 
@@ -305,12 +308,12 @@ Run `graphify <platform> install` once in your project, for example `graphify cl
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
-- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path.
+- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools, or via `cat`, `head`, `tail`, `sed -n` and similar readers in Bash) and nudges your assistant toward the graph path.
 - **Instruction-file platforms** (Codex, OpenCode, Cursor, etc.): persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance.
 
 `GRAPH_REPORT.md` is still available for broad architecture review.
 
-Exactly which files each platform writes (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, Kilo's native `.kilo` plugin, Cursor's `alwaysApply` rule, and so on) is covered in **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Exactly which files each platform writes (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, Kilo's native `.kilo` plugin, Cursor's `alwaysApply` rule, and so on) is covered in **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
 
@@ -484,7 +487,7 @@ Every command and flag, with examples: **[CLI reference](https://docs.graphify.c
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) is the always-on layer built on top of graphify. Instead of a graph you rebuild on demand per folder, it keeps one live graph across your entire software development lifecycle:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) is the always-on layer built on top of graphify. Instead of a graph you rebuild on demand per folder, it keeps one live graph across your entire software development lifecycle:
 
 - **80% fewer tokens**: always-on memory means your agents stop re-reading and re-explaining the codebase every session.
 - **Monorepo and cross-repo**: one connected graph across every service and repository, not a graph per folder.
@@ -493,7 +496,7 @@ Every command and flag, with examples: **[CLI reference](https://docs.graphify.c
 - **SDLC connectors**: pull in Sentry, Jira, and more, so incidents, tickets, and code live in one graph.
 - **Always-on**: updates continuously in the background across code, docs, and meetings.
 
-**[Start a free 14-day trial at app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Start free, no card required &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 

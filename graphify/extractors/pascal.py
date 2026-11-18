@@ -228,6 +228,147 @@ def _resolve_pascal_callee_factory(
     return _resolve
 
 
+# tree-sitter-pascal 0.11.0 mis-lexes a string literal whose FIRST content
+# character is an escaped apostrophe -- `'''X'`, and the degenerate `''''`
+# (a literal apostrophe). The same escape in the middle (`'a''b'`) or at the
+# end (`'abc'''`) parses fine, so this is a lexer edge case, not missing
+# support for escapes. The grammar has no usable error recovery here: every
+# symbol from the offending literal to EOF is dropped, which on a Delphi
+# codebase that builds SQL by concatenation (`'where x='''+V+''' and'`)
+# routinely costs an entire unit.
+#
+# Same remedy as the C# verbatim-interpolated-string failure (#3376): mask
+# only the offending bytes, keep every byte offset identical, and discard the
+# rewrite unless it parses better. The mask is applied for PARSING only --
+# node text is still read from the untouched original source, so labels and
+# locations are byte-for-byte what the user wrote.
+def _pascal_parse_health(root) -> tuple[int, int]:
+    """Return ``(bytes inside ERROR nodes, -first error byte)``; lower is better.
+
+    Error COUNT is the wrong measure here: tree-sitter answers a failure in the
+    first declaration by wrapping the entire unit in one ERROR node, which by
+    count (1) would outrank a parse that recovered everything but a handful of
+    statements (68). Bytes swallowed by ERROR nodes tracks what the extractor
+    actually loses. Only the outermost ERROR is measured -- its children are
+    already inside it -- and the first error's position breaks ties, so a plain
+    ``<`` comparison means "parses better".
+    """
+    covered, first = 0, -1
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "ERROR" or node.is_missing:
+            covered += node.end_byte - node.start_byte
+            if first < 0 or node.start_byte < first:
+                first = node.start_byte
+            continue  # children are inside this span; do not double-count
+        stack.extend(node.children)
+    return (covered, 1) if covered == 0 else (covered, -first)
+
+
+def _normalize_pascal_escaped_string_literals(source: bytes) -> bytes | None:
+    """Blank the leading escaped apostrophe of Pascal string literals.
+
+    Returns ``None`` when the source holds no such literal. Each replacement is
+    the same byte length as what it replaces, so every downstream offset, line
+    and column is preserved.
+    """
+    out = bytearray(source)
+    i, n, changed = 0, len(source), False
+    while i < n:
+        byte = source[i:i + 1]
+        if byte == b"/" and source[i:i + 2] == b"//":
+            j = source.find(b"\n", i)
+            i = n if j < 0 else j + 1
+            continue
+        if byte == b"{":
+            j = source.find(b"}", i)
+            i = n if j < 0 else j + 1
+            continue
+        if byte == b"(" and source[i:i + 2] == b"(*":
+            j = source.find(b"*)", i)
+            i = n if j < 0 else j + 2
+            continue
+        if byte == b"'":
+            start = i
+            leading = source[i + 1:i + 3] == b"''"
+            i += 1
+            while i < n:
+                if source[i:i + 1] == b"'":
+                    if source[i + 1:i + 2] == b"'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                if source[i:i + 1] == b"\n":
+                    break
+                i += 1
+            # `i - start >= 4` keeps the empty literal `''` out of the rewrite.
+            if leading and i - start >= 4:
+                out[start + 1:start + 3] = b"xx"
+                changed = True
+            continue
+        i += 1
+    return bytes(out) if changed else None
+
+
+# A compiler directive between a routine header and its `begin` is rejected by
+# tree-sitter-pascal 0.11.0 -- even an empty `{$IFDEF X}{$ENDIF}` pair, while an
+# ordinary `{ comment }` in the same position parses fine, so the directive rule
+# simply is not allowed in the declaration-section position. Delphi code guards
+# a routine's `var` block this way routinely:
+#
+#     procedure TDM.CheckUserRights;
+#     {$IFDEF R2platnik}
+#     var
+#       i: integer;
+#     {$ENDIF}
+#     begin
+#
+# As with the string-literal mask, the whole unit is lost from that point on.
+# Blanking the `$` turns the directive into an ordinary comment the grammar
+# already accepts, at identical byte length. Directives do not contribute nodes
+# or edges to the Pascal graph, so nothing is lost by hiding them from the
+# parser -- and this runs only on the retry path, after the unmasked parse has
+# already failed.
+def _normalize_pascal_compiler_directives(source: bytes) -> bytes | None:
+    """Disguise ``{$...}`` compiler directives as ordinary ``{...}`` comments."""
+    out = bytearray(source)
+    i, n, changed = 0, len(source), False
+    while i < n:
+        byte = source[i:i + 1]
+        if byte == b"/" and source[i:i + 2] == b"//":
+            j = source.find(b"\n", i)
+            i = n if j < 0 else j + 1
+            continue
+        if byte == b"'":
+            i += 1
+            while i < n:
+                if source[i:i + 1] == b"'":
+                    if source[i + 1:i + 2] == b"'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                if source[i:i + 1] == b"\n":
+                    break
+                i += 1
+            continue
+        if byte == b"{":
+            j = source.find(b"}", i)
+            if source[i + 1:i + 2] == b"$":
+                out[i + 1:i + 2] = b" "
+                changed = True
+            i = n if j < 0 else j + 1
+            continue
+        if byte == b"(" and source[i:i + 2] == b"(*":
+            j = source.find(b"*)", i)
+            i = n if j < 0 else j + 2
+            continue
+        i += 1
+    return bytes(out) if changed else None
+
+
 def _extract_pascal_regex(path: Path) -> dict:
     """Regex fallback for Pascal/Delphi extraction when tree-sitter-pascal
     is unavailable. Produces the same node/edge schema as the tree-sitter pass.
@@ -460,6 +601,16 @@ def extract_pascal(path: Path) -> dict:
         source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
+        if root.has_error:
+            masked = _normalize_pascal_escaped_string_literals(source) or source
+            masked = _normalize_pascal_compiler_directives(masked) or masked
+            if masked != source:
+                retry = parser.parse(masked)
+                if _pascal_parse_health(retry.root_node) < _pascal_parse_health(root):
+                    # Parse the masked bytes but keep reading node text
+                    # from the original `source`: offsets are identical
+                    # and only string-literal interiors differ.
+                    tree, root = retry, retry.root_node
     except Exception:
         return _extract_pascal_regex(path)
 
@@ -509,6 +660,44 @@ def extract_pascal(path: Path) -> dict:
     add_node(file_nid, path.name, 1)
     module_nid = file_nid
 
+    # Scope facts for `graphify.pascal_singleton_resolution`, which resolves a
+    # call through a global object variable (`DM.Open`). Collected HERE rather
+    # than in the resolver because scope is per-file knowledge: only this
+    # extraction can see which names a routine declares locally and which
+    # fields its class publishes, and those are exactly the names that shadow
+    # a global of the same name.
+    global_vars: dict[str, str] = {}      # unit-level var name -> type name
+    fields_of: dict[str, set[str]] = {}   # class nid -> field names it declares
+    shadow_by_proc: dict[str, set[str]] = {}  # proc nid -> names NOT global here
+
+    def _plain_type_name(decl_node) -> str | None:  # type: ignore[no-untyped-def]
+        """The type of a ``declVar``/``declField``, when it is a plain typeref.
+
+        ``array[1..12] of TDateTime``, records and pointers return None on
+        purpose: only a variable holding a class instance can receive a
+        method call, and an array's element type is not that variable's type.
+        """
+        for child in decl_node.children:
+            if child.type != "type":
+                continue
+            for grandchild in child.children:
+                if grandchild.type == "typeref":
+                    # `Data.TDM` -> TDM: the last identifier is the type.
+                    names = [
+                        _read(ident) for ident in grandchild.children
+                        if ident.type == "identifier"
+                    ]
+                    if names:
+                        return names[-1]
+            return None
+        return None
+
+    def _declared_names(decl_node) -> list[str]:  # type: ignore[no-untyped-def]
+        return [
+            _read(child) for child in decl_node.children
+            if child.type == "identifier"
+        ]
+
     def _proc_name(header_node) -> str | None:  # type: ignore[no-untyped-def]
         name_node = header_node.child_by_field_name("name")
         if name_node:
@@ -532,6 +721,21 @@ def extract_pascal(path: Path) -> dict:
             module_nid = mod_nid
             for child in node.children:
                 walk(child, mod_nid)
+            return
+
+        if t == "declVars" and parent_nid == module_nid:
+            # Only a var block hanging directly off the unit is global. Class
+            # `var` sections arrive with the class nid as parent, and a
+            # routine's own `var` block is never reached: the defProc branch
+            # returns before descending.
+            for decl in node.children:
+                if decl.type != "declVar":
+                    continue
+                type_name = _plain_type_name(decl)
+                if not type_name:
+                    continue
+                for var_name in _declared_names(decl):
+                    global_vars[var_name.lower()] = type_name.lower()
             return
 
         if t == "declUses":
@@ -586,6 +790,23 @@ def extract_pascal(path: Path) -> dict:
                 cls_nid = _make_id(stem, type_name)
                 add_node(cls_nid, type_name, line)
                 add_edge(parent_nid, cls_nid, "contains", line)
+                # A Delphi form publishes its components as plain fields
+                # (`Query: TADOQuery;`), so inside its methods `Query.Open`
+                # means the component, never a global of that name. Record
+                # them so the singleton resolver does not cross the two.
+                field_names: set[str] = set()
+
+                def _collect_fields(scope_node) -> None:  # type: ignore[no-untyped-def]
+                    for member in scope_node.children:
+                        if member.type == "declField":
+                            field_names.update(
+                                name.lower() for name in _declared_names(member)
+                            )
+                        elif member.type in ("declSection", "declVars"):
+                            _collect_fields(member)
+
+                _collect_fields(kind_node)
+                fields_of[cls_nid] = field_names
                 for child in kind_node.children:
                     if child.type == "typeref":
                         base_name = _read(child)
@@ -656,6 +877,22 @@ def extract_pascal(path: Path) -> dict:
             )
             if body_node:
                 proc_bodies.append((proc_nid, body_node, container, label.removesuffix("()").lower()))
+                # Parameters and locals shadow a global of the same name, and
+                # so do the fields of the class this routine belongs to. `Q`,
+                # `Query` and `Table` are common as both, so without this a
+                # qualified call would be attributed to the wrong object.
+                shadowed = set(fields_of.get(container, ()))
+                for scope_node in (header, node):
+                    for member in scope_node.children:
+                        if member.type == "declArgs":
+                            for arg in member.children:
+                                if arg.type == "declArg":
+                                    shadowed.update(n.lower() for n in _declared_names(arg))
+                        elif member.type == "declVars":
+                            for decl in member.children:
+                                if decl.type == "declVar":
+                                    shadowed.update(n.lower() for n in _declared_names(decl))
+                shadow_by_proc[proc_nid] = shadowed
             return
 
         for child in node.children:
@@ -671,7 +908,38 @@ def extract_pascal(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def _emit_or_report(caller_nid: str, name_lower: str, line: int) -> None:
+    def _qualified_pair(node) -> tuple[str, str] | None:  # type: ignore[no-untyped-def]
+        """``(qualifier, member)`` for a plain ``Ident.Ident`` exprDot.
+
+        Only a bare identifier on the left is accepted. A chain
+        (``Grid.Columns.Add``) nests another exprDot there, and its receiver
+        is an expression whose type this pass cannot know -- reporting a
+        qualifier for it would invite the resolver to guess.
+        """
+        if node.type != "exprDot":
+            return None
+        parts = [c for c in node.children if c.is_named and c.type != "kDot"]
+        if len(parts) != 2:
+            return None
+        if parts[0].type != "identifier" or parts[1].type != "identifier":
+            return None
+        return _read(parts[0]).lower(), _read(parts[1]).lower()
+
+    def _visible_qualifier(caller_nid: str, qualifier: str | None) -> str | None:
+        """Keep the qualifier only when it could name a global object.
+
+        `Self` is dropped so a `Self.Foo` call keeps reaching the inherited-call
+        resolver, and so is any name the routine declares itself.
+        """
+        if not qualifier or qualifier == "self":
+            return None
+        if qualifier in shadow_by_proc.get(caller_nid, ()):
+            return None
+        return qualifier
+
+    def _emit_or_report(
+        caller_nid: str, name_lower: str, line: int, qualifier: str | None = None,
+    ) -> None:
         target = resolve_callee(caller_nid, name_lower)
         if target == caller_nid:
             return
@@ -680,12 +948,19 @@ def extract_pascal(path: Path) -> dict:
             # class declared in another file) -- report for the cross-file
             # resolver (graphify.pascal_resolution) instead of guessing or
             # dropping it silently.
-            raw_calls.append({
+            raw_call: dict[str, Any] = {
                 "source_file": str_path,
                 "source_location": f"L{line}",
                 "caller_nid": caller_nid,
                 "callee": name_lower,
-            })
+            }
+            qualifier = _visible_qualifier(caller_nid, qualifier)
+            if qualifier:
+                # Written as `Obj.Method`, so it is NOT a call to an inherited
+                # `Method`: graphify.pascal_singleton_resolution resolves it
+                # through the object instead.
+                raw_call["qualifier"] = qualifier
+            raw_calls.append(raw_call)
             return
         pair = (caller_nid, target)
         if pair not in seen_call_pairs:
@@ -695,12 +970,19 @@ def extract_pascal(path: Path) -> dict:
     def walk_calls(node, caller_nid: str) -> None:  # type: ignore[no-untyped-def]
         if node.type == "exprCall":
             callee_text = None
+            qualifier = None
             for child in node.children:
                 if child.is_named and child.type not in ("exprArgs",):
-                    callee_text = _read(child).split(".")[-1]
+                    pair = _qualified_pair(child)
+                    if pair:
+                        qualifier, callee_text = pair
+                    else:
+                        callee_text = _read(child).split(".")[-1]
                     break
             if callee_text:
-                _emit_or_report(caller_nid, callee_text.lower(), node.start_point[0] + 1)
+                _emit_or_report(
+                    caller_nid, callee_text.lower(), node.start_point[0] + 1, qualifier,
+                )
         elif node.type == "statement":
             # Pascal bare procedure calls with no args: `Reset;`
             # tree-sitter represents these as statement → identifier (no exprCall wrapper)
@@ -708,6 +990,25 @@ def extract_pascal(path: Path) -> dict:
             if len(named) == 1 and named[0].type == "identifier":
                 callee_text = _read(named[0])
                 _emit_or_report(caller_nid, callee_text.lower(), node.start_point[0] + 1)
+            elif len(named) == 1 and named[0].type == "exprDot":
+                # `DM.Open;` -- a parameterless qualified call. The grammar
+                # gives no exprCall wrapper, so this shape was invisible to
+                # the pass above and produced nothing at all. Report it for
+                # the object-aware resolver rather than resolving the bare
+                # member name here, which would attribute it to whatever
+                # unrelated class happens to own that name in this file.
+                pair = _qualified_pair(named[0])
+                if pair:
+                    qualifier, callee_text = pair
+                    qualifier = _visible_qualifier(caller_nid, qualifier)
+                    if qualifier:
+                        raw_calls.append({
+                            "source_file": str_path,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                            "caller_nid": caller_nid,
+                            "callee": callee_text,
+                            "qualifier": qualifier,
+                        })
         for child in node.children:
             walk_calls(child, caller_nid)
 
@@ -717,4 +1018,5 @@ def extract_pascal(path: Path) -> dict:
     return {
         "nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0,
         "raw_calls": raw_calls,
+        "global_vars": global_vars,
     }

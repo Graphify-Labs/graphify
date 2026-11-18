@@ -18,6 +18,35 @@ from graphify.extractors.base import _make_id
 from graphify.rcfile import effective_suffix
 
 
+def is_csharp_constructor_node(node: dict) -> bool:
+    """A C# constructor node (instance, static or primary).
+
+    A constructor carries its type's name but is reached only through `new`
+    or a `: base(...)` / `: this(...)` initializer, never by that name, so the
+    name-keyed call indexes leave it out.
+    """
+    metadata = node.get("metadata") or {}
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("kind") == "constructor"
+        and effective_suffix(str(node.get("source_file") or "")) == ".cs"
+    )
+
+
+def is_csharp_explicit_interface_node(node: dict) -> bool:
+    """A C# explicit interface implementation (``int IA.Get()``).
+
+    It is reachable only through the interface, so the name-keyed call indexes
+    leave it out; the interface member reaches it by dispatch.
+    """
+    metadata = node.get("metadata") or {}
+    return (
+        isinstance(metadata, dict)
+        and bool(metadata.get("explicit_interface"))
+        and effective_suffix(str(node.get("source_file") or "")) == ".cs"
+    )
+
+
 def _build_csharp_type_def_index(
     all_nodes: list[dict],
     all_edges: list[dict] | None = None,
@@ -305,6 +334,7 @@ class CsharpNameResolver:
         self.aliases_by_file: dict[str, dict[str, list[tuple[str, str, str | None]]]] = {}
         self.static_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
         self.nested_types_by_holder: dict[str, dict[str, str]] = {}
+        self.base_types_by_holder: dict[str, list[str]] = {}
         self._holder_nid_cache: dict[str, str | None] = {}
 
         for edge in all_edges:
@@ -347,6 +377,13 @@ class CsharpNameResolver:
 
         nested_candidates: dict[tuple[str, str], dict[str, dict]] = {}
         for edge in all_edges:
+            if edge.get("relation") == "inherits":
+                holder_nid, base_nid = edge.get("source"), edge.get("target")
+                if (
+                    isinstance(holder_nid, str) and isinstance(base_nid, str)
+                    and _is_cs_file(self.node_by_id.get(holder_nid, {}).get("source_file"))
+                ):
+                    self.base_types_by_holder.setdefault(holder_nid, []).append(base_nid)
             if edge.get("relation") != "contains":
                 continue
             target_nid = edge.get("target")
@@ -407,6 +444,34 @@ class CsharpNameResolver:
                 _append_unique(scopes, namespace)
         return scopes
 
+    def visible_namespaces(self, source_node: dict, source_file: str) -> list[set[str]]:
+        """Namespaces visible to extension-method lookup, innermost level first.
+
+        C# 12.8.10.3: for each enclosing namespace declaration — innermost first,
+        ending with the compilation unit — consider that namespace and the
+        ``using namespace`` directives declared at that level. A file-level
+        using belongs to the compilation unit, so it is only considered at the
+        outermost level; that is why an extension declared in an inner namespace
+        wins over one imported at the top of the file (#4828).
+
+        A namespace-scoped using is treated as visible at every level inside it.
+        That is coarser than the spec but only ever adds candidates at a deeper
+        level than the directive's own, and the caller drops ties.
+        """
+        chain = [part for part in self._namespace(source_node).split(".") if part]
+        usings = self.namespace_usings_by_file.get(source_file, [])
+        levels: list[set[str]] = []
+        for i in range(len(chain), -1, -1):
+            visible = {".".join(chain[:i])}
+            for target_fqn, scope_kind, scope_id in usings:
+                if scope_kind == "file":
+                    if i == 0:
+                        visible.add(target_fqn)
+                elif self._using_in_scope(scope_kind, scope_id, source_node):
+                    visible.add(target_fqn)
+            levels.append(visible)
+        return levels
+
     def _resolve_alias(self, label: str, source_node: dict, source_file: str) -> str | None:
         hits = set()
         for target_fqn, scope_kind, scope_id in self.aliases_by_file.get(source_file, {}).get(label, []):
@@ -422,6 +487,25 @@ class CsharpNameResolver:
             hit = self.type_def_index.get((namespace, simple_name))
             if hit:
                 hits.add(hit)
+        return next(iter(hits)) if len(hits) == 1 else None
+
+    def _resolve_nested_type(self, holder_nid: str, name: str) -> str | None:
+        hits: set[str] = set()
+        seen: set[str] = set()
+        frontier = [holder_nid]
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            node = self.node_by_id.get(nid)
+            if not node or not _is_cs_file(node.get("source_file")):
+                return None
+            declared = self.nested_types_by_holder.get(nid, {}).get(name)
+            if declared:
+                hits.add(declared)
+                continue
+            frontier.extend(self.base_types_by_holder.get(nid, ()))
         return next(iter(hits)) if len(hits) == 1 else None
 
     def _resolve_holder_nid(self, target_fqn: str) -> str | None:
@@ -444,7 +528,7 @@ class CsharpNameResolver:
 
         parent_nid = self._resolve_holder_nid(prefix)
         if parent_nid:
-            nested_hit = self.nested_types_by_holder.get(parent_nid, {}).get(name)
+            nested_hit = self._resolve_nested_type(parent_nid, name)
             if nested_hit:
                 self._holder_nid_cache[base_fqn] = nested_hit
                 return nested_hit
@@ -465,6 +549,24 @@ class CsharpNameResolver:
           * ``(None, False)`` — scoping knows nothing about the name; a caller
             may fall back (e.g. to the corpus-wide unique bare-name match).
         """
+        if label.startswith("global::"):
+            return self._resolve_holder_nid(label.removeprefix("global::")), True
+        if "." in label:
+            first, _, rest = label.partition(".")
+            holder, decisive = self.resolve_type_name(first, source_node, source_file)
+            if holder:
+                for segment in rest.split("."):
+                    holder = self._resolve_nested_type(holder, segment)
+                    if holder is None:
+                        break
+                return holder, True
+            if decisive and first not in self.aliases_by_file.get(source_file, {}):
+                return None, True
+            qualifier, _, name = label.rpartition(".")
+            qualified = self.resolve_qualified(name, qualifier, source_node, source_file)
+            if qualified:
+                return qualified, True
+            return (None if decisive else self._resolve_holder_nid(label)), True
         if label in self.aliases_by_file.get(source_file, {}):
             return self._resolve_alias(label, source_node, source_file), True
         candidates: list[str] = []

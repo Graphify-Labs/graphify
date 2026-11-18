@@ -287,8 +287,8 @@ def test_to_wiki_case_only_distinct_labels_dont_overwrite(tmp_path):
     # both communities survive as separate files on disk (no silent overwrite)
     assert len(articles) == n == 2, [p.name for p in articles]
     # filenames are distinct even when compared case-insensitively
-    lowered = [p.stem.lower() for p in articles]
-    assert len(set(lowered)) == len(lowered), [p.name for p in articles]
+    folded = [p.stem.casefold() for p in articles]
+    assert len(set(folded)) == len(folded), [p.name for p in articles]
 
 
 def test_to_wiki_god_node_label_case_collides_with_community(tmp_path):
@@ -305,8 +305,8 @@ def test_to_wiki_god_node_label_case_collides_with_community(tmp_path):
     n = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
     articles = [p for p in tmp_path.glob("*.md") if p.name != "index.md"]
     assert len(articles) == n == 2, [p.name for p in articles]
-    lowered = [p.stem.lower() for p in articles]
-    assert len(set(lowered)) == len(lowered), [p.name for p in articles]
+    folded = [p.stem.casefold() for p in articles]
+    assert len(set(folded)) == len(folded), [p.name for p in articles]
 
 
 def test_to_wiki_article_labelled_index_does_not_overwrite_index_md(tmp_path):
@@ -327,13 +327,115 @@ def test_to_wiki_article_labelled_index_does_not_overwrite_index_md(tmp_path):
     labels = {0: "index", 1: "Search"}
     god_nodes = [{"id": "n3", "label": "Index", "degree": 1}]
     n = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
-    articles = [p for p in tmp_path.glob("*.md") if p.stem.lower() != "index"]
+    articles = [p for p in tmp_path.glob("*.md") if p.stem.casefold() != "index"]
     # every article survives as its own file next to the catalog
     assert len(articles) == n == 3, sorted(p.name for p in tmp_path.glob("*.md"))
     index_text = (tmp_path / "index.md").read_text(encoding="utf-8")
     assert index_text.startswith("# Knowledge Graph Index")
     # no catalog entry links back to the catalog itself
     assert "(index.md)" not in index_text, index_text
+
+
+# Unicode labels that share a case fold but not a lower() spelling. On 0.9.104,
+# lower()-based slug dedup allocated a distinct slug for each, while the
+# casefold()-based orphan sweep mapped both filenames to the same key and
+# unlinked whichever current article it did not keep (#5087).
+_UNICODE_FOLD_PAIRS = [
+    ("Straße", "STRASSE"),
+    ("Σ", "ς"),
+]
+
+
+def _assert_wiki_complete(root: Path, expected_headings: set[str]) -> None:
+    """Every expected article survives under a distinct folded slug, its body is
+    the one generated for it, and every inline link target exists on disk."""
+    files = sorted(p.name for p in root.glob("*.md"))
+    articles = [p for p in root.glob("*.md") if p.name != "index.md"]
+    assert len(articles) == len(expected_headings), files
+    assert len({p.stem.casefold() for p in articles}) == len(articles), files
+    headings = {p.read_text(encoding="utf-8").splitlines()[0] for p in articles}
+    assert headings == {f"# {label}" for label in expected_headings}, headings
+    for md in root.glob("*.md"):
+        for display, target in _inline_links(md.read_text(encoding="utf-8")):
+            assert (root / target).exists(), f"{md.name}: [{display}] -> {target} is dead"
+
+
+@pytest.mark.parametrize("labels", _UNICODE_FOLD_PAIRS, ids=["german-sharp-s", "greek-sigma"])
+@pytest.mark.parametrize("kind", ["community-community", "community-hub", "hub-hub"])
+def test_to_wiki_unicode_case_fold_collision_keeps_both_articles(tmp_path, kind, labels):
+    """Two simultaneously produced Unicode labels with the same case fold must
+    both survive. Allocating slugs with lower() while the orphan sweep folds with
+    casefold() let both slugs through and then deleted one as if it were a stale
+    spelling, leaving index.md linking to a file that no longer existed (#5087)."""
+    first, second = labels
+    G = nx.Graph()
+    G.add_node("n1", label=first, file_type="code", source_file="a.py")
+    G.add_node("n2", label=second, file_type="code", source_file="b.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+
+    if kind == "community-community":
+        communities = {0: ["n1"], 1: ["n2"]}
+        community_labels = {0: first, 1: second}
+        god_nodes = []
+        expected = {first, second}
+    elif kind == "community-hub":
+        communities = {0: ["n1"]}
+        community_labels = {0: first}
+        god_nodes = [{"id": "n2", "label": second, "degree": 1}]
+        expected = {first, second}
+    else:
+        communities = {0: ["n1", "n2"]}
+        community_labels = {0: "Core"}
+        god_nodes = [
+            {"id": "n1", "label": first, "degree": 1},
+            {"id": "n2", "label": second, "degree": 1},
+        ]
+        expected = {"Core", first, second}
+
+    count = to_wiki(
+        G, communities, tmp_path,
+        community_labels=community_labels, god_nodes_data=god_nodes,
+    )
+    assert count == len(expected)
+    _assert_wiki_complete(tmp_path, expected)
+
+
+def test_to_wiki_unicode_case_fold_repeat_export_is_stable(tmp_path):
+    """Re-exporting the same graph must not delete an article the first export
+    wrote, and must leave the wiki byte-identical (#5087)."""
+    first, second = _UNICODE_FOLD_PAIRS[0]
+    G = nx.Graph()
+    G.add_node("n1", label=first, file_type="code", source_file="a.py")
+    G.add_node("n2", label=second, file_type="code", source_file="b.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    communities = {0: ["n1"], 1: ["n2"]}
+    labels = {0: first, 1: second}
+
+    to_wiki(G, communities, tmp_path, community_labels=labels)
+    after_first = {p.name: p.read_text(encoding="utf-8") for p in tmp_path.glob("*.md")}
+    _assert_wiki_complete(tmp_path, {first, second})
+
+    to_wiki(G, communities, tmp_path, community_labels=labels)
+    after_second = {p.name: p.read_text(encoding="utf-8") for p in tmp_path.glob("*.md")}
+    assert after_second == after_first
+    _assert_wiki_complete(tmp_path, {first, second})
+
+
+def test_to_wiki_unicode_case_fold_relabel_removes_stale_twin(tmp_path):
+    """The fold-aware sweep must still remove a genuinely stale spelling when a
+    community is relabelled from one fold-equal form to the other. Keeping both
+    current articles must not turn the cleanup into a no-op (#4508, #5087)."""
+    first, second = _UNICODE_FOLD_PAIRS[0]
+    G = nx.Graph()
+    G.add_node("n1", label="parse", file_type="code", source_file="a.py")
+
+    to_wiki(G, {0: ["n1"]}, tmp_path, community_labels={0: first})
+    assert (tmp_path / f"{first}.md").exists()
+
+    to_wiki(G, {0: ["n1"]}, tmp_path, community_labels={0: second})
+    articles = [p.name for p in tmp_path.glob("*.md") if p.name != "index.md"]
+    assert articles == [f"{second}.md"], articles
+    _assert_wiki_complete(tmp_path, {second})
 
 
 # Regression tests for portable wiki links - Obsidian [[wikilinks]] break in

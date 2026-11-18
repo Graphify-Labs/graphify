@@ -1213,6 +1213,12 @@ def _disambiguate_colliding_node_ids(
             raw_call["caller_nid"] = remap[caller_key]
         elif raw_call.get("caller_nid") in unambiguous_remaps:
             raw_call["caller_nid"] = unambiguous_remaps[str(raw_call["caller_nid"])]
+        if raw_call.get("evidence_owner"):
+            eo_key = (raw_call.get("evidence_owner", ""), call_source_key)
+            if eo_key in remap:
+                raw_call["evidence_owner"] = remap[eo_key]
+            elif raw_call.get("evidence_owner") in unambiguous_remaps:
+                raw_call["evidence_owner"] = unambiguous_remaps[str(raw_call["evidence_owner"])]
 
 def _is_type_like_definition(node: dict) -> bool:
     if node.get("type") == "namespace":
@@ -1281,6 +1287,9 @@ def _apply_symbol_resolution_facts(
         or facts.uses
         or facts.module_imports
     ):
+        for edge in edges:
+            edge.pop("_require_imported_name", None)
+            edge.pop("_require_target_file", None)
         return
 
     path_by_resolved = {_resolve_cached(path): path for path in paths}
@@ -1634,6 +1643,24 @@ def _apply_symbol_resolution_facts(
                     candidates.add(origin)
         return candidates, cyclic
 
+    # A destructured `require` names the immediate barrel's symbol. When that
+    # target is not a node (the barrel defines nothing), follow the barrel to
+    # the file that declares the symbol, so cross-file call resolution sees
+    # import evidence instead of a dangling barrel reference.
+    for edge in edges:
+        imported_name = edge.pop("_require_imported_name", None)
+        target_file = edge.pop("_require_target_file", None)
+        if edge.get("relation") != "imports" or not imported_name or not target_file:
+            continue
+        origin_path, origin_symbol = resolve_exported_origin(
+            Path(str(target_file)), str(imported_name)
+        )
+        target_id = symbol_nodes.get((origin_path, origin_symbol))
+        if target_id is None or edge.get("target") == target_id:
+            continue
+        edge["target"] = target_id
+        edge["target_file"] = str(path_by_resolved.get(origin_path, origin_path))
+
     # The structural extractor names the immediate barrel's symbol. Resolve
     # that exact authored export site through the shared import/export facts,
     # including `import {x}; export {x}` bridges with no local declaration.
@@ -1692,7 +1719,7 @@ def _apply_symbol_resolution_facts(
         )
 
     if raw_calls and any(
-        fact.imported_name == "default"
+        fact.imported_name in ("default", "*")
         and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
         for fact in facts.imports
     ):
@@ -1702,7 +1729,18 @@ def _apply_symbol_resolution_facts(
             if fact.imported_name == "default"
             and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
         }
+        namespace_imports = {
+            (_resolve_cached(fact.file_path), fact.local_name): _resolve_cached(fact.target_path)
+            for fact in facts.imports
+            if fact.imported_name == "*"
+            and effective_suffix(fact.file_path) in _JS_CACHE_BYPASS_SUFFIXES
+        }
         member_nodes: dict[tuple[Path, str, str], set[str]] = {}
+        # Every id this loop collects is already gated on _callable (below), so
+        # it doubles as the namespace branch's own non-callable guard (#5144):
+        # m.handler() must not resolve to an exported object literal just
+        # because exactly one symbol named "handler" exists.
+        callable_node_ids: set[str] = set()
         fresh_paths = {_resolve_cached(path) for path in paths}
         for node in nodes + [
             node for node in resolution_context_nodes or []
@@ -1710,6 +1748,7 @@ def _apply_symbol_resolution_facts(
         ]:
             if not node.get("_callable"):
                 continue
+            callable_node_ids.add(str(node["id"]))
             source_path = _js_source_path(str(node.get("source_file", "")), root)
             if source_path is None:
                 continue
@@ -1717,18 +1756,38 @@ def _apply_symbol_resolution_facts(
             member_nodes.setdefault(key, set()).add(str(node["id"]))
         default_members: dict[Path, dict[str, tuple[str, str]]] = {}
         for call in raw_calls:
-            if (not call.get("is_member_call") or call.get("_js_receiver_shadowed")
-                    or call.get("_js_construct") or call.get("ts_this_field")):
+            if (not call.get("is_member_call") or call.get("_js_construct") or call.get("ts_this_field")):
                 continue
             source_path = _js_source_path(str(call.get("source_file", "")), root)
             if source_path is None:
                 continue
-            target_path = default_imports.get((source_path, str(call.get("receiver") or "")))
+            receiver = str(call.get("receiver") or "")
+            callee = str(call.get("callee") or "")
+            if not receiver or not callee:
+                continue
+            if (source_path, receiver) in namespace_imports:
+                if call.get("_js_receiver_shadowed"):
+                    continue
+                target_path = namespace_imports[(source_path, receiver)]
+                candidates, _ = exported_candidates((target_path, callee), frozenset())
+                if len(candidates) == 1:
+                    origin_path, origin_symbol = next(iter(candidates))
+                    target_id = symbol_nodes.get((origin_path, origin_symbol))
+                    if target_id is not None and target_id in callable_node_ids:
+                        add_edge(
+                            call["caller_nid"], target_id, "calls", "call",
+                            int(str(call["source_location"]).removeprefix("L")),
+                            Path(call["source_file"]), target_file=str(target_path),
+                        )
+                        continue
+            if call.get("_js_receiver_shadowed"):
+                continue
+            target_path = default_imports.get((source_path, receiver))
             if target_path is None:
                 continue
             if target_path not in default_members:
                 default_members[target_path] = _js_default_object_members(target_path)
-            member = default_members[target_path].get(str(call.get("callee") or ""))
+            member = default_members[target_path].get(callee)
             if member is None:
                 continue
             targets = member_nodes.get((target_path, *member), set())
@@ -1868,6 +1927,63 @@ def _apply_symbol_resolution_facts(
     # survives, and the file id is exactly what the #2231 remap
     # canonicalizes — or drop it when no file node id is available.
     owned = {str(n.get("id")) for n in nodes}
+
+    # Group the nodes `_collision_aware` may pick by the plain id they belong
+    # to, once, in node order: a node under its own id, and an
+    # underscore-collision salted node (`<plain>_<6 hex>`, see below) also under
+    # its plain id. Scanning every node id for each use fact was
+    # O(uses x nodes) and never finished on large repos.
+    _salt_rx = re.compile(r"[0-9a-f]{6}")
+    collision_groups: dict[str, list[tuple[dict, bool]]] = {}
+    for n in nodes:
+        nid = n.get("id")
+        if not isinstance(nid, str):
+            continue
+        collision_groups.setdefault(nid, []).append((n, False))
+        if len(nid) >= 7 and nid[-7] == "_" and _salt_rx.fullmatch(nid[-6:]):
+            collision_groups.setdefault(nid[:-7], []).append((n, True))
+
+    def _collision_aware(source_id: str, file_path: Path, line: int) -> str:
+        """The declaration node a top-level ``def``'s call actually belongs to.
+
+        ``make_id`` strips the underscore edges off each part, so ``_main`` and
+        ``main`` mint one plain id. The engine salts the colliding pair apart
+        (#3302) and leaves only the unique public spelling — ``main()`` — on the
+        plain id, while a ``def`` collected by name here can only carry the plain
+        id. So every call inside ``_main`` was being credited to ``main`` (#4994).
+
+        The declarations sharing that plain id sit on distinct lines, so the one
+        enclosing the call line is the caller. Anything the line cannot settle
+        (no candidates, or several) keeps ``source_id`` unchanged, which is what
+        this pass did before.
+        """
+        group = collision_groups.get(source_id, ())
+        # Without a salted sibling every candidate carries ``source_id`` itself,
+        # so the answer is ``source_id`` whatever the line says.
+        if not any(salted for _, salted in group):
+            return source_id
+        candidates = [n for n, salted in group if not salted or (
+            # Only an underscore-collision salt (`_underscore_salted_nid`, a
+            # 6-char sha1 hex) is a sibling spelling of the same def. A plain
+            # alphanumeric suffix is a child node id (`classid_methodname`), so
+            # matching it would wrongly steal a class member's edge (e.g. a
+            # type-annotated field's reference) onto a preceding method.
+            _js_source_path(str(n.get("source_file") or ""), root) == file_path
+        )]
+        if len(candidates) < 2:
+            return source_id
+
+        def _start(node: dict) -> int:
+            try:
+                return int(str(node.get("source_location") or "").removeprefix("L"))
+            except ValueError:
+                return 0
+
+        enclosing = [n for n in candidates if _start(n) <= line]
+        if not enclosing:
+            return source_id
+        return str(max(enclosing, key=_start)["id"])
+
     for use_fact in facts.uses:
         file_path = _resolve_cached(use_fact.file_path)
         target_id = None
@@ -1885,7 +2001,7 @@ def _apply_symbol_resolution_facts(
             target_id = symbol_nodes.get((file_path, use_fact.local_name))
         if target_id is None:
             continue
-        source_id = use_fact.source_id
+        source_id = _collision_aware(use_fact.source_id, file_path, use_fact.line)
         # Structural walking can omit named-function-local declarations while
         # materializing callback-local ones. Only actual node ownership decides
         # whether a type relationship has a represented source declaration.
@@ -2069,6 +2185,21 @@ def _js_default_import_name(node, source: bytes) -> str | None:
             for sub in child.children:
                 if sub.type == "identifier":
                     return _read_text(sub, source)
+    return None
+
+def _js_namespace_import_name(node, source: bytes) -> str | None:
+    """Local binding of a namespace import: the `Foo` in `import * as Foo from './x'`."""
+    for child in node.children:
+        if child.type == "import_clause":
+            for sub in child.children:
+                if sub.type == "namespace_import":
+                    for nested in sub.children:
+                        if nested.type == "identifier":
+                            return _read_text(nested, source) or None
+        elif child.type == "namespace_import":
+            for sub in child.children:
+                if sub.type == "identifier":
+                    return _read_text(sub, source) or None
     return None
 
 def _js_default_export_name(node, source: bytes) -> str | None:
@@ -2407,7 +2538,7 @@ def _js_cjs_require_bindings(declarator, source: bytes) -> list[tuple[str, str]]
     them would also resolve call-uses through the symbol pass and regress the
     EXTRACTED ``confidence_score`` path for destructured requires (#4688 / #4634).
     Whole-module bindings are recorded as default imports, matching ESM
-    ``import X from './m'``.
+    ``import X from './m'``, as well as namespace imports for member calls (#5114).
     """
     value = declarator.child_by_field_name("value")
     if value is None or value.type != "call_expression":
@@ -2421,7 +2552,7 @@ def _js_cjs_require_bindings(declarator, source: bytes) -> list[tuple[str, str]]
     local = _read_text(name_node, source)
     if not local:
         return []
-    return [(local, "default")]
+    return [(local, "*"), (local, "default")]
 
 
 def _js_cjs_default_export_local(right, source: bytes) -> str | None:
@@ -2492,6 +2623,14 @@ def _js_cjs_export_facts(node, source: bytes, path: Path) -> list[_SymbolExportF
                         out.append(
                             _SymbolExportFact(path, name, line, local_name=name)
                         )
+                elif prop.type == "method_definition":
+                    name_node = prop.child_by_field_name("name")
+                    if name_node is not None:
+                        name = _read_text(name_node, source)
+                        if name:
+                            out.append(
+                                _SymbolExportFact(path, name, line, local_name=name)
+                            )
                 elif prop.type == "pair":
                     key = prop.child_by_field_name("key")
                     val = prop.child_by_field_name("value")
@@ -2637,6 +2776,17 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         node.start_point[0] + 1,
                     )
                 )
+            namespace_local = _js_namespace_import_name(node, source)
+            if namespace_local is not None:
+                facts.imports.append(
+                    _SymbolImportFact(
+                        path,
+                        namespace_local,
+                        target_path,
+                        "*",
+                        node.start_point[0] + 1,
+                    )
+                )
             # TS `import X = require("./m")` — same default-import shape as
             # `const X = require("./m")` (#4688).
             for child in node.children:
@@ -2649,6 +2799,15 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     continue
                 local_name = _read_text(local_node, source)
                 if local_name:
+                    facts.imports.append(
+                        _SymbolImportFact(
+                            path,
+                            local_name,
+                            target_path,
+                            "*",
+                            node.start_point[0] + 1,
+                        )
+                    )
                     facts.imports.append(
                         _SymbolImportFact(
                             path,
@@ -2788,30 +2947,22 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             _ts_walk_class_members(node, source, path, class_nid, member_facts)
     facts.uses.extend(member_facts.uses)
 
-@functools.lru_cache(maxsize=2048)
-def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
-    import tree_sitter_python as tspython
-    from tree_sitter import Language, Parser
-    source = _read_source_bytes(Path(path_str), warn=False)
-    parser = Parser(Language(tspython.language()))
-    return source, parser.parse(source).root_node
-
-
 def _parse_python_tree(path: Path):
-    """Parse one Python file to ``(source, root_node)``, memoized (#perf).
+    """Parse one Python file to ``(source, root_node)``, or ``None`` on any error.
 
-    The Python symbol-resolution facts pass and the cross-file import pass each
-    parse the entire ``.py`` corpus, back to back, from the main process after
-    the workers return — so every file was tree-sitter-parsed (and read from
-    disk) twice for no reason. Keying the memo on ``(path, mtime_ns, size)``
-    lets the second pass reuse the first pass's tree while still re-parsing a
-    file that changed between runs (watch mode). Both passes only read the
-    tree, so sharing one parse is behaviour-preserving. Returns ``None`` on any
-    error, exactly as before — callers already treat that as "skip this file".
+    Not memoized. Each resolution pass parses a file, walks it, and drops it
+    before the next file, so only one tree is alive at a time. A shared memo
+    (#3502) pinned up to 2,048 trees plus their cached ``Node`` wrappers
+    (~775 MB on django) and still missed on every file of a corpus with more
+    than 2,048 ``.py`` files, because the second pass walks in the same order
+    as the first.
     """
     try:
-        st = path.stat()
-        return _parse_python_tree_cached(str(path), st.st_mtime_ns, st.st_size)
+        import tree_sitter_python as tspython
+        from tree_sitter import Language, Parser
+        source = _read_source_bytes(path, warn=False)
+        parser = Parser(Language(tspython.language()))
+        return source, parser.parse(source).root_node
     except Exception:
         return None
 
@@ -3005,6 +3156,43 @@ _PYTHON_STDLIB_MODULE_NAMES = frozenset({
 })
 
 
+# C and C++ standard library header names as written in an angle include
+# (`<functional>`, `<stdio.h>`, `<cstdio>`). An unresolved angle include of one
+# of these must not bind to a same-named project header through the bare-stem
+# alias index, mirroring _PYTHON_STDLIB_MODULE_NAMES for `import logging`
+# (#4261, #5218).
+_C_STD_HEADERS = frozenset({
+    "assert.h", "complex.h", "ctype.h", "errno.h", "fenv.h", "float.h",
+    "inttypes.h", "iso646.h", "limits.h", "locale.h", "math.h", "setjmp.h",
+    "signal.h", "stdalign.h", "stdarg.h", "stdatomic.h", "stdbit.h", "stdbool.h",
+    "stdckdint.h", "stddef.h", "stdint.h", "stdio.h", "stdlib.h", "stdnoreturn.h",
+    "string.h", "tgmath.h", "threads.h", "time.h", "uchar.h", "wchar.h", "wctype.h",
+})
+_CPP_STD_HEADERS = frozenset({
+    "algorithm", "any", "array", "atomic", "barrier", "bit", "bitset", "charconv",
+    "chrono", "codecvt", "compare", "complex", "concepts", "condition_variable",
+    "coroutine", "debugging", "deque", "exception", "execution", "expected",
+    "filesystem", "flat_map", "flat_set", "format", "forward_list", "fstream",
+    "functional", "future", "generator", "hazard_pointer", "initializer_list",
+    "inplace_vector", "iomanip", "ios", "iosfwd", "iostream", "istream", "iterator",
+    "latch", "limits", "linalg", "list", "locale", "map", "mdspan", "memory",
+    "memory_resource", "mutex", "new", "numbers", "numeric", "optional", "ostream",
+    "print", "queue", "random", "ranges", "ratio", "rcu", "regex", "scoped_allocator",
+    "semaphore", "set", "shared_mutex", "simd", "source_location", "span",
+    "spanstream", "sstream", "stack", "stacktrace", "stdexcept", "stdfloat",
+    "stop_token", "streambuf", "string", "string_view", "strstream", "syncstream",
+    "system_error", "text_encoding", "thread", "tuple", "type_traits", "typeindex",
+    "typeinfo", "unordered_map", "unordered_set", "utility", "valarray", "variant",
+    "vector", "version",
+    # <cxxx> forms of the C headers.
+    "cassert", "ccomplex", "cctype", "cerrno", "cfenv", "cfloat", "cinttypes",
+    "ciso646", "climits", "clocale", "cmath", "csetjmp", "csignal", "cstdalign",
+    "cstdarg", "cstdbool", "cstddef", "cstdint", "cstdio", "cstdlib", "cstring",
+    "ctgmath", "ctime", "cuchar", "cwchar", "cwctype",
+})
+C_STANDARD_INCLUDE_NAMES = _C_STD_HEADERS | _CPP_STD_HEADERS
+
+
 def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
     if level > 0:
         base = current_path.parent
@@ -3135,15 +3323,45 @@ def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Pa
     return None
 
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
+    """``(plain caller id, body)`` for every top-level ``def`` and every method of
+    a top-level class, decorated or not.
+
+    A decorated definition is wrapped in a ``decorated_definition`` node, and a
+    method lives in its class body; skipping either dropped every aliased import
+    call made there (``from m import f as g`` then ``g()``), which only these
+    facts can resolve because the bare-name pass never matches ``g`` to ``f``.
+
+    Deliberately the *unsalted* id: ``_apply_symbol_resolution_facts`` resolves
+    the caller against the final graph, where the underscore-collision spread
+    (#3302) is baked into the ids.
+    """
+    def definition(node):
+        if node.type == "decorated_definition":
+            return node.child_by_field_name("definition")
+        return node
+
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
-    for node in root_node.children:
-        if node.type != "function_definition":
+    for top in root_node.children:
+        node = definition(top)
+        if node is None:
             continue
         name_node = node.child_by_field_name("name")
         body = node.child_by_field_name("body")
-        if name_node is not None and body is not None:
-            bodies.append((_make_id(stem, _read_text(name_node, source)), body))
+        if name_node is None or body is None:
+            continue
+        name = _read_text(name_node, source)
+        if node.type == "function_definition":
+            bodies.append((_make_id(stem, name), body))
+        elif node.type == "class_definition":
+            for member in body.children:
+                method = definition(member)
+                if method is None or method.type != "function_definition":
+                    continue
+                method_name = method.child_by_field_name("name")
+                method_body = method.child_by_field_name("body")
+                if method_name is not None and method_body is not None:
+                    bodies.append((_make_id(stem, name, _read_text(method_name, source)), method_body))
     return bodies
 
 def _python_call_identifier(node, source: bytes) -> str | None:
@@ -3378,8 +3596,7 @@ def _resolve_cross_file_imports(
         if not name_to_nid:
             continue
 
-        # Parse imports from this file (shared with the facts pass via the
-        # mtime-keyed memo, so each .py is parsed once across both passes).
+        # Parse imports from this file. The tree is dropped before the next file.
         parsed = _parse_python_tree(path)
         if parsed is None:
             continue
@@ -3564,6 +3781,215 @@ _DECLDEF_HEADER_SUFFIXES = frozenset({".h", ".hpp", ".hh", ".hxx"})
 
 _DECLDEF_IMPL_SUFFIXES = frozenset({".m", ".mm", ".cpp", ".cc", ".cxx", ".c"})
 
+def _cpp_source_key(source_file: str | Path, root: Path) -> str:
+    """Portable source/proof identity; the permitted corpus is checked separately."""
+    if not source_file:
+        return ""
+    try:
+        return os.path.relpath((root / source_file).resolve(), root.resolve()).replace("\\", "/")
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
+def _cpp_reconciliation_paths(
+    paths: list[Path], nodes: list[dict], root: Path,
+    available_paths: list[Path] | None = None,
+    changed_paths: list[Path] | None = None,
+) -> list[Path]:
+    """Reparse a persisted forward group when one of its source/proof files changes."""
+    groups = [set(n["_cpp_reconcile_files"]) for n in nodes if n.get("_cpp_reconcile_files")]
+    if not groups:
+        return paths
+    selected = {_cpp_source_key(p, root) for p in [*paths, *(changed_paths or [])]} - {""}
+    if not any(group & selected for group in groups):
+        return paths
+    available = available_paths if available_paths is not None else [
+        *paths, *(Path(n["source_file"]) for n in nodes if n.get("source_file")),
+    ]
+    allowed = {_cpp_source_key(p, root) for p in available} - {""}
+    changed = True
+    while changed:
+        changed = False
+        for group in groups:
+            if group & selected:
+                additions = (group & allowed) - selected
+                selected.update(additions)
+                changed = changed or bool(additions)
+    original = {_cpp_source_key(p, root) for p in paths}
+    return paths + [root / sf for sf in sorted((selected & allowed) - original)
+                    if (root / sf).is_file()]
+
+
+def _cpp_exact_includes(resolution_nodes: list[dict], edges: list[dict], root: Path) -> dict[str, set[str]]:
+    """Build equivalence evidence only from exact unconditional in-corpus includes."""
+    by_id = {n["id"]: n for n in resolution_nodes}
+    includes: dict[str, set[str]] = {}
+    for edge in edges:
+        if (edge.get("relation") != "imports" or not edge.get("_cpp_include_proof")
+                or (edge.get("metadata") or {}).get("cpp_conditions")):
+            continue
+        source = _cpp_source_key(edge.get("source_file", ""), root)
+        target_file = edge.get("target_file") or by_id.get(edge.get("target"), {}).get("source_file")
+        if source and target_file:
+            target = _cpp_source_key(target_file, root)
+            if target:
+                includes.setdefault(source, set()).add(target)
+
+    return includes
+
+
+def _cpp_include_path(includes: dict[str, set[str]], start: str, target: str) -> list[str]:
+    if not start or not target:
+        return []
+    pending = [(start, [start])]
+    visited = {start}
+    for current, path in pending:
+        if current == target:
+            return path
+        for following in sorted(includes.get(current, ())):
+            if following not in visited:
+                visited.add(following)
+                pending.append((following, [*path, following]))
+    return []
+
+
+def _merge_cpp_forward_classes(
+    nodes: list[dict], edges: list[dict], raw_calls: list[dict],
+    resolution_nodes: list[dict], context_edges: list[dict], root: Path,
+) -> None:
+    """Fold plain class forwards only with one exactly named, include-reachable definition.
+
+    Unlike sibling-stem decl/def folding, this pass has distinct IDs to rewire.
+    Templates, nested/local/anonymous and conditional declarations stay separate;
+    guessed include-path fallback is not equivalence evidence.
+    """
+    includes = _cpp_exact_includes(resolution_nodes, [*edges, *context_edges], root)
+
+    groups: dict[str, list[dict]] = {}
+    for node in resolution_nodes:
+        qualified = node.get("_cpp_qualified")
+        if node.get("_callable_class") and qualified:
+            groups.setdefault(qualified, []).append(node)
+    remap = {}
+    fresh_objects = {id(n) for n in nodes}
+    for group in groups.values():
+        if any(n.get("_cpp_class_kind") not in {"forward", "definition"}
+               or (n.get("metadata") or {}).get("cpp_conditions") for n in group):
+            continue
+        definitions = [n for n in group if n["_cpp_class_kind"] == "definition"]
+        if len(definitions) != 1:
+            continue
+        keeper = definitions[0]
+        # Context is read-only; affected groups are re-extracted above.
+        if id(keeper) not in fresh_objects:
+            continue
+        definition_file = _cpp_source_key(keeper["source_file"], root)
+        sites = []
+        proof_files = {definition_file}
+        for declaration in group:
+            if declaration["_cpp_class_kind"] != "forward":
+                continue
+            declaration_file = _cpp_source_key(declaration["source_file"], root)
+            path = (_cpp_include_path(includes, definition_file, declaration_file)
+                    or _cpp_include_path(includes, declaration_file, definition_file))
+            if not path:
+                continue
+            remap[declaration["id"]] = keeper["id"]
+            sites.append({"source_file": declaration_file,
+                          "source_location": declaration.get("source_location", "")})
+            proof_files.update(path)
+        if sites:
+            keeper.setdefault("metadata", {})["cpp_declaration_sites"] = sorted(
+                sites, key=lambda site: (site["source_file"], site["source_location"]),
+            )
+            keeper["_cpp_reconcile_files"] = sorted(proof_files)
+    if remap:
+        nodes[:] = [n for n in nodes if n["id"] not in remap]
+        for edge in edges:
+            for endpoint in ("source", "target"):
+                edge[endpoint] = remap.get(edge.get(endpoint), edge.get(endpoint))
+        for call in raw_calls:
+            call["caller_nid"] = remap.get(call.get("caller_nid"), call.get("caller_nid"))
+
+
+def _merge_cpp_member_declarations(
+    nodes: list[dict], edges: list[dict], raw_calls: list[dict],
+    resolution_nodes: list[dict], context_edges: list[dict], root: Path,
+) -> None:
+    """Unify only unique, exactly matching zero-argument members of one proven owner."""
+    includes = _cpp_exact_includes(resolution_nodes, [*edges, *context_edges], root)
+    owners: dict[str, list[dict]] = {}
+    members: dict[str, list[dict]] = {}
+    for node in resolution_nodes:
+        if node.get("_callable_class") and node.get("_cpp_qualified"):
+            owners.setdefault(node["_cpp_qualified"], []).append(node)
+        for record in node.get("_cpp_member_records", []):
+            members.setdefault(record["qualified"], []).append(node)
+    owned = {(e.get("source"), e.get("target")) for e in [*edges, *context_edges]
+             if e.get("relation") == "method"}
+    fresh_objects = {id(n) for n in nodes}
+    remap = {}
+    merged_owners = {}
+    for qualified, group in members.items():
+        if "::" not in qualified or len(group) != 2:
+            continue
+        scope, name = qualified.rsplit("::", 1)
+        classes = owners.get(scope, [])
+        if len(classes) != 1 or classes[0].get("_cpp_class_kind") != "definition":
+            continue
+        owner = classes[0]
+        if any(len(n["_cpp_member_records"]) != 1
+               or not n["_cpp_member_records"][0].get("signature")
+               or (n.get("metadata") or {}).get("cpp_conditions") for n in group):
+            continue
+        declarations = [n for n in group if n["_cpp_member_records"][0]["kind"] == "declaration"]
+        definitions = [n for n in group if n["_cpp_member_records"][0]["kind"] == "definition"]
+        if len(declarations) != 1 or len(definitions) != 1:
+            continue
+        declaration, definition = declarations[0], definitions[0]
+        if (id(declaration) not in fresh_objects or id(definition) not in fresh_objects
+                or (owner["id"], declaration["id"]) not in owned
+                or declaration["_cpp_member_records"][0]["signature"] != definition["_cpp_member_records"][0]["signature"]):
+            continue
+        declaration_file = _cpp_source_key(declaration["source_file"], root)
+        definition_file = _cpp_source_key(definition["source_file"], root)
+        path = _cpp_include_path(includes, definition_file, declaration_file)
+        if not path:
+            continue
+        remap[definition["id"]] = declaration["id"]
+        merged_owners[declaration["id"]] = owner["id"]
+        # Store the impl's raw source_file, not the _cpp_source_key form. The key
+        # is relpath'd against ``root`` (the cache/out root here, not the scan
+        # root), so for an out-of-tree corpus it is a `../`-walk that the build's
+        # _norm_source_file cannot re-anchor (it only relativizes absolute paths).
+        # The sibling decl/def merge below stores the raw source_file for exactly
+        # this reason, so definition_file normalizes to the same root as
+        # source_file. The key form is still right for include-path proofs.
+        declaration["definition_file"] = definition["source_file"]
+        declaration["definition_location"] = definition.get("source_location", "")
+        declaration["_cpp_reconcile_files"] = sorted(set(path) | set(owner.get("_cpp_reconcile_files", [])))
+    if remap:
+        by_id = {n["id"]: n for n in resolution_nodes}
+        member_names: dict[str | None, set[str]] = {}
+        for owner_id, member_id in owned:
+            label = by_id.get(member_id, {}).get("label", "")
+            if label.startswith(".") and label.endswith("()"):
+                member_names.setdefault(owner_id, set()).add(label[1:-2])
+        nodes[:] = [n for n in nodes if n["id"] not in remap]
+        for edge in edges:
+            for endpoint in ("source", "target"):
+                edge[endpoint] = remap.get(edge.get(endpoint), edge.get(endpoint))
+        for call in raw_calls:
+            for key in ("caller_nid", "evidence_owner"):
+                if key in call:
+                    call[key] = remap.get(call[key], call[key])
+            owner_id = merged_owners.get(call.get("caller_nid"))
+            if (owner_id and not call.get("is_member_call")
+                    and call.get("callee") in member_names.get(owner_id, ())):
+                call["is_member_call"] = True
+                call["receiver"] = "this"
+
+
 def _decldef_class_stem(source_file: str) -> tuple[str, str] | None:
     """Return ``(dir, base_stem)`` for a header/impl source file, else None.
 
@@ -3649,11 +4075,26 @@ def _merge_decl_def_classes(
             continue
         by_id.setdefault(nid, []).append(n)
 
+    # Actual C++ classes and their members need include/scope proof even when
+    # sibling stems collide. Let disambiguation retain them before reconciliation.
+    cpp_separate: set[str | None] = {nid for nid, group in by_id.items()
+                    if sum("_cpp_class_kind" in n for n in group) > 1}
+    while cpp_separate:
+        children = {e.get("target") for e in all_edges if e.get("source") in cpp_separate
+                    and e.get("relation") in {"method", "defines", "contains"}}
+        if children <= cpp_separate:
+            break
+        cpp_separate.update(children)
+
     # Identify, per surviving id, which node to keep (header preferred). We can't
     # mutate all_nodes mid-scan, so collect a set of node object ids to drop.
     drop_objs: set[int] = set()
     for nid, group in by_id.items():
         if len(group) < 2:
+            continue
+        if nid in cpp_separate:
+            continue
+        if any(record.get("zero_args") for n in group for record in n.get("_cpp_member_records", [])):
             continue
         # The distinct source files of this collision must form a clean sibling
         # header/impl set with exactly one header. Each file must parse as a
@@ -3751,6 +4192,21 @@ def _merge_decl_def_classes(
         rewritten.append(e)
     all_edges[:] = rewritten
 
+
+_GO_COMMENT_RE = re.compile(rb"//[^\n]*|/\*.*?\*/", re.DOTALL)
+_GO_PACKAGE_RE = re.compile(rb"^\s*package\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
+
+
+def _go_package_clause(path: Path) -> str | None:
+    """The package name a Go file's ``package`` clause declares, or None if unreadable."""
+    try:
+        source = _read_source_bytes(path, warn=False)
+    except Exception:
+        return None
+    m = _GO_PACKAGE_RE.search(_GO_COMMENT_RE.sub(b" ", source))
+    return m.group(1).decode("ascii") if m else None
+
+
 def _merge_go_package_types(
     all_nodes: list[dict],
     all_edges: list[dict],
@@ -3772,9 +4228,12 @@ def _merge_go_package_types(
       * Every node in the id-collision must be a ``.go`` file in ONE directory — Go's
         package unit. The id folds in only the directory's NAME, so ``a/svc`` and
         ``b/svc`` collide on id while being different packages; those stay split.
-      * Folding stops at a ``_test.go`` member, whose package clause may be the separate
-        ``svc_test`` package declaring a type of its own name. The clause is not parsed,
-        so same-directory is not evidence of same package there.
+      * A ``_test.go`` member folds only when its package clause names the same
+        package as the group's other files (#5209). An internal test file
+        (``package svc``) commonly adds test-only methods to a package type, while an
+        external test package (``package svc_test``) shares the directory but declares
+        types of its own; same-directory is not evidence of same package there, so a
+        clause that differs or cannot be read keeps the group split.
 
     No edge re-pointing is needed: the group already shares one id, so every edge
     already points at the survivor. The declaration site wins — the file holding
@@ -3809,7 +4268,9 @@ def _merge_go_package_types(
         if len({f.parent for f in files}) != 1:
             continue
         if any(f.name.endswith("_test.go") for f in files):
-            continue
+            clauses = {_go_package_clause(f) for f in files}
+            if len(clauses) != 1 or None in clauses:
+                continue
         # A type whose declaring file is outside the corpus leaves the whole group
         # method-only; one node is still the answer, so fold on the lowest path.
         declared = declaring_files.get(nid, set())

@@ -956,3 +956,69 @@ def test_ambiguous_or_unresolved_citation_is_skipped(tmp_path):
     # Ambiguous "Dup" skipped; only the unambiguous "Solo" survives.
     assert "dup_a" not in nodes and "dup_b" not in nodes
     assert "solo" in nodes
+
+
+# --- _is_stale staleness check (characterization) ------------------------------
+#
+# These pin down the existing, correct behavior of the overlay's per-entry
+# staleness test directly at the helper level (the loader tests above exercise it
+# end-to-end). `_is_stale` compares a freshly recomputed content hash against the
+# fingerprint the writer stored, using the same file resolution + hash as the
+# writer (`_code_fingerprint`), so writer and reader always agree on an unchanged
+# file. A changed file, or one that no longer resolves, is reported stale — the
+# deliberate over-flagging ("safe") direction for a re-verify hint.
+
+from graphify.reflect import _code_fingerprint, _is_stale  # noqa: E402
+
+
+def _overlay_graph_json(tmp_path: Path) -> Path:
+    """A minimal graph.json path for resolution. The entries below use absolute
+    source paths, so the graph's own layout does not affect resolution here."""
+    out = tmp_path / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    gp = out / "graph.json"
+    gp.write_text(json.dumps({"nodes": [], "links": []}), encoding="utf-8")
+    return gp
+
+
+def test_is_stale_false_when_source_unchanged(tmp_path):
+    """An entry whose stored fingerprint still matches the source file's current
+    content is reported fresh (stale=False)."""
+    gp = _overlay_graph_json(tmp_path)
+    src = tmp_path / "auth.py"
+    src.write_text("def login(): pass\n", encoding="utf-8")
+    node = {"source_file": str(src)}
+    entry = {"source_file": str(src),
+             "code_fingerprint": _code_fingerprint(node, gp)}
+    assert _is_stale(entry, gp) is False
+
+
+def test_is_stale_true_when_source_content_changes(tmp_path):
+    """Once the source file's content changes, the recomputed hash no longer
+    matches the stored fingerprint and the entry is reported stale (stale=True)."""
+    gp = _overlay_graph_json(tmp_path)
+    src = tmp_path / "auth.py"
+    src.write_text("def login(): pass\n", encoding="utf-8")
+    node = {"source_file": str(src)}
+    entry = {"source_file": str(src),
+             "code_fingerprint": _code_fingerprint(node, gp)}
+    assert _is_stale(entry, gp) is False  # baseline: matches before the edit
+
+    src.write_text("def login(): return 1  # changed\n", encoding="utf-8")
+    assert _is_stale(entry, gp) is True
+
+
+def test_is_stale_true_when_source_file_vanishes(tmp_path):
+    """A source path that no longer resolves to a file is reported stale,
+    regardless of the stored fingerprint — the deliberate safe (over-flagging)
+    direction, so a re-verify hint is never silently dropped."""
+    gp = _overlay_graph_json(tmp_path)
+    src = tmp_path / "auth.py"
+    src.write_text("def login(): pass\n", encoding="utf-8")
+    node = {"source_file": str(src)}
+    entry = {"source_file": str(src),
+             "code_fingerprint": _code_fingerprint(node, gp)}
+    assert _is_stale(entry, gp) is False  # baseline while the file is present
+
+    src.unlink()  # the tracked source disappears
+    assert _is_stale(entry, gp) is True

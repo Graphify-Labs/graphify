@@ -45,6 +45,13 @@ def test_node_filepath_folds_to_source_file():
     assert node["source_file"] == "baz.go"
 
 
+def test_node_src_folds_to_source_file():
+    node = {"id": "a", "label": "A", "src": "src/engine.py"}
+    _fold_node_aliases(node)
+    assert node["source_file"] == "src/engine.py"
+    assert "src" not in node
+
+
 def test_node_source_file_wins_over_alias():
     node = {"id": "a", "label": "A", "source_file": "real.py", "file": "other.py"}
     _fold_node_aliases(node)

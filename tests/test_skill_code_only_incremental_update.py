@@ -40,7 +40,12 @@ def _section(body: str, start: str, end: str) -> str:
 
 
 def _run_code(script: str, *, cwd: Path, root: Path) -> subprocess.CompletedProcess[str]:
-    script = script.replace("INPUT_PATH", root.as_posix()).replace("IS_DIRECTED", "False")
+    # Since #4762 the blocks read the scan root from the trusted .graphify_root
+    # sidecar instead of a substituted literal; Step 1 writes it, so simulate that.
+    out = cwd / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / ".graphify_root").write_text(root.as_posix(), encoding="utf-8")
+    script = script.replace("IS_DIRECTED", "False")
     env = {
         **os.environ,
         "GRAPHIFY_OUT": "graphify-out",

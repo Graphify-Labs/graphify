@@ -1343,6 +1343,53 @@ console.log(bad);
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
 
 
+def test_hyperedge_regions_skip_hidden_members():
+    """Legend toggles set `hidden` on nodes, but getPositions() still returns
+    them. The hull must skip hidden members so a region disappears once fewer
+    than two members remain visible (#5121)."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+    from graphify.exporters.html import _hyperedge_script
+    hyperedges = json.dumps([{"nodes": ["a", "b", "c"], "label": "h"}])
+    script = _hyperedge_script(hyperedges)
+    body = script.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    harness = r"""
+let handler = null;
+const pos = {a: {x: 0, y: 0}, b: {x: 10, y: 0}, c: {x: 0, y: 10}};
+const network = {
+  on: (ev, fn) => { if (ev === 'afterDrawing') handler = fn; },
+  getPositions: ids => ({[ids[0]]: pos[ids[0]]}),
+};
+const store = {a: {id: 'a'}, b: {id: 'b'}, c: {id: 'c'}};
+const nodesDS = {get: id => store[id]};
+let fills = 0;
+const ctx = new Proxy({}, {
+  get: (t, k) => k === 'fill' ? (() => { fills++; })
+    : k === 'measureText' ? (() => ({width: 1})) : (() => {}),
+  set: () => true,
+});
+""" + body + r"""
+const out = [];
+handler(ctx); out.push(fills);
+fills = 0; store.a.hidden = true; handler(ctx); out.push(fills);
+fills = 0; store.b.hidden = true; handler(ctx); out.push(fills);
+console.log(JSON.stringify(out));
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        js = Path(tmp) / "hyperedge_hidden.js"
+        js.write_text(harness, encoding="utf-8")
+        proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    visible, one_hidden, two_hidden = json.loads(proc.stdout.strip())
+    assert visible >= 1
+    assert one_hidden >= 1
+    assert two_hidden == 0, "hull still drawn with only one visible member"
+
+
 def test_to_html_pins_vis_network_version_for_tooltip_xss_boundary():
     """Tooltip `title` is passed to vis-network as a STRING and rendered via
     Popup.setText -> innerText (verified in the 9.1.6 bundle), so tooltips are
