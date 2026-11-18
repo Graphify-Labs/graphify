@@ -596,3 +596,151 @@ def test_redact_secrets_sk_prefix_prose_untouched():
     benign = "# NOTE: use the sk-learn-compatible-estimator-wrapper here"
     assert redact_secrets(benign) == benign
     assert "[redacted]" in redact_secrets("key sk-proj-" + "a1" * 12)
+
+
+# ---------------------------------------------------------------------------
+# SSRF-guarded connection classes (direct coverage, no real network)
+# ---------------------------------------------------------------------------
+
+def _fake_gai(*addrs: str):
+    """Build a socket.getaddrinfo replacement returning *addrs* in order."""
+    import socket
+
+    def gai(host, port, *args, **kwargs):
+        out = []
+        for a in addrs:
+            fam = socket.AF_INET6 if ":" in a else socket.AF_INET
+            sockaddr = (a, port or 0, 0, 0) if ":" in a else (a, port or 0)
+            out.append((fam, socket.SOCK_STREAM, 6, "", sockaddr))
+        return out
+
+    return gai
+
+
+@pytest.mark.parametrize(
+    "addr",
+    ["127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fd00::1"],
+)
+def test_resolve_and_validate_blocks_internal_addresses(addr):
+    from graphify.security import _resolve_and_validate
+
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai(addr)):
+        with pytest.raises(OSError, match="SSRF blocked"):
+            _resolve_and_validate("example.test", 80)
+
+
+def test_resolve_and_validate_returns_public_address():
+    import socket
+
+    from graphify.security import _resolve_and_validate
+
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai("93.184.216.34")):
+        assert _resolve_and_validate("example.test", 80) == (socket.AF_INET, "93.184.216.34")
+
+
+def test_resolve_and_validate_mixed_answers_are_order_dependent():
+    """Documents current behavior: the first record decides.
+
+    A blocked record first raises; a clean record first is returned and later
+    blocked records are never inspected. (validate_url, by contrast, rejects
+    if *any* record is blocked.)
+    """
+    from graphify.security import _resolve_and_validate
+
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai("127.0.0.1", "93.184.216.34")):
+        with pytest.raises(OSError, match="SSRF blocked"):
+            _resolve_and_validate("example.test", 80)
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai("93.184.216.34", "127.0.0.1")):
+        assert _resolve_and_validate("example.test", 80)[1] == "93.184.216.34"
+
+
+def test_validate_url_rejects_any_blocked_record():
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai("93.184.216.34", "10.0.0.1")):
+        with pytest.raises(ValueError, match="private/internal"):
+            validate_url("http://dual.example.test/")
+
+
+@pytest.mark.parametrize("host", ["metadata.google.internal", "METADATA.GOOGLE.COM"])
+def test_validate_url_blocks_metadata_hostnames(host):
+    with pytest.raises(ValueError, match="metadata"):
+        validate_url(f"http://{host}/computeMetadata/v1/")
+
+
+def test_validate_url_blocks_link_local_metadata_ip():
+    with pytest.raises(ValueError, match="private/internal"):
+        validate_url("http://169.254.169.254/latest/meta-data/")
+
+
+def test_http_connection_connects_to_validated_ip_only():
+    from graphify.security import _SSRFGuardedHTTPConnection
+
+    conn = _SSRFGuardedHTTPConnection("rebind.example.test", 8080, timeout=5)
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai("93.184.216.34")), \
+         patch("graphify.security.socket.create_connection") as cc:
+        conn.connect()
+    assert cc.call_args.args[0] == ("93.184.216.34", 8080)
+
+
+def test_http_connection_refuses_blocked_ip_without_connecting():
+    from graphify.security import _SSRFGuardedHTTPConnection
+
+    conn = _SSRFGuardedHTTPConnection("evil.example.test", 80)
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai("169.254.169.254")), \
+         patch("graphify.security.socket.create_connection") as cc:
+        with pytest.raises(OSError, match="SSRF blocked"):
+            conn.connect()
+    cc.assert_not_called()
+
+
+def test_https_connection_keeps_sni_hostname_and_pins_ip():
+    from graphify.security import _SSRFGuardedHTTPSConnection
+
+    ctx = MagicMock()
+    conn = _SSRFGuardedHTTPSConnection("secure.example.test", 443, context=ctx)
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai("93.184.216.34")), \
+         patch("graphify.security.socket.create_connection") as cc:
+        conn.connect()
+    assert cc.call_args.args[0] == ("93.184.216.34", 443)
+    assert ctx.wrap_socket.call_args.kwargs["server_hostname"] == "secure.example.test"
+
+
+def test_https_connection_refuses_blocked_ip_without_connecting():
+    from graphify.security import _SSRFGuardedHTTPSConnection
+
+    ctx = MagicMock()
+    conn = _SSRFGuardedHTTPSConnection("evil.example.test", 443, context=ctx)
+    with patch("graphify.security.socket.getaddrinfo", _fake_gai("10.0.0.1")), \
+         patch("graphify.security.socket.create_connection") as cc:
+        with pytest.raises(OSError, match="SSRF blocked"):
+            conn.connect()
+    cc.assert_not_called()
+    ctx.wrap_socket.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["http://127.0.0.1/admin", "http://169.254.169.254/latest/meta-data/",
+     "http://metadata.google.internal/", "file:///etc/passwd"],
+)
+def test_redirect_handler_rejects_internal_targets(target):
+    import urllib.request
+    from http.client import HTTPMessage
+
+    from graphify.security import _NoFileRedirectHandler
+
+    req = urllib.request.Request("http://93.184.216.34/start")
+    with pytest.raises(ValueError):
+        _NoFileRedirectHandler().redirect_request(req, MagicMock(), 302, "Found", HTTPMessage(), target)
+
+
+def test_redirect_handler_allows_public_target():
+    import urllib.request
+    from http.client import HTTPMessage
+
+    from graphify.security import _NoFileRedirectHandler
+
+    req = urllib.request.Request("http://93.184.216.34/start")
+    new = _NoFileRedirectHandler().redirect_request(
+        req, MagicMock(), 302, "Found", HTTPMessage(), "http://93.184.216.35/next"
+    )
+    assert new is not None and new.full_url == "http://93.184.216.35/next"
