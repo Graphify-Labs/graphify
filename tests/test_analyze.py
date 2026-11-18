@@ -1,6 +1,5 @@
 """Tests for analyze.py."""
 import json
-import re
 import networkx as nx
 import pytest
 from pathlib import Path
@@ -908,9 +907,6 @@ def _betweenness_case(n: int, m: int, *, directed: bool = False, extras: bool = 
     return G
 
 
-_NETWORKX_RESCALES_SAMPLES_BY_SOURCE = tuple(map(int, re.match(r"(\d+)\.(\d+)", nx.__version__).groups())) >= (3, 5)
-
-
 @pytest.mark.parametrize(
     ("G", "k"),
     [
@@ -923,13 +919,10 @@ _NETWORKX_RESCALES_SAMPLES_BY_SOURCE = tuple(map(int, re.match(r"(\d+)\.(\d+)", 
         (nx.complete_graph(5), None),
         (_betweenness_case(60, 70, extras=True), None),
         (_betweenness_case(60, 140, directed=True, extras=True), None),
-        pytest.param(_betweenness_case(300, 420, extras=True), 40, marks=pytest.mark.skipif(
-            not _NETWORKX_RESCALES_SAMPLES_BY_SOURCE, reason="networkx < 3.5 rescales sampled scores differently")),
-        pytest.param(_betweenness_case(200, 500, directed=True), 30, marks=pytest.mark.skipif(
-            not _NETWORKX_RESCALES_SAMPLES_BY_SOURCE, reason="networkx < 3.5 rescales sampled scores differently")),
+        (_betweenness_case(300, 420, extras=True), 40),
+        (_betweenness_case(200, 500, directed=True), 30),
         # suggest_questions samples 100 sources once a graph has more than 1000 nodes.
-        pytest.param(_betweenness_case(1500, 1900, extras=True), 100, marks=pytest.mark.skipif(
-            not _NETWORKX_RESCALES_SAMPLES_BY_SOURCE, reason="networkx < 3.5 rescales sampled scores differently")),
+        (_betweenness_case(1500, 1900, extras=True), 100),
     ],
 )
 def test_betweenness_matches_networkx_bit_for_bit(G, k):
