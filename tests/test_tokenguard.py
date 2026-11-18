@@ -8,6 +8,7 @@ import io
 import json
 import os
 import time
+from typing import Any
 
 import pytest
 
@@ -34,7 +35,7 @@ class _Stdin:
         self.buffer = io.BytesIO(data)
 
 
-def run(sub, payload, monkeypatch, capsys):
+def run(sub, payload, monkeypatch, capsys) -> "tuple[int, Any]":
     """Run one hook; returns (exit code, parsed stdout JSON or None)."""
     data = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
     monkeypatch.setattr("sys.stdin", _Stdin(data))
@@ -44,7 +45,7 @@ def run(sub, payload, monkeypatch, capsys):
     return code, (json.loads(out) if out.strip() else None)
 
 
-def read_payload(path, session="s1", agent=None, **tool_input):
+def read_payload(path, session="s1", agent=None, **tool_input: Any):
     p = {"session_id": session, "hook_event_name": "PreToolUse", "tool_name": "Read",
          "cwd": os.path.dirname(str(path)), "tool_input": {"file_path": str(path), **tool_input}}
     if agent:
@@ -217,7 +218,9 @@ def test_hooks_fail_open_on_garbage_stdin(sub, garbage, monkeypatch, capsys):
 
 
 def test_reread_bad_offset_limit_fails_open(src, monkeypatch, capsys):
-    for bad in ({"offset": "abc"}, {"limit": []}, {"limit": 0}, {"limit": -5}, {"offset": True}):
+    cases: "list[dict[str, Any]]" = [
+        {"offset": "abc"}, {"limit": []}, {"limit": 0}, {"limit": -5}, {"offset": True}]
+    for bad in cases:
         for _ in range(2):
             assert run("reread", read_payload(src, **bad), monkeypatch, capsys) == (0, None)
 

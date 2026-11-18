@@ -298,7 +298,7 @@ def analyze(
                                 rereads += 1
                                 frow["rereads"] += 1
                     tool_by_id[tid] = (name, is_reread)
-                    if is_reread:
+                    if is_reread and isinstance(inp, dict):
                         tool_by_id[tid + "\0path"] = (inp["file_path"], True)
                 elif btype == "tool_result":
                     tid = block.get("tool_use_id")
