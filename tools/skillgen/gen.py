@@ -1471,6 +1471,18 @@ def _is_get_section_tool_line(line: str) -> bool:
     }
 
 
+def _is_pip_upgrade_fix_line(line: str) -> bool:
+    """Whether a line is part of Step 1's pip-upgrade fix (#5235).
+
+    The no-uv fallback ran ``pip install graphifyy``, which answers
+    "Requirement already satisfied" over an older install and leaves it in
+    place, so a stale graphify was never upgraded. It now passes ``-U``. Both
+    the old (removed) and new (added) forms match here.
+    """
+    s = line.strip()
+    return '-m pip install graphifyy -q' in s or '-m pip install -U graphifyy -q' in s
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1506,6 +1518,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
+    _is_pip_upgrade_fix_line,
 )
 
 
