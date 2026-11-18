@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -55,7 +56,9 @@ def step1_script() -> str:
     return _extract_step1_bash_block()
 
 
-def _run_step1(script: str, input_path_value: str, cwd: Path) -> subprocess.CompletedProcess:
+def _run_step1(script: str, input_path_value: str, cwd: Path, spec_path_value: str | None = None) -> subprocess.CompletedProcess:
+    if spec_path_value is not None:
+        script = script.replace("SPEC_PATH", spec_path_value)
     if sys.platform == "win32":
         if len(input_path_value) > 2 and input_path_value[1] == ":":
             drive = input_path_value[0].lower()
@@ -259,3 +262,142 @@ def test_step1_still_fails_loudly_on_a_nonexistent_path(tmp_path: Path, skill_fi
     marker = tmp_path / "graphify-out" / ".graphify_root"
     assert result.returncode != 0
     assert not marker.exists() or marker.read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.parametrize("attack_name,payload_fn", HOSTILE_PAYLOADS)
+def test_step1_does_not_execute_hostile_spec_path(
+    tmp_path: Path, attack_name: str, payload_fn
+):
+    """A hostile SPEC_PATH must never execute — Step 1 rejects it or stores it inert."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    script = _extract_step1_bash_block("skill.md")
+    sentinel = tmp_path / f"PWNED_SPEC_{attack_name}"
+    malicious = payload_fn(sentinel)
+
+    _run_step1(script, str(project), cwd=tmp_path, spec_path_value=malicious)
+
+    assert not sentinel.exists(), (
+        f"hostile {attack_name} inside SPEC_PATH must never execute as shell code"
+    )
+    spec_sidecar = tmp_path / "graphify-out" / ".graphify_spec"
+    # Step 1 opens the spec path before storing it, so a payload that is not a
+    # readable file is rejected loudly. A payload that happens to resolve is
+    # stored verbatim as inert text — either way nothing executes.
+    if spec_sidecar.exists():
+        written = spec_sidecar.read_text(encoding="utf-8")
+        assert malicious.split("\n")[0] in written or malicious.strip() in written, (
+            f"a stored spec value must be verbatim; got {written!r}"
+        )
+
+
+def test_step1_bad_spec_path_fails_loudly(tmp_path: Path):
+    """A SPEC_PATH that does not resolve must fail Step 1, not store a bad path.
+
+    The spec write opens the path before storing it: a typo'd or hostile path
+    dies here instead of silently mis-attributing every B0/B3 cache entry.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    script = _extract_step1_bash_block("skill.md")
+
+    result = _run_step1(
+        script, str(project), cwd=tmp_path,
+        spec_path_value=str(tmp_path / "no-such-spec.md"),
+    )
+
+    assert result.returncode != 0
+    # The root write already ran (&& chain order), but no spec sidecar.
+    assert (tmp_path / "graphify-out" / ".graphify_root").exists()
+    assert not (tmp_path / "graphify-out" / ".graphify_spec").exists()
+
+
+# --- PowerShell Step 1 (skill-windows.md) ------------------------------------
+
+PWSH = shutil.which("pwsh")
+
+
+def _extract_step1_powershell_sidecar_tail() -> str:
+    """The INPUT_PATH/SPEC_PATH sidecar-write tail of the windows Step-1 block.
+
+    The block's head detects a graphify-installed Python (a Windows-only
+    `Scripts\\python.exe` probe), which cannot succeed in the test sandbox;
+    the sidecar tail is the part this test exercises, sliced at the
+    ``$InputPathRaw`` here-string. ``$Utf8NoBom`` is defined by the caller.
+    """
+    text = SKILL_MD.parent.joinpath("skill-windows.md").read_text(encoding="utf-8")
+    for match in re.finditer(r"```powershell\n(.*?)\n```", text, re.DOTALL):
+        block = match.group(1)
+        if "graphify_root" in block and "$InputPathRaw" in block:
+            return block[block.index("$InputPathRaw"):]
+    raise AssertionError("could not find the sidecar tail in skill-windows.md Step 1")
+
+
+def _run_step1_ps(tail: str, input_path: str, spec_path: str, cwd: Path):
+    """Run the sidecar tail under pwsh with the here-string bodies filled."""
+    script = (
+        "$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)\n"
+        "New-Item -ItemType Directory -Force -Path graphify-out | Out-Null\n"
+        + tail.replace("INPUT_PATH", input_path)
+        .replace("SPEC_PATH", spec_path)
+        .replace("\r\n", "\n")
+    )
+    script_file = cwd / "_step1.ps1"
+    script_file.write_text(script, encoding="utf-8", newline="\n")
+    return subprocess.run(
+        [PWSH, "-NoProfile", "-File", str(script_file)],
+        cwd=cwd, capture_output=True, text=True, timeout=60,
+    )
+
+
+@pytest.mark.skipif(PWSH is None, reason="pwsh not available")
+def test_step1_powershell_writes_both_sidecars_on_a_good_path(tmp_path: Path):
+    """The windows Step 1 must write .graphify_root AND .graphify_spec."""
+    project = tmp_path / "my project with spaces"
+    project.mkdir()
+    spec = tmp_path / "extraction-spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    result = _run_step1_ps(
+        _extract_step1_powershell_sidecar_tail(), str(project), str(spec), cwd=tmp_path
+    )
+
+    out = tmp_path / "graphify-out"
+    root = (out / ".graphify_root").read_text(encoding="utf-8")
+    spec_read = (out / ".graphify_spec").read_text(encoding="utf-8")
+    assert Path(root).resolve() == project.resolve(), (
+        f".graphify_root must hold the resolved scan root; got {root!r} "
+        f"stderr={result.stderr!r}"
+    )
+    assert Path(spec_read).resolve() == spec.resolve(), (
+        f".graphify_spec must hold the spec path; got {spec_read!r}"
+    )
+
+
+@pytest.mark.skipif(PWSH is None, reason="pwsh not available")
+def test_step1_powershell_bad_path_writes_no_sidecars(tmp_path: Path):
+    """A bad INPUT_PATH must fail before ANY sidecar is written.
+
+    Resolve-Path raises only a non-terminating error by default: without
+    -ErrorAction Stop the step continued and WriteAllText created an EMPTY
+    .graphify_root, after which the Test-Path guard also let .graphify_spec
+    through — a silent bad-root state instead of a loud failure.
+    """
+    result = _run_step1_ps(
+        _extract_step1_powershell_sidecar_tail(),
+        "does/not/exist-ps",
+        str(tmp_path / "spec.md"),
+        cwd=tmp_path,
+    )
+
+    out = tmp_path / "graphify-out"
+    assert result.returncode != 0, (
+        f"a nonexistent INPUT_PATH must fail; rc=0 stderr={result.stderr!r}"
+    )
+    assert not (out / ".graphify_root").exists(), (
+        ".graphify_root must not exist after a failed Resolve-Path "
+        "(an empty marker would silently resolve later blocks to cwd)"
+    )
+    assert not (out / ".graphify_spec").exists(), (
+        ".graphify_spec must not be written when the root write failed"
+    )

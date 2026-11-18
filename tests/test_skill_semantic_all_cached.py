@@ -83,11 +83,12 @@ def test_all_cached_run_reaches_part_c_with_cached_nodes_and_no_stale_chunks(tmp
         json.dumps({"nodes": [{"id": "stale_node", "label": "old", "source_file": "x.md"}],
                     "edges": []}), encoding="utf-8")
 
-    # Since #4762 the blocks read the scan root from the trusted .graphify_root
-    # sidecar instead of a substituted INPUT_PATH literal; simulate Step 1's write.
+    # The blocks read the scan root and the spec path from the trusted
+    # .graphify_root/.graphify_spec sidecars Step 1 writes — a substituted
+    # literal was the paste-into-code vector; simulate both writes.
     (out / ".graphify_root").write_text(corpus.as_posix(), encoding="utf-8")
+    (out / ".graphify_spec").write_text(spec.as_posix(), encoding="utf-8")
     for src in b0 + b3 + part_c:
-        src = src.replace("SPEC_PATH", spec.as_posix())
         subprocess.run([sys.executable, "-c", src], cwd=tmp_path, check=True,
                        capture_output=True, text=True)
 

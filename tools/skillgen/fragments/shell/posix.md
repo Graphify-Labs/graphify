@@ -35,9 +35,21 @@ mkdir -p graphify-out
 # command line itself: a bare `cd <path>` (or an unquoted heredoc, which
 # still expands $()/backticks in its body) would let a malicious path execute
 # as shell code the moment this line runs.
-"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); os.chdir(sys.stdin.readline().rstrip('\n')); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF'
+# The extraction-spec path travels through a second heredoc chained with &&
+# to the root write: Steps B0/B3 hand it to the semantic cache as prompt_file,
+# and a path pasted into those calls breaks (or executes) on a quote exactly
+# like a hostile scan root would. It is the body of the GRAPHIFY_SPEC_EOF
+# heredoc below: the absolute path of the references/extraction-spec.md that
+# ships beside this SKILL.md. The && chain keeps the bad-path failure loud
+# instead of masking it behind the spec write, and the spec command opens the
+# path before storing it: a path that does not resolve fails the step here
+# instead of silently mis-attributing Step B0/B3 cache entries (#1939).
+"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); os.chdir(sys.stdin.readline().rstrip('\n')); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF' && \
+"$PYTHON" -c "import sys; p = sys.stdin.readline().rstrip('\n'); open(p, encoding='utf-8').close(); open('graphify-out/.graphify_spec', 'w', encoding='utf-8').write(p)" <<'GRAPHIFY_SPEC_EOF'
 INPUT_PATH
 GRAPHIFY_ROOT_EOF
+SPEC_PATH
+GRAPHIFY_SPEC_EOF
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
