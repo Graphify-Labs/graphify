@@ -18,8 +18,8 @@ from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
 # and CREATE PROCEDURE [dbo].[usp_Load] ... are both recovered. A bare [\w$.]+
 # stops dead at the leading delimiter, which silently dropped every quoted
 # PL/pgSQL routine (#2180) and every bracket-named T-SQL procedure. T-SQL's
-# AS BEGIN...END body idiom always lands in recovery — the grammar has no
-# create_procedure parse for it — and T-SQL spells re-creation CREATE OR ALTER
+# AS BEGIN...END body idiom lands in recovery (from tree-sitter-sql 0.3.12 it
+# may also partially parse; see #5236 below) — and T-SQL spells re-creation CREATE OR ALTER
 # (it has no OR REPLACE), so accept that form too, mirroring fb_proc_or_trigger.
 # Inside a bracket-delimited part, a literal ] is escaped by doubling
 # ([a]]b] names the identifier a]b), so consume ]] before treating a
