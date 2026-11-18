@@ -468,6 +468,37 @@ end
     assert any(i.endswith("_foo_eq") for i in ids)
 
 
+def test_ruby_def_passed_to_access_modifier_stays_a_method(tmp_path: Path):
+    """`private def x` passes the method definition as an argument to a call.
+
+    The call node used to drop the class link, so the method became a
+    file-level function and calls to it bound to that function instead.
+    """
+    f = tmp_path / "billing.rb"
+    f.write_text("""\
+class Billing
+  def charge
+    validate
+  end
+
+  private def validate
+  end
+
+  private_class_method def self.audit
+  end
+end
+""")
+    r = extract_ruby(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert ".validate()" in labels and "validate()" not in labels
+    assert ".audit()" in labels and "audit()" not in labels
+    methods = _edge_labels(r, "method")
+    assert ("Billing", "validate") in methods
+    assert ("Billing", "audit") in methods
+    assert (".charge()", ".validate()") in _calls(r)
+
+
 # ── C# ───────────────────────────────────────────────────────────────────────
 
 def test_csharp_no_error():
