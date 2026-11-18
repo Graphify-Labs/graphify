@@ -2486,19 +2486,40 @@ def dispatch_command(cmd: str) -> None:
         import argparse as _ap
 
         p = _ap.ArgumentParser(prog="graphify save-result")
-        p.add_argument("--question", required=True)
+        # Each free-text field has a --*-file twin. The skill writes those files
+        # with a quoted heredoc, because bash still runs `...` and $(...) inside
+        # a double-quoted argument (#5234).
+        p.add_argument("--question", default=None)
+        p.add_argument("--question-file", dest="question_file", default=None)
         p.add_argument("--answer", default=None)
         p.add_argument("--answer-file", dest="answer_file", default=None)
         p.add_argument("--type", dest="query_type", default="query")
         p.add_argument("--nodes", nargs="*", default=[])
+        p.add_argument("--nodes-file", dest="nodes_file", default=None,
+                       help="file with one cited node label per line")
         p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
         p.add_argument("--correction", default=None)
+        p.add_argument("--correction-file", dest="correction_file", default=None)
         p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
         opts = p.parse_args(sys.argv[2:])
+
+        def _read(path: str) -> str:
+            return Path(path).read_text(encoding="utf-8").strip()
+
+        if opts.question_file:
+            opts.question = _read(opts.question_file)
+        elif not opts.question:
+            p.error("--question or --question-file is required")
         if opts.answer_file:
-            opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
+            opts.answer = _read(opts.answer_file)
         elif not opts.answer:
             p.error("--answer or --answer-file is required")
+        if opts.correction_file:
+            opts.correction = _read(opts.correction_file)
+        if opts.nodes_file:
+            opts.nodes = [*opts.nodes, *(
+                line.strip() for line in _read(opts.nodes_file).splitlines() if line.strip()
+            )]
         from graphify.ingest import save_query_result as _sqr
 
         out = _sqr(
