@@ -11151,6 +11151,11 @@ def _extract_generic(
                 # versions (including the JVM `io.github.bonede:tree-sitter-kotlin`
                 # binding) produce `simple_identifier`. Accept both.
                 first = node.children[0] if node.children else None
+                # The grammar parses `!isEmpty()` / `-bonus()` as
+                # `(!isEmpty)()`, putting the prefix operator in the callee
+                # slot. The call belongs to the operand.
+                while first is not None and first.type == "unary_expression":
+                    first = first.child_by_field_name("argument")
                 if first:
                     if first.type in ("simple_identifier", "identifier"):
                         callee_name = _read_text(first, source)

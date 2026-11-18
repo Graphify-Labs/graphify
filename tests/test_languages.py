@@ -1061,6 +1061,27 @@ def test_kotlin_emits_in_file_calls():
     assert ("createClient()", "HttpClient") in calls
 
 
+def test_kotlin_call_under_prefix_operator_is_kept(tmp_path):
+    """tree-sitter-kotlin parses `!isEmpty()` as `(!isEmpty)()`: the callee
+    slot holds the `unary_expression`, so the call itself was dropped."""
+    f = tmp_path / "Validator.kt"
+    f.write_text("""\
+class Validator {
+    fun check(): Boolean = !isEmpty()
+    fun negated(): Int = -bonus()
+    fun isEmpty(): Boolean {
+        return false
+    }
+    fun bonus(): Int {
+        return 1
+    }
+}
+""")
+    calls = _calls(extract_kotlin(f))
+    assert (".check()", ".isEmpty()") in calls
+    assert (".negated()", ".bonus()") in calls
+
+
 def test_kotlin_splits_inherits_and_implements():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert ("DataProcessor", "BaseProcessor") in _edge_labels(r, "inherits")
