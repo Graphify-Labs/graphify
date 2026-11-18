@@ -2886,7 +2886,7 @@ def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
     return lines
 
 
-def _build_server(graph_path: str):
+def _build_server(graph_path: str, *, request_graph=None):
     """Build the configured low-level MCP Server (shared by every transport).
 
     All graph query tools and resources are registered here over a single
@@ -2929,6 +2929,10 @@ def _build_server(graph_path: str):
         keeps the server's default graph (backward-compatible); a project_path
         resolves to ``<project_path>/<GRAPHIFY_OUT>/graph.json``, honouring the
         GRAPHIFY_OUT override so worktree/shared-output setups keep working."""
+        if request_graph is not None:
+            if project_path is not None:
+                raise ToolError("The server selects the project for this endpoint.")
+            return request_graph()
         if not project_path:
             return _default_graph_path
         return str(Path(project_path) / _paths.GRAPHIFY_OUT / "graph.json")
@@ -2939,13 +2943,13 @@ def _build_server(graph_path: str):
     # await between them), so a concurrent call never observes a half-applied
     # swap.
     active_graph_path = _default_graph_path
-    try:
-        G, communities = _load_ctx(_default_graph_path)
-    except (FileNotFoundError, RuntimeError):
-        # No default graph at startup → run as a pure multi-project server. Tools
-        # then require project_path; a call without one gets a clear error rather
-        # than the process refusing to start (which is what _load_graph would do).
-        G, communities = None, {}
+    G, communities = None, {}
+    if request_graph is None:
+        try:
+            G, communities = _load_ctx(_default_graph_path)
+        except (FileNotFoundError, RuntimeError):
+            # Tools can still work with an explicit project_path.
+            pass
 
     def _select_graph(project_path) -> None:
         nonlocal G, communities, active_graph_path
@@ -3120,6 +3124,9 @@ def _build_server(graph_path: str):
                 },
             ),
         ]
+        if request_graph is not None:
+            return [tool for tool in _tools if tool.name in _project_tools]
+
         # Multi-project support: every tool accepts an optional project_path.
         # Injected here (rather than repeated in 11 literal schemas) so the set
         # stays in lockstep as tools are added. Omitting it keeps the historical
@@ -3415,6 +3422,10 @@ def _build_server(graph_path: str):
         "get_pr_impact": _tool_get_pr_impact,
         "triage_prs": _tool_triage_prs,
     }
+    _project_tools = {
+        "query_graph", "get_node", "get_section", "get_neighbors", "get_community",
+        "god_nodes", "graph_stats", "shortest_path",
+    }
 
     def _load_community_labels() -> dict[int, str]:
         labels_path = Path(active_graph_path).parent / ".graphify_labels.json"
@@ -3492,7 +3503,7 @@ def _build_server(graph_path: str):
         arguments = dict(arguments or {})
         project_path = arguments.pop("project_path", None)
         handler = _handlers.get(name)
-        if not handler:
+        if not handler or (request_graph is not None and name not in _project_tools):
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
             _select_graph(project_path)  # bind G/communities to the target graph

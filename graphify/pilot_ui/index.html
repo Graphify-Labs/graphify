@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Graphify · Phòng làm việc</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <main id="login-view" class="auth-page" hidden>
+    <section class="auth-card" aria-labelledby="login-title">
+      <div class="brand"><span class="mark" aria-hidden="true">G</span> Graphify</div>
+      <h1 id="login-title">Đăng nhập</h1>
+      <p class="muted">Dùng tài khoản do quản trị viên cấp để mở dự án của bạn.</p>
+      <form id="login-form" class="form">
+        <label>Tên tài khoản <input name="username" autocomplete="username" autocapitalize="none" required></label>
+        <label>Mật khẩu <input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="primary" type="submit">Đăng nhập</button>
+        <p class="feedback" role="status"></p>
+      </form>
+    </section>
+  </main>
+
+  <div id="app-view" class="app" hidden>
+    <aside class="sidebar">
+      <div class="brand"><span class="mark" aria-hidden="true">G</span> Graphify</div>
+      <div class="side-content">
+        <div class="side-heading"><span>DỰ ÁN CỦA TÔI</span><span id="project-count">0</span></div>
+        <button type="button" id="new-project" class="primary new-project"><span aria-hidden="true">+</span> Tải repo lên</button>
+        <nav id="project-list" aria-label="Dự án của tôi"></nav>
+      </div>
+      <div class="side-footer">
+        <button type="button" id="admin-open" hidden>Quản trị máy chủ</button>
+        <div class="identity">
+          <span id="identity-avatar" class="avatar" aria-hidden="true"></span>
+          <strong id="identity-name"></strong>
+          <button type="button" id="logout" class="quiet" aria-label="Đăng xuất" title="Đăng xuất">↗</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace" id="workspace">
+      <div id="notice" class="notice" hidden role="status"></div>
+      <section id="empty-view" class="empty">
+        <div class="empty-icon" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <h1>Khám phá một repo</h1>
+        <p>Đưa mã nguồn lên để xem cách các tệp, hàm và lớp kết nối với nhau.</p>
+        <button type="button" id="empty-upload" class="primary">Chọn file ZIP</button>
+      </section>
+
+      <section id="project-view" hidden>
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow">DỰ ÁN</p>
+            <h1 id="project-title"></h1>
+            <p id="project-detail" class="muted"></p>
+          </div>
+          <div class="heading-actions">
+            <span class="status" id="project-status"></span>
+            <button type="button" class="quiet danger" id="delete-project">Xóa dự án</button>
+          </div>
+        </header>
+        <div id="build-state" class="panel waiting" hidden role="status"></div>
+        <div id="ready-view" hidden>
+          <nav class="tabs" aria-label="Tính năng dự án">
+            <button type="button" data-tab="graph">Đồ thị</button>
+            <button type="button" data-tab="tools">Truy vấn</button>
+            <button type="button" data-tab="exports">Báo cáo &amp; xuất</button>
+            <button type="button" data-tab="mcp">Kết nối MCP</button>
+          </nav>
+
+          <section id="tab-graph">
+            <div class="metrics">
+              <div class="panel metric"><span>Nút</span><strong id="metric-nodes">—</strong></div>
+              <div class="panel metric"><span>Liên kết</span><strong id="metric-edges">—</strong></div>
+              <div class="panel metric"><span>Nhóm liên quan</span><strong id="metric-communities">—</strong></div>
+            </div>
+            <div class="panel graph-panel">
+              <div class="panel-heading graph-toolbar">
+                <div><h2>Bản đồ mã nguồn</h2><p class="muted" id="graph-caption"></p></div>
+                <label class="sr-only" for="node-search">Tìm nút trong bản đồ</label>
+                <input id="node-search" type="search" placeholder="Tìm nút trong bản đồ">
+              </div>
+              <div class="graph-grid">
+                <div class="graph-canvas"><canvas id="graph-canvas" aria-label="Bản đồ trực quan của các nút"></canvas></div>
+                <div class="node-panel" id="node-panel">
+                  <label for="node-select">Xem nút</label>
+                  <select id="node-select" size="5" aria-label="Các nút đang hiển thị"></select>
+                  <div id="node-detail" class="node-detail"></div>
+                  <button type="button" class="secondary" id="node-explain" hidden>Giải thích nút này</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="tab-tools" hidden>
+            <div class="panel panel-body">
+              <div class="panel-heading"><div><h2>Truy vấn đồ thị</h2><p class="muted">Chạy công cụ Graphify trên dự án hiện tại.</p></div></div>
+              <form id="query-form" class="form">
+                <label>Công cụ
+                  <select id="query-action">
+                    <option value="query">Truy vấn theo câu hỏi</option>
+                    <option value="explain">Giải thích một nút</option>
+                    <option value="path">Tìm đường giữa hai nút</option>
+                    <option value="affected">Tìm phần bị ảnh hưởng</option>
+                    <option value="section">Đọc mục Markdown</option>
+                    <option value="god-nodes">Các nút kết nối nhiều nhất</option>
+                    <option value="benchmark">Đo mức giảm token</option>
+                    <option value="diagnose">Chẩn đoán liên kết trùng</option>
+                  </select>
+                </label>
+                <label id="query-first-label"><span id="query-first-title">Câu hỏi</span><input id="query-first" maxlength="1000"></label>
+                <label id="query-second-label" hidden>Nút đích<input id="query-second" maxlength="1000"></label>
+                <div><button class="primary" type="submit">Chạy truy vấn</button></div>
+                <p class="feedback" role="status"></p>
+              </form>
+              <pre id="query-result" hidden tabindex="0" aria-label="Kết quả truy vấn"></pre>
+            </div>
+          </section>
+
+          <section id="tab-exports" hidden>
+            <div class="panel panel-body">
+              <div class="panel-heading"><div><h2>Báo cáo &amp; xuất</h2><p class="muted">Tải xuống các định dạng Graphify của dự án.</p></div></div>
+              <div id="export-list" class="exports"></div>
+              <p id="export-feedback" class="feedback" role="status"></p>
+              <details id="report-details">
+                <summary>Mở báo cáo kiến trúc</summary>
+                <pre id="report-text" tabindex="0" aria-label="Báo cáo kiến trúc"></pre>
+              </details>
+            </div>
+          </section>
+
+          <section id="tab-mcp" hidden>
+            <div class="panel panel-body">
+              <div class="panel-heading"><div><h2>Kết nối agent qua MCP</h2><p class="muted">Cấu hình Streamable HTTP cho agent truy cập được máy chủ nội bộ.</p></div></div>
+              <div class="form">
+                <label>Endpoint <input id="mcp-url" readonly></label>
+                <p class="muted" id="mcp-status"></p>
+                <div class="button-row">
+                  <button type="button" class="primary" id="token-create">Tạo token</button>
+                  <button type="button" class="secondary" id="token-revoke" hidden>Thu hồi</button>
+                </div>
+                <p class="feedback" id="mcp-feedback" role="status"></p>
+                <div id="mcp-config" hidden>
+                  <label>Cấu hình mẫu cho client hỗ trợ header
+                    <textarea id="mcp-config-text" rows="10" readonly></textarea>
+                  </label>
+                  <p class="muted">Sao chép và lưu token ngay. Tạo token mới sẽ thay thế token đang dùng.</p>
+                  <div class="button-row">
+                    <button type="button" class="secondary" id="token-copy">Sao chép</button>
+                    <button type="button" class="secondary" id="mcp-test">Thử kết nối</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="admin-view" hidden>
+        <header class="page-heading">
+          <div><p class="eyebrow">QUẢN TRỊ</p><h1>Quản lý máy chủ</h1><p class="muted">Cấp tài khoản và theo dõi trạng thái phân tích.</p></div>
+          <button type="button" class="primary" id="account-new">Tạo tài khoản</button>
+        </header>
+        <div id="admin-metrics" class="metrics admin-metrics"></div>
+        <div class="panel panel-body">
+          <div class="panel-heading"><h2>Tài khoản</h2></div>
+          <div class="table-wrap"><table><thead><tr><th>Tên tài khoản</th><th>Vai trò</th><th>Dự án</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="account-list"></tbody></table></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="upload-dialog">
+    <form id="upload-form" class="form">
+      <div class="dialog-heading"><h2>Tải repo lên</h2><button type="button" class="quiet" data-close="upload-dialog" aria-label="Đóng">×</button></div>
+      <label>Tên dự án <input name="title" maxlength="100" required></label>
+      <label class="upload-zone">Mã nguồn (.zip)
+        <input name="repo" type="file" accept=".zip,application/zip" required>
+        <span class="muted">Tối đa 50 MB và 250 MB sau giải nén.</span>
+      </label>
+      <p class="muted">Phân tích mã nguồn và cấu trúc Markdown cục bộ. Dự án thuộc riêng tài khoản của bạn.</p>
+      <p class="feedback" role="status"></p>
+      <div class="button-row dialog-actions"><button type="button" class="secondary" data-close="upload-dialog">Hủy</button><button class="primary" type="submit">Phân tích repo</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="account-dialog">
+    <form id="account-form" class="form">
+      <div class="dialog-heading"><h2 id="account-title">Tạo tài khoản</h2><button type="button" class="quiet" data-close="account-dialog" aria-label="Đóng">×</button></div>
+      <label>Tên tài khoản <input name="username" pattern="[a-z0-9][a-z0-9._\-]{2,39}" maxlength="40" autocomplete="off" required></label>
+      <label>Mật khẩu <input name="password" minlength="10" maxlength="128" type="password" autocomplete="new-password" required></label>
+      <p class="feedback" role="status"></p>
+      <div class="button-row dialog-actions"><button type="button" class="secondary" data-close="account-dialog">Hủy</button><button class="primary" type="submit">Lưu</button></div>
+    </form>
+  </dialog>
+</body>
+</html>
