@@ -1157,7 +1157,7 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text())
 G = json_graph.node_link_graph(data, edges='links')
 
-question = 'QUESTION'
+question = sys.stdin.read().strip()
 mode = 'MODE'  # 'bfs' or 'dfs'
 terms = [t.lower() for t in question.split() if len(t) > 3]
 
@@ -1231,18 +1231,32 @@ output = '\n'.join(lines)
 if len(output) > char_budget:
     output = output[:char_budget] + f'\n... (truncated at ~{token_budget} token budget - use --budget N for more)'
 print(output)
-"
+" <<'GRAPHIFY_TERMS_EOF'
+QUESTION
+GRAPHIFY_TERMS_EOF
 ```
 
-Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above.
+Replace `QUESTION` (the line before `GRAPHIFY_TERMS_EOF`) with the user's actual question, exactly as written, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above.
 
 **Bypass check (hub/bridge questions only, #4426).** If the question is about why a node bridges communities or has unusually many edges (a hub/god node), the neighbour listing above only shows code that already has an edge to it — it cannot show code that does the hub's job without ever calling it. Before finalizing the answer: pick one or two literal, distinctive things the hub does (a hard-coded constant it wraps, a specific string it returns, the exact computation in its body), then grep the corpus for that literal text in files that have no edge to the hub node in the subgraph above. Report any hits separately, labeled "Bypasses", distinct from the normal neighbour list — each is a file that reimplements the hub instead of using it. Also check whether the hub's own community label names a different node: a shared utility is often clustered into its heaviest consumer's community, so the label can read as if that consumer were the bridge. If so, say so plainly in the answer rather than letting the label stand unquestioned.
 
 After writing the answer, save it back into the graph so it improves future queries:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+cat > graphify-out/.save_question.txt <<'GRAPHIFY_Q_EOF'
+QUESTION
+GRAPHIFY_Q_EOF
+cat > graphify-out/.save_answer.md <<'GRAPHIFY_A_EOF'
+ANSWER
+GRAPHIFY_A_EOF
+cat > graphify-out/.save_nodes.txt <<'GRAPHIFY_N_EOF'
+NODE1
+NODE2
+GRAPHIFY_N_EOF
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.save_question.txt --answer-file graphify-out/.save_answer.md --nodes-file graphify-out/.save_nodes.txt --type query
 ```
+
+Replace `QUESTION` with the question, `ANSWER` with your full answer text, and `NODE1`/`NODE2` with the node labels you cited, one per line. Write each value between its heredoc lines exactly as it is, with no quoting or escaping: the quoted delimiter (`<<'GRAPHIFY_A_EOF'`) stops bash from running backticks or `$(...)` in the text (#5234). This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
 ---
 
@@ -1270,8 +1284,8 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text())
 G = json_graph.node_link_graph(data, edges='links')
 
-a_term = 'NODE_A'
-b_term = 'NODE_B'
+a_term = sys.stdin.readline().rstrip('\n')
+b_term = sys.stdin.readline().rstrip('\n')
 
 def find_node(term):
     term = term.lower()
@@ -1305,15 +1319,28 @@ except nx.NetworkXNoPath:
     print(f'No path found between {a_term!r} and {b_term!r}')
 except nx.NodeNotFound as e:
     print(f'Node not found: {e}')
-"
+" <<'GRAPHIFY_TERMS_EOF'
+NODE_A
+NODE_B
+GRAPHIFY_TERMS_EOF
 ```
 
-Replace `NODE_A` and `NODE_B` with the actual concept names. Then explain the path in plain language - what each hop means, why it's significant.
+Replace `NODE_A` and `NODE_B` (the two lines before `GRAPHIFY_TERMS_EOF`) with the actual concept names, exactly as written: the script reads them from stdin, so apostrophes and backticks need no escaping (#5234). Then explain the path in plain language - what each hop means, why it's significant.
 
 After writing the explanation, save it back:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+cat > graphify-out/.save_question.txt <<'GRAPHIFY_Q_EOF'
+Path from NODE_A to NODE_B
+GRAPHIFY_Q_EOF
+cat > graphify-out/.save_answer.md <<'GRAPHIFY_A_EOF'
+ANSWER
+GRAPHIFY_A_EOF
+cat > graphify-out/.save_nodes.txt <<'GRAPHIFY_N_EOF'
+NODE_A
+NODE_B
+GRAPHIFY_N_EOF
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.save_question.txt --answer-file graphify-out/.save_answer.md --nodes-file graphify-out/.save_nodes.txt --type path_query
 ```
 
 ---
@@ -1342,7 +1369,7 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text())
 G = json_graph.node_link_graph(data, edges='links')
 
-term = 'NODE_NAME'
+term = sys.stdin.readline().rstrip('\n')
 term_lower = term.lower()
 
 # Find best matching node
@@ -1370,15 +1397,26 @@ for neighbor in G.neighbors(nid):
     conf = edge.get('confidence', '')
     src_file = G.nodes[neighbor].get('source_file', '')
     print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
-"
+" <<'GRAPHIFY_TERMS_EOF'
+NODE_NAME
+GRAPHIFY_TERMS_EOF
 ```
 
-Replace `NODE_NAME` with the concept. Then write a 3-5 sentence explanation using source locations as citations.
+Replace `NODE_NAME` (the line before `GRAPHIFY_TERMS_EOF`) with the concept, exactly as written. Then write a 3-5 sentence explanation using source locations as citations.
 
 After writing the explanation, save it back:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+cat > graphify-out/.save_question.txt <<'GRAPHIFY_Q_EOF'
+Explain NODE_NAME
+GRAPHIFY_Q_EOF
+cat > graphify-out/.save_answer.md <<'GRAPHIFY_A_EOF'
+ANSWER
+GRAPHIFY_A_EOF
+cat > graphify-out/.save_nodes.txt <<'GRAPHIFY_N_EOF'
+NODE_NAME
+GRAPHIFY_N_EOF
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.save_question.txt --answer-file graphify-out/.save_answer.md --nodes-file graphify-out/.save_nodes.txt --type explain
 ```
 
 ---
