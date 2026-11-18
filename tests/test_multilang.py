@@ -2008,3 +2008,26 @@ def test_sql_quoted_plpgsql_file_stays_clean():
     contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
     fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
     assert fn_ids <= contains_targets
+
+
+def test_recovery_keeps_a_real_routine_sharing_the_misread_line(tmp_path):
+    """#5236 review: two routines on one line are both real.
+
+    Recovery drops the walk routine misread from a T-SQL header, but must
+    not drop a correctly parsed neighbour on the same line, nor the
+    trigger edge that runs it.
+    """
+    f = tmp_path / "s.sql"
+    f.write_text(
+        "CREATE FUNCTION b() RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$"
+        " LANGUAGE plpgsql; CREATE PROCEDURE p @x INT AS SELECT 1;\n"
+        "CREATE TABLE t (id INT);\n"
+        "CREATE TRIGGER tr AFTER INSERT ON t FOR EACH ROW EXECUTE FUNCTION b();\n"
+    )
+    r = extract_sql(f)
+    labels = sorted(n["label"] for n in r["nodes"] if n["label"].endswith("()"))
+    assert labels == ["b()", "p()"]
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    executes = [(by_id[e["source"]], by_id[e["target"]])
+                for e in r["edges"] if e["relation"] == "executes"]
+    assert executes == [("tr", "b()")]
