@@ -128,11 +128,10 @@ def extract_vbnet(path: Path) -> dict:
                 "id": nid,
                 "label": label,
                 "file_type": "code",
-                "source_location": f"L{node.start_point[0] + 1}",
+                "source_file": source_file if source_backed else "",
+                "source_location": f"L{node.start_point[0] + 1}" if source_backed else "",
                 "metadata": details,
             }
-            if source_backed:
-                item["source_file"] = source_file
             if callable_node:
                 item["_callable"] = True
             nodes.append(item)
@@ -267,7 +266,9 @@ def extract_vbnet(path: Path) -> dict:
                     if member.type == "event_declaration":
                         events[(owner_key, data_name.casefold())] = member_id
                 continue
-            if member.type not in {"method_declaration", "constructor_declaration"}:
+            if member.type not in {
+                "method_declaration", "constructor_declaration", "operator_declaration",
+            }:
                 continue
 
             if member.type == "constructor_declaration":
@@ -278,7 +279,9 @@ def extract_vbnet(path: Path) -> dict:
                 if method_name_node is None:
                     continue
                 method_name = _read_text(method_name_node, source)
-                method_kind = "method"
+                method_kind = (
+                    "operator" if member.type == "operator_declaration" else "method"
+                )
             parameters = member.child_by_field_name("parameters")
             parameter_nodes = (
                 [child for child in parameters.named_children if child.type == "parameter"]
@@ -381,7 +384,8 @@ def extract_vbnet(path: Path) -> dict:
         while stack:
             node = stack.pop()
             if node != body and node.type in {
-                "method_declaration", "constructor_declaration", "property_declaration"
+                "method_declaration", "constructor_declaration", "property_declaration",
+                "operator_declaration",
             }:
                 continue
             if node.type == "invocation":

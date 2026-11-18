@@ -15,7 +15,25 @@ _GLOBAL_MANIFEST = _GLOBAL_DIR / "global-manifest.json"
 def _load_manifest() -> dict:
     if _GLOBAL_MANIFEST.exists():
         try:
-            return json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
+            manifest = json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
+            repos = manifest.get("repos") if isinstance(manifest, dict) else None
+            if not isinstance(repos, dict):
+                raise ValueError("expected a manifest object with a repos map")
+            # Isolate a malformed repo entry instead of discarding every tracked
+            # repo: a single bad value should not lose the user's other repos
+            # (#5020). Drop the bad ones, keep the rest, and say which went. Only
+            # a non-dict root or repos map is unrecoverable enough to back up.
+            bad = sorted(name for name, info in repos.items() if not isinstance(info, dict))
+            if bad:
+                for name in bad:
+                    repos.pop(name)
+                print(
+                    f"[graphify global] dropped {len(bad)} malformed repo "
+                    f"entr{'y' if len(bad) == 1 else 'ies'} ({', '.join(bad)}) "
+                    f"from {_GLOBAL_MANIFEST}; kept {len(repos)} valid repo(s).",
+                    file=sys.stderr,
+                )
+            return manifest
         except Exception as exc:
             # Don't silently wipe the user's manifest on a parse error: that
             # deletes every tracked repo. Back the bad file up and surface the

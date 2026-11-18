@@ -36,7 +36,7 @@ This Code of Conduct applies within all community spaces, including the GitHub r
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers at safi@graphify.com, or by directly messaging a Community Leader on the [Graphify Discord server](https://discord.gg/XDnKVpzdXB).
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers at safi@graphify.com, or by directly messaging a Community Leader on the [Graphify Discord server](https://discord.gg/graphify).
 
 All complaints will be reviewed and investigated promptly and fairly. All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

@@ -133,6 +133,28 @@ class TestParseCi:
         ]
         assert _parse_ci(rollup) == "FAILURE"
 
+    def test_unfinished_check_run_statuses_are_pending(self):
+        """GitHub's CheckStatusState has six values — REQUESTED, QUEUED,
+        IN_PROGRESS, COMPLETED, WAITING, PENDING — and every one but COMPLETED
+        means the run has no conclusion yet. Reading only IN_PROGRESS/QUEUED
+        made a WAITING run (a job held by a deployment protection rule),
+        a REQUESTED one and a PENDING one invisible: NONE on their own."""
+        for status in ("REQUESTED", "QUEUED", "IN_PROGRESS", "WAITING", "PENDING"):
+            rollup = [{"__typename": "CheckRun", "name": "deploy",
+                       "status": status, "conclusion": ""}]
+            assert _parse_ci(rollup) == "PENDING", status
+
+    def test_unfinished_check_run_beside_passing_one_is_pending(self):
+        """...and worse, masked by a sibling that did pass, so a PR still
+        waiting on a gated job was classified READY/APPROVED, not PENDING."""
+        for status in ("REQUESTED", "WAITING", "PENDING"):
+            rollup = [
+                {"__typename": "CheckRun", "name": "test",
+                 "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"__typename": "CheckRun", "name": "deploy",
+                 "status": status, "conclusion": ""},
+            ]
+            assert _parse_ci(rollup) == "PENDING", status
 
     def test_status_context_failure_is_failure(self):
         """A commit status from external CI (StatusContext) carries only `state`,

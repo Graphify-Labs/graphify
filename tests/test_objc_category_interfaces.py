@@ -120,3 +120,31 @@ def test_objc_same_named_categories_in_different_directories_stay_distinct(tmp_p
     assert len(_nodes_labelled(result, "Thing")) == 2
     assert [e for e in result["edges"]
             if e.get("relation") == "calls" and _label(result, e["source"]) == "-go"] == []
+
+
+def test_objc_class_split_across_header_and_impl_dirs_resolves_members(tmp_path: Path):
+    """One class with `.h` in `include/` and `.m` in `src/` still resolves `[w render]`.
+
+    `_merge_decl_def_classes` folds decl/def pairs only within a directory, so this
+    split mints two same-labelled `Widget` nodes that never merge. The resolver unions
+    their members and binds the selector to the sole DEFINITION (the `.m` node), rather
+    than bailing on "two candidates" — the header-only node is a bare declaration.
+    """
+    _write(tmp_path / "include" / "Widget.h",
+           "@interface Widget : NSObject\n- (void)render;\n@end\n")
+    _write(tmp_path / "src" / "Widget.m",
+           '#import "Widget.h"\n@implementation Widget\n- (void)render {}\n@end\n')
+    _write(tmp_path / "src" / "Caller.m",
+           '#import "Widget.h"\n@implementation Caller\n'
+           "- (void)go { Widget *w = [Widget new]; [w render]; }\n@end\n")
+    result = extract(sorted(tmp_path.rglob("*.[hm]")), cache_root=tmp_path / "cache")
+
+    assert len(_nodes_labelled(result, "Widget")) == 2
+    render_defs = [n for n in _nodes_labelled(result, "-render")
+                   if str(n.get("source_file", "")).endswith(".m")]
+    assert len(render_defs) == 1
+    hits = [e for e in result["edges"]
+            if e.get("relation") == "calls" and _label(result, e["source"]) == "-go"]
+    assert len(hits) == 1
+    assert hits[0]["target"] == render_defs[0]["id"]
+    assert hits[0].get("confidence") == "INFERRED"

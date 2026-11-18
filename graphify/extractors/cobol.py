@@ -22,6 +22,7 @@ _COPY = re.compile(
     re.IGNORECASE,
 )
 _CALL = re.compile(r"\bCALL\s+(['\"])([A-Z0-9-]+)\1", re.IGNORECASE)
+_END_PROGRAM = re.compile(r"\bEND\s+PROGRAM\b", re.IGNORECASE)
 _DATA_ITEM = re.compile(
     rf"^\s*(?:0[1-9]|[1-4][0-9]|66|77|88)\s+({_NAME})\b", re.IGNORECASE
 )
@@ -169,6 +170,14 @@ def extract_cobol(path: Path) -> dict:
     in_exec = False
     paragraphs: dict[tuple[str, str], str] = {}
     pending_performs: list[tuple[str, str, str, int]] = []
+    # A nested (contained) program's PROGRAM-ID switches current_program with
+    # no record of what it switched FROM; everything after its own END
+    # PROGRAM, including code physically back in the enclosing program, kept
+    # attributing to the nested one forever. Each PROGRAM-ID pushes the
+    # program it is nested under (possibly file_id, for a top-level one), and
+    # END PROGRAM pops back to it, so sibling and nested programs alike
+    # restore the right scope once their own body ends.
+    program_stack: list[str] = []
 
     for line, code in code_lines:
         upper = code.upper().strip()
@@ -182,9 +191,17 @@ def extract_cobol(path: Path) -> dict:
                 in_exec = True
             continue
 
+        if _END_PROGRAM.search(upper):
+            if program_stack:
+                current_program = program_stack.pop()
+                current_scope = current_program
+                in_procedure = True
+            continue
+
         program_match = _PROGRAM.search(upper)
         if program_match:
             name = program_match.group(1).upper()
+            program_stack.append(current_program)
             current_program = add_node(
                 _make_id(file_id, "program", name.casefold()),
                 name,

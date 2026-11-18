@@ -315,3 +315,150 @@ def test_3203_allow_partial_override_permits_intentional_reduction(tmp_path, mon
     # With override, the 1-node graph is persisted
     graph = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
     assert len(graph["nodes"]) == 1
+
+
+# -- 3. #5083: the degraded cache entry must not pin the corpus forever --------
+
+_PROMPT = llmmod._extraction_system(deep=False)
+
+
+def _doc_result(sf: str, count: int, prefix: str) -> dict:
+    return {
+        "nodes": [
+            {
+                "id": f"{prefix}_{i}",
+                "label": f"{sf} {i}",
+                "file_type": "document",
+                "source_file": sf,
+            }
+            for i in range(count)
+        ],
+        "edges": [],
+        "hyperedges": [],
+        "input_tokens": 10,
+        "output_tokens": 10,
+        "uncovered_files": [],
+    }
+
+
+def _mock_extract(result: dict, calls: list):
+    def _run(files, **kwargs):
+        calls.append([str(f) for f in files])
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, result)
+        return result
+
+    return _run
+
+
+def _cache_entry(root: Path, path: Path) -> Path:
+    from graphify.cache import _resolve_prompt_fp, cache_dir, file_hash
+
+    fp = _resolve_prompt_fp(_PROMPT)
+    return cache_dir(root, "semantic", fp) / f"{file_hash(path, root)}.json"
+
+
+def _clear_partial_flag(entry: Path) -> None:
+    """Simulate an entry written by a graphify that predates this fix."""
+    data = json.loads(entry.read_text(encoding="utf-8"))
+    data.pop("partial", None)
+    entry.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _boot_corpus(tmp_path, monkeypatch, capsys, calls):
+    corpus = tmp_path / "repo"
+    corpus.mkdir()
+    readme = corpus / "README.md"
+    readme.write_text("# Readme\nInitial content\n", encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    monkeypatch.setattr(
+        llmmod, "extract_corpus_parallel", _mock_extract(_doc_result("README.md", 3, "readme_n"), calls)
+    )
+    monkeypatch.setattr(
+        mainmod.sys, "argv", ["graphify", "extract", str(corpus), "--backend", "claude"]
+    )
+    assert _run_cli() == 0
+    capsys.readouterr()
+    return corpus, readme
+
+
+def test_5083_degraded_entry_is_marked_partial_and_next_run_reextracts(
+    tmp_path, monkeypatch, capsys
+):
+    calls: list = []
+    corpus, readme = _boot_corpus(tmp_path, monkeypatch, capsys, calls)
+    out_dir = corpus / "graphify-out"
+
+    readme.write_text("# Readme\nEdited content\n", encoding="utf-8")
+    monkeypatch.setattr(
+        llmmod, "extract_corpus_parallel", _mock_extract(_doc_result("README.md", 1, "readme_doc"), calls)
+    )
+    assert _run_cli() == 1
+    err = capsys.readouterr().err
+    assert "unverified semantic shrink detected for 'README.md' (3 -> 1 nodes)" in err
+    assert "marked 1 semantic cache entry partial" in err
+
+    from graphify.cache import load_cached
+
+    assert load_cached(readme, root=corpus, kind="semantic", prompt=_PROMPT) is None
+    kept = load_cached(
+        readme, root=corpus, kind="semantic", prompt=_PROMPT, allow_partial=True
+    )
+    assert kept["partial"] is True
+    assert len(kept["nodes"]) == 1
+    # The graph on disk is untouched.
+    assert len(json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))["nodes"]) == 3
+
+    # Next run: the partial entry is a MISS, so the model is consulted again and
+    # the healthy extraction lands instead of re-failing against the cache.
+    monkeypatch.setattr(
+        llmmod, "extract_corpus_parallel", _mock_extract(_doc_result("README.md", 24, "readme_h"), calls)
+    )
+    assert _run_cli() == 0
+    assert any(str(readme) in c for c in calls[-1])
+    assert len(json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))["nodes"]) == 24
+
+
+def test_5083_cached_degraded_replay_is_marked_and_does_not_advise_allow_partial(
+    tmp_path, monkeypatch, capsys
+):
+    calls: list = []
+    corpus, readme = _boot_corpus(tmp_path, monkeypatch, capsys, calls)
+
+    readme.write_text("# Readme\nEdited content\n", encoding="utf-8")
+    monkeypatch.setattr(
+        llmmod, "extract_corpus_parallel", _mock_extract(_doc_result("README.md", 1, "readme_doc"), calls)
+    )
+    assert _run_cli() == 1
+    capsys.readouterr()
+
+    # Pretend the 1-node entry was written by a graphify that predates the fix:
+    # the shrink guard refuses, but nothing marks the entry, so the next run
+    # replays it without ever calling the model.
+    entry = _cache_entry(corpus, readme)
+    _clear_partial_flag(entry)
+
+    def _must_not_call(files, **kwargs):  # pragma: no cover - must stay uncalled
+        raise AssertionError(f"a cached degraded replay must not call the model: {files}")
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _must_not_call)
+    assert _run_cli() == 1
+    err = capsys.readouterr().err
+    assert "replayed from the semantic" in err
+    assert "Do NOT pass --allow-partial" in err
+    # No misleading "pass --allow-partial" advice for a cached replay.
+    assert "pass --allow-partial to overwrite a larger existing graph" not in err
+    assert "marked 1 semantic cache entry partial" in err
+    assert json.loads(entry.read_text(encoding="utf-8"))["partial"] is True
+
+    # Re-run now re-extracts and heals the graph.
+    monkeypatch.setattr(
+        llmmod, "extract_corpus_parallel", _mock_extract(_doc_result("README.md", 24, "readme_h"), calls)
+    )
+    assert _run_cli() == 0
+    assert any(str(readme) in c for c in calls[-1])
+    assert len(
+        json.loads((corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8"))["nodes"]
+    ) == 24

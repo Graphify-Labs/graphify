@@ -61,7 +61,7 @@ def test_ts_call_typeof_import_keeps_subsequent_declarations(tmp_path: Path, cap
     assert "before()" in labels
     assert "after()" in labels
     assert "AfterClass" in labels
-    assert "mod" in labels
+    assert "mod" not in labels  # An import type is not a runtime module dependency.
     _assert_silent(capsys.readouterr().err)
 
 
@@ -78,7 +78,7 @@ def test_ts_call_import_member_type_keeps_subsequent_declarations(tmp_path: Path
     assert "before()" in labels
     assert "after()" in labels
     assert "AfterClass" in labels
-    assert "mod" in labels
+    assert "mod" not in labels
     _assert_silent(capsys.readouterr().err)
 
 
@@ -97,7 +97,7 @@ def test_tsx_call_typeof_import_keeps_subsequent_declarations(tmp_path: Path, ca
     assert "after()" in labels
     assert "AfterWidget" in labels
     assert "Comp()" in labels
-    assert "mod" in labels
+    assert "mod" not in labels
     _assert_silent(capsys.readouterr().err)
 
 
@@ -146,7 +146,7 @@ def test_ts_multiline_import_type_arguments(tmp_path: Path, capsys):
     })
     labels = _labels(r)
     assert "after()" in labels
-    assert "mod" in labels
+    assert "mod" not in labels
     _assert_silent(capsys.readouterr().err)
 
 

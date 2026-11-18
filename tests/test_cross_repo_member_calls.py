@@ -107,6 +107,35 @@ def test_a_parked_call_binds_to_the_one_declaration_in_another_repo():
     assert data["source_location"] == "L10"
 
 
+def test_edge_source_file_is_the_parked_call_site_not_the_caller_node_file():
+    # The caller node's source_file is the declaration file (an ObjC caller lives
+    # in its `.h`); the call happens in the `.m`. Pairing the call-site line with
+    # the `.h` points past the end of an unrelated file (#3152 issue 3). The parked
+    # `file` carries the call-site, relativized at extract time.
+    parked = [{"callee": "greet", "receiver_type": "Greeter", "lang": "java",
+               "line": "L10", "file": "src/App.m"}]
+    G = _graph(
+        caller=_caller("a", parked, source_file="src/App.h"),
+        declarations=[(_declaration("b", "Greeter"), _method("b"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    data = G.edges["a::app_run", "b::greeter_greet"]
+    assert data["source_file"] == "src/App.m"
+    assert data["source_location"] == "L10"
+
+
+def test_a_pre_3152_parked_entry_without_file_falls_back_to_the_caller_file():
+    # Graphs built before the call-site `file` was parked still merge: the edge
+    # falls back to the caller node's own source_file, the pre-fix behavior.
+    G = _graph(
+        caller=_caller("a", PARKED_GREET, source_file="src/App.h"),
+        declarations=[(_declaration("b", "Greeter"), _method("b"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    data = G.edges["a::app_run", "b::greeter_greet"]
+    assert data["source_file"] == "src/App.h"
+
+
 def test_two_repos_declaring_the_same_name_bind_nothing():
     # The single-definition guard the single-repo resolvers apply. Two `Greeter`
     # declarations mean the call is ambiguous, and guessing one is worse than
@@ -302,6 +331,40 @@ def test_an_objc_protocol_does_not_answer_a_parked_call():
                        _method("b", "-greet", source_file="Greeter.h"))],
     )
     assert link_cross_repo_member_calls(G) == 0
+
+
+def test_an_objc_class_split_decl_impl_across_repos_binds_to_the_definition():
+    # `@interface` in one repo's header, `@implementation` in another repo's `.m`:
+    # `_merge_decl_def_classes` folds this within a repo but not across the boundary,
+    # so both surface as `Greeter` and the collision guard would drop the call. The
+    # `.m` definition is the target; the header declaration is not.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[
+            (_declaration("b", "Greeter", "include/Greeter.h"),
+             _method("b", "-greet", source_file="include/Greeter.h")),
+            (_declaration("c", "Greeter", "src/Greeter.m"),
+             _method("c", "-greet", source_file="src/Greeter.m")),
+        ],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "c::greeter_greet")}
+
+
+def test_two_objc_definitions_of_the_same_class_still_bind_nothing():
+    # Two unrelated `Greeter` classes, each with its own `.m` definition, are a real
+    # collision: the split-class union must not paper over the guard it loosened.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[
+            (_declaration("b", "Greeter", "b/Greeter.m"),
+             _method("b", "-greet", source_file="b/Greeter.m")),
+            (_declaration("c", "Greeter", "c/Greeter.m"),
+             _method("c", "-greet", source_file="c/Greeter.m")),
+        ],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+    assert _added_calls(G) == set()
 
 
 def test_the_definition_answers_before_a_same_named_declaration():
@@ -594,3 +657,124 @@ def test_each_language_parks_the_call_and_the_merge_finishes_it(
     assert any(e.startswith("lib::") and callee.lower() in e.lower()
                for e in endpoints), endpoints
 
+
+@needs_cpp
+@pytest.mark.parametrize("guarded", [False, True])
+@pytest.mark.parametrize("explicit_template", [False, True])
+def test_cpp_call_conditions_survive_parking_and_merge(tmp_path, guarded, explicit_template):
+    expression = "g.greet<int>()" if explicit_template else "g.greet()"
+    body = f"{expression},\n{expression},\n"
+    if guarded:
+        body = "#if FEATURE\n" + body + "#else\n0,\n#endif\n"
+    app = _build(tmp_path, "app", "Run.cpp", "void run(Greeter& g) { int values[] = {\n" + body + "}; }")
+    lib = _build(tmp_path, "lib", "Greeter.hpp", "struct Greeter { "
+                 + ("template<class T> " if explicit_template else "")
+                 + "int greet() { return 1; } };")
+    parked = _parked(app)
+    assert len(parked) == 1  # Keep the existing callee/receiver pair deduplication.
+    assert parked[0]["line"] == ("L3" if guarded else "L2")
+    calls = _cross_repo_calls(_merge(tmp_path, app, lib))
+    assert len(calls) == 1
+    assert calls[0]["source_file"] == parked[0]["file"]
+    assert calls[0]["source_location"] == parked[0]["line"]
+    expected = {"cpp_conditions": [{"group_line": 2, "branch": 0}]} if guarded else {}
+    assert parked[0].get("metadata", {}) == expected
+    assert calls[0].get("metadata", {}) == expected
+
+
+@pytest.mark.parametrize("lang, suffix", [("cpp", ".hpp"), ("csharp", ".cs")])
+def test_cpp_condition_metadata_is_copied_selectively_and_relinks_stably(lang, suffix):
+    conditions = [{"group_line": 4, "branch": 1}]
+    parked = [{"callee": "greet", "receiver_type": "Greeter", "lang": lang,
+               "line": "L8", "metadata": {"cpp_conditions": conditions, "unrelated": "keep out"}}]
+    graph = _graph(
+        caller=_caller("app", parked, source_file="Run" + suffix),
+        declarations=[(_declaration("lib", "Greeter", source_file="Greeter" + suffix),
+                       _method("lib", source_file="Greeter" + suffix))],
+    )
+    for _, node in graph.nodes(data=True):
+        node["file_type"] = "code"
+    assert link_cross_repo_member_calls(graph) == 1
+    first = [dict(data) for _, _, data in graph.edges(data=True) if data.get(CROSS_REPO_CALL_MARKER)]
+    expected = {"cpp_conditions": conditions} if lang == "cpp" else {}
+    assert first[0].get("metadata", {}) == expected
+    assert link_cross_repo_member_calls(graph) == 1
+    assert [dict(data) for _, _, data in graph.edges(data=True) if data.get(CROSS_REPO_CALL_MARKER)] == first
+
+
+
+# ---------- overloaded Java methods across repos (#5251) ----------
+
+
+def _overload(repo: str, node_id: str, arity: int, line: int, *, variadic: bool = False):
+    meta: dict = {"arity": arity, "signature": "x"}
+    if variadic:
+        meta.update(variadic=True, min_arity=arity - 1)
+    return f"{repo}::{node_id}", {
+        "label": ".run()", "repo": repo, "source_file": "src/Svc.java",
+        "source_location": f"L{line}", "_callable": True, "metadata": meta,
+    }
+
+
+def _overload_graph(arity) -> nx.Graph:
+    parked = [{"callee": "run", "receiver_type": "Svc", "lang": "java", "line": "L3"}]
+    if arity is not None:
+        parked[0]["arity"] = arity
+    return _graph(
+        caller=_caller("a", parked),
+        declarations=[],
+    ), parked
+
+
+def _with_overloads(arity) -> nx.Graph:
+    G, _ = _overload_graph(arity)
+    decl = _declaration("b", "Svc", node_id="svc")
+    G.add_node(decl[0], **decl[1])
+    for node_id, n_args, line in (("svc_run", 0, 2), ("svc_run_1a2b3c", 1, 3), ("svc_run_4d5e6f", 2, 4)):
+        nid, data = _overload("b", node_id, n_args, line)
+        G.add_node(nid, **data)
+        G.add_edge(decl[0], nid, relation="method")
+    return G
+
+
+def test_a_parked_call_binds_to_the_overload_its_argument_count_fits():
+    G = _with_overloads(1)
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::svc_run_1a2b3c")}
+
+
+def test_a_parked_call_that_fits_several_overloads_binds_the_first_declared():
+    G = _with_overloads(5)  # no overload takes five: the first declared stands
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::svc_run")}
+
+
+def test_an_older_parked_entry_without_arity_binds_the_first_declared():
+    G = _with_overloads(None)
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::svc_run")}
+
+
+def test_two_same_named_methods_that_are_not_overloads_stay_ambiguous():
+    G = _graph(
+        caller=_caller("a", [{"callee": "greet", "receiver_type": "Greeter",
+                              "lang": "java", "arity": 1}]),
+        declarations=[(_declaration("b", "Greeter"), _method("b")),
+                      (_declaration("b", "Greeter"), _method("b", node_id="greeter_greet2"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+@needs_java
+def test_extraction_parks_the_argument_count(tmp_path: Path):
+    from graphify.extract import extract
+
+    src = tmp_path / "App.java"
+    src.write_text("class App { void go(Svc s) { s.run(1); s.run(1, 2); } }\n", encoding="utf-8")
+    result = extract([src], cache_root=tmp_path / "graphify-out")
+    parked = [
+        entry
+        for node in result["nodes"]
+        for entry in (node.get("metadata") or {}).get("unresolved_calls", [])
+    ]
+    assert sorted(e["arity"] for e in parked if e["callee"] == "run") == [1, 2]

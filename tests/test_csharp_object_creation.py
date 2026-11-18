@@ -371,3 +371,150 @@ def test_qualified_construction_with_an_unknown_outer_type_gives_no_edge(tmp_pat
     ensure = _find(r, ".Ensure()", "ensure")
     slots = {n["id"] for n in r["nodes"] if n["label"] == "Slot"}
     assert not any(t in slots for s, t in calls if s == ensure)
+
+
+# Constructors are nodes: `new X(a, b)` and `: base(...)` / `: this(...)` reach
+# the overload whose parameter count fits, next to the edge to the type.
+
+def _ctor(r, type_name, signature):
+    ids = [n["id"] for n in r["nodes"]
+           if n["label"] == f".{type_name}()"
+           and (n.get("metadata") or {}).get("kind") == "constructor"
+           and (n.get("metadata") or {}).get("signature") == signature]
+    assert len(ids) == 1, (type_name, signature, ids)
+    return ids[0]
+
+
+def test_construction_links_the_constructor_overload_its_arguments_fit(tmp_path):
+    calls, r = _extract(tmp_path, {
+        "Repo.cs": (
+            "public class Repo {\n"
+            "    public Repo() { }\n"
+            "    public Repo(int a) { }\n"
+            "    public Repo(int a, int b) { }\n"
+            "}\n"
+        ),
+        "User.cs": "public class User { public void Go() { var r = new Repo(1, 2); } }\n",
+    })
+    go = _find(r, ".Go()", "user")
+    assert (go, _find(r, "Repo", "repo")) in calls  # the type edge stays
+    assert (go, _ctor(r, "Repo", "int,int")) in calls
+    assert (go, _ctor(r, "Repo", "int")) not in calls
+    assert (go, _ctor(r, "Repo", "")) not in calls
+
+
+def test_construction_two_overloads_fit_gives_no_constructor_edge(tmp_path):
+    calls, r = _extract(tmp_path, {"S.cs": (
+        "public class Repo { public Repo(int a) { } public Repo(string s) { } }\n"
+        "public class User { public void Go() { var r = new Repo(1); } }\n"
+    )})
+    go = _find(r, ".Go()", "user")
+    assert (go, _find(r, "Repo", "repo")) in calls
+    assert not {t for s, t in calls if s == go} & {
+        _ctor(r, "Repo", "int"), _ctor(r, "Repo", "string")
+    }
+
+
+def test_constructor_body_and_initializer_calls_belong_to_the_constructor(tmp_path):
+    calls, r = _extract(tmp_path, {"S.cs": (
+        "public class Base { public Base(int a) { } }\n"
+        "public class Svc : Base {\n"
+        "    public Svc(int x) : base(Seed(x)) { Init(); }\n"
+        "    static int Seed(int x) { return x; }\n"
+        "    void Init() { }\n"
+        "}\n"
+    )})
+    ctor = _ctor(r, "Svc", "int")
+    svc = _find(r, "Svc", "svc")
+    for callee in (".Seed()", ".Init()"):
+        assert (ctor, _find(r, callee, "svc")) in calls
+        assert (svc, _find(r, callee, "svc")) not in calls
+
+
+def test_this_initializer_links_the_own_overload(tmp_path):
+    calls, r = _extract(tmp_path, {"S.cs": (
+        "public class Svc {\n"
+        "    public Svc() : this(1, 2) { }\n"
+        "    public Svc(int a) { }\n"
+        "    public Svc(int a, int b) { }\n"
+        "}\n"
+    )})
+    assert (_ctor(r, "Svc", ""), _ctor(r, "Svc", "int,int")) in calls
+    assert (_ctor(r, "Svc", ""), _ctor(r, "Svc", "int")) not in calls
+
+
+def test_base_initializer_links_the_base_constructor_in_another_file(tmp_path):
+    calls, r = _extract(tmp_path, {
+        "Base.cs": (
+            "namespace Demo {\n"
+            "    public class Base { public Base(int a) { } public Base(string a, int b) { } }\n"
+            "}\n"
+        ),
+        "Derived.cs": (
+            "namespace Demo {\n"
+            "    public class Derived : Base { public Derived(int x) : base(\"s\", x) { } }\n"
+            "}\n"
+        ),
+    })
+    derived = _ctor(r, "Derived", "int")
+    assert (derived, _ctor(r, "Base", "string,int")) in calls
+    assert (derived, _ctor(r, "Base", "int")) not in calls
+
+
+def test_base_initializer_with_an_out_of_corpus_base_gives_no_edge(tmp_path):
+    calls, r = _extract(tmp_path, {"S.cs": (
+        "public class Local { public Local(int a) { } }\n"
+        "public class Derived : System.Exception { public Derived(int x) : base(\"m\") { } }\n"
+    )})
+    derived = _ctor(r, "Derived", "int")
+    assert not {t for s, t in calls if s == derived}
+
+
+def test_static_constructor_is_its_own_node_and_never_constructed(tmp_path):
+    calls, r = _extract(tmp_path, {"S.cs": (
+        "public class Reg {\n"
+        "    static Reg() { Load(); }\n"
+        "    public Reg() { }\n"
+        "    static void Load() { }\n"
+        "}\n"
+        "public class User { public void Go() { var r = new Reg(); } }\n"
+    )})
+    static_ctor, instance_ctor = _ctor(r, "Reg", "static"), _ctor(r, "Reg", "")
+    assert static_ctor != instance_ctor
+    assert (static_ctor, _find(r, ".Load()", "reg")) in calls
+    go = _find(r, ".Go()", "user")
+    assert (go, instance_ctor) in calls
+    assert (go, static_ctor) not in calls
+
+
+def test_primary_constructor_competes_with_the_explicit_ones(tmp_path):
+    calls, r = _extract(tmp_path, {"S.cs": (
+        "public record Point(int X, int Y) { public Point(int x) : this(x, 0) { } }\n"
+        "public class User { public void Go() { var a = new Point(1, 2); var b = new Point(3); } }\n"
+    )})
+    primary, explicit = _ctor(r, "Point", "int,int"), _ctor(r, "Point", "int")
+    go = _find(r, ".Go()", "user")
+    assert {(go, primary), (go, explicit), (explicit, primary)} <= calls
+
+
+def test_constructor_in_an_unchanged_file_resolves_on_an_incremental_rebuild(tmp_path):
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    files = {
+        "Repo.cs": "public class Repo { public Repo() { } public Repo(int a, int b) { } }\n",
+        "User.cs": "public class User { public void Go() { var r = new Repo(1, 2); } }\n",
+    }
+    for name, body in files.items():
+        (tmp_path / name).write_text(body)
+    assert _rebuild_code(tmp_path, no_cluster=True, acquire_lock=False, force=True)
+    user = tmp_path / "User.cs"
+    user.write_text(user.read_text() + "// touched\n")
+    assert _rebuild_code(tmp_path, changed_paths=[user], no_cluster=True, acquire_lock=False)
+    graph = json.loads((tmp_path / "graphify-out" / "graph.json").read_text())
+    ctor = next(n["id"] for n in graph["nodes"]
+                if (n.get("metadata") or {}).get("signature") == "int,int")
+    go = next(n["id"] for n in graph["nodes"] if n["label"].endswith("Go()"))
+    assert any(l["source"] == go and l["target"] == ctor and l["relation"] == "calls"
+               for l in graph["links"])

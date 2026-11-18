@@ -20,15 +20,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>Μειώστε τη δαπάνη token των agent κατά 80%.</b> Το Graphify Cloud είναι πάντα ενεργή μνήμη που διακυβερνά τους agent σας, διατηρεί υψηλή την ποιότητα κώδικα, και αποδεικνύει την ορθότητα με τυπική επαλήθευση. <a href="https://app.graphify.com/login"><b>Ξεκινήστε μια δωρεάν δοκιμή 14 ημερών &rarr;</b></a>
+  <b>Μειώστε τη δαπάνη token των agent κατά 80%.</b> Το Graphify Cloud είναι πάντα ενεργή μνήμη που διακυβερνά τους agent σας, διατηρεί υψηλή την ποιότητα κώδικα, και αποδεικνύει την ορθότητα με τυπική επαλήθευση. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;</b></a>
 </p>
 
 Πληκτρολογήστε `/graphify` στον βοηθό κωδικοποίησης AI σας και αυτός χαρτογραφεί ολόκληρο το έργο σας (κώδικα, έγγραφα, PDF, εικόνες, βίντεο) σε έναν **γράφο γνώσης** τον οποίο μπορείτε να **ρωτάτε αντί να κάνετε grep** στα αρχεία.
@@ -38,7 +38,7 @@
 - **Δεν είναι διανυσματικό ευρετήριο.** Χωρίς embeddings, χωρίς διανυσματικό αποθετήριο: ένας πραγματικός γράφος που διασχίζετε. Κάντε μια ερώτηση, εντοπίστε τη διαδρομή μεταξύ δύο πραγμάτων, ή εξηγήστε μία έννοια.
 
 > [!NOTE]
-> **Το θέλετε πάντα ενεργό;** Το [Graphify Cloud](https://app.graphify.com/login) διατηρεί τον γράφο ζωντανό σε ολόκληρο τον SDLC σας: υποστήριξη monorepo και cross-repo, τυπική επαλήθευση, και έλεγχο κώδικα με πανοραμική εικόνα του SDLC σας, συν connectors για Sentry, Jira, και άλλα ώστε τα συμβάντα και τα tickets να βρίσκονται στον ίδιο γράφο με τον κώδικά σας. **[Ξεκινήστε μια δωρεάν δοκιμή 14 ημερών στο app.graphify.com](https://app.graphify.com/login)**.
+> **Το θέλετε πάντα ενεργό;** Το [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) διατηρεί τον γράφο ζωντανό σε ολόκληρο τον SDLC σας: υποστήριξη monorepo και cross-repo, τυπική επαλήθευση, και έλεγχο κώδικα με πανοραμική εικόνα του SDLC σας, συν connectors για Sentry, Jira, και άλλα ώστε τα συμβάντα και τα tickets να βρίσκονται στον ίδιο γράφο με τον κώδικά σας. **[Ξεκινήστε δωρεάν, χωρίς κάρτα](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@
   <em>Η βάση κώδικα του FastAPI χαρτογραφημένη από το graphify. Κάθε κόμβος είναι μια έννοια, τα χρώματα είναι εντοπισμένες κοινότητες, και το σύνολο είναι clickable στο graph.html.</em>
 </p>
 
-**Ξεκινήστε** (30 δευτερόλεπτα). Χρειάζεται Python 3.10+ και uv (ή pipx):
+**Ξεκινήστε** (30 δευτερόλεπτα). Χρειάζεται Python 3.11+ και uv (ή pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **Local-first** | Ο κώδικας αναλύεται τοπικά με tree-sitter (χωρίς LLM, τίποτα δεν φεύγει από το μηχάνημά σας)· μόνο το σημασιολογικό πέρασμα πάνω σε έγγραφα/μέσα καλεί ένα backend, και μόνο αν διαμορφώσετε ένα |
 
 > [!TIP]
-> Το εκτελείτε σε πολλά repos ή σε monorepo; Το [Graphify Cloud](https://app.graphify.com/login) το κάνει συνεχώς και μειώνει τη δαπάνη token των agent κατά 80%, με συνδέσμους cross-repo, έλεγχο κώδικα σε όλο τον SDLC, τυπική επαλήθευση, και connectors Sentry/Jira. [Ξεκινήστε μια δωρεάν δοκιμή 14 ημερών &rarr;](https://app.graphify.com/login)
+> Το εκτελείτε σε πολλά repos ή σε monorepo; Το [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) το κάνει συνεχώς και μειώνει τη δαπάνη token των agent κατά 80%, με συνδέσμους cross-repo, έλεγχο κώδικα σε όλο τον SDLC, τυπική επαλήθευση, και connectors Sentry/Jira. [Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | Απαίτηση | Ελάχιστο | Έλεγχος | Εγκατάσταση |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(συνιστάται)* | οποιαδήποτε | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(εναλλακτικά)* | οποιαδήποτε | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ graphify install --project --platform codex
 
 Το `GRAPH_REPORT.md` παραμένει διαθέσιμο για ευρύ έλεγχο αρχιτεκτονικής.
 
-Ακριβώς ποια αρχεία γράφει κάθε πλατφόρμα (το `CODEBUDDY.md` + `PreToolUse` hooks του CodeBuddy, το `AGENTS.md` του Codex, το εγγενές plugin `.kilo` του Kilo, ο κανόνας `alwaysApply` του Cursor, κ.ο.κ.) καλύπτεται στο **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Ακριβώς ποια αρχεία γράφει κάθε πλατφόρμα (το `CODEBUDDY.md` + `PreToolUse` hooks του CodeBuddy, το `AGENTS.md` του Codex, το εγγενές plugin `.kilo` του Kilo, ο κανόνας `alwaysApply` του Cursor, κ.ο.κ.) καλύπτεται στο **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Για να αφαιρέσετε το graphify από όλες τις πλατφόρμες ταυτόχρονα: `graphify uninstall` (προσθέστε `--purge` για να διαγράψετε επίσης το `graphify-out/`). Ή χρησιμοποιήστε την εντολή ανά πλατφόρμα (π.χ. `graphify claude uninstall`).
 
@@ -439,7 +439,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-Το [**Graphify Cloud**](https://app.graphify.com/login) είναι το πάντα ενεργό επίπεδο που είναι χτισμένο πάνω στο graphify. Αντί για έναν γράφο που ανακατασκευάζετε κατ' απαίτηση ανά φάκελο, διατηρεί έναν ζωντανό γράφο σε ολόκληρο τον κύκλο ζωής ανάπτυξης λογισμικού σας:
+Το [**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) είναι το πάντα ενεργό επίπεδο που είναι χτισμένο πάνω στο graphify. Αντί για έναν γράφο που ανακατασκευάζετε κατ' απαίτηση ανά φάκελο, διατηρεί έναν ζωντανό γράφο σε ολόκληρο τον κύκλο ζωής ανάπτυξης λογισμικού σας:
 
 - **80% λιγότερα tokens**: η πάντα ενεργή μνήμη σημαίνει ότι οι agent σας σταματούν να ξαναδιαβάζουν και να ξαναεξηγούν τη βάση κώδικα σε κάθε συνεδρία.
 - **Monorepo και cross-repo**: ένας συνδεδεμένος γράφος σε κάθε υπηρεσία και αποθετήριο, όχι ένας γράφος ανά φάκελο.
@@ -448,7 +448,7 @@ viz_node_limit=0
 - **Connectors SDLC**: ενσωματώστε Sentry, Jira, και άλλα, ώστε τα συμβάντα, τα tickets, και ο κώδικας να ζουν σε έναν γράφο.
 - **Πάντα ενεργό**: ενημερώνεται συνεχώς στο παρασκήνιο σε κώδικα, έγγραφα, και συσκέψεις.
 
-**[Ξεκινήστε μια δωρεάν δοκιμή 14 ημερών στο app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -456,7 +456,7 @@ viz_node_limit=0
 
 Οι συνεισφορές είναι ευπρόσδεκτες. Δείτε το **[CONTRIBUTING.md](../../CONTRIBUTING.md)** για τη ρύθμιση ανάπτυξης, τις εντολές test και CI-parity, τη ροή εργασίας git, και τι κάνει μια ισχυρή συνεισφορά (τα δουλεμένα παραδείγματα και οι αναφορές σφαλμάτων εξαγωγής είναι τα πιο χρήσιμα). Αρχιτεκτονική και πώς να προσθέσετε μια γλώσσα: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-Νέοι εδώ; Πείτε ένα γεια στο [Discord](https://discord.gg/XDnKVpzdXB) ή στα [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+Νέοι εδώ; Πείτε ένα γεια στο [Discord](https://discord.gg/graphify) ή στα [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
@@ -486,7 +486,7 @@ viz_node_limit=0
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

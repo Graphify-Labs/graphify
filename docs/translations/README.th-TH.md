@@ -20,15 +20,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>ลดการใช้จ่ายโทเคนของเอเจนต์ลง 80%</b> Graphify Cloud คือหน่วยความจำที่ทำงานตลอดเวลา ซึ่งกำกับดูแลเอเจนต์ของคุณ รักษาคุณภาพโค้ดให้สูง และพิสูจน์ความถูกต้องด้วยการตรวจสอบเชิงรูปนัย <a href="https://app.graphify.com/login"><b>เริ่มทดลองใช้ฟรี 14 วัน &rarr;</b></a>
+  <b>ลดการใช้จ่ายโทเคนของเอเจนต์ลง 80%</b> Graphify Cloud คือหน่วยความจำที่ทำงานตลอดเวลา ซึ่งกำกับดูแลเอเจนต์ของคุณ รักษาคุณภาพโค้ดให้สูง และพิสูจน์ความถูกต้องด้วยการตรวจสอบเชิงรูปนัย <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;</b></a>
 </p>
 
 พิมพ์ `/graphify` ในผู้ช่วยเขียนโค้ด AI ของคุณ แล้วมันจะแมปทั้งโปรเจกต์ของคุณ (โค้ด, เอกสาร, PDF, รูปภาพ, วิดีโอ) ให้เป็น **กราฟความรู้** ที่คุณสามารถ **สืบค้นแทนการ grep** ไฟล์ทีละไฟล์ได้
@@ -38,7 +38,7 @@
 - **ไม่ใช่ดัชนีเวกเตอร์** ไม่มี embedding ไม่มีที่เก็บเวกเตอร์: เป็นกราฟจริงที่คุณเดินสำรวจได้ ถามคำถามหนึ่งข้อ ตามเส้นทางระหว่างสองสิ่ง หรืออธิบายแนวคิดหนึ่งอย่าง
 
 > [!NOTE]
-> **อยากให้สิ่งนี้ทำงานตลอดเวลาไหม?** [Graphify Cloud](https://app.graphify.com/login) รักษากราฟให้สดตลอดทั้ง SDLC ของคุณ: รองรับ monorepo และข้าม repo, การตรวจสอบเชิงรูปนัย, และการรีวิวโค้ดด้วยมุมมองภาพรวมของ SDLC ของคุณ รวมถึงตัวเชื่อมต่อสำหรับ Sentry, Jira และอื่น ๆ เพื่อให้เหตุการณ์และทิกเก็ตอยู่ในกราฟเดียวกับโค้ดของคุณ **[เริ่มทดลองใช้ฟรี 14 วันที่ app.graphify.com](https://app.graphify.com/login)**
+> **อยากให้สิ่งนี้ทำงานตลอดเวลาไหม?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) รักษากราฟให้สดตลอดทั้ง SDLC ของคุณ: รองรับ monorepo และข้าม repo, การตรวจสอบเชิงรูปนัย, และการรีวิวโค้ดด้วยมุมมองภาพรวมของ SDLC ของคุณ รวมถึงตัวเชื่อมต่อสำหรับ Sentry, Jira และอื่น ๆ เพื่อให้เหตุการณ์และทิกเก็ตอยู่ในกราฟเดียวกับโค้ดของคุณ **[เริ่มใช้ฟรี ไม่ต้องใช้บัตร](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graph.html แบบโต้ตอบของ graphify ที่แสดงฐานโค้ด FastAPI เป็นกราฟความรู้แบบ force-directed พร้อมคำอธิบายของชุมชนที่ตรวจพบ" width="900">
@@ -47,7 +47,7 @@
   <em>ฐานโค้ด FastAPI ที่แมปโดย graphify โหนดทุกจุดคือแนวคิดหนึ่ง สีคือชุมชนที่ตรวจพบ และทั้งหมดคลิกได้ใน graph.html</em>
 </p>
 
-**เริ่มต้นใช้งาน** (30 seconds) ต้องมี Python 3.10+ และ uv (หรือ pipx):
+**เริ่มต้นใช้งาน** (30 seconds) ต้องมี Python 3.11+ และ uv (หรือ pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -121,7 +121,7 @@ Shortest path (3 hops):
 | **Local-first** | โค้ดถูกแยกวิเคราะห์ในเครื่องด้วย tree-sitter (ไม่มี LLM ไม่มีอะไรออกจากเครื่องของคุณ) มีเพียงการประมวลผลเชิงความหมายกับเอกสาร/สื่อเท่านั้นที่เรียกใช้แบ็กเอนด์ และต่อเมื่อคุณกำหนดค่าไว้ |
 
 > [!TIP]
-> กำลังรันสิ่งนี้ข้ามหลาย repo หรือ monorepo อยู่ใช่ไหม? [Graphify Cloud](https://app.graphify.com/login) ทำสิ่งนี้อย่างต่อเนื่องและลดการใช้จ่ายโทเคนของเอเจนต์ลง 80% พร้อมลิงก์ข้าม repo, การรีวิวโค้ดครอบคลุมทั้ง SDLC, การตรวจสอบเชิงรูปนัย และตัวเชื่อมต่อ Sentry/Jira [เริ่มทดลองใช้ฟรี 14 วัน &rarr;](https://app.graphify.com/login)
+> กำลังรันสิ่งนี้ข้ามหลาย repo หรือ monorepo อยู่ใช่ไหม? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) ทำสิ่งนี้อย่างต่อเนื่องและลดการใช้จ่ายโทเคนของเอเจนต์ลง 80% พร้อมลิงก์ข้าม repo, การรีวิวโค้ดครอบคลุมทั้ง SDLC, การตรวจสอบเชิงรูปนัย และตัวเชื่อมต่อ Sentry/Jira [เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | ข้อกำหนด | ขั้นต่ำ | ตรวจสอบ | ติดตั้ง |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ Pi ไม่มี `PreToolUse` hook ดังนั้น `graphify pi guard in
 
 `GRAPH_REPORT.md` ยังคงใช้ได้สำหรับการทบทวนสถาปัตยกรรมในวงกว้าง
 
-ไฟล์ที่แต่ละแพลตฟอร์มเขียนออกมาจริง ๆ (เช่น `CODEBUDDY.md` + `PreToolUse` hooks ของ CodeBuddy, `AGENTS.md` ของ Codex, ปลั๊กอิน `.kilo` แบบเนทีฟของ Kilo, กฎ `alwaysApply` ของ Cursor และอื่น ๆ) ครอบคลุมใน **[Always-on setup](https://docs.graphify.com/guides/always-on)**
+ไฟล์ที่แต่ละแพลตฟอร์มเขียนออกมาจริง ๆ (เช่น `CODEBUDDY.md` + `PreToolUse` hooks ของ CodeBuddy, `AGENTS.md` ของ Codex, ปลั๊กอิน `.kilo` แบบเนทีฟของ Kilo, กฎ `alwaysApply` ของ Cursor และอื่น ๆ) ครอบคลุมใน **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**
 
 หากต้องการนำ graphify ออกจากทุกแพลตฟอร์มในครั้งเดียว: `graphify uninstall` (เพิ่ม `--purge` เพื่อลบ `graphify-out/` ด้วย) หรือใช้คำสั่งเฉพาะแพลตฟอร์ม (เช่น `graphify claude uninstall`)
 
@@ -439,7 +439,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) คือเลเยอร์ที่ทำงานตลอดเวลา ซึ่งสร้างขึ้นบน graphify แทนที่จะเป็นกราฟที่คุณสร้างใหม่ตามต้องการต่อโฟลเดอร์ มันรักษากราฟสดหนึ่งกราฟตลอดวงจรการพัฒนาซอฟต์แวร์ทั้งหมดของคุณ:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) คือเลเยอร์ที่ทำงานตลอดเวลา ซึ่งสร้างขึ้นบน graphify แทนที่จะเป็นกราฟที่คุณสร้างใหม่ตามต้องการต่อโฟลเดอร์ มันรักษากราฟสดหนึ่งกราฟตลอดวงจรการพัฒนาซอฟต์แวร์ทั้งหมดของคุณ:
 
 - **โทเคนน้อยลง 80%**: หน่วยความจำที่ทำงานตลอดเวลาหมายความว่าเอเจนต์ของคุณหยุดอ่านซ้ำและอธิบายฐานโค้ดซ้ำในทุกเซสชัน
 - **Monorepo และข้าม repo**: กราฟที่เชื่อมต่อกันหนึ่งกราฟข้ามทุกบริการและทุกที่เก็บ ไม่ใช่กราฟหนึ่งต่อหนึ่งโฟลเดอร์
@@ -448,7 +448,7 @@ viz_node_limit=0
 - **ตัวเชื่อมต่อ SDLC**: ดึง Sentry, Jira และอื่น ๆ เข้ามา เพื่อให้เหตุการณ์ ทิกเก็ต และโค้ดอยู่ในกราฟเดียว
 - **ทำงานตลอดเวลา**: อัปเดตอย่างต่อเนื่องในเบื้องหลัง ข้ามโค้ด เอกสาร และการประชุม
 
-**[เริ่มทดลองใช้ฟรี 14 วันที่ app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -456,7 +456,7 @@ viz_node_limit=0
 
 ยินดีรับการมีส่วนร่วม ดู **[CONTRIBUTING.md](../../CONTRIBUTING.md)** สำหรับการตั้งค่าสภาพแวดล้อมการพัฒนา, คำสั่งทดสอบและ CI-parity, เวิร์กโฟลว์ git และอะไรที่ทำให้การมีส่วนร่วมแข็งแกร่ง (ตัวอย่างจริงและรายงานบั๊กการสกัดมีประโยชน์ที่สุด) สถาปัตยกรรมและวิธีเพิ่มภาษา: [ARCHITECTURE.md](../../ARCHITECTURE.md)
 
-เพิ่งมาที่นี่? ทักทายบน [Discord](https://discord.gg/XDnKVpzdXB) หรือใน [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions)
+เพิ่งมาที่นี่? ทักทายบน [Discord](https://discord.gg/graphify) หรือใน [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions)
 
 ---
 
@@ -486,7 +486,7 @@ README นี้มีให้ใน 32 ภาษา ใช้ตัวสล�
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

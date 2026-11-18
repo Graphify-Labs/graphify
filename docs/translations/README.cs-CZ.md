@@ -20,15 +20,15 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>Snižte spotřebu tokenů agentů o 80 %.</b> Graphify Cloud je vždy zapnutá paměť, která řídí vaše agenty, udržuje vysokou kvalitu kódu a dokazuje správnost pomocí formální verifikace. <a href="https://app.graphify.com/login"><b>Spusťte bezplatnou 14denní zkušební verzi &rarr;</b></a>
+  <b>Snižte spotřebu tokenů agentů o 80 %.</b> Graphify Cloud je vždy zapnutá paměť, která řídí vaše agenty, udržuje vysokou kvalitu kódu a dokazuje správnost pomocí formální verifikace. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Začněte zdarma, bez karty &rarr;</b></a>
 </p>
 
 Napište `/graphify` ve svém AI programovacím asistentovi a ten zmapuje celý váš projekt (kód, dokumentaci, PDF, obrázky, videa) do **znalostního grafu**, který můžete **dotazovat namísto grepování** skrze soubory.
@@ -38,7 +38,7 @@ Napište `/graphify` ve svém AI programovacím asistentovi a ten zmapuje celý 
 - **Nejde o vektorový index.** Žádné embeddingy, žádné vektorové úložiště: skutečný graf, kterým procházíte. Položte otázku, vysledujte cestu mezi dvěma věcmi nebo vysvětlete jeden koncept.
 
 > [!NOTE]
-> **Chcete to mít vždy zapnuté?** [Graphify Cloud](https://app.graphify.com/login) udržuje graf živý napříč celým vaším SDLC: podpora monorepa i napříč repozitáři, formální verifikace a revize kódu s ptačím pohledem na váš SDLC, plus konektory pro Sentry, Jira a další, takže incidenty a tikety sedí ve stejném grafu jako váš kód. **[Spusťte bezplatnou 14denní zkušební verzi na app.graphify.com](https://app.graphify.com/login)**.
+> **Chcete to mít vždy zapnuté?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) udržuje graf živý napříč celým vaším SDLC: podpora monorepa i napříč repozitáři, formální verifikace a revize kódu s ptačím pohledem na váš SDLC, plus konektory pro Sentry, Jira a další, takže incidenty a tikety sedí ve stejném grafu jako váš kód. **[Začněte zdarma, bez karty](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@ Napište `/graphify` ve svém AI programovacím asistentovi a ten zmapuje celý 
   <em>Kódová báze FastAPI zmapovaná nástrojem graphify. Každý uzel je koncept, barvy jsou detekované komunity a celek je klikatelný v graph.html.</em>
 </p>
 
-**Začínáme** (30 sekund). Vyžaduje Python 3.10+ a uv (nebo pipx):
+**Začínáme** (30 sekund). Vyžaduje Python 3.11+ a uv (nebo pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Co dostanete rovnou z krabice:
 | **Lokální na prvním místě** | Kód se parsuje lokálně pomocí tree-sitter (bez LLM, nic neopouští váš počítač); pouze sémantický průchod přes dokumentaci/média volá backend, a to jen pokud nějaký nakonfigurujete |
 
 > [!TIP]
-> Spouštíte to napříč mnoha repozitáři nebo monorepem? [Graphify Cloud](https://app.graphify.com/login) to dělá nepřetržitě a snižuje spotřebu tokenů agentů o 80 %, s propojeními napříč repozitáři, revizí kódu v celém SDLC, formální verifikací a konektory Sentry/Jira. [Spusťte bezplatnou 14denní zkušební verzi &rarr;](https://app.graphify.com/login)
+> Spouštíte to napříč mnoha repozitáři nebo monorepem? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) to dělá nepřetržitě a snižuje spotřebu tokenů agentů o 80 %, s propojeními napříč repozitáři, revizí kódu v celém SDLC, formální verifikací a konektory Sentry/Jira. [Začněte zdarma, bez karty &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Každý systém běžel na stejném harnessu se stejným modelem a rozpočty, ho
 
 | Požadavek | Minimum | Kontrola | Instalace |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(doporučeno)* | jakékoli | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativa)* | jakékoli | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Toto zapíše malý konfigurační soubor, který řekne vašemu asistentovi, ab
 
 `GRAPH_REPORT.md` je stále k dispozici pro širokou architektonickou revizi.
 
-Přesně které soubory každá platforma zapisuje (CodeBuddy `CODEBUDDY.md` + hooky `PreToolUse`, Codex `AGENTS.md`, nativní plugin `.kilo` u Kilo, pravidlo `alwaysApply` u Cursoru a tak dále) je pokryto v **[Nastavení vždy zapnuto](https://docs.graphify.com/guides/always-on)**.
+Přesně které soubory každá platforma zapisuje (CodeBuddy `CODEBUDDY.md` + hooky `PreToolUse`, Codex `AGENTS.md`, nativní plugin `.kilo` u Kilo, pravidlo `alwaysApply` u Cursoru a tak dále) je pokryto v **[Nastavení vždy zapnuto](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Chcete-li odebrat graphify ze všech platforem najednou: `graphify uninstall` (přidejte `--purge`, chcete-li také smazat `graphify-out/`). Nebo použijte příkaz pro jednotlivou platformu (např. `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ Každý příkaz a přepínač, s příklady: **[CLI reference](https://docs.gra
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) je vždy zapnutá vrstva postavená nad graphify. Namísto grafu, který na vyžádání znovu sestavujete pro jednotlivé složky, udržuje jeden živý graf napříč celým životním cyklem vývoje softwaru:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) je vždy zapnutá vrstva postavená nad graphify. Namísto grafu, který na vyžádání znovu sestavujete pro jednotlivé složky, udržuje jeden živý graf napříč celým životním cyklem vývoje softwaru:
 
 - **O 80 % méně tokenů**: vždy zapnutá paměť znamená, že vaši agenti přestanou v každé relaci znovu číst a znovu vysvětlovat kódovou bázi.
 - **Monorepo a napříč repozitáři**: jeden propojený graf napříč každou službou a repozitářem, nikoli graf pro každou složku.
@@ -456,7 +456,7 @@ Každý příkaz a přepínač, s příklady: **[CLI reference](https://docs.gra
 - **SDLC konektory**: zapojte Sentry, Jira a další, aby incidenty, tikety a kód žily v jednom grafu.
 - **Vždy zapnuto**: nepřetržitě se aktualizuje na pozadí napříč kódem, dokumentací a schůzkami.
 
-**[Spusťte bezplatnou 14denní zkušební verzi na app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Začněte zdarma, bez karty &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -464,7 +464,7 @@ Každý příkaz a přepínač, s příklady: **[CLI reference](https://docs.gra
 
 Příspěvky jsou vítány. Viz **[CONTRIBUTING.md](../../CONTRIBUTING.md)** pro vývojové nastavení, příkazy pro testy a paritu s CI, git workflow a to, co dělá silný příspěvek (vypracované příklady a hlášení chyb extrakce jsou nejužitečnější). Architektura a jak přidat jazyk: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-Jste tu noví? Pozdravte nás na [Discordu](https://discord.gg/XDnKVpzdXB) nebo v [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+Jste tu noví? Pozdravte nás na [Discordu](https://discord.gg/graphify) nebo v [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
@@ -494,7 +494,7 @@ Stavíte něco v ekosystému graphify? To je podporováno. Pokud váš projekt p
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

@@ -20,15 +20,15 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>एजेंट टोकन खर्च को 80% तक घटाएं।</b> Graphify Cloud एक हमेशा-चालू मेमोरी है जो आपके एजेंट्स को नियंत्रित करती है, कोड की गुणवत्ता ऊंची बनाए रखती है, और औपचारिक सत्यापन के साथ शुद्धता को सिद्ध करती है। <a href="https://app.graphify.com/login"><b>14-दिन का मुफ्त ट्रायल शुरू करें &rarr;</b></a>
+  <b>एजेंट टोकन खर्च को 80% तक घटाएं।</b> Graphify Cloud एक हमेशा-चालू मेमोरी है जो आपके एजेंट्स को नियंत्रित करती है, कोड की गुणवत्ता ऊंची बनाए रखती है, और औपचारिक सत्यापन के साथ शुद्धता को सिद्ध करती है। <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>मुफ़्त में शुरू करें, कार्ड की ज़रूरत नहीं &rarr;</b></a>
 </p>
 
 अपने AI कोडिंग असिस्टेंट में `/graphify` टाइप करें और यह आपके पूरे प्रोजेक्ट (कोड, डॉक्स, PDF, इमेज, वीडियो) को एक **नॉलेज ग्राफ** में मैप कर देता है, जिसे आप फाइलों में **grep करने के बजाय query** कर सकते हैं।
@@ -38,7 +38,7 @@
 - **यह वेक्टर इंडेक्स नहीं है।** कोई embeddings नहीं, कोई वेक्टर स्टोर नहीं: एक असली ग्राफ जिसमें आप ट्रैवर्स करते हैं। कोई सवाल पूछें, दो चीज़ों के बीच का रास्ता ट्रेस करें, या किसी एक अवधारणा की व्याख्या कराएं।
 
 > [!NOTE]
-> **इसे हमेशा-चालू चाहते हैं?** [Graphify Cloud](https://app.graphify.com/login) आपके पूरे SDLC में ग्राफ को लाइव रखता है: मोनोरेपो और क्रॉस-रेपो सपोर्ट, औपचारिक सत्यापन, और आपके SDLC के विहंगम दृश्य के साथ कोड रिव्यू, साथ ही Sentry, Jira और अन्य के लिए कनेक्टर्स ताकि इंसिडेंट और टिकट उसी ग्राफ में आपके कोड के साथ रहें। **[app.graphify.com पर 14-दिन का मुफ्त ट्रायल शुरू करें](https://app.graphify.com/login)**।
+> **इसे हमेशा-चालू चाहते हैं?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) आपके पूरे SDLC में ग्राफ को लाइव रखता है: मोनोरेपो और क्रॉस-रेपो सपोर्ट, औपचारिक सत्यापन, और आपके SDLC के विहंगम दृश्य के साथ कोड रिव्यू, साथ ही Sentry, Jira और अन्य के लिए कनेक्टर्स ताकि इंसिडेंट और टिकट उसी ग्राफ में आपके कोड के साथ रहें। **[मुफ़्त में शुरू करें, कार्ड की ज़रूरत नहीं](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**।
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@
   <em>graphify द्वारा मैप किया गया FastAPI कोडबेस। हर नोड एक अवधारणा है, रंग पहचाने गए समुदाय हैं, और पूरी चीज़ graph.html में क्लिक करने योग्य है।</em>
 </p>
 
-**शुरू करें** (30 सेकंड)। Python 3.10+ और uv (या pipx) चाहिए:
+**शुरू करें** (30 सेकंड)। Python 3.11+ और uv (या pipx) चाहिए:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **Local-first** | कोड tree-sitter के साथ लोकली पार्स होता है (कोई LLM नहीं, कुछ भी आपकी मशीन से बाहर नहीं जाता); केवल डॉक्स/मीडिया पर सिमैंटिक पास किसी बैकएंड को कॉल करता है, और वह भी तभी जब आप एक कॉन्फ़िगर करें |
 
 > [!TIP]
-> इसे कई रेपो या मोनोरेपो में चला रहे हैं? [Graphify Cloud](https://app.graphify.com/login) इसे लगातार करता है और एजेंट टोकन खर्च को 80% तक घटाता है, क्रॉस-रेपो लिंक, SDLC-व्यापी कोड रिव्यू, औपचारिक सत्यापन, और Sentry/Jira कनेक्टर्स के साथ। [14-दिन का मुफ्त ट्रायल शुरू करें &rarr;](https://app.graphify.com/login)
+> इसे कई रेपो या मोनोरेपो में चला रहे हैं? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) इसे लगातार करता है और एजेंट टोकन खर्च को 80% तक घटाता है, क्रॉस-रेपो लिंक, SDLC-व्यापी कोड रिव्यू, औपचारिक सत्यापन, और Sentry/Jira कनेक्टर्स के साथ। [मुफ़्त में शुरू करें, कार्ड की ज़रूरत नहीं &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | आवश्यकता | न्यूनतम | जांचें | इंस्टॉल करें |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(अनुशंसित)* | कोई भी | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(वैकल्पिक)* | कोई भी | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Pi के पास कोई `PreToolUse` hook नहीं है, इसल�
 
 `GRAPH_REPORT.md` व्यापक आर्किटेक्चर समीक्षा के लिए अब भी उपलब्ध है।
 
-हर प्लेटफॉर्म वास्तव में कौन-सी फाइलें लिखता है (CodeBuddy की `CODEBUDDY.md` + `PreToolUse` hooks, Codex की `AGENTS.md`, Kilo का नेटिव `.kilo` प्लगइन, Cursor का `alwaysApply` नियम, इत्यादि) यह **[Always-on setup](https://docs.graphify.com/guides/always-on)** में शामिल है।
+हर प्लेटफॉर्म वास्तव में कौन-सी फाइलें लिखता है (CodeBuddy की `CODEBUDDY.md` + `PreToolUse` hooks, Codex की `AGENTS.md`, Kilo का नेटिव `.kilo` प्लगइन, Cursor का `alwaysApply` नियम, इत्यादि) यह **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** में शामिल है।
 
 सभी प्लेटफॉर्म से graphify को एक साथ हटाने के लिए: `graphify uninstall` (`graphify-out/` को भी हटाने के लिए `--purge` जोड़ें)। या प्रति-प्लेटफॉर्म कमांड उपयोग करें (उदा. `graphify claude uninstall`)।
 
@@ -447,7 +447,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) graphify के ऊपर बना हमेशा-चालू स्तर है। प्रति फ़ोल्डर मांग पर दोबारा बनाए जाने वाले ग्राफ के बजाय, यह आपके पूरे सॉफ़्टवेयर डेवलपमेंट लाइफ़साइकल में एक लाइव ग्राफ बनाए रखता है:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) graphify के ऊपर बना हमेशा-चालू स्तर है। प्रति फ़ोल्डर मांग पर दोबारा बनाए जाने वाले ग्राफ के बजाय, यह आपके पूरे सॉफ़्टवेयर डेवलपमेंट लाइफ़साइकल में एक लाइव ग्राफ बनाए रखता है:
 
 - **80% कम टोकन**: हमेशा-चालू मेमोरी का मतलब है कि आपके एजेंट्स हर सेशन में कोडबेस को दोबारा पढ़ना और दोबारा समझाना बंद कर देते हैं।
 - **मोनोरेपो और क्रॉस-रेपो**: हर सर्विस और रिपॉज़िटरी में एक जुड़ा हुआ ग्राफ, प्रति फ़ोल्डर एक ग्राफ नहीं।
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **SDLC कनेक्टर्स**: Sentry, Jira, और अन्य को खींच लें, ताकि इंसिडेंट, टिकट, और कोड एक ही ग्राफ में रहें।
 - **हमेशा-चालू**: कोड, डॉक्स, और मीटिंग्स में बैकग्राउंड में लगातार अपडेट होता है।
 
-**[app.graphify.com पर 14-दिन का मुफ्त ट्रायल शुरू करें &rarr;](https://app.graphify.com/login)**
+**[मुफ़्त में शुरू करें, कार्ड की ज़रूरत नहीं &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -464,7 +464,7 @@ viz_node_limit=0
 
 योगदान का स्वागत है। डेवलपमेंट सेटअप, टेस्ट और CI-समतुल्य कमांड, git वर्कफ़्लो, और क्या एक मजबूत योगदान बनाता है (worked examples और एक्सट्रैक्शन बग रिपोर्ट सबसे उपयोगी हैं) के लिए **[CONTRIBUTING.md](../../CONTRIBUTING.md)** देखें। आर्किटेक्चर और कोई भाषा कैसे जोड़ें: [ARCHITECTURE.md](../../ARCHITECTURE.md)।
 
-यहां नए हैं? [Discord](https://discord.gg/XDnKVpzdXB) पर या [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions) में नमस्ते कहें।
+यहां नए हैं? [Discord](https://discord.gg/graphify) पर या [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions) में नमस्ते कहें।
 
 ---
 
@@ -494,7 +494,7 @@ graphify पारिस्थितिकी तंत्र में कु�
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

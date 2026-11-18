@@ -22,6 +22,8 @@ from graphify.file_slice import (
     FileSlice,
     bisect_slice,
     expand_oversized_files,
+    is_complete_slice_coverage,
+    make_full_slice,
     read_slice_text,
     unit_path,
 )
@@ -60,6 +62,21 @@ def _get_tokenizer():
 
 # Cached at import time. None if tiktoken is unavailable; consumers must handle.
 _TOKENIZER = _get_tokenizer()
+
+# Anything past Latin Extended (CJK, Devanagari, Cyrillic, Arabic, ...).
+_NON_LATIN_RE = re.compile(r"[^\u0000-ɏ]")
+
+
+def _estimate_prompt_tokens(text: str) -> int:
+    """Rough token count for sizing a local model's context window.
+
+    chars/4 holds for English and code but not other scripts: on qwen2.5 a
+    Chinese doc came out 2.8x larger than chars/4 and a Hindi one 3.7x, so
+    num_ctx was too small and Ollama cut the prompt. Count non-Latin
+    characters as one token each, which errs on the safe side for both.
+    """
+    non_latin = len(_NON_LATIN_RE.findall(text))
+    return (len(text) - non_latin) // _CHARS_PER_TOKEN + non_latin
 
 
 def _resolve_ollama_base_url(default: str) -> str:
@@ -342,6 +359,41 @@ def _resolve_max_tokens(default: int) -> int:
     return default
 
 
+def _openai_max_tokens_kwarg(backend: str, max_tokens: int) -> dict[str, int]:
+    """Map the output cap to the OpenAI-compatible field accepted by the backend."""
+    # DeepSeek documents max_tokens and ignores max_completion_tokens.
+    key = "max_tokens" if backend == "deepseek" else "max_completion_tokens"
+    return {key: max_tokens}
+
+
+def _provider_extra_headers(raw: object, name: str = "") -> dict[str, str] | None:
+    """Validate a custom provider's providers.json ``extra_headers`` map (#3680).
+
+    Some OpenAI-compatible gateways need request headers beyond Authorization
+    (OpenCode Go rejects a request without ``x-opencode-session``). They are
+    passed to the OpenAI client as ``default_headers``, the header counterpart
+    of ``extra_body``. Only string-to-string entries are kept, and an
+    ``Authorization`` entry is dropped: the API key always comes from the
+    provider's ``env_key``, so the config cannot swap in a different credential.
+    Returns None when nothing usable remains.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        print(f"[graphify] WARNING: provider {name!r} extra_headers is not an object; ignoring.", file=sys.stderr)
+        return None
+    headers: dict[str, str] = {}
+    for key, value in raw.items():
+        if not (isinstance(key, str) and isinstance(value, str)):
+            print(f"[graphify] WARNING: provider {name!r} extra_headers entry {key!r} is not a string pair; ignoring it.", file=sys.stderr)
+            continue
+        if key.strip().lower() == "authorization":
+            print(f"[graphify] WARNING: provider {name!r} extra_headers cannot set Authorization; ignoring it.", file=sys.stderr)
+            continue
+        headers[key] = value
+    return headers or None
+
+
 # Model-name fragments for OpenAI-compatible "reasoning" models that reject an
 # explicit temperature: the API returns 400 "Unsupported value: 'temperature'
 # does not support 0 with this model. Only the default (1) value is supported."
@@ -525,9 +577,12 @@ source (a markdown or wiki link, a backticked path, a "Source:" or "Related:"
 line, a module or class a design doc specifies) is a reference, not the source:
 never use its path as source_file. Model the referenced file or entity as a node
 attributed to the enclosing file and link to it with a `references` or `cites`
-edge. Never invent, shorten or rewrite a path, and never omit source_file.
+edge. Add `"metadata":{"graphify_reference_stub":true}` to every node created
+solely for such a cross-document reference. Never add this marker to a node
+defined by the enclosing source. Never invent, shorten or rewrite a path, and
+never omit source_file.
 
-Node ID format: lowercase, only [a-z0-9_], no dots or slashes.
+Node ID format: lowercase, word characters only (`[^\\W]` after casefolding, i.e. `[a-z0-9_]` for ASCII input but non-ASCII letters and digits are kept as-is), no dots or slashes.
 Format: {stem}_{entity} where stem = full repo-relative path with the extension dropped, every segment joined with _ (e.g. src/auth/session.py -> src_auth_session); entity = symbol name (both normalised). Top-level files use just the filename stem (setup.py -> setup).
 
 Edge direction rule — source is always the ACTOR, target is the ACTED-UPON:
@@ -792,7 +847,16 @@ def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root
         # No evidence. Flag only a node the model itself presented as solid
         # (EXTRACTED/unset) — one it already hedged (INFERRED/AMBIGUOUS) needs no
         # second flag. Idempotent: never overwrites an existing verification.
-        if n.get("confidence") in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
+        # Matched case-insensitively, the way build._fold_confidence (#4529)
+        # reads it: a mis-cased enum value IS that enum value there and is
+        # corrected to the canonical spelling, so a node the model wrote as
+        # `"extracted"` reaches graph.json just as solid as `"EXTRACTED"` and
+        # must be evidence-checked the same. A hedged spelling in any case
+        # ("inferred", "ambiguous") still falls through unflagged.
+        _conf = n.get("confidence")
+        if isinstance(_conf, str):
+            _conf = _conf.upper()
+        if _conf in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
             n[_VERIFICATION_FIELD] = _UNVERIFIED_VALUE
             downgraded += 1
     return downgraded
@@ -1134,8 +1198,8 @@ def _json_object_candidates(text: str) -> list[int]:
     return preferred + rest
 
 
-def _json_fragment_candidates(text: str) -> "Iterator[str]":
-    """Yield candidate JSON texts from a model reply, most-likely first.
+def _json_fragment_candidates(text: str) -> "Iterator[tuple[str, int, int]]":
+    """Yield candidate JSON texts and source spans, most-likely first.
 
     Two sources, in order:
 
@@ -1151,14 +1215,15 @@ def _json_fragment_candidates(text: str) -> "Iterator[str]":
     handling did, cutting from the first ``` to the last — let a fence in the
     narration truncate the real answer before it was ever parsed (#2882).
     """
-    for _lang, body in sorted(
-        _FENCE_RE.findall(text), key=lambda b: b[0].strip().lower() not in ("json", "")
+    for match in sorted(
+        _FENCE_RE.finditer(text),
+        key=lambda m: m.group(1).strip().lower() not in ("json", ""),
     ):
-        yield body.strip()
+        yield match.group(2).strip(), match.start(2), match.end(2)
     for start in _json_object_candidates(text):
         blob = _balanced_object(text, start)
         if blob is not None:
-            yield blob
+            yield blob, start, start + len(blob)
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -1174,6 +1239,12 @@ def _parse_llm_json(raw: str) -> dict:
     extraction keys is kept only as a last resort — reasoning-first models
     routinely restate the schema (``{"description": "graph fragment"}``) before
     answering, and the narration must never shadow the answer that follows it.
+
+    Independent nonempty fragments are ambiguous: returning only the first
+    would cache missing content as complete, while merging could promote a
+    reasoning sketch to fact. Return empty so hollow retry handles the response.
+    Source spans exclude nested candidates; identical graph payloads discovered
+    more than once are one answer, not ambiguity.
     """
     if len(raw) > _LLM_JSON_MAX_BYTES:
         print(
@@ -1189,9 +1260,21 @@ def _parse_llm_json(raw: str) -> dict:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
             return _sanitize_fragment(parsed)
-        # Top-level array/scalar (common LLM output) is not a usable graph
-        # fragment; fall through rather than returning a non-dict that callers
-        # will try to subscript (e.g. result["input_tokens"]).
+        if isinstance(parsed, list):
+            frags = [
+                item for item in parsed
+                if isinstance(item, dict)
+                and any(_sanitize_fragment(item).get(k) for k in _FRAGMENT_KEYS)
+            ]
+            # A single-element array wrapping one valid fragment is unambiguous;
+            # unwrap it. Zero or two-plus fragments are refused (fail closed).
+            if len(frags) == 1:
+                return _sanitize_fragment(frags[0])
+            print(
+                "[graphify] LLM returned an array instead of one graph fragment; "
+                "refusing to accept only its first object.", file=sys.stderr,
+            )
+            return {"nodes": [], "edges": [], "hyperedges": []}
     except json.JSONDecodeError:
         pass
 
@@ -1202,11 +1285,31 @@ def _parse_llm_json(raw: str) -> dict:
     # object would (#2882).
     empty_fragment: dict | None = None   # right shape, nothing in it
     fallback: dict | None = None         # parses, but not a fragment at all
-    for candidate in _json_fragment_candidates(stripped):
+    content: list[tuple[dict, int, int]] = []
+    for candidate, start, end in _json_fragment_candidates(stripped):
+        if any(left <= start and end <= right for _, left, right in content):
+            continue
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError:
             continue
+        if isinstance(parsed, list):
+            frags = [
+                item for item in parsed
+                if isinstance(item, dict)
+                and any(_sanitize_fragment(item).get(k) for k in _FRAGMENT_KEYS)
+            ]
+            if len(frags) > 1:
+                print(
+                    "[graphify] LLM returned an array of graph fragments; "
+                    "refusing to accept only its first object.", file=sys.stderr,
+                )
+                return {"nodes": [], "edges": [], "hyperedges": []}
+            # A single-element array wrapping one valid fragment is unambiguous;
+            # unwrap and process it as that object. An array with no fragment
+            # falls through to the non-dict guard below, which skips it.
+            if len(frags) == 1:
+                parsed = frags[0]
         if not isinstance(parsed, dict):
             continue
         if any(k in parsed for k in _FRAGMENT_KEYS):
@@ -1219,11 +1322,28 @@ def _parse_llm_json(raw: str) -> dict:
             # empty-fragment tier so the genuine fragment below still wins.
             cand = _sanitize_fragment(parsed)
             if any(cand.get(k) for k in _FRAGMENT_KEYS):
-                return cand
+                content.append((cand, start, end))
+                continue
             if empty_fragment is None:
                 empty_fragment = cand
         elif fallback is None:
             fallback = parsed
+
+    distinct: dict[str, dict] = {}
+    for cand, start, end in content:
+        if any(left <= start and end <= right and (left, right) != (start, end)
+               for _, left, right in content):
+            continue
+        signature = json.dumps({k: cand.get(k, []) for k in _FRAGMENT_KEYS}, sort_keys=True)
+        distinct.setdefault(signature, cand)
+    if len(distinct) > 1:
+        print(
+            "[graphify] LLM returned multiple independent graph fragments; "
+            "refusing to cache only the first as a complete extraction.", file=sys.stderr,
+        )
+        return {"nodes": [], "edges": [], "hyperedges": []}
+    if distinct:
+        return next(iter(distinct.values()))
 
     # A genuinely empty extraction is still a valid answer, and still reads as
     # hollow downstream, so it outranks an object that is not a fragment at all.
@@ -1392,7 +1512,8 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
     )
 
 
-def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dict:
+def _ollama_request_extras(user_message: str, max_completion_tokens: int,
+                           system_prompt: str = "") -> dict:
     """num_ctx/keep_alive for an Ollama request, sized to the prompt."""
     # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
     # than that — the symptom is hollow 200 OK responses after the first few
@@ -1400,12 +1521,14 @@ def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dic
     # over-allocate KV-cache VRAM. Over-allocation (e.g. 128k slots for an 8k
     # prompt on a 31B model) exhausts VRAM by chunk 4 and produces the same
     # hollow-200 symptom — just from a different direction (#798 follow-up).
-    # Formula: actual input tokens + output cap + system prompt headroom.
+    # Formula: input tokens (user message + system prompt) + output cap + margin.
     # Capped at 131072 (enough for the default 60k token_budget); env var wins.
     num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
     # Auto-derive num_ctx from actual chunk size regardless — used as the
     # fallback and for the mismatch check below.
-    estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
+    # The system prompt is measured rather than assumed: a flat 400 was short
+    # of the ~760 tokens the extraction prompt really takes.
+    estimated_input = _estimate_prompt_tokens(user_message) + _estimate_prompt_tokens(system_prompt)
     auto_num_ctx = min(estimated_input + max_completion_tokens + 2000, 131072)
     auto_num_ctx = max(auto_num_ctx, 8192)
     if num_ctx_raw:
@@ -1432,8 +1555,6 @@ def _ollama_request_extras(user_message: str, max_completion_tokens: int) -> dic
                     file=sys.stderr,
                 )
     else:
-        # Estimate input tokens: user_message chars / 4 (standard BPE
-        # heuristic) + 400 for the system prompt, then add output headroom.
         num_ctx = auto_num_ctx
     keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
     return {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
@@ -1522,6 +1643,7 @@ def _call_openai_compat(
     deep_mode: bool = False,
     images: list[_ImageRef] | None = None,
     extra_body: dict | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
     ollama_seed = _resolve_ollama_seed() if backend == "ollama" else None
@@ -1547,14 +1669,15 @@ def _call_openai_compat(
     if backend == "ollama" and not os.environ.get("GRAPHIFY_MAX_RETRIES", "").strip():
         _retries = 0
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=_resolve_api_timeout(),
-                    max_retries=_retries)
+                    max_retries=_retries,
+                    **({"default_headers": extra_headers} if extra_headers else {}))
     kwargs: dict = {
         "model": model,
         "messages": [
             {"role": "system", "content": _extraction_system(deep=deep_mode)},
             {"role": "user", "content": _openai_content(user_message, images or [])},
         ],
-        "max_completion_tokens": max_completion_tokens,
+        **_openai_max_tokens_kwarg(backend, max_completion_tokens),
         "stream": False,
     }
     if temperature is not None:
@@ -1583,7 +1706,8 @@ def _call_openai_compat(
         # above, and replacing it here made the flag silently inert on ollama (#3988).
         kwargs["extra_body"] = {
             **kwargs.get("extra_body", {}),
-            **_ollama_request_extras(user_message, max_completion_tokens),
+            **_ollama_request_extras(user_message, max_completion_tokens,
+                                     kwargs["messages"][0]["content"]),
         }
     native = None
     if backend == "ollama" and extra_body is None:
@@ -1629,6 +1753,18 @@ def _call_openai_compat(
     return result
 
 
+def _claude_prompt_cache_enabled() -> bool:
+    """Keep prompt caching on by default; allow incompatible endpoints to opt out."""
+    raw = os.environ.get("GRAPHIFY_CLAUDE_PROMPT_CACHE", "").strip().lower()
+    if raw in ("", "1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(
+        "GRAPHIFY_CLAUDE_PROMPT_CACHE must be 1/true/yes/on or 0/false/no/off"
+    )
+
+
 def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Anthropic Claude directly (not via OpenAI compat layer)."""
     try:
@@ -1636,6 +1772,7 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
 
+    cache_enabled = _claude_prompt_cache_enabled()
     client = anthropic.Anthropic(
         api_key=api_key,
         base_url=BACKENDS["claude"]["base_url"],
@@ -1645,13 +1782,26 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     resp = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=_extraction_system(deep=deep_mode),
+        # The system prompt is identical on every per-file call, so mark it
+        # cacheable: later calls bill it as a cache read, not full input (#4835).
+        system=[{
+            "type": "text",
+            "text": _extraction_system(deep=deep_mode),
+            "cache_control": {"type": "ephemeral"},
+        }] if cache_enabled else _extraction_system(deep=deep_mode),
         messages=[{"role": "user", "content": _anthropic_content(user_message, images or [])}],
     )
     raw_content = _anthropic_response_text(resp.content)
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = (resp.usage.input_tokens or 0) if resp.usage else 0
-    result["output_tokens"] = (resp.usage.output_tokens or 0) if resp.usage else 0
+    # Anthropic reports the cached system prompt in its own cache_* fields, not
+    # in input_tokens; add them back so cost.json still counts the whole prompt.
+    usage = resp.usage
+    result["input_tokens"] = (
+        (usage.input_tokens or 0)
+        + (getattr(usage, "cache_read_input_tokens", 0) or 0)
+        + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    ) if usage else 0
+    result["output_tokens"] = (usage.output_tokens or 0) if usage else 0
     result["model"] = model
     # Normalise Anthropic's `stop_reason` to the OpenAI-compat `finish_reason`
     # vocabulary so the adaptive-retry layer doesn't have to know which
@@ -2178,6 +2328,7 @@ def extract_files_direct(
             deep_mode=deep_mode,
             images=image_refs,
             extra_body=cfg.get("extra_body"),
+            extra_headers=_provider_extra_headers(cfg.get("extra_headers"), backend),
         )
 
     # Verify code-typed nodes against the source the model read and downgrade the
@@ -2513,10 +2664,17 @@ def _extract_with_adaptive_retry(
         }
 
     def _split_lone_slice() -> "tuple[FileSlice, FileSlice] | None":
-        # When a single-unit chunk is a slice, bisect the slice so we can retry
-        # on a smaller range rather than give up (#1369).
-        if len(chunk) == 1 and isinstance(chunk[0], FileSlice) and _depth < max_depth:
-            return bisect_slice(chunk[0])
+        # When a single-unit chunk is a slice (or an eligible splittable text file
+        # below the char cap), bisect the slice so we can retry on a smaller
+        # range rather than give up (#1369, #5072).
+        if len(chunk) == 1 and _depth < max_depth:
+            unit = chunk[0]
+            if isinstance(unit, FileSlice):
+                return bisect_slice(unit)
+            if isinstance(unit, (Path, str)):
+                fs = make_full_slice(Path(unit))
+                if fs is not None:
+                    return bisect_slice(fs)
         return None
 
     try:
@@ -2564,7 +2722,10 @@ def _extract_with_adaptive_retry(
                 f"and cannot be split further: {exc}",
                 file=sys.stderr,
             )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+            # Mark the chunk's files partial (as the hollow give-up path does), so a
+            # parent whose other slices succeeded is not cached as complete (#5099).
+            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0,
+                    "model": model, "finish_reason": "stop", "_partial_files": _chunk_partial_files(chunk)}
         if _depth >= max_depth:
             persist_desc = "still times out" if is_timeout else "still overflows context"
             print(
@@ -2572,7 +2733,8 @@ def _extract_with_adaptive_retry(
                 f"recursion depth {_depth} (max {max_depth}) — dropping",
                 file=sys.stderr,
             )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0,
+                    "model": model, "finish_reason": "stop", "_partial_files": _chunk_partial_files(chunk)}
         print(
             f"[graphify] chunk of {len(chunk)} {reason} at depth "
             f"{_depth} ({type(exc).__name__}); splitting in half and retrying",
@@ -2690,7 +2852,7 @@ def _extract_with_adaptive_retry(
 
 
 def extract_corpus_parallel(
-    files: list[Path],
+    files: "list[Path | FileSlice]",
     backend: str = "kimi",
     api_key: str | None = None,
     model: str | None = None,
@@ -2772,8 +2934,11 @@ def extract_corpus_parallel(
         "failed_chunks": 0,  # count of chunks that raised — loud failure on chunk errors
     }
     total = len(chunks)
+    # Files whose chunk raised before returning a response. The #1890
+    # reconciliation below must not describe them as omitted by the model (#3616).
+    failed_files: set[Path] = set()
 
-    def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
+    def _run_one(idx: int, chunk: "list[Path | FileSlice]") -> tuple[int, dict | None, Exception | None]:
         t0 = time.time()
         try:
             result = _extract_with_adaptive_retry(
@@ -2799,7 +2964,55 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
-    def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
+    # A file split into slices is complete only once every slice has returned
+    # (#4943). Checkpointing each slice as it lands stamped the parent's entry
+    # complete after its first slice, so an interrupted run served the head of
+    # the file as the whole file. Its results wait here until the last slice
+    # succeeds, then go out in one write; a slice that fails keeps it unsaved.
+    slices_left: dict[Path, int] = {}
+    all_slices_by_parent: dict[Path, list[FileSlice]] = {}
+    whole_parents: set[Path] = set()
+    for _chunk in chunks:
+        for _unit in _chunk:
+            if isinstance(_unit, FileSlice):
+                p = unit_path(_unit)
+                slices_left[p] = slices_left.get(p, 0) + 1
+                all_slices_by_parent.setdefault(p, []).append(_unit)
+            else:
+                whole_parents.add(unit_path(_unit))
+
+    incomplete_parents: set[Path] = {
+        p for p, sl in all_slices_by_parent.items()
+        if p not in whole_parents and not is_complete_slice_coverage(p, sl)
+    }
+    held_results: dict[Path, list[tuple[int, dict]]] = {}
+
+    def _checkpoint_chunk(idx: int, result: dict, chunk: "list[Path | FileSlice]") -> None:
+        sliced = [unit_path(u) for u in chunk if isinstance(u, FileSlice)]
+        for parent in sliced:
+            slices_left[parent] -= 1
+        whole = [unit_path(u) for u in chunk if not isinstance(u, FileSlice)]
+        if whole:
+            _save_checkpoint(result, whole)
+        for parent in dict.fromkeys(sliced):
+            held_results.setdefault(parent, []).append((idx, result))
+            if slices_left[parent] == 0:
+                # Chunk order, not completion order, so the entry is the same
+                # whichever slice returned first (#1632).
+                held = [r for _, r in sorted(held_results.pop(parent), key=lambda p: p[0])]
+                if parent in incomplete_parents:
+                    # Incomplete parent coverage: precomputed slices did not cover
+                    # the full file, so keep it unsaved to prevent caching as
+                    # complete (#5106).
+                    continue
+                combined: dict = {
+                    bucket: [item for r in held for item in r.get(bucket, [])]
+                    for bucket in ("nodes", "edges", "hyperedges")
+                }
+                combined["_partial_files"] = _merged_partial_files(*held)
+                _save_checkpoint(combined, [parent])
+
+    def _save_checkpoint(result: dict, allowed: "list[Path]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
         # completes. Without this, the semantic cache is only written once, at
         # the very end of the run (in __main__), so a run interrupted partway
@@ -2819,7 +3032,6 @@ def extract_corpus_parallel(
             # old `.rel` attribute does not exist on FileSlice, so every sliced
             # chunk leaked the FileSlice object into the allowlist and the write
             # raised TypeError, silently defeating the checkpoint.)
-            allowed = [unit_path(item) for item in chunk]
             # Deep-mode results checkpoint into their own namespace
             # (cache/semantic-deep/) so a deep run never overwrites standard
             # entries — and a later standard run never serves deep ones (#1894).
@@ -2853,10 +3065,11 @@ def extract_corpus_parallel(
             if exc is not None:
                 print(f"[graphify] chunk {idx + 1}/{total} failed: {exc}", file=sys.stderr)
                 merged["failed_chunks"] += 1
+                failed_files.update(unit_path(f) for f in chunk)
                 continue
             assert result is not None
             _merge_into(merged, result)
-            _checkpoint_chunk(result, chunk)
+            _checkpoint_chunk(idx, result, chunk)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
@@ -2870,22 +3083,49 @@ def extract_corpus_parallel(
         results_by_idx: dict[int, dict] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(_run_one, idx, chunk) for idx, chunk in enumerate(chunks)]
-            for future in as_completed(futures):
-                idx, result, exc = future.result()
-                if exc is not None:
-                    print(
-                        f"[graphify] chunk {idx + 1}/{total} failed: {exc}",
-                        file=sys.stderr,
-                    )
-                    merged["failed_chunks"] += 1
-                    continue
-                assert result is not None
-                results_by_idx[idx] = result
-                _checkpoint_chunk(result, chunks[idx])
-                if callable(on_chunk_done):
-                    on_chunk_done(idx, total, result)
+            try:
+                for future in as_completed(futures):
+                    idx, result, exc = future.result()
+                    if exc is not None:
+                        print(
+                            f"[graphify] chunk {idx + 1}/{total} failed: {exc}",
+                            file=sys.stderr,
+                        )
+                        merged["failed_chunks"] += 1
+                        failed_files.update(unit_path(f) for f in chunks[idx])
+                        continue
+                    assert result is not None
+                    results_by_idx[idx] = result
+                    _checkpoint_chunk(idx, result, chunks[idx])
+                    if callable(on_chunk_done):
+                        on_chunk_done(idx, total, result)
+            except Exception:
+                # Every chunk was submitted above, and the callback runs only
+                # after one returns. Cancel work that has not started so a
+                # callback failure does not keep queued model calls running
+                # (#5184). cancel() leaves anything already running alone; the
+                # pool then drains that in-flight work and this exception
+                # propagates unchanged.
+                for pending in futures:
+                    pending.cancel()
+                raise
         for idx in sorted(results_by_idx):
             _merge_into(merged, results_by_idx[idx])
+
+    # A failed slice leaves its parent with nodes from the other slices, so the
+    # parent looks covered and the caller's final save would write it complete
+    # (#4943). Incomplete precomputed slice coverage similarly must not be
+    # promoted to complete (#5106). Name both partial so any downstream save
+    # stamps them and a future run retries.
+    failed_parents = {
+        unit_path(u) for chunk in chunks for u in chunk
+        if isinstance(u, FileSlice) and unit_path(u) in failed_files
+    }
+    partial_parents = failed_parents | incomplete_parents
+    if partial_parents:
+        merged["_partial_files"] = sorted(
+            set(merged.get("_partial_files", []) or []) | {str(p) for p in partial_parents}
+        )
 
     # Loud failure summary — surface chunk failures at end so they're never
     # buried mid-log. Exit 0 preserved for caller compatibility; the
@@ -2991,11 +3231,25 @@ def extract_corpus_parallel(
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
     _stamp_semantic_origin(merged)
-    if uncovered:
-        shown = ", ".join(p.name for p in uncovered[:5])
-        more = f" (+{len(uncovered) - 5} more)" if len(uncovered) > 5 else ""
+    # Split the gap by cause (#3616): a file whose chunk raised never got a
+    # response, so only the rest were actually omitted by the model.
+    unanswered = [p for p in uncovered if p in failed_files]
+    omitted = [p for p in uncovered if p not in failed_files]
+    if unanswered:
+        shown = ", ".join(p.name for p in unanswered[:5])
+        more = f" (+{len(unanswered) - 5} more)" if len(unanswered) > 5 else ""
         print(
-            f"[graphify] WARNING: {len(uncovered)}/{len(dispatched)} dispatched file(s) "
+            f"[graphify] WARNING: {len(unanswered)}/{len(dispatched)} dispatched file(s) "
+            f"produced no nodes and are absent from the graph: {shown}{more}. Their "
+            "chunk failed before returning a response (see errors above); a re-run "
+            "will retry them.",
+            file=sys.stderr,
+        )
+    if omitted:
+        shown = ", ".join(p.name for p in omitted[:5])
+        more = f" (+{len(omitted) - 5} more)" if len(omitted) > 5 else ""
+        print(
+            f"[graphify] WARNING: {len(omitted)}/{len(dispatched)} dispatched file(s) "
             f"produced no nodes and are absent from the graph: {shown}{more}. The model "
             "returned a response but omitted them; a re-run will retry them.",
             file=sys.stderr,
@@ -3205,11 +3459,13 @@ def _call_llm(
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
-    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
+    _headers = _provider_extra_headers(cfg.get("extra_headers"), backend)
+    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries(),
+                    **({"default_headers": _headers} if _headers else {}))
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],
-        "max_completion_tokens": max_tokens,
+        **_openai_max_tokens_kwarg(backend, max_tokens),
         # Force a single non-streamed response: some OpenAI-compatible gateways
         # default to SSE streaming when `stream` is omitted, but the result here
         # is always read as resp.choices[0]. Same fix as _call_openai_compat

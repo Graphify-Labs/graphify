@@ -171,3 +171,89 @@ def test_python_base_method_caller_end_to_end(tmp_path: Path):
     })
     hits = _hits(g, _node(g, ".run()", "impl_impl_run"))
     assert _node(g, ".go()", "base_base_go") in hits
+
+
+def test_java_overloads_are_not_overrides_of_a_different_arity(tmp_path: Path):
+    """Overloads share a label, but `Impl.run(int)` overrides only `Api.run(int)`:
+    a caller of the zero-argument `Api.run()` is not affected (#5251)."""
+    g = _extract_graph(tmp_path, {
+        "Api.java": "interface Api { void run(); void run(int n); }\n",
+        "Impl.java": "class Impl implements Api { public void run() {} public void run(int n) {} }\n",
+        "Zero.java": "class Zero { void a(Api x) { x.run(); } }\n",
+        "One.java": "class One { void b(Api x) { x.run(1); } }\n",
+    })
+    impl_runs = sorted(
+        (n for n, a in g.nodes(data=True)
+         if a.get("label") == ".run()" and "impl" in n),
+        key=lambda n: g.nodes[n].get("metadata", {}).get("arity", 0),
+    )
+    run_int = impl_runs[-1]
+    assert g.nodes[run_int]["metadata"]["arity"] == 1
+    hits = _hits(g, run_int)
+    assert _node(g, ".b()", "one_b") in hits
+    assert _node(g, ".a()", "zero_a") not in hits
+    # the zero-argument override is reached by the zero-argument callers only
+    hits_zero = _hits(g, impl_runs[0])
+    assert _node(g, ".a()", "zero_a") in hits_zero
+    assert _node(g, ".b()", "one_b") not in hits_zero
+
+
+def test_a_generic_supertype_override_keeps_its_caller(tmp_path: Path):
+    """`save(T)` erases to `T`, its override `save(String)` to `String`: same
+    arity, so the override is still found and the caller is still affected."""
+    g = _extract_graph(tmp_path, {
+        "Repo.java": "interface Repo<T> { void save(T t); }\n",
+        "Names.java": "class Names implements Repo<String> { public void save(String s) {} }\n",
+        "Use.java": "class Use { void go(Repo<String> r) { r.save(\"x\"); } }\n",
+    })
+    hits = _hits(g, _node(g, ".save()", "names_save"))
+    assert _node(g, ".go()", "use_go") in hits
+
+
+def test_generic_and_concrete_overloads_in_a_supertype_are_both_overridden(tmp_path: Path):
+    """`Repo<T>` declares `save(T)` and `save(String)`; `Names.save(String)` can
+    override either, so a caller bound to either is affected (#5251)."""
+    g = _extract_graph(tmp_path, {
+        "Repo.java": "interface Repo<T> { void save(T t); void save(String s); }\n",
+        "Names.java": "class Names implements Repo<String> { public void save(String s) {} }\n",
+        "Generic.java": "class Generic { void g(Repo<Integer> r) { r.save(1); } }\n",
+        "Concrete.java": "class Concrete { void c(Repo<Integer> r) { r.save(\"x\"); } }\n",
+    })
+    hits = _hits(g, _node(g, ".save()", "names_save"))
+    assert _node(g, ".c()", "concrete_c") in hits
+    assert _node(g, ".g()", "generic_g") in hits
+
+
+def test_a_primitive_overload_is_not_an_override_of_a_reference_one(tmp_path: Path):
+    """`put(int)` and `put(String)` take one argument each, so a call binds to the
+    first declared (`put(int)`) when its type is not known. Changing
+    `Impl.put(String)` must not reach that caller through `Api.put(int)`: a
+    primitive parameter never overrides a reference one (#5251)."""
+    g = _extract_graph(tmp_path, {
+        "Api.java": "interface Api { void put(int n); void put(String s); }\n",
+        "Impl.java": "class Impl implements Api { public void put(int n) {} public void put(String s) {} }\n",
+        "Num.java": "class Num { void n(Api a) { a.put(1); } }\n",
+    })
+    by_sig = {
+        a["metadata"]["signature"]: n for n, a in g.nodes(data=True)
+        if a.get("label") == ".put()" and "impl" in n
+    }
+    assert _node(g, ".n()", "num_n") in _hits(g, by_sig["int"])
+    assert _node(g, ".n()", "num_n") not in _hits(g, by_sig["String"])
+
+
+def test_a_variadic_overrides_the_array_form_but_not_the_empty_one(tmp_path: Path):
+    """`run(String...)` and `run(String[])` are one declared shape; a call to the
+    variadic may pass no arguments, but `run()` is a different method (#5251)."""
+    g = _extract_graph(tmp_path, {
+        "Api.java": "interface Api { void run(); void run(String[] xs); }\n",
+        "Impl.java": "class Impl implements Api { public void run() {} public void run(String... xs) {} }\n",
+        "Empty.java": "class Empty { void e(Api a) { a.run(); } }\n",
+        "Arr.java": "class Arr { void r(Api a) { a.run(new String[0]); } }\n",
+    })
+    impl_var = next(n for n, a in g.nodes(data=True)
+                    if a.get("label") == ".run()" and "impl" in n
+                    and a["metadata"].get("variadic"))
+    hits = _hits(g, impl_var)
+    assert _node(g, ".r()", "arr_r") in hits
+    assert _node(g, ".e()", "empty_e") not in hits

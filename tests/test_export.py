@@ -212,7 +212,15 @@ def test_to_cypher_contains_merge_statements():
         out = Path(tmp) / "cypher.txt"
         to_cypher(G, str(out))
         content = out.read_text()
-        assert "MERGE" in content
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Transformer';" in content
+        assert "{id: 'n_transformer', label:" not in content
+
+        G.nodes["n_transformer"]["label"] = "Renamed Transformer"
+        to_cypher(G, str(out))
+        refreshed = out.read_text()
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Renamed Transformer';" in refreshed
+        assert "{id: 'n_transformer', label:" not in refreshed
+        assert "SET n.label = 'Transformer';" not in refreshed
 
 def test_to_graphml_creates_file():
     G = make_graph()
@@ -1053,6 +1061,65 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     assert backup_if_protected(tmp_path) is None
 
 
+# ── Issue #3769: incomplete backups reported as successful ──────────────────
+
+def test_backup_failed_copy_warns_and_returns_none(tmp_path, monkeypatch, capsys):
+    """A copy that fails part-way leaves a stale snapshot; it must be warned
+    and reported as no backup, not printed as a success (#3769)."""
+    import shutil
+    from datetime import date
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[{"id":"new"}],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    # A same-day snapshot holding the pre-overwrite graph: its graph.json is
+    # stale but readable, so the copy attempt fails rather than the hash check.
+    backup_dir = tmp_path / date.today().isoformat()
+    backup_dir.mkdir()
+    stale = backup_dir / "graph.json"
+    stale.write_text('{"nodes":[{"id":"old"}],"links":[]}')
+
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src, dst):
+        if Path(src).name == "graph.json":
+            raise PermissionError("denied")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is None
+    assert "graph.json" in capsys.readouterr().err
+    # The stale snapshot must not have been silently kept.
+    assert stale.read_text() == '{"nodes":[{"id":"old"}],"links":[]}'
+
+
+def test_backup_same_day_retries_missing_sidecar(tmp_path, monkeypatch, capsys):
+    """A snapshot missing a sidecar is retried on the next call, not treated
+    as complete because graph.json already matches (#3769)."""
+    import shutil
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    (tmp_path / "cost.json").write_text('{"input_tokens": 5}')
+
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src, dst):
+        if Path(src).name == "cost.json":
+            raise PermissionError("denied")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy2)
+    assert backup_if_protected(tmp_path) is None
+    assert "cost.json" in capsys.readouterr().err
+
+    monkeypatch.setattr(shutil, "copy2", real_copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is not None
+    assert (result / "graph.json").exists()
+    assert (result / "cost.json").read_text() == '{"input_tokens": 5}'
+
+
 def _mkG(n):
     import networkx as nx
     G = nx.Graph()
@@ -1274,6 +1341,53 @@ console.log(bad);
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
+
+
+def test_hyperedge_regions_skip_hidden_members():
+    """Legend toggles set `hidden` on nodes, but getPositions() still returns
+    them. The hull must skip hidden members so a region disappears once fewer
+    than two members remain visible (#5121)."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+    from graphify.exporters.html import _hyperedge_script
+    hyperedges = json.dumps([{"nodes": ["a", "b", "c"], "label": "h"}])
+    script = _hyperedge_script(hyperedges)
+    body = script.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    harness = r"""
+let handler = null;
+const pos = {a: {x: 0, y: 0}, b: {x: 10, y: 0}, c: {x: 0, y: 10}};
+const network = {
+  on: (ev, fn) => { if (ev === 'afterDrawing') handler = fn; },
+  getPositions: ids => ({[ids[0]]: pos[ids[0]]}),
+};
+const store = {a: {id: 'a'}, b: {id: 'b'}, c: {id: 'c'}};
+const nodesDS = {get: id => store[id]};
+let fills = 0;
+const ctx = new Proxy({}, {
+  get: (t, k) => k === 'fill' ? (() => { fills++; })
+    : k === 'measureText' ? (() => ({width: 1})) : (() => {}),
+  set: () => true,
+});
+""" + body + r"""
+const out = [];
+handler(ctx); out.push(fills);
+fills = 0; store.a.hidden = true; handler(ctx); out.push(fills);
+fills = 0; store.b.hidden = true; handler(ctx); out.push(fills);
+console.log(JSON.stringify(out));
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        js = Path(tmp) / "hyperedge_hidden.js"
+        js.write_text(harness, encoding="utf-8")
+        proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    visible, one_hidden, two_hidden = json.loads(proc.stdout.strip())
+    assert visible >= 1
+    assert one_hidden >= 1
+    assert two_hidden == 0, "hull still drawn with only one visible member"
 
 
 def test_to_html_pins_vis_network_version_for_tooltip_xss_boundary():

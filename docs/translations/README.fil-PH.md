@@ -20,15 +20,15 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>Bawasan ang paggastos ng token ng agent nang 80%.</b> Ang Graphify Cloud ay laging-nakabukas na memory na namamahala sa iyong mga agent, pinapanatiling mataas ang kalidad ng code, at pinapatunayan ang pagiging tama gamit ang formal verification. <a href="https://app.graphify.com/login"><b>Magsimula ng libreng 14-araw na pagsubok &rarr;</b></a>
+  <b>Bawasan ang paggastos ng token ng agent nang 80%.</b> Ang Graphify Cloud ay laging-nakabukas na memory na namamahala sa iyong mga agent, pinapanatiling mataas ang kalidad ng code, at pinapatunayan ang pagiging tama gamit ang formal verification. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Magsimula nang libre, walang card &rarr;</b></a>
 </p>
 
 I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong proyekto mo (code, docs, PDF, mga larawan, video) sa isang **knowledge graph** na maaari mong **i-query sa halip na mag-grep** sa mga file.
@@ -38,7 +38,7 @@ I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong pr
 - **Hindi isang vector index.** Walang embeddings, walang vector store: isang tunay na graph na tinatahak mo. Magtanong, subaybayan ang landas sa pagitan ng dalawang bagay, o ipaliwanag ang isang konsepto.
 
 > [!NOTE]
-> **Gusto mo bang laging-nakabukas ito?** Pinapanatili ng [Graphify Cloud](https://app.graphify.com/login) na buhay ang graph sa buong SDLC mo: suporta sa monorepo at cross-repo, formal verification, at code review na may bird's-eye view ng iyong SDLC, kasama ang mga connector para sa Sentry, Jira, at iba pa upang ang mga insidente at ticket ay nasa iisang graph kasama ng iyong code. **[Magsimula ng libreng 14-araw na pagsubok sa app.graphify.com](https://app.graphify.com/login)**.
+> **Gusto mo bang laging-nakabukas ito?** Pinapanatili ng [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) na buhay ang graph sa buong SDLC mo: suporta sa monorepo at cross-repo, formal verification, at code review na may bird's-eye view ng iyong SDLC, kasama ang mga connector para sa Sentry, Jira, at iba pa upang ang mga insidente at ticket ay nasa iisang graph kasama ng iyong code. **[Magsimula nang libre, walang card](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@ I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong pr
   <em>Ang FastAPI codebase na inimapa ng graphify. Bawat node ay isang konsepto, ang mga kulay ay mga natukoy na community, at ang buong bagay ay naki-click sa graph.html.</em>
 </p>
 
-**Magsimula** (30 segundo). Kailangan ng Python 3.10+ at uv (o pipx):
+**Magsimula** (30 segundo). Kailangan ng Python 3.11+ at uv (o pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Ang makukuha mo nang out of the box:
 | **Local-first** | Ang code ay pini-parse nang lokal gamit ang tree-sitter (walang LLM, walang umaalis sa iyong makina); tanging ang semantikong pass sa docs/media ang tumatawag ng backend, at tanging kung mag-configure ka ng isa |
 
 > [!TIP]
-> Pinapatakbo ito sa maraming repo o isang monorepo? Ginagawa ito ng [Graphify Cloud](https://app.graphify.com/login) nang tuloy-tuloy at binabawasan ang paggastos ng token ng agent nang 80%, na may mga cross-repo na link, code review na saklaw ng buong SDLC, formal verification, at mga connector ng Sentry/Jira. [Magsimula ng libreng 14-araw na pagsubok &rarr;](https://app.graphify.com/login)
+> Pinapatakbo ito sa maraming repo o isang monorepo? Ginagawa ito ng [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) nang tuloy-tuloy at binabawasan ang paggastos ng token ng agent nang 80%, na may mga cross-repo na link, code review na saklaw ng buong SDLC, formal verification, at mga connector ng Sentry/Jira. [Magsimula nang libre, walang card &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Ang buong gabay at reference ay nasa **[docs.graphify.com](https://docs.graphify
 
 | Kinakailangan | Minimum | Suriin | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(inirerekomenda)* | kahit ano | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatibo)* | kahit ano | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Nagsusulat ito ng maliit na config file na nagsasabi sa iyong assistant na kumon
 
 Ang `GRAPH_REPORT.md` ay magagamit pa rin para sa malawak na pagsusuri ng arkitektura.
 
-Kung aling mga file ang isinusulat ng bawat platform (ang `CODEBUDDY.md` + `PreToolUse` hook ng CodeBuddy, ang `AGENTS.md` ng Codex, ang native na `.kilo` plugin ng Kilo, ang `alwaysApply` na panuntunan ng Cursor, at iba pa) ay saklaw sa **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Kung aling mga file ang isinusulat ng bawat platform (ang `CODEBUDDY.md` + `PreToolUse` hook ng CodeBuddy, ang `AGENTS.md` ng Codex, ang native na `.kilo` plugin ng Kilo, ang `alwaysApply` na panuntunan ng Cursor, at iba pa) ay saklaw sa **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Upang alisin ang graphify sa lahat ng platform nang sabay-sabay: `graphify uninstall` (idagdag ang `--purge` upang tanggalin din ang `graphify-out/`). O gamitin ang per-platform na utos (hal. `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ Bawat utos at flag, na may mga halimbawa: **[CLI reference](https://docs.graphif
 
 ## Graphify Cloud
 
-Ang [**Graphify Cloud**](https://app.graphify.com/login) ay ang laging-nakabukas na layer na itinayo sa ibabaw ng graphify. Sa halip na isang graph na muli mong itinatayo kapag kailangan kada folder, pinapanatili nito ang isang buhay na graph sa buong software development lifecycle mo:
+Ang [**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) ay ang laging-nakabukas na layer na itinayo sa ibabaw ng graphify. Sa halip na isang graph na muli mong itinatayo kapag kailangan kada folder, pinapanatili nito ang isang buhay na graph sa buong software development lifecycle mo:
 
 - **80% mas kaunting token**: ang laging-nakabukas na memory ay nangangahulugang hihinto ang iyong mga agent sa muling-pagbabasa at muling-pagpapaliwanag ng codebase bawat sesyon.
 - **Monorepo at cross-repo**: isang konektadong graph sa bawat serbisyo at repository, hindi isang graph kada folder.
@@ -456,7 +456,7 @@ Ang [**Graphify Cloud**](https://app.graphify.com/login) ay ang laging-nakabukas
 - **Mga SDLC connector**: hilahin ang Sentry, Jira, at iba pa, upang ang mga insidente, ticket, at code ay nasa iisang graph.
 - **Laging-nakabukas**: nag-a-update nang tuloy-tuloy sa background sa code, docs, at mga pulong.
 
-**[Magsimula ng libreng 14-araw na pagsubok sa app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Magsimula nang libre, walang card &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -464,7 +464,7 @@ Ang [**Graphify Cloud**](https://app.graphify.com/login) ay ang laging-nakabukas
 
 Malugod na tinatanggap ang mga kontribusyon. Tingnan ang **[CONTRIBUTING.md](../../CONTRIBUTING.md)** para sa development setup, ang mga utos para sa test at CI-parity, ang git workflow, at kung ano ang bumubuo ng isang matibay na kontribusyon (ang mga worked example at extraction bug report ang pinaka-kapaki-pakinabang). Arkitektura at kung paano magdagdag ng wika: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-Bago rito? Kumusta sa [Discord](https://discord.gg/XDnKVpzdXB) o sa [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+Bago rito? Kumusta sa [Discord](https://discord.gg/graphify) o sa [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
@@ -494,7 +494,7 @@ May ginagawa ka ba sa ekosistema ng graphify? Iyon ay hinihikayat. Kung ang proy
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

@@ -20,15 +20,15 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>Скоротіть витрати токенів агентів на 80%.</b> Graphify Cloud - це завжди активна памʼять, яка керує вашими агентами, підтримує високу якість коду та доводить коректність за допомогою формальної верифікації. <a href="https://app.graphify.com/login"><b>Почніть безкоштовну 14-денну пробну версію &rarr;</b></a>
+  <b>Скоротіть витрати токенів агентів на 80%.</b> Graphify Cloud - це завжди активна памʼять, яка керує вашими агентами, підтримує високу якість коду та доводить коректність за допомогою формальної верифікації. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Почніть безкоштовно, без картки &rarr;</b></a>
 </p>
 
 Введіть `/graphify` у вашому AI-асистенті для кодування, і він відобразить увесь ваш проєкт (код, документацію, PDF, зображення, відео) у **граф знань**, який ви можете **запитувати замість того, щоб грепати** файли.
@@ -38,7 +38,7 @@
 - **Це не векторний індекс.** Жодних ембедингів, жодного векторного сховища: справжній граф, яким ви проходите. Поставте питання, простежте шлях між двома речами або поясніть одне поняття.
 
 > [!NOTE]
-> **Хочете, щоб це було завжди активним?** [Graphify Cloud](https://app.graphify.com/login) підтримує граф живим упродовж усього вашого SDLC: підтримка монорепозиторіїв і крос-репозиторіїв, формальна верифікація та код-рев'ю з висоти пташиного польоту над вашим SDLC, а також конектори для Sentry, Jira та інших, тож інциденти й тикети перебувають у тому самому графі, що й ваш код. **[Почніть безкоштовну 14-денну пробну версію на app.graphify.com](https://app.graphify.com/login)**.
+> **Хочете, щоб це було завжди активним?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) підтримує граф живим упродовж усього вашого SDLC: підтримка монорепозиторіїв і крос-репозиторіїв, формальна верифікація та код-рев'ю з висоти пташиного польоту над вашим SDLC, а також конектори для Sentry, Jira та інших, тож інциденти й тикети перебувають у тому самому графі, що й ваш код. **[Почніть безкоштовно, без картки](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@
   <em>Кодова база FastAPI, відображена graphify. Кожен вузол - це поняття, кольори - це виявлені спільноти, і все це клікабельне у graph.html.</em>
 </p>
 
-**Початок роботи** (30 секунд). Потрібні Python 3.10+ та uv (або pipx):
+**Початок роботи** (30 секунд). Потрібні Python 3.11+ та uv (або pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ Shortest path (3 hops):
 | **Локальний пріоритет** | Код розбирається локально за допомогою tree-sitter (без LLM, нічого не залишає вашу машину); лише семантичний прохід над документами/медіа звертається до бекенду, і тільки якщо ви його налаштуєте |
 
 > [!TIP]
-> Запускаєте це на багатьох репозиторіях чи монорепозиторії? [Graphify Cloud](https://app.graphify.com/login) робить це безперервно та скорочує витрати токенів агентів на 80%, з крос-репозиторними звʼязками, код-рев'ю на рівні всього SDLC, формальною верифікацією та конекторами Sentry/Jira. [Почніть безкоштовну 14-денну пробну версію &rarr;](https://app.graphify.com/login)
+> Запускаєте це на багатьох репозиторіях чи монорепозиторії? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) робить це безперервно та скорочує витрати токенів агентів на 80%, з крос-репозиторними звʼязками, код-рев'ю на рівні всього SDLC, формальною верифікацією та конекторами Sentry/Jira. [Почніть безкоштовно, без картки &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | Вимога | Мінімум | Перевірка | Встановлення |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(рекомендовано)* | будь-яка | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(альтернатива)* | будь-яка | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Pi не має хука `PreToolUse`, тож `graphify pi guard install` реє�
 
 `GRAPH_REPORT.md` досі доступний для широкого огляду архітектури.
 
-Які саме файли записує кожна платформа (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, нативний плагін Kilo `.kilo`, правило Cursor `alwaysApply` тощо) описано в **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Які саме файли записує кожна платформа (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, нативний плагін Kilo `.kilo`, правило Cursor `alwaysApply` тощо) описано в **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Щоб видалити graphify з усіх платформ одразу: `graphify uninstall` (додайте `--purge`, щоб також видалити `graphify-out/`). Або використайте команду для конкретної платформи (наприклад, `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ viz_node_limit=0
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) - це завжди активний рівень, побудований поверх graphify. Замість графа, який ви перебудовуєте на вимогу для кожної теки, він підтримує один живий граф упродовж усього вашого життєвого циклу розробки ПЗ:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) - це завжди активний рівень, побудований поверх graphify. Замість графа, який ви перебудовуєте на вимогу для кожної теки, він підтримує один живий граф упродовж усього вашого життєвого циклу розробки ПЗ:
 
 - **На 80% менше токенів**: завжди активна памʼять означає, що ваші агенти припиняють повторно читати та повторно пояснювати кодову базу щосесії.
 - **Монорепозиторій та крос-репозиторій**: один звʼязаний граф на всі сервіси та репозиторії, а не граф на теку.
@@ -456,7 +456,7 @@ viz_node_limit=0
 - **Конектори SDLC**: підтягуйте Sentry, Jira та інше, тож інциденти, тикети та код живуть в одному графі.
 - **Завжди активний**: оновлюється безперервно у фоновому режимі по коду, документах та зустрічах.
 
-**[Почніть безкоштовну 14-денну пробну версію на app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Почніть безкоштовно, без картки &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -464,7 +464,7 @@ viz_node_limit=0
 
 Внески вітаються. Дивіться **[CONTRIBUTING.md](../../CONTRIBUTING.md)** для налаштування розробки, команд тестування та відповідності CI, git-процесу та того, що робить внесок сильним (опрацьовані приклади та звіти про баги вилучення найкорисніші). Архітектура та як додати мову: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-Новачок тут? Привітайтеся в [Discord](https://discord.gg/XDnKVpzdXB) або в [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+Новачок тут? Привітайтеся в [Discord](https://discord.gg/graphify) або в [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
@@ -494,7 +494,7 @@ README доступний 32 мовами. Використовуйте пере
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

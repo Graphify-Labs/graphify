@@ -20,15 +20,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>Reduza o gasto de tokens dos agentes em 80%.</b> O Graphify Cloud é uma memória sempre ativa que governa seus agentes, mantém a qualidade do código alta e prova a correção com verificação formal. <a href="https://app.graphify.com/login"><b>Comece um teste gratuito de 14 dias &rarr;</b></a>
+  <b>Reduza o gasto de tokens dos agentes em 80%.</b> O Graphify Cloud é uma memória sempre ativa que governa seus agentes, mantém a qualidade do código alta e prova a correção com verificação formal. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Comece grátis, sem cartão &rarr;</b></a>
 </p>
 
 Digite `/graphify` no seu assistente de programação com IA e ele mapeia o seu projeto inteiro (código, documentos, PDFs, imagens, vídeos) em um **grafo de conhecimento** que você pode **consultar em vez de fazer grep** nos arquivos.
@@ -38,7 +38,7 @@ Digite `/graphify` no seu assistente de programação com IA e ele mapeia o seu 
 - **Não é um índice vetorial.** Sem embeddings, sem armazenamento de vetores: um grafo real que você percorre. Faça uma pergunta, trace o caminho entre duas coisas ou explique um conceito.
 
 > [!NOTE]
-> **Quer isso sempre ativo?** O [Graphify Cloud](https://app.graphify.com/login) mantém o grafo ativo em todo o seu SDLC: suporte a monorepo e multi-repositório, verificação formal e revisão de código com uma visão panorâmica do seu SDLC, além de conectores para Sentry, Jira e mais, para que incidentes e tickets fiquem no mesmo grafo que o seu código. **[Comece um teste gratuito de 14 dias em app.graphify.com](https://app.graphify.com/login)**.
+> **Quer isso sempre ativo?** O [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) mantém o grafo ativo em todo o seu SDLC: suporte a monorepo e multi-repositório, verificação formal e revisão de código com uma visão panorâmica do seu SDLC, além de conectores para Sentry, Jira e mais, para que incidentes e tickets fiquem no mesmo grafo que o seu código. **[Comece grátis, sem cartão](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -47,7 +47,7 @@ Digite `/graphify` no seu assistente de programação com IA e ele mapeia o seu 
   <em>A base de código do FastAPI mapeada pelo graphify. Cada nó é um conceito, as cores são comunidades detectadas, e tudo é clicável em graph.html.</em>
 </p>
 
-**Comece agora** (30 segundos). Precisa de Python 3.10+ e uv (ou pipx):
+**Comece agora** (30 segundos). Precisa de Python 3.11+ e uv (ou pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -123,7 +123,7 @@ O que você obtém de imediato:
 | **Local em primeiro lugar** | O código é analisado localmente com tree-sitter (sem LLM, nada sai da sua máquina); apenas a passagem semântica sobre docs/mídia chama um backend, e só se você configurar um |
 
 > [!TIP]
-> Executando isso em muitos repositórios ou em um monorepo? O [Graphify Cloud](https://app.graphify.com/login) faz isso continuamente e reduz o gasto de tokens dos agentes em 80%, com links multi-repositório, revisão de código em todo o SDLC, verificação formal e conectores Sentry/Jira. [Comece um teste gratuito de 14 dias &rarr;](https://app.graphify.com/login)
+> Executando isso em muitos repositórios ou em um monorepo? O [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) faz isso continuamente e reduz o gasto de tokens dos agentes em 80%, com links multi-repositório, revisão de código em todo o SDLC, verificação formal e conectores Sentry/Jira. [Comece grátis, sem cartão &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -159,7 +159,7 @@ Guias completos e referência ficam em **[docs.graphify.com](https://docs.graphi
 
 | Requisito | Mínimo | Verificar | Instalar |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recomendado)* | qualquer | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativa)* | qualquer | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Isso grava um pequeno arquivo de configuração que diz ao seu assistente para c
 
 O `GRAPH_REPORT.md` continua disponível para revisão ampla de arquitetura.
 
-Exatamente quais arquivos cada plataforma grava (o `CODEBUDDY.md` + hooks `PreToolUse` do CodeBuddy, o `AGENTS.md` do Codex, o plugin nativo `.kilo` do Kilo, a regra `alwaysApply` do Cursor, e assim por diante) é coberto em **[Configuração sempre ativa](https://docs.graphify.com/guides/always-on)**.
+Exatamente quais arquivos cada plataforma grava (o `CODEBUDDY.md` + hooks `PreToolUse` do CodeBuddy, o `AGENTS.md` do Codex, o plugin nativo `.kilo` do Kilo, a regra `alwaysApply` do Cursor, e assim por diante) é coberto em **[Configuração sempre ativa](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Para remover o graphify de todas as plataformas de uma vez: `graphify uninstall` (adicione `--purge` para também excluir `graphify-out/`). Ou use o comando por plataforma (por exemplo, `graphify claude uninstall`).
 
@@ -447,7 +447,7 @@ Todos os comandos e flags, com exemplos: **[Referência da CLI](https://docs.gra
 
 ## Graphify Cloud
 
-O [**Graphify Cloud**](https://app.graphify.com/login) é a camada sempre ativa construída sobre o graphify. Em vez de um grafo que você reconstrói sob demanda por pasta, ele mantém um grafo ativo em todo o seu ciclo de vida de desenvolvimento de software:
+O [**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) é a camada sempre ativa construída sobre o graphify. Em vez de um grafo que você reconstrói sob demanda por pasta, ele mantém um grafo ativo em todo o seu ciclo de vida de desenvolvimento de software:
 
 - **80% menos tokens**: memória sempre ativa significa que seus agentes param de reler e reexplicar a base de código a cada sessão.
 - **Monorepo e multi-repositório**: um grafo conectado em cada serviço e repositório, não um grafo por pasta.
@@ -456,7 +456,7 @@ O [**Graphify Cloud**](https://app.graphify.com/login) é a camada sempre ativa 
 - **Conectores de SDLC**: traga Sentry, Jira e mais, para que incidentes, tickets e código vivam em um único grafo.
 - **Sempre ativo**: atualiza continuamente em segundo plano em código, docs e reuniões.
 
-**[Comece um teste gratuito de 14 dias em app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Comece grátis, sem cartão &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -464,7 +464,7 @@ O [**Graphify Cloud**](https://app.graphify.com/login) é a camada sempre ativa 
 
 Contribuições são bem-vindas. Veja **[CONTRIBUTING.md](../../CONTRIBUTING.md)** para a configuração de desenvolvimento, os comandos de teste e de paridade com a CI, o fluxo de trabalho do git, e o que faz uma contribuição forte (exemplos resolvidos e relatórios de bugs de extração são os mais úteis). Arquitetura e como adicionar uma linguagem: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-Novo por aqui? Diga oi no [Discord](https://discord.gg/XDnKVpzdXB) ou nas [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+Novo por aqui? Diga oi no [Discord](https://discord.gg/graphify) ou nas [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
@@ -494,7 +494,7 @@ Está construindo algo no ecossistema do graphify? Isso é incentivado. Se o seu
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
