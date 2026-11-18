@@ -435,19 +435,19 @@ def test_warm_cache_from_another_root_does_not_leak_that_root(tmp_path, monkeypa
     paths_b = sorted(p for p in corpus_b.rglob("*") if p.is_file()
                      and "graphify-out" not in p.parts)
 
-    # Warmth probe: _safe_extract_with_xaml_root runs only on a cache MISS. If
+    # Warmth probe: _safe_extract_with_scan_root runs only on a cache MISS. If
     # run B silently re-extracts, cold ids come out clean and every assertion
     # below passes while proving nothing. The probe requires parallel=False —
     # the process pool extracts in a subprocess where this patch is invisible,
     # so switching this call to parallel=True would make `misses` vacuously [].
     misses = []
-    real_extract = ex._safe_extract_with_xaml_root
+    real_extract = ex._safe_extract_with_scan_root
 
     def _counting(extractor, path, root):
         misses.append(str(path))
         return real_extract(extractor, path, root)
 
-    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", _counting)
+    monkeypatch.setattr(ex, "_safe_extract_with_scan_root", _counting)
 
     _reset_stat_index()
     warm_b = ex.extract(paths_b, cache_root=corpus_b, root=corpus_b, parallel=False)
@@ -566,13 +566,13 @@ def test_warm_hit_with_relative_inputs_from_above_the_root(tmp_path, monkeypatch
     # re-extraction would make the assertions below pass vacuously. Only the
     # .astro file is cached, so it is the one that must not be re-extracted.
     misses: list[str] = []
-    real_extract = ex._safe_extract_with_xaml_root
+    real_extract = ex._safe_extract_with_scan_root
 
     def _counting(extractor, path, root):
         misses.append(str(path))
         return real_extract(extractor, path, root)
 
-    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", _counting)
+    monkeypatch.setattr(ex, "_safe_extract_with_scan_root", _counting)
     _reset_stat_index()
     warm = ex.extract(rel_paths, parallel=False)
     assert not [m for m in misses if m.endswith(".astro")], (
@@ -836,13 +836,13 @@ def test_warm_cache_keeps_target_and_symlink_sources_distinct(
 
     cold = extract_mod.extract(paths, cache_root=root, root=root, parallel=False)
     misses = []
-    real_extract = extract_mod._safe_extract_with_xaml_root
+    real_extract = extract_mod._safe_extract_with_scan_root
 
     def counting_extract(extractor, path, extract_root):
         misses.append(path)
         return real_extract(extractor, path, extract_root)
 
-    monkeypatch.setattr(extract_mod, "_safe_extract_with_xaml_root", counting_extract)
+    monkeypatch.setattr(extract_mod, "_safe_extract_with_scan_root", counting_extract)
     warm = extract_mod.extract(paths, cache_root=root, root=root, parallel=False)
 
     assert misses == []

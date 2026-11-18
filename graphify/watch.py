@@ -814,7 +814,7 @@ def _reconcile_markdown_links(
     keeps or drops it with the target node.
     """
     from graphify.build import _is_ast_tier
-    from graphify.extract import _file_node_id, _safe_extract_with_xaml_root
+    from graphify.extract import _file_node_id, _safe_extract_with_scan_root
     from graphify.extractors.base import _make_id
     from graphify.extractors.markdown import extract_markdown
     from graphify.markdown_resolution import MARKDOWN_MENTION_SUFFIXES, _is_file_node
@@ -872,7 +872,7 @@ def _reconcile_markdown_links(
         source_file = source_paths.normalize(str(relative_source))
         source_rep = representatives.get(source_file)
 
-        extraction = _safe_extract_with_xaml_root(
+        extraction = _safe_extract_with_scan_root(
             extract_markdown, markdown_file, project_root
         )
         if extraction.get("error"):

@@ -112,7 +112,7 @@ def test_copied_ast_cache_preserves_terraform_ids(
     def unexpected_parse(*args, **kwargs):
         raise AssertionError("copied AST cache should avoid parsing unchanged files")
 
-    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", unexpected_parse)
+    monkeypatch.setattr(ex, "_safe_extract_with_scan_root", unexpected_parse)
     capsys.readouterr()
     warm = scan(copied)
     assert "AST cache: 2/2 files served from cache" in capsys.readouterr().out
@@ -137,7 +137,7 @@ def test_copied_ast_cache_preserves_module_topology(tmp_path, monkeypatch):
     def unexpected_parse(*args, **kwargs):
         raise AssertionError("copied AST cache should avoid parsing unchanged files")
 
-    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", unexpected_parse)
+    monkeypatch.setattr(ex, "_safe_extract_with_scan_root", unexpected_parse)
     warm = _extract(copied)
     _assert_integrity(warm)
     assert first["nodes"] == warm["nodes"]
