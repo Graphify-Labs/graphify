@@ -2210,9 +2210,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # soon as either family differs (an unknown ext counts as different).
                 # A VB call the VB resolver bound to one C# target is not a name
                 # match; a C# bare name matched to a VB Module member still is (#4570).
+                # VB shares the "cs" family for imports/references (#5247), but a
+                # call between VB and C# is a bare-name guess unless the VB resolver
+                # bound it, so calls give .vb a family of its own.
+                src_call_fam = "vb" if src_ext == ".vb" else src_fam
+                tgt_call_fam = "vb" if tgt_ext == ".vb" else tgt_fam
                 if (
                     attrs.get("confidence") == "INFERRED"
-                    and src_ext and tgt_ext and src_fam != tgt_fam
+                    and src_ext and tgt_ext and src_call_fam != tgt_call_fam
                     and not attrs.get("_vbnet_resolved")
                 ):
                     continue
