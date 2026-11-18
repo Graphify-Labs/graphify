@@ -4,17 +4,24 @@ Load this when the user passed one or more `https://github.com/...` URLs, or nam
 
 ### Step 0 - Clone GitHub repo(s) (only if a GitHub URL was given)
 
-**Single repo:**
+**Single repo** — write the URL the user gave to `graphify-out/.graphify_clone_url` (and a named branch to `.graphify_clone_branch`) before cloning; never paste it into the command line, since a URL containing `&`, `;` or `$()` would run as shell. `graphify-out` may not exist yet on a first run (Step 0 precedes Step 1's mkdir), so create it first:
 ```bash
-LOCAL_PATH=$(graphify clone <github-url> [--branch <branch>])
+mkdir -p graphify-out
+LOCAL_PATH=$(graphify clone "$(cat graphify-out/.graphify_clone_url)")
+# or with a branch the user named:
+LOCAL_PATH=$(graphify clone "$(cat graphify-out/.graphify_clone_url)" --branch "$(cat graphify-out/.graphify_clone_branch)")
+rm -f graphify-out/.graphify_clone_url graphify-out/.graphify_clone_branch
 # Use LOCAL_PATH as the target for all subsequent steps
 ```
 
 **Multiple repos (cross-repo graph):**
 ```bash
-# Clone each repo, run the full pipeline on each, then merge
-graphify clone <url1>   # → ~/.graphify/repos/<owner1>/<repo1>
-graphify clone <url2>   # → ~/.graphify/repos/<owner2>/<repo2>
+# Clone each repo, run the full pipeline on each, then merge.
+# Write each URL to graphify-out/.graphify_clone_url before its clone runs.
+graphify clone "$(cat graphify-out/.graphify_clone_url)"   # repo 1 → ~/.graphify/repos/<owner1>/<repo1>
+# rewrite .graphify_clone_url with the next URL, then:
+graphify clone "$(cat graphify-out/.graphify_clone_url)"   # repo 2 → ~/.graphify/repos/<owner2>/<repo2>
+rm -f graphify-out/.graphify_clone_url graphify-out/.graphify_clone_branch   # after the last clone
 # Run /graphify on each local path to produce their graph.json files
 # Then merge:
 graphify merge-graphs \
