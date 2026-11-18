@@ -11106,6 +11106,7 @@ _DISPATCH: dict[str, Any] = {
     ".tsx": extract_js,
     ".mts": extract_js,
     ".cts": extract_js,
+    ".ets": extract_js,
     ".go": extract_go,
     ".rs": extract_rust,
     ".r": extract_r,
@@ -12037,7 +12038,7 @@ def extract(
                 _failed_seen.add(_key)
 
     # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
-    # extractor wired up (e.g. .ets — there is no ArkTS dispatch) silently
+    # extractor wired up (e.g. a MATLAB-style .m, whose extractor is ObjC-only) silently
     # contributes zero nodes. The #1666 warning above deliberately skips these (it
     # only fires when an extractor exists), so surface them explicitly, grouped by
     # extension, rather than reporting success as if the language were mapped.

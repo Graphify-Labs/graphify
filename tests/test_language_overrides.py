@@ -29,6 +29,7 @@ import pytest
 from graphify import rcfile
 from graphify.detect import FileType, classify_file, detect
 from graphify.extract import (
+    _DISPATCH,
     _get_extractor,
     _lang_family,
     _lang_is_case_insensitive,
@@ -558,12 +559,14 @@ def test_a_declared_csharp_file_disambiguates_inherits_by_namespace(tmp_path):
     assert target_node.get("source_file", "").replace("\\", "/").endswith("Pkg1/Shape.cs")
 
 
-def test_a_declared_unsupported_language_still_warns_no_extractor(tmp_path, capsys):
-    # .ets (ArkTS) is a recognized CODE_EXTENSIONS member with no registered
-    # AST extractor (unlike .r, which upstream now implements behind an
-    # optional dependency and would instead warn "dependency is missing").
+def test_a_declared_unsupported_language_still_warns_no_extractor(tmp_path, capsys, monkeypatch):
+    # `.m` is a recognized CODE_EXTENSIONS member whose extractor is selected by
+    # content sniff; force it absent here so the declared remap resolves to no
+    # extractor (unlike .r, which upstream now implements behind an optional
+    # dependency and would instead warn "dependency is missing").
+    monkeypatch.setitem(_DISPATCH, ".m", None)
     (tmp_path / "a.tpl").write_text("class Foo {}\n", encoding="utf-8")
-    (tmp_path / ".graphifyrc").write_text("language.tpl=.ets\n", encoding="utf-8")
+    (tmp_path / ".graphifyrc").write_text("language.tpl=.m\n", encoding="utf-8")
     _quiet_extract([tmp_path / "a.tpl"], cache_root=tmp_path, root=tmp_path)
     assert "no AST extractor" in capsys.readouterr().err
 
