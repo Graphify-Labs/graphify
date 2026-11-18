@@ -251,6 +251,20 @@ class _GraphContextCache:
             return new_entry["G"], new_entry["communities"]
 
 
+def _node_location(d: dict) -> str:
+    """``L42-L58`` when the node records its declaration end, else its ``source_location``.
+
+    The range is printed so an agent reads the declaration, not the whole file.
+    """
+    loc = str(d.get("source_location") or "")
+    metadata = d.get("metadata")
+    end = metadata.get("end_line") if isinstance(metadata, dict) else None
+    m = re.fullmatch(r"L(\d+)", loc)
+    if m and type(end) is int and end > int(m.group(1)):
+        return f"{loc}-L{end}"
+    return loc
+
+
 def _node_arg(arguments: dict) -> str:
     """The node identifier a lookup tool was called with.
 
@@ -1462,7 +1476,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
-            f"loc={sanitize_label(str(d.get('source_location', '')))} "
+            f"loc={sanitize_label(_node_location(d))} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
             f"{learning_suffix}"
             f"{attrs_suffix}]"
@@ -3196,7 +3210,7 @@ def _build_server(graph_path: str):
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
-            f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
+            f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(_node_location(d))}",
             # A C/C++/ObjC symbol declared in a header and defined in the sibling
             # impl file is ONE node keyed to the header, so Source alone points at
             # the declaration. Name where it is implemented too, when known.

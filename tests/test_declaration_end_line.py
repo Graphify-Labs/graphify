@@ -313,3 +313,20 @@ def test_definition_merge_keeps_separate_ranges(reverse):
     _merge_decl_def_classes(nodes, [])
     assert "definition_end_line" not in header["metadata"]
     assert header["metadata"]["end_line"] == 3
+
+
+def test_query_and_get_node_print_the_declaration_range(tmp_path):
+    from graphify import serve
+
+    src = tmp_path / "svc.py"
+    src.write_text("def run():\n    a = 1\n    return a\n\n\ndef one(): return 1\n")
+    G = build([extract([src], tmp_path / "cache", root=tmp_path)])
+    run = next(n for n, d in G.nodes(data=True) if d.get("label") == "run()")
+    one = next(n for n, d in G.nodes(data=True) if d.get("label") == "one()")
+
+    text = serve._subgraph_to_text(G, {run, one}, [])
+    assert "loc=L1-L3 " in text
+    # A one-line declaration keeps the start-only form.
+    assert "loc=L6 " in text
+    assert serve._node_location({"source_location": "L4", "metadata": {"end_line": "9"}}) == "L4"
+    assert serve._node_location({"source_location": "L4", "metadata": "x"}) == "L4"
