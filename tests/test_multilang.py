@@ -1109,8 +1109,9 @@ def test_sql_commented_out_create_table_is_not_recovered(tmp_path):
 def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
     """T-SQL CREATE PROCEDURE [Schema].[Name] ... AS BEGIN...END.
 
-    The grammar has no create_procedure parse for T-SQL's AS BEGIN...END body
-    idiom, so the statement lands in ERROR recovery — where a name pattern
+    Up to tree-sitter-sql 0.3.11 the grammar has no create_procedure parse for
+    T-SQL's AS BEGIN...END body idiom (0.3.12+ partially parses it, #5236), so
+    the statement lands in ERROR recovery — where a name pattern
     without a bracket-delimited alternative recovered nothing. In a T-SQL
     codebase that brackets every identifier (a common house standard), that
     made every stored procedure invisible.
@@ -1620,10 +1621,10 @@ def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
     the first closing quote truncated the recovered name to "dbo"."a" — the
     "" twin of the bracket ]] escape handled above.
 
-    The AS BEGIN body idiom keeps the whole statement in ERROR recovery: for a
-    statement the grammar CAN parse, tree-sitter-sql itself truncates the
-    object_reference at the "" escape (emitting `"b"` as a stray ERROR child),
-    which is an upstream grammar defect this extractor cannot repair."""
+    Where the grammar parses the statement (from tree-sitter-sql 0.3.12 even
+    this AS BEGIN idiom), it truncates the object_reference at the "" escape
+    and emits `"b"` as a stray ERROR child; the recovery scan's full name then
+    replaces the walk's truncated one (#5236)."""
     pytest.importorskip("tree_sitter_sql")
     p = tmp_path / "fn.sql"
     p.write_text('CREATE PROCEDURE "dbo"."a""b"\nAS\nBEGIN\n    SELECT 1;\nEND;\n')
