@@ -1632,6 +1632,43 @@ def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
     assert routine == ['"dbo"."a""b"()'], routine
 
 
+_TSQL_BODY = "\nAS\nBEGIN\n    INSERT INTO dbo.Debtors (Id) SELECT Id FROM staging.Debtors;\nEND;\n"
+
+
+@pytest.mark.parametrize("header, expected", [
+    ("CREATE PROCEDURE p @x INT", "p()"),
+    ("CREATE PROCEDURE s.p @x INT", "s.p()"),
+    ("CREATE PROCEDURE [s].[p] @x INT", "s.p()"),
+    ('CREATE PROCEDURE "a""b"', '"a""b"()'),
+    ('CREATE PROCEDURE "s"."a""b"', '"s"."a""b"()'),
+    ("CREATE PROCEDURE [a]]b]", "a]b()"),
+])
+def test_sql_partially_parsed_routine_header_yields_one_node(tmp_path, header, expected):
+    """#5236: from tree-sitter-sql 0.3.12 the grammar parses T-SQL procedure
+    headers but misreads the name (absorbs unparenthesised params, takes the
+    param type, or stops at a "" / ]] escape). The walk and the recovery scan
+    then named one declaration twice."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text(header + _TSQL_BODY)
+    r = extract_sql(p)
+    routines = [n for n in r["nodes"] if n["label"].endswith("()")]
+    assert [n["label"] for n in routines] == [expected]
+    rid = routines[0]["id"]
+    rels = sorted((e["relation"], e["target"]) for e in r["edges"] if e["source"] == rid)
+    assert rels == sorted({*rels}), rels
+    assert {rel for rel, _ in rels} == {"reads_from", "writes_to"}
+
+
+def test_sql_escaped_quote_function_name_yields_one_node(tmp_path):
+    """#5236: same truncation for CREATE FUNCTION, already broken on 0.3.11."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "fn.sql"
+    p.write_text('CREATE FUNCTION "a""b"() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;\n')
+    labels = [n["label"] for n in extract_sql(p)["nodes"] if n["label"].endswith("()")]
+    assert labels == ['"a""b"()']
+
+
 def test_sql_cte_is_not_read_as_a_table():
     """#2577: a name bound by WITH ... AS (...) is scoped to its statement, not a table.
 
