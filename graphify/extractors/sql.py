@@ -1242,6 +1242,23 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # not scanned. One whose node holds an ERROR (a PL/pgSQL
             # `RETURN QUERY SELECT ... FROM t` puts t inside one, #5349) is
             # scanned too, adding only the edges the walk missed.
+            # From tree-sitter-sql 0.3.12 a T-SQL header can partially parse as
+            # create_procedure with a misread name: unparenthesised params are
+            # absorbed (`p @x INT`) or taken as the name (`INT`), and a ""/]]
+            # escape truncates it. The walk then minted a second routine with
+            # the wrong id and its own copy of the edges (#5236). A walk routine
+            # on this CREATE's line under another id is that misread: drop it
+            # and its edges, and let this match own the node and re-derive refs.
+            for dup in [nid for nid, ln in structured_routine_lines.items()
+                        if ln == fn_line and nid != fn_nid]:
+                nodes[:] = [n for n in nodes if n["id"] != dup]
+                edges[:] = [e for e in edges if e["source"] != dup and e["target"] != dup]
+                structured_routine_lines.pop(dup)
+                for key in [k for k, v in routine_nids.items() if v == dup]:
+                    del routine_nids[key]
+                seen_ids.discard(dup)
+            # A routine the tree already produced (a cleanly parsed function)
+            # keeps its tree-based reads_from; scanning it too would double them.
             from_tree = fn_nid in seen_ids
             _add_node(fn_nid, f"{_clean_ident(fn_name)}()", fn_line)
             if from_tree and fn_nid not in error_routines:
