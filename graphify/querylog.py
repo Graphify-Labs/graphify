@@ -31,6 +31,11 @@ def _log_path() -> Path | None:
     return None
 
 
+def is_enabled() -> bool:
+    """True when query logging is on, i.e. log_query() will append to a file."""
+    return _log_path() is not None
+
+
 def _log_responses() -> bool:
     return os.environ.get("GRAPHIFY_QUERY_LOG_RESPONSES", "").lower() in ("1", "true", "yes")
 

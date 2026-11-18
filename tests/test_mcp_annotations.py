@@ -35,8 +35,17 @@ _INIT = {
 _GH_TOOLS = {"list_prs", "get_pr_impact", "triage_prs"}
 
 
+_LOG_ENV = ("GRAPHIFY_QUERY_LOG", "GRAPHIFY_QUERY_LOG_ENABLE", "GRAPHIFY_QUERY_LOG_DISABLE")
+
+
 @pytest.fixture()
-def session(tmp_path: Path):
+def session(tmp_path: Path, monkeypatch):
+    for name in _LOG_ENV:
+        monkeypatch.delenv(name, raising=False)
+    yield from _session(tmp_path)
+
+
+def _session(tmp_path: Path):
     graph = tmp_path / "graph.json"
     graph.write_text(json.dumps(_GRAPH), encoding="utf-8")
     app = serve_mod._build_http_app(str(graph), json_response=True)
@@ -76,3 +85,17 @@ def test_only_github_tools_are_open_world(session):
 def test_annotation_table_matches_the_tool_list(session):
     _, tools = session
     assert {t["name"] for t in tools} == set(serve_mod._TOOL_ANNOTATIONS)
+
+
+def test_query_graph_is_not_read_only_when_query_logging_is_enabled(tmp_path, monkeypatch):
+    for name in _LOG_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(tmp_path / "queries.log"))
+    gen = _session(tmp_path)
+    try:
+        _, tools = next(gen)
+    finally:
+        gen.close()
+    read_only = {t["name"]: t["annotations"]["readOnlyHint"] for t in tools}
+    assert read_only.pop("query_graph") is False
+    assert all(read_only.values())

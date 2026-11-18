@@ -2887,7 +2887,9 @@ def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
 
 
 # MCP tool annotations (title, openWorldHint). Every tool only reads, so all are
-# readOnlyHint=True; the PR tools shell out to `gh` (GitHub), so they are open-world.
+# readOnlyHint=True, except query_graph while query logging is enabled (it then
+# appends to the query log). The PR tools shell out to `gh` (GitHub), so they are
+# open-world.
 _TOOL_ANNOTATIONS: dict[str, tuple[str, bool]] = {
     "query_graph": ("Query graph", False),
     "get_node": ("Get node", False),
@@ -2909,8 +2911,9 @@ _SERVER_INSTRUCTIONS = (
     "the path between two things. Start with query_graph for a question, get_node "
     "or get_neighbors to inspect a result, and shortest_path to trace a "
     "connection. Use grep for exact strings or text the graph may not index. "
-    "All tools are read-only. list_prs, get_pr_impact and triage_prs call GitHub "
-    "through the gh CLI."
+    "All tools are read-only, except that query_graph appends to the query log "
+    "when query logging is enabled (GRAPHIFY_QUERY_LOG). list_prs, get_pr_impact "
+    "and triage_prs call GitHub through the gh CLI."
 )
 
 
@@ -3152,6 +3155,8 @@ def _build_server(graph_path: str):
         # Injected here (rather than repeated in 11 literal schemas) so the set
         # stays in lockstep as tools are added. Omitting it keeps the historical
         # single-graph behaviour, so this is purely additive for existing callers.
+        from graphify import querylog as _querylog
+        _query_log_enabled = _querylog.is_enabled()
         for _t in _tools:
             # The constructor accepts the camelCase alias in both majors, but
             # attribute access is inputSchema on mcp 1.x and input_schema on 2.x.
@@ -3159,8 +3164,9 @@ def _build_server(graph_path: str):
             if _schema is None:
                 _schema = _t.input_schema
             _title, _open_world = _TOOL_ANNOTATIONS.get(_t.name, (None, False))
+            _read_only = not (_t.name == "query_graph" and _query_log_enabled)
             _t.annotations = types.ToolAnnotations(
-                title=_title, readOnlyHint=True, openWorldHint=_open_world,
+                title=_title, readOnlyHint=_read_only, openWorldHint=_open_world,
             )
             _schema.setdefault("properties", {})["project_path"] = {
                 "type": "string",
