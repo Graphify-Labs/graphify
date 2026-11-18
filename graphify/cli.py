@@ -2506,8 +2506,12 @@ def dispatch_command(cmd: str) -> None:
         def _read(path: str) -> str:
             return Path(path).read_text(encoding="utf-8").strip()
 
+        def _read_verbatim(path: str) -> str:
+            # A heredoc always ends the file with one newline; drop only that.
+            return Path(path).read_text(encoding="utf-8").removesuffix("\n")
+
         if opts.question_file:
-            opts.question = _read(opts.question_file)
+            opts.question = _read_verbatim(opts.question_file)
         elif not opts.question:
             p.error("--question or --question-file is required")
         if opts.answer_file:
@@ -2515,7 +2519,7 @@ def dispatch_command(cmd: str) -> None:
         elif not opts.answer:
             p.error("--answer or --answer-file is required")
         if opts.correction_file:
-            opts.correction = _read(opts.correction_file)
+            opts.correction = _read_verbatim(opts.correction_file)
         if opts.nodes_file:
             opts.nodes = [*opts.nodes, *(
                 line.strip() for line in _read(opts.nodes_file).splitlines() if line.strip()
