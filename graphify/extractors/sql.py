@@ -1232,9 +1232,19 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # name a genuine statement captures is allowed to be a delimited
         # identifier; its CREATE never is.
         masked_src, ident_spans = _scan_sql(src_text)
-        for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
-            if any(s <= m.start() < e for s, e in ident_spans):
-                continue
+        routine_matches = [
+            m for m in _ROUTINE_RECOVERY_RX.finditer(masked_src)
+            if not any(s <= m.start() < e for s, e in ident_spans)
+        ]
+        # Every routine the scan finds, by line. A walk routine on a CREATE's
+        # line is a misread only when no match on that line carries its id: two
+        # routines can share a line, and the other one is real.
+        recovered_on_line: dict[int, set[str]] = {}
+        for m in routine_matches:
+            recovered_on_line.setdefault(
+                src_text[: m.start()].count("\n") + 1, set()
+            ).add(_make_id(stem, m.group(1)))
+        for m in routine_matches:
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
             fn_nid = _make_id(stem, fn_name)
@@ -1250,7 +1260,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # on this CREATE's line under another id is that misread: drop it
             # and its edges, and let this match own the node and re-derive refs.
             for dup in [nid for nid, ln in structured_routine_lines.items()
-                        if ln == fn_line and nid != fn_nid]:
+                        if ln == fn_line and nid not in recovered_on_line[fn_line]]:
                 nodes[:] = [n for n in nodes if n["id"] != dup]
                 edges[:] = [e for e in edges if e["source"] != dup and e["target"] != dup]
                 structured_routine_lines.pop(dup)
