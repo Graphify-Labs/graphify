@@ -9973,6 +9973,8 @@ def _extract_generic(
                     method_metadata = {**csharp_sig_meta, "signature": csharp_sig}
                 elif config.ts_module == "tree_sitter_java" and t == "method_declaration":
                     method_metadata = {**java_sig_meta, "signature": java_sig}
+                elif config.ts_module == "tree_sitter_java" and t == "constructor_declaration":
+                    method_metadata = {"kind": "constructor"}
                 add_node(
                     func_nid,
                     f".{func_name}()",
