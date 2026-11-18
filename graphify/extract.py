@@ -29,7 +29,10 @@ from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .go_dispatch import resolve_go_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
+from .pascal_class_resolution import resolve_pascal_base_classes
+from .dfm_resolution import resolve_dfm_handlers
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .pascal_singleton_resolution import resolve_pascal_singleton_calls
 from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
 
@@ -1216,11 +1219,14 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
                 }
-                if child.type != "system_lib_string":
-                    edge_dict["metadata"] = sanitize_metadata({
-                        "raw_include": raw,
-                        "include_kind": "quoted",
-                    })
+                # Angle includes are tagged too (#5218): a directory-qualified
+                # one (`<liba/Bus.h>`) can then resolve to a corpus header in
+                # _resolve_c_include_edges, and an unresolved standard header
+                # (`<functional>`) stays out of the bare-stem alias index.
+                edge_dict["metadata"] = sanitize_metadata({
+                    "raw_include": raw,
+                    "include_kind": "quoted" if child.type != "system_lib_string" else "angle",
+                })
                 edges.append(edge_dict)
             break
 
@@ -4880,6 +4886,10 @@ def _rewire_unique_stub_nodes(
                     supertype_stub_ids.add(str(nid))
 
     remap: dict[str, str] = {}
+    # #5240: every crate's `use crate::…::X` points at the same bare stub id, but each
+    # stub resolves within its own file's crate. A Rust edge takes its own file's
+    # answer, so one crate's X is never handed to another crate.
+    file_remap: dict[tuple[str, str], str | None] = {}
     for stub in stubs:
         stub_id = str(stub.get("id", ""))
         if not stub_id:
@@ -4915,11 +4925,18 @@ def _rewire_unique_stub_nodes(
                 cand_fam = _lang_family(fcands[0].get("source_file"))
                 if not fams or cand_fam is None or cand_fam in fams:
                     candidates = fcands
-        if len(candidates) != 1:
-            continue
-        target_id = candidates[0].get("id")
-        if isinstance(target_id, str) and target_id and target_id != stub_id:
-            remap[stub_id] = target_id
+        resolved: str | None = None
+        if len(candidates) == 1:
+            target_id = candidates[0].get("id")
+            if isinstance(target_id, str) and target_id and target_id != stub_id:
+                resolved = target_id
+        origin = str(stub.get("origin_file", ""))
+        if origin.endswith(".rs"):
+            # Two stubs of one file that disagree leave that file's edges unbound.
+            key = (stub_id, origin)
+            file_remap[key] = resolved if file_remap.get(key, resolved) == resolved else None
+        if resolved is not None:
+            remap[stub_id] = resolved
 
     # SQL: a table no file defines is one table however many files read it, so the
     # per-file stubs of one name fold into a single node.
@@ -5017,8 +5034,12 @@ def _rewire_unique_stub_nodes(
             ) and not _cross_language_candidate(edge, remapped_source):
                 edge["source"] = remapped_source
         target = edge.get("target")
-        if target in remap:
-            remapped_target = remap[str(target)]
+        own_key = (str(target), str(edge.get("source_file", "")))
+        if own_key in file_remap:
+            remapped_target = file_remap[own_key]  # None: this file's stub found no match
+        else:
+            remapped_target = remap.get(str(target))
+        if remapped_target is not None:
             if not (
                 is_csharp_scoped_edge
                 and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
@@ -5470,14 +5491,21 @@ def _park_unresolved_member_call(
     if not isinstance(parked, list) or len(parked) >= _MAX_PARKED_CALLS_PER_NODE:
         return
     callee, receiver_type = str(callee), str(receiver_type)
+    # The argument count tells overloads of one name apart after the merge
+    # (#5251); calls without one (most languages) keep the old key.
+    arity = raw_call.get("arity")
+    arity = arity if isinstance(arity, int) and not isinstance(arity, bool) else None
     for previous in parked:
         if (
             isinstance(previous, dict)
             and previous.get("callee") == callee
             and previous.get("receiver_type") == receiver_type
+            and previous.get("arity") == arity
         ):
             return
-    entry = {"callee": callee, "receiver_type": receiver_type, "lang": lang}
+    entry: dict[str, object] = {"callee": callee, "receiver_type": receiver_type, "lang": lang}
+    if arity is not None:
+        entry["arity"] = arity
     location = raw_call.get("source_location")
     if location:
         entry["line"] = str(location)
@@ -7881,6 +7909,34 @@ def _resolve_java_member_calls(
         enclosing_type.setdefault(method, owner)
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
+    def _one(hits: set[str] | list[str], argc: object) -> str | None:
+        """The single method ``hits`` name, else None. Several overloads of one
+        class are one method when the call's argument count fits exactly one
+        (#5251); two that both fit, or overloads in different classes, stay
+        ambiguous, as the same-name rule has always treated them."""
+        if len(hits) == 1:
+            return next(iter(hits))
+        owners = {enclosing_type.get(h) for h in hits}
+        if len(owners) != 1 or not isinstance(argc, int):
+            return None
+        def _line(h: str) -> int:
+            loc = str((node_by_id.get(h) or {}).get("source_location") or "")
+            return int(loc[1:]) if loc[1:].isdigit() else 0
+
+        fits = []
+        for h in hits:
+            meta = (node_by_id.get(h) or {}).get("metadata") or {}
+            arity = meta.get("arity")
+            if (isinstance(arity, int) and meta.get("min_arity", arity) <= argc
+                    and (argc <= arity or meta.get("variadic"))):
+                fits.append(h)
+        if len(fits) == 1:
+            return fits[0]
+        # Several fit (`run(String)` / `run(int)`) or none does: the first
+        # declared overload stands for the name, as it did when overloads were
+        # one node, and as the same-file walk and the bare-name fallback pick.
+        return min(hits, key=lambda h: (_line(h), h))
+
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
     # Inherited fields (#3151): a field declared on a superclass - possibly in
     # another file - types a `this.<field>` receiver in the subclass. Safe
@@ -7926,7 +7982,7 @@ def _resolve_java_member_calls(
             queue.extend(bases.get(cls, []))
         return None
 
-    def _inherited_method(class_nid: str, callee_key: str) -> str | None:
+    def _inherited_method(class_nid: str, callee_key: str, argc: object = None) -> str | None:
         # Java's "class wins": a method declared up the superclass chain beats
         # an interface default, whatever the depth. Only then the interfaces,
         # level by level. The class itself was searched in-file.
@@ -7943,7 +7999,7 @@ def _resolve_java_member_calls(
                 return None
             declared = method_index.get((nid, callee_key))
             if declared:
-                return next(iter(declared)) if len(declared) == 1 else None
+                return _one(declared, argc)
         level = list(dict.fromkeys(
             base for nid in [class_nid, *chain] for base in supertypes.get(nid, []) if base not in seen
         ))
@@ -7956,7 +8012,7 @@ def _resolve_java_member_calls(
                     return None
                 hits |= method_index.get((nid, callee_key), set())
             if hits:
-                return next(iter(hits)) if len(hits) == 1 else None
+                return _one(hits, argc)
             level = list(dict.fromkeys(
                 base for nid in level for base in supertypes.get(nid, []) if base not in seen
             ))
@@ -7984,7 +8040,7 @@ def _resolve_java_member_calls(
                 return None
         return bases
 
-    def _method_on_type_or_bases(type_nid: str, callee_key: str) -> str | None:
+    def _method_on_type_or_bases(type_nid: str, callee_key: str, argc: object = None) -> str | None:
         hits: set[str] = set()
         seen: set[str] = set()
         frontier = [type_nid]
@@ -8001,7 +8057,7 @@ def _resolve_java_member_calls(
             if bases is None:
                 return None
             frontier.extend(bases)
-        return next(iter(hits)) if len(hits) == 1 else None
+        return _one(hits, argc)
 
     def _type_named(name: str, near: str | None) -> str | None:
         name = key(name)
@@ -8099,7 +8155,10 @@ def _resolve_java_member_calls(
         if kind == "call":
             owner = (enclosing_type.get(caller) if chain[2] is None
                      else _chain_type(chain[2], caller, depth + 1))
-            method_nid = _method_on_type_or_bases(owner, key(chain[1])) if owner else None
+            method_nid = (
+                _method_on_type_or_bases(owner, key(chain[1]), chain[3] if len(chain) > 3 else None)
+                if owner else None
+            )
             returned = node_by_id.get(method_nid or "", {}).get("_java_ret")
             return _type_named(returned, method_nid) if returned else None
         if kind == "field":
@@ -8121,7 +8180,7 @@ def _resolve_java_member_calls(
             caller = raw_call.get("caller_nid")
             if not raw_call.get("is_member_call"):
                 class_nid = enclosing_type.get(caller)
-                method_nid = _inherited_method(class_nid, key(callee)) if class_nid and callee else None
+                method_nid = _inherited_method(class_nid, key(callee), raw_call.get("arity")) if class_nid and callee else None
                 # `new Base()` names a constructor, which is not inherited.
                 owner = node_by_id.get(enclosing_type.get(method_nid or ""), {})
                 if (method_nid and method_nid != caller and key(owner.get("label", "")) != key(callee)
@@ -8131,7 +8190,7 @@ def _resolve_java_member_calls(
             chain = raw_call.get("java_receiver_chain")
             if chain and not receiver and callee and caller:
                 type_nid = _chain_type(chain, caller)
-                method_nid = _method_on_type_or_bases(type_nid, key(callee)) if type_nid else None
+                method_nid = _method_on_type_or_bases(type_nid, key(callee), raw_call.get("arity")) if type_nid else None
                 if method_nid and method_nid != caller and (caller, method_nid) not in existing_pairs:
                     existing_pairs.add((caller, method_nid))
                     all_edges.append({
@@ -8199,7 +8258,7 @@ def _resolve_java_member_calls(
                 if not type_nid:
                     continue
 
-            method_nid = _method_on_type_or_bases(type_nid, key(callee))
+            method_nid = _method_on_type_or_bases(type_nid, key(callee), raw_call.get("arity"))
             if not method_nid or method_nid == caller or (caller, method_nid) in existing_pairs:
                 continue
             _emit(caller, method_nid, raw_call, exact)
@@ -8683,7 +8742,7 @@ def _resolve_c_include_edges(
     resolution_nodes: list[dict],
     root: Path | None = None,
 ) -> None:
-    """Resolve unresolved quoted C/C++/ObjC include edges to matching header file nodes (#4354).
+    """Resolve unresolved C/C++/ObjC include edges to matching header file nodes (#4354, #5218).
 
     When a quoted #include / #import is outside the including file's directory,
     _resolve_c_include_path cannot resolve it, so per-file extraction emits a
@@ -8692,8 +8751,10 @@ def _resolve_c_include_edges(
     established, but before import-evidence indexing.
 
     Resolution rules:
-    1. Only processes unresolved quoted includes (metadata.include_kind == "quoted"
-       and metadata.raw_include is present).
+    1. Only processes unresolved quoted or angle includes (metadata.include_kind
+       is "quoted" or "angle" and metadata.raw_include is present). An angle
+       include is considered only when it has a directory component
+       (`<liba/Bus.h>`); a bare `<name>` is left alone (#5218).
     2. Explicit relative (./ or ../) or absolute paths that failed sibling
        resolution are never resolved via corpus fallback.
     3. Matches the full include path as a path suffix, not merely the basename
@@ -8753,7 +8814,8 @@ def _resolve_c_include_edges(
         md = e.get("metadata")
         if not isinstance(md, dict):
             continue
-        if md.get("include_kind") != "quoted":
+        include_kind = md.get("include_kind")
+        if include_kind not in ("quoted", "angle"):
             continue
         raw = md.get("raw_include")
         if not raw or not isinstance(raw, str):
@@ -8761,6 +8823,11 @@ def _resolve_c_include_edges(
 
         raw_norm = raw.replace("\\", "/").strip()
         if not raw_norm:
+            continue
+        # An angle include without a directory (`<functional>`, `<config.h>`)
+        # names no path to match, so a same-named project header is not
+        # evidence for it (#5218).
+        if include_kind == "angle" and "/" not in raw_norm:
             continue
 
         if raw_norm.startswith(("./", "../", "/")):
@@ -9310,11 +9377,14 @@ def _resolve_go_member_calls(
         return
     package_vars_by_file: dict[str, dict[str, str | None]] = {}
     imports_by_file: dict[str, dict[str, str]] = {}
+    package_path_by_file: dict[str, str] = {}
     for result in per_file:
         tt = result.get("go_type_table")
         if tt and tt.get("path"):
             package_vars_by_file[tt["path"]] = tt.get("package_vars", {})
             imports_by_file[tt["path"]] = result.get("go_imports") or {}
+            if tt.get("package_path"):
+                package_path_by_file[tt["path"]] = tt["package_path"]
 
     def _key(label: object) -> str:
         return str(label or "").strip().removeprefix(".").removesuffix("()")
@@ -9387,7 +9457,18 @@ def _resolve_go_member_calls(
             if not type_defs:
                 continue
         else:
+            # A bare name is a same-package reference (Go requires a qualifier
+            # for anything else), so two packages that both declare a type of
+            # this name must not collide into one corpus-wide ambiguity (#5242):
+            # narrow to the caller's own package when that is known, the same
+            # import evidence the qualified branch above already insists on.
             type_defs = type_def_nids.get(_key(type_name), [])
+            caller_package = package_path_by_file.get(rc.get("source_file", ""))
+            if caller_package:
+                scoped = [nid for nid in type_defs
+                          if caller_package in package_paths_by_nid.get(nid, ())]
+                if scoped:
+                    type_defs = scoped
         if not type_defs:
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
@@ -9728,7 +9809,21 @@ def _resolve_kotlin_member_calls(
             m for m in methods_by_type.get(type_nids[0], [])
             if str(node_by_id.get(m, {}).get("label", "")).strip("()") == wanted
         ))
-        if len(candidates) != 1:
+        # Overloads of a Java method are one node each since #5251, and a Kotlin
+        # call site carries no argument count to choose between them. The first
+        # declared stands for the name, as it did when they were one node, but
+        # which overload runs is a guess, so the edge is INFERRED.
+        overloaded = len(candidates) > 1 and all(
+            isinstance((node_by_id.get(c, {}).get("metadata") or {}).get("arity"), int)
+            for c in candidates
+        )
+        if overloaded:
+            candidates.sort(key=lambda c: (
+                int(str(node_by_id[c].get("source_location") or "L0")[1:] or 0)
+                if str(node_by_id[c].get("source_location") or "L0")[1:].isdigit() else 0,
+                c,
+            ))
+        elif len(candidates) != 1:
             continue
         tgt = candidates[0]
         if tgt == caller or (caller, tgt) in existing_pairs:
@@ -9739,8 +9834,9 @@ def _resolve_kotlin_member_calls(
             "target": tgt,
             "relation": "calls",
             "context": "call",
-            "confidence": "EXTRACTED",  # the receiver names the type explicitly in source
-            "confidence_score": 1.0,
+            # the receiver names the type explicitly in source
+            "confidence": "INFERRED" if overloaded else "EXTRACTED",
+            "confidence_score": 0.85 if overloaded else 1.0,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
             "weight": 1.0,
@@ -9854,6 +9950,19 @@ register_language_resolver(
         _resolve_elixir_qualified_calls,
     )
 )
+# Pascal/Delphi base-class resolution: the per-file extractor can only find a
+# base class by filename convention (`TFooBar` -> `FooBar.pas`), so every class
+# declared in a differently-named unit arrives as one private stub per
+# inheriting file. Lives in graphify.pascal_class_resolution, and is registered
+# BEFORE the inherited-call resolver below, which walks the `inherits` chain
+# this pass repairs.
+register_language_resolver(
+    LanguageResolver(
+        "pascal_base_classes",
+        frozenset({".pas", ".pp", ".dpr", ".dpk", ".inc"}),
+        resolve_pascal_base_classes,
+    )
+)
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared
 # in a DIFFERENT file (the common generated-base/manual-descendant split,
@@ -9865,6 +9974,32 @@ register_language_resolver(
         "pascal_inherited_calls",
         frozenset({".pas", ".pp", ".dpr", ".dpk", ".inc"}),
         resolve_pascal_inherited_calls,
+    )
+)
+# Pascal/Delphi global-singleton call resolution: `DM.Open`, where `DM` is a
+# unit-level `var` holding a data module or form -- the idiom most Delphi
+# applications are built on. The per-file pass drops the qualifier and looks
+# the member name up in the CALLER's scope, so the call is left unresolved (or
+# bound to a same-named method of the calling class). Lives in
+# graphify.pascal_singleton_resolution. Registered after the inherited-call
+# resolver so it walks an `inherits` chain any earlier pass has finished with.
+register_language_resolver(
+    LanguageResolver(
+        "pascal_singleton_calls",
+        frozenset({".pas", ".pp", ".dpr", ".dpk", ".inc"}),
+        resolve_pascal_singleton_calls,
+    )
+)
+# Delphi/Lazarus form-to-unit resolution: a form (.dfm/.lfm) and the unit that
+# implements it are extracted independently, so the form's class node and its
+# `OnClick = Handler` stubs sit disconnected from the real class and methods in
+# the sibling .pas. Lives in graphify.dfm_resolution; gated on the FORM
+# suffixes, since a corpus of units with no forms has nothing to pair.
+register_language_resolver(
+    LanguageResolver(
+        "dfm_form_handlers",
+        frozenset({".dfm", ".lfm"}),
+        resolve_dfm_handlers,
     )
 )
 # Kotlin fully-qualified call resolution (#2550): `com.pkg.Fn()` /
@@ -12720,14 +12855,19 @@ def extract(
     # #4439: a Rust `use` reached its declaration only when a type annotation had left
     # a sourceless node under the same id. Lend the rewire one for each imported name
     # that has none; they are not kept, so an unresolved import dangles as before.
+    # One per importing file, not per name (#5240). Another file's stub resolves
+    # within that file's crate, so it cannot answer for this one.
+    _real_ids = {n.get("id") for n in all_nodes if n.get("source_file")}
+    _stubbed = {(n.get("id"), n.get("origin_file")) for n in all_nodes if not n.get("source_file")}
     _use_stubs = {
-        e["target"]: {
+        (e["target"], e.get("source_file")): {
             "id": e["target"], "label": e["_rust_use_name"], "file_type": "code",
             "source_file": "", "origin_file": e.get("source_file"),
             "_rust_use_roots": ["crate"],
         }
         for e in all_edges
-        if e.get("_rust_use_name", "").isidentifier() and e["target"] not in _fresh_ids
+        if e.get("_rust_use_name", "").isidentifier() and e["target"] not in _real_ids
+        and (e["target"], e.get("source_file")) not in _stubbed
     }
     _rewire_view = all_nodes + list(_use_stubs.values()) + [
         n for n in resolution_context_nodes or [] if n.get("id") not in _fresh_ids]
@@ -13112,7 +13252,14 @@ def extract(
             candidates = [candidate for candidate in candidates if candidate not in _method_nids]
         if not candidates:
             continue
-        if rc.get("lang") == "csharp" and not rc.get("csharp_new") and len(candidates) > 1:
+        # A bare Kotlin call has no `lang` tag and no argument count; it can still
+        # reach a Java class's overloads (a subclass calling `run(1)`), so the JVM
+        # family collapses them too and the first declared stands for the name.
+        if (
+            (rc.get("lang") in ("csharp", "java") or _lang_family(rc.get("source_file")) == "jvm")
+            and not rc.get("csharp_new")
+            and len(candidates) > 1
+        ):
             if not _csharp_overload_cache:
                 _csharp_overload_cache.update(_csharp_overload_index(
                     resolution_nodes, all_edges + list(resolution_context_edges or [])

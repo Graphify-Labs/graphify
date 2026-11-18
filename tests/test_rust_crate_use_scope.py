@@ -227,3 +227,70 @@ def test_a_use_of_a_scanned_crate_keeps_the_binding_extracted(tmp_path):
     edges = _edges_between(result, tmp_path, "plugin", "corelib")
     assert edges
     assert {edge["confidence"] for edge in edges} == {"EXTRACTED"}
+
+
+# #5240: both crates import their own `ApiError` with `use crate::…`, so every import
+# targets the same bare stub id. One crate's answer must not stand in for the other's.
+CLIENT_API = "pub enum ApiError { Network }\n"
+SERVER_ERROR = "pub enum ApiError { NotFound }\n"
+CLIENT_IMPORT = "use crate::api::ApiError;\n"
+SERVER_IMPORT = "use crate::error::ApiError;\n\npub fn check() -> Option<ApiError> { None }\n"
+
+
+def _imports_between(result: dict, root: Path, src_crate: str, dst_crate: str) -> list[dict]:
+    return [e for e in _edges_between(result, root, src_crate, dst_crate)
+            if e["relation"] == "imports_from"]
+
+
+def test_a_crate_use_ignores_another_crates_test_module_import(tmp_path):
+    # The issue's fixture, where the server's nested `mod tests` import decided
+    # where the client's `use crate::api::ApiError` landed.
+    result = _run(tmp_path, {
+        "client/src/api.rs": CLIENT_API,
+        "client/src/calls.rs": CLIENT_IMPORT,
+        "server/src/error.rs": SERVER_ERROR,
+        "server/src/dpop.rs": (
+            "pub fn check() {}\n\n#[cfg(test)]\nmod tests {\n"
+            "  use crate::error::ApiError;\n\n  fn t() -> Option<ApiError> { None }\n}\n"
+        ),
+    })
+    assert _imports_between(result, tmp_path, "client", "client") != []
+    assert _edges_between(result, tmp_path, "client", "server") == []
+
+
+def test_two_crates_importing_the_same_name_each_reach_their_own(tmp_path):
+    result = _run(tmp_path, {
+        "client/src/api.rs": CLIENT_API,
+        "client/src/calls.rs": CLIENT_IMPORT,
+        "server/src/error.rs": SERVER_ERROR,
+        "server/src/dpop.rs": SERVER_IMPORT,
+    })
+    assert _imports_between(result, tmp_path, "client", "client") != []
+    assert _imports_between(result, tmp_path, "server", "server") != []
+    assert _edges_between(result, tmp_path, "client", "server") == []
+    assert _edges_between(result, tmp_path, "server", "client") == []
+
+
+def test_two_crates_with_only_use_imports_each_reach_their_own(tmp_path):
+    # No type annotation in either crate, so each `use` gets its own lent stub.
+    result = _run(tmp_path, {
+        "client/src/api.rs": CLIENT_API,
+        "client/src/calls.rs": CLIENT_IMPORT,
+        "server/src/error.rs": SERVER_ERROR,
+        "server/src/dpop.rs": "use crate::error::ApiError;\n",
+    })
+    assert _imports_between(result, tmp_path, "client", "client") != []
+    assert _imports_between(result, tmp_path, "server", "server") != []
+    assert _edges_between(result, tmp_path, "client", "server") == []
+
+
+def test_a_crate_use_with_no_match_in_its_crate_stays_unbound(tmp_path):
+    # The client imports `crate::api::ApiError` but defines no `ApiError`. The
+    # server's is not the client's, so the import stays unresolved.
+    result = _run(tmp_path, {
+        "client/src/calls.rs": CLIENT_IMPORT,
+        "server/src/error.rs": SERVER_ERROR,
+        "server/src/dpop.rs": SERVER_IMPORT,
+    })
+    assert _imports_between(result, tmp_path, "server", "server") != []
+    assert _edges_between(result, tmp_path, "client", "server") == []

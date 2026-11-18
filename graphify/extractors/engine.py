@@ -759,7 +759,7 @@ def _java_receiver_type_name(type_node, source: bytes) -> str | None:
 def _java_receiver_chain(node, source: bytes, depth: int = 0) -> list | None:
     """Describe a Java receiver that is itself an expression, for the resolver
     to type from declared return types: `new T()` / `(T) x` -> ["type", "T"],
-    `f()` -> ["call", "f", None], `x.f()` -> ["call", "f", <x>],
+    `f()` -> ["call", "f", None, argc], `x.f()` -> ["call", "f", <x>, argc],
     `T.FIELD` -> ["field", "FIELD", <T>], and the leaves
     ["this"], ["super"], ["name", "x"]. None when any part is something else."""
     if node is None or depth > 16:
@@ -797,7 +797,9 @@ def _java_receiver_chain(node, source: bytes, depth: int = 0) -> list | None:
             inner = _java_receiver_chain(receiver, source, depth + 1)
             if inner is None:
                 return None
-        return ["call", _read_text(name_node, source), inner]
+        # The argument count tells overloads apart when the resolver types
+        # the next step from this call's declared return type (#5251).
+        return ["call", _read_text(name_node, source), inner, _java_argc(node)]
     return None
 
 
@@ -819,7 +821,7 @@ def _java_type_chain_leaf(
         if chain[2] is None:
             return chain
         inner = _java_type_chain_leaf(chain[2], receiver_types, bound, field_names)
-        return ["call", chain[1], inner] if inner else None
+        return ["call", chain[1], inner, *chain[3:]] if inner else None
     if chain[0] == "field":
         owner = chain[2]
         if not owner or owner[0] != "name":
@@ -1717,6 +1719,132 @@ def _java_member_nid(class_nid: str, member_node, name: str, source: bytes,
         groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
         groups_cache[key] = groups
     return _underscore_salted_nid(_make_id(class_nid, name), name, groups)
+
+
+def _java_erase_type(text: str) -> str:
+    """A Java type as written, minus generic arguments and whitespace.
+
+    ``List<String>`` and ``List<Integer>`` are one signature after erasure, as
+    they are in Java itself (two such methods cannot coexist), and a line break
+    inside a type never changes an id.
+    """
+    out: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth = max(0, depth - 1)
+        elif depth == 0 and not ch.isspace():
+            out.append(ch)
+    return "".join(out)
+
+
+_JAVA_TYPE_PARAM_OWNERS = frozenset({
+    "class_declaration", "interface_declaration", "record_declaration",
+    "enum_declaration", "method_declaration", "constructor_declaration",
+})
+
+
+def _java_type_var_bounds(node, source: bytes) -> dict[str, str]:
+    """``{type variable: its erased bound}`` in scope at a Java method.
+
+    A type variable erases to its first bound (``<T extends Number & Comparable<T>>``
+    -> ``Number``) or ``Object`` when it has none, so ``<T extends Number> run(T)``
+    and ``<T extends CharSequence> run(T)`` are different overloads (#5251). The
+    method's own variables and those of every enclosing type count; an inner
+    declaration shadows an outer one.
+    """
+    scopes = []
+    cur = node
+    while cur is not None:
+        if cur.type in _JAVA_TYPE_PARAM_OWNERS:
+            scopes.append(cur)
+        cur = cur.parent
+    bounds: dict[str, str] = {}
+    for owner in reversed(scopes):  # outermost first
+        tparams = next((c for c in owner.children if c.type == "type_parameters"), None)
+        if tparams is None:
+            continue
+        local: dict[str, str] = {}
+        for tp in tparams.children:
+            if tp.type != "type_parameter":
+                continue
+            name_node = next((c for c in tp.children if c.type == "type_identifier"), None)
+            if name_node is None:
+                continue
+            bound = next((c for c in tp.children if c.type == "type_bound"), None)
+            first = next((c for c in bound.children if c.is_named), None) if bound is not None else None
+            erased = _java_erase_type(_read_text(first, source)) if first is not None else "Object"
+            local[_read_text(name_node, source)] = erased or "Object"
+        # Resolve this scope's bounds now, against this scope's own variables
+        # (a bound may name a later one: `<A extends B, B extends Number>`) and
+        # the enclosing scopes' already resolved ones, before an inner scope can
+        # shadow a name: `U extends T` in the class means the class's `T` even
+        # when a method declares its own `T`.
+        resolved: dict[str, str] = {}
+        for name in local:
+            erased, seen = local[name], {name}
+            while erased not in seen and (erased in local or erased in bounds):
+                seen.add(erased)
+                erased = local[erased] if erased in local else bounds[erased]
+            resolved[name] = erased
+        bounds.update(resolved)  # inner scopes shadow outer ones from here on
+    return bounds
+
+
+def _java_erase_type_var(text: str, bounds: dict[str, str]) -> str:
+    """``text`` with a type variable (or an array of one) replaced by its bound."""
+    base = text.rstrip("[].")
+    suffix = text[len(base):]
+    return bounds.get(base, base) + suffix
+
+
+def _java_method_signature(node, source: bytes) -> tuple[str, dict]:
+    """A Java method's erased parameter signature and the argument counts it accepts.
+
+    The signature (``"String,int[]"``) tells overloads apart; type variables are
+    replaced by their erased bounds, as the compiler does. The metadata
+    (``arity``, plus ``min_arity`` and ``variadic`` for a ``T...`` parameter)
+    lets a call site pick the overload its argument count fits (#5251).
+    """
+    bounds = _java_type_var_bounds(node, source)
+    params = node.child_by_field_name("parameters")
+    parts: list[str] = []
+    arity = 0
+    variadic = False
+    for c in (params.children if params is not None else []):
+        if c.type == "formal_parameter":
+            type_node = c.child_by_field_name("type")
+            text = _java_erase_type(_read_text(type_node, source)) if type_node is not None else ""
+            dims = c.child_by_field_name("dimensions")
+            if dims is not None:
+                text += "".join(_read_text(dims, source).split())
+            parts.append(_java_erase_type_var(text, bounds))
+            arity += 1
+        elif c.type == "spread_parameter":
+            type_node = next(
+                (x for x in c.children
+                 if x.is_named and x.type not in ("modifiers", "variable_declarator")),
+                None,
+            )
+            text = _java_erase_type(_read_text(type_node, source)) if type_node is not None else ""
+            parts.append(_java_erase_type_var(text, bounds) + "...")
+            arity += 1
+            variadic = True
+    meta: dict = {"arity": arity}
+    if variadic:
+        meta["variadic"] = True
+        meta["min_arity"] = arity - 1
+    return ",".join(parts), meta
+
+
+def _java_argc(call_node) -> int | None:
+    """Argument count of a Java ``method_invocation``, or None for anything else."""
+    if call_node.type != "method_invocation":
+        return None
+    args = call_node.child_by_field_name("arguments")
+    return sum(1 for c in args.children if c.is_named and c.type not in ("line_comment", "block_comment")) if args is not None else 0
 
 
 _KOTLIN_MEMBER_BODY_TYPES = ("class_body", "enum_class_body")
@@ -5392,6 +5520,7 @@ def _js_member_assignment_target(left, source: bytes):
 def _js_scan_member_assignments(
     body, this_owner_nid: str, source: bytes, *,
     this_as_method: bool, add_node_fn, add_edge_fn, function_bodies: list,
+    closure_locals_by_body: dict | None = None,
 ) -> None:
     """Materialize callable members assigned in ``body`` (#1322/#3408).
 
@@ -5460,6 +5589,12 @@ def _js_scan_member_assignments(
             add_edge_fn(owner_nid, m_nid, "contains", m_line)
         m_body = val.child_by_field_name("body")
         if m_body:
+            # #5241: the member body is walked on its own, so record its params
+            # and the names it captures from enclosing scopes as its locals.
+            if closure_locals_by_body is not None:
+                closure_locals_by_body[id(m_body)] = (
+                    _js_local_bound_names(val, source)
+                    | _js_enclosing_bound_names(val, source))
             function_bodies.append((m_nid, m_body))
 
 
@@ -5579,6 +5714,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         closure_body, file_nid, source, this_as_method=False,
                         add_node_fn=add_node_fn, add_edge_fn=add_edge_fn,
                         function_bodies=function_bodies,
+                        closure_locals_by_body=closure_locals_by_body,
                     )
                     # #3124: calls made directly inside this closure (not just
                     # `this.X = fn` member assignments) were dropped entirely,
@@ -5783,6 +5919,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                     body, func_nid, source, this_as_method=True,
                                     add_node_fn=add_node_fn, add_edge_fn=add_edge_fn,
                                     function_bodies=function_bodies,
+                                    closure_locals_by_body=closure_locals_by_body,
                                 )
                             arrow_found = True
                     elif (
@@ -7573,6 +7710,8 @@ def _extract_generic(
     php_member_groups: dict = {}
     # Java class body -> method/constructor collision groups, filled lazily.
     java_member_groups: dict = {}
+    # plain method nid -> {signature: node}, the Java twin of csharp_overloads (#5251).
+    java_overloads: dict[str, dict[str, dict]] = {}
     # Kotlin class body (with its companion object) -> method collision groups.
     kotlin_member_groups: dict = {}
     # Swift type (class body and same-file extensions) -> method collision groups.
@@ -9535,6 +9674,18 @@ def _extract_generic(
                     func_nid = _java_member_nid(
                         parent_class_nid, node, sanitized_name, source, java_member_groups
                     )
+                    if t == "method_declaration":
+                        # Overloads share a name, so they minted one id and
+                        # every later overload vanished into the first (#5251).
+                        # The first declaration keeps the plain id; each other
+                        # signature gets its own, salted like the C# rule.
+                        java_sig, java_sig_meta = _java_method_signature(node, source)
+                        java_group = java_overloads.setdefault(func_nid, {})
+                        if java_group and java_sig not in java_group:
+                            salt = hashlib.sha1(
+                                java_sig.encode("utf-8"), usedforsecurity=False
+                            ).hexdigest()[:6]
+                            func_nid = _make_id(func_nid, salt)
                 elif config.ts_module == "tree_sitter_kotlin" and t == "function_declaration":
                     func_nid = _kotlin_member_nid(
                         parent_class_nid, node, sanitized_name, source, kotlin_member_groups
@@ -9571,6 +9722,8 @@ def _extract_generic(
                 method_metadata = ruby_method_metadata
                 if config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration":
                     method_metadata = {**csharp_sig_meta, "signature": csharp_sig}
+                elif config.ts_module == "tree_sitter_java" and t == "method_declaration":
+                    method_metadata = {**java_sig_meta, "signature": java_sig}
                 add_node(
                     func_nid,
                     f".{func_name}()",
@@ -9584,6 +9737,9 @@ def _extract_generic(
                         and explicit is None
                         and csharp_group_key not in group and nodes and nodes[-1]["id"] == func_nid):
                     group[csharp_group_key] = nodes[-1]
+                if (config.ts_module == "tree_sitter_java" and t == "method_declaration"
+                        and java_sig not in java_group and nodes and nodes[-1]["id"] == func_nid):
+                    java_group[java_sig] = nodes[-1]
                 add_edge(parent_class_nid, func_nid, "method", line)
                 if config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration":
                     csharp_method_returns.setdefault(parent_class_nid, {}).setdefault(
@@ -10025,6 +10181,7 @@ def _extract_generic(
                     body, function_owner_nid, source, this_as_method=True,
                     add_node_fn=add_node, add_edge_fn=add_edge,
                     function_bodies=function_bodies,
+                    closure_locals_by_body=closure_locals_by_body,
                 )
             if body:
                 if config.ts_module == "tree_sitter_java" and parent_class_nid:
@@ -10503,6 +10660,12 @@ def _extract_generic(
         for peers in _csharp_callable_groups if len(peers) > 1
         for peer in peers
     }
+    # Java overloads (#5251) pick their peer the same way.
+    for _java_group in java_overloads.values():
+        _java_peers = list(_java_group.values())
+        if len(_java_peers) > 1:
+            for _peer in _java_peers:
+                csharp_overload_peers[_peer["id"]] = _java_peers
 
     seen_call_pairs: set[tuple[str, str]] = set()
     seen_indirect_pairs: set[tuple[str, str]] = set()  # Python indirect_call dedup
@@ -11716,7 +11879,10 @@ def _extract_generic(
                 # the one this call means, else the first declared (#4584).
                 if tgt_nid in csharp_overload_peers:
                     peers = csharp_overload_peers[tgt_nid]
-                    picked = _csharp_pick_overload(peers, _csharp_argc(node))
+                    picked = _csharp_pick_overload(
+                        peers,
+                        _java_argc(node) if config.ts_module == "tree_sitter_java" else _csharp_argc(node),
+                    )
                     tgt_nid = (picked or peers[0])["id"]
                 if (config.ts_module == "tree_sitter_c_sharp"
                         and node.type == "object_creation_expression" and callee_name):
@@ -11898,6 +12064,9 @@ def _extract_generic(
                                 rc_entry["receiver_undeclared"] = True
                         if config.ts_module == "tree_sitter_java":
                             rc_entry["lang"] = "java"
+                            java_argc = _java_argc(node)
+                            if java_argc is not None:
+                                rc_entry["arity"] = java_argc
                             field_names = set(_fields_up_chain(
                                 _java_field_name_tables, method_owner.get(caller_nid, caller_nid),
                             )) - extra_locals
