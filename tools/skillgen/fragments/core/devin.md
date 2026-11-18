@@ -1256,7 +1256,7 @@ GRAPHIFY_N_EOF
 $(cat graphify-out/.graphify_python) -m graphify save-result --question-file graphify-out/.save_question.txt --answer-file graphify-out/.save_answer.md --nodes-file graphify-out/.save_nodes.txt --type query
 ```
 
-Replace `QUESTION` with the question, `ANSWER` with your full answer text, and `NODE1`/`NODE2` with the node labels you cited, one per line. Write each value between its heredoc lines exactly as it is, with no quoting or escaping: the quoted delimiter (`<<'GRAPHIFY_A_EOF'`) stops bash from running backticks or `$(...)` in the text (#5234). This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+Replace `QUESTION` with the question, `ANSWER` with your full answer text, and `NODE1`/`NODE2` with the node labels you cited, one per line. Write each value between its heredoc lines exactly as it is, with no quoting or escaping: the quoted delimiter (`<<'GRAPHIFY_A_EOF'`) stops bash from running backticks or `$(...)` in the text (#5234). If you have a file-write tool, prefer it: write each value to its `graphify-out/.save_*` file with that tool and run only the `save-result` line, so no shell reads the text. Otherwise check each value before running the block: a line that is exactly a delimiter (such as `GRAPHIFY_A_EOF`) ends the heredoc early and bash runs the lines after it as commands. If any value has such a line, append `_2` to that delimiter in both places (`<<'GRAPHIFY_A_EOF_2'` and the closing `GRAPHIFY_A_EOF_2`), and keep adding to it until no line of the value matches. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
 ---
 

@@ -36,7 +36,7 @@ def _blocks(path: Path) -> list[str]:
 
 def _project(tmp_path: Path) -> Path:
     out = tmp_path / "graphify-out"
-    out.mkdir()
+    out.mkdir(parents=True)
     (out / ".graphify_python").write_text(sys.executable, encoding="utf-8")
     graph = {
         "directed": False, "multigraph": False, "graph": {},
@@ -146,3 +146,44 @@ def test_cli_question_correction_and_nodes_files(tmp_path):
     saved = next((tmp_path / "m").glob("*.md")).read_text(encoding="utf-8")
     assert saved.count(HOSTILE) >= 2
     assert NAME in saved and OTHER in saved
+
+
+DELIM_HOSTILE = "first line\nGRAPHIFY_A_EOF\ntouch PWNED\nlast line"
+
+
+@pytest.mark.parametrize("frag", FRAGMENTS, ids=str)
+def test_answer_with_delimiter_line_is_safe_after_documented_rename(tmp_path, frag):
+    """A value line equal to the delimiter ends the heredoc; the skill says to append `_2`."""
+    text = FRAGMENTS[frag].read_text(encoding="utf-8")
+    assert "append `_2` to that delimiter" in text
+    block = next(b for b in _blocks(FRAGMENTS[frag])
+                 if "save-result" in b and "--type query" in b)
+
+    raw = _project(tmp_path / "raw")
+    _bash(_render(block.replace("ANSWER", DELIM_HOSTILE)), raw)
+    assert list(raw.glob("PWNED*")), "hazard no longer reproduces; revisit the rule"
+
+    cwd = _project(tmp_path / "renamed")
+    renamed = block.replace("GRAPHIFY_A_EOF", "GRAPHIFY_A_EOF_2")
+    r = _bash(_render(renamed.replace("ANSWER", DELIM_HOSTILE)), cwd)
+    assert r.returncode == 0, r.stderr
+    _assert_nothing_ran(cwd)
+    saved = next((cwd / "graphify-out" / "memory").glob("*.md")).read_text(encoding="utf-8")
+    assert DELIM_HOSTILE in saved
+
+
+def test_question_and_correction_files_keep_edge_whitespace(tmp_path):
+    """Only the heredoc's trailing newline is dropped from question/correction files."""
+    (tmp_path / "q").write_text("  indented question\n", encoding="utf-8")
+    (tmp_path / "c").write_text("\tfixed answer  \n", encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, "-m", "graphify", "save-result",
+         "--question-file", str(tmp_path / "q"), "--answer", "ans",
+         "--outcome", "corrected", "--correction-file", str(tmp_path / "c"),
+         "--memory-dir", str(tmp_path / "m")],
+        capture_output=True, text=True, cwd=tmp_path,
+        env={"PYTHONPATH": str(REPO), "PATH": "/usr/bin:/bin"})
+    assert r.returncode == 0, r.stderr
+    saved = next((tmp_path / "m").glob("*.md")).read_text(encoding="utf-8")
+    assert "  indented question" in saved
+    assert "\tfixed answer  " in saved
