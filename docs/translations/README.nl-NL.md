@@ -306,7 +306,7 @@ Dit schrijft een klein configuratiebestand dat je assistent vertelt om de kennis
 
 `GRAPH_REPORT.md` blijft beschikbaar voor een brede architectuurbeoordeling.
 
-Precies welke bestanden elk platform schrijft (CodeBuddy's `CODEBUDDY.md` + `PreToolUse`-hooks, Codex's `AGENTS.md`, Kilo's native `.kilo`-plugin, Cursor's `alwaysApply`-regel, enzovoort) wordt behandeld in **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Precies welke bestanden elk platform schrijft (CodeBuddy's `CODEBUDDY.md` + `PreToolUse`-hooks, Codex's `AGENTS.md`, Kilo's native `.kilo`-plugin, Cursor's `alwaysApply`-regel, enzovoort) wordt behandeld in **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Om graphify in één keer van alle platforms te verwijderen: `graphify uninstall` (voeg `--purge` toe om ook `graphify-out/` te verwijderen). Of gebruik het per-platform commando (bijv. `graphify claude uninstall`).
 

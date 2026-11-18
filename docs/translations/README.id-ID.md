@@ -306,7 +306,7 @@ Ini menulis berkas konfigurasi kecil yang memberi tahu asisten Anda untuk berkon
 
 `GRAPH_REPORT.md` tetap tersedia untuk tinjauan arsitektur secara luas.
 
-Berkas apa yang persisnya ditulis setiap platform (`CODEBUDDY.md` + `PreToolUse` hooks milik CodeBuddy, `AGENTS.md` milik Codex, plugin `.kilo` native milik Kilo, aturan `alwaysApply` milik Cursor, dan seterusnya) dibahas di **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Berkas apa yang persisnya ditulis setiap platform (`CODEBUDDY.md` + `PreToolUse` hooks milik CodeBuddy, `AGENTS.md` milik Codex, plugin `.kilo` native milik Kilo, aturan `alwaysApply` milik Cursor, dan seterusnya) dibahas di **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Untuk menghapus graphify dari semua platform sekaligus: `graphify uninstall` (tambahkan `--purge` untuk juga menghapus `graphify-out/`). Atau gunakan perintah per platform (mis. `graphify claude uninstall`).
 

@@ -306,7 +306,7 @@ graphify install --project --platform codex
 
 `GRAPH_REPORT.md` по-прежнему доступен для широкого обзора архитектуры.
 
-Какие именно файлы записывает каждая платформа (`CODEBUDDY.md` + хуки `PreToolUse` у CodeBuddy, `AGENTS.md` у Codex, нативный плагин `.kilo` у Kilo, правило `alwaysApply` у Cursor и так далее) описано в **[Настройка постоянной работы](https://docs.graphify.com/guides/always-on)**.
+Какие именно файлы записывает каждая платформа (`CODEBUDDY.md` + хуки `PreToolUse` у CodeBuddy, `AGENTS.md` у Codex, нативный плагин `.kilo` у Kilo, правило `alwaysApply` у Cursor и так далее) описано в **[Настройка постоянной работы](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Чтобы удалить graphify со всех платформ сразу: `graphify uninstall` (добавьте `--purge`, чтобы также удалить `graphify-out/`). Либо используйте команду для конкретной платформы (например, `graphify claude uninstall`).
 

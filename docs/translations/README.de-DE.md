@@ -306,7 +306,7 @@ Dies schreibt eine kleine Konfigurationsdatei, die Ihrem Assistenten sagt, den W
 
 `GRAPH_REPORT.md` steht weiterhin für eine breite Architekturüberprüfung zur Verfügung.
 
-Welche Dateien jede Plattform genau schreibt (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-Hooks, Codex' `AGENTS.md`, Kilos natives `.kilo`-Plugin, Cursors `alwaysApply`-Regel usw.) wird in **[Always-on-Einrichtung](https://docs.graphify.com/guides/always-on)** behandelt.
+Welche Dateien jede Plattform genau schreibt (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-Hooks, Codex' `AGENTS.md`, Kilos natives `.kilo`-Plugin, Cursors `alwaysApply`-Regel usw.) wird in **[Always-on-Einrichtung](https://docs.graphify.com/open-source/vibe-coding)** behandelt.
 
 Um graphify von allen Plattformen auf einmal zu entfernen: `graphify uninstall` (fügen Sie `--purge` hinzu, um auch `graphify-out/` zu löschen). Oder nutzen Sie den Per-Plattform-Befehl (z. B. `graphify claude uninstall`).
 

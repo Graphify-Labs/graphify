@@ -306,7 +306,7 @@ Pi هیچ قلاب `PreToolUse` ندارد، بنابراین `graphify pi guard
 
 `GRAPH_REPORT.md` همچنان برای بازبینی گستردهٔ معماری در دسترس است.
 
-اینکه دقیقاً هر پلتفرم چه فایل‌هایی می‌نویسد (`CODEBUDDY.md` + قلاب‌های `PreToolUse` برای CodeBuddy، `AGENTS.md` برای Codex، افزونهٔ بومی `.kilo` برای Kilo، قاعدهٔ `alwaysApply` برای Cursor، و غیره) در **[Always-on setup](https://docs.graphify.com/guides/always-on)** پوشش داده شده است.
+اینکه دقیقاً هر پلتفرم چه فایل‌هایی می‌نویسد (`CODEBUDDY.md` + قلاب‌های `PreToolUse` برای CodeBuddy، `AGENTS.md` برای Codex، افزونهٔ بومی `.kilo` برای Kilo، قاعدهٔ `alwaysApply` برای Cursor، و غیره) در **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** پوشش داده شده است.
 
 برای حذف graphify از همهٔ پلتفرم‌ها به‌یک‌باره: `graphify uninstall` (برای حذف `graphify-out/` نیز `--purge` را اضافه کنید). یا از فرمان هر پلتفرم استفاده کنید (برای مثال `graphify claude uninstall`).
 

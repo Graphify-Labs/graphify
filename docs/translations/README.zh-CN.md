@@ -298,7 +298,7 @@ Pi 没有 `PreToolUse` hook，因此 `graphify pi guard install` 会注册一个
 
 `GRAPH_REPORT.md` 仍可用于广泛的架构审查。
 
-各平台究竟会写入哪些文件（CodeBuddy 的 `CODEBUDDY.md` + `PreToolUse` hooks、Codex 的 `AGENTS.md`、Kilo 的原生 `.kilo` 插件、Cursor 的 `alwaysApply` 规则等），在 **[Always-on setup](https://docs.graphify.com/guides/always-on)** 中有说明。
+各平台究竟会写入哪些文件（CodeBuddy 的 `CODEBUDDY.md` + `PreToolUse` hooks、Codex 的 `AGENTS.md`、Kilo 的原生 `.kilo` 插件、Cursor 的 `alwaysApply` 规则等），在 **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** 中有说明。
 
 若要一次从所有平台移除 graphify：`graphify uninstall`（加上 `--purge` 也会删除 `graphify-out/`）。或使用各平台的命令（例如 `graphify claude uninstall`）。
 

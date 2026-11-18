@@ -306,7 +306,7 @@ Detta skriver en liten konfigurationsfil som säger åt din assistent att konsul
 
 `GRAPH_REPORT.md` är fortfarande tillgänglig för bred arkitekturgranskning.
 
-Exakt vilka filer varje plattform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex `AGENTS.md`, Kilos inbyggda `.kilo`-plugin, Cursors `alwaysApply`-regel och så vidare) beskrivs i **[Alltid aktiv-uppsättning](https://docs.graphify.com/guides/always-on)**.
+Exakt vilka filer varje plattform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex `AGENTS.md`, Kilos inbyggda `.kilo`-plugin, Cursors `alwaysApply`-regel och så vidare) beskrivs i **[Alltid aktiv-uppsättning](https://docs.graphify.com/open-source/vibe-coding)**.
 
 För att ta bort graphify från alla plattformar på en gång: `graphify uninstall` (lägg till `--purge` för att även radera `graphify-out/`). Eller använd kommandot per plattform (t.ex. `graphify claude uninstall`).
 

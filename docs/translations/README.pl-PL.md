@@ -306,7 +306,7 @@ To zapisuje mały plik konfiguracyjny, który mówi Twojemu asystentowi, aby prz
 
 `GRAPH_REPORT.md` jest nadal dostępny do szerokiego przeglądu architektury.
 
-Dokładnie to, które pliki zapisuje każda platforma (`CODEBUDDY.md` + hooki `PreToolUse` w CodeBuddy, `AGENTS.md` w Codex, natywny plugin `.kilo` w Kilo, reguła `alwaysApply` w Cursorze itd.), jest opisane w **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Dokładnie to, które pliki zapisuje każda platforma (`CODEBUDDY.md` + hooki `PreToolUse` w CodeBuddy, `AGENTS.md` w Codex, natywny plugin `.kilo` w Kilo, reguła `alwaysApply` w Cursorze itd.), jest opisane w **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Aby usunąć graphify ze wszystkich platform naraz: `graphify uninstall` (dodaj `--purge`, aby usunąć również `graphify-out/`). Albo użyj polecenia dla konkretnej platformy (np. `graphify claude uninstall`).
 

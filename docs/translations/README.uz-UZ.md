@@ -306,7 +306,7 @@ Bu yordamchingizga kod bazasi savollari uchun bilim grafiga murojaat qilishni ay
 
 `GRAPH_REPORT.md` keng arxitektura ko'rib chiqish uchun hamon mavjud.
 
-Har bir platforma aynan qaysi fayllarni yozishi (CodeBuddy ning `CODEBUDDY.md` + `PreToolUse` hooklari, Codex ning `AGENTS.md`, Kilo ning mahalliy `.kilo` plagini, Cursor ning `alwaysApply` qoidasi va hokazo) **[Doimiy yoniq sozlash](https://docs.graphify.com/guides/always-on)** da yoritilgan.
+Har bir platforma aynan qaysi fayllarni yozishi (CodeBuddy ning `CODEBUDDY.md` + `PreToolUse` hooklari, Codex ning `AGENTS.md`, Kilo ning mahalliy `.kilo` plagini, Cursor ning `alwaysApply` qoidasi va hokazo) **[Doimiy yoniq sozlash](https://docs.graphify.com/open-source/vibe-coding)** da yoritilgan.
 
 graphify ni barcha platformalardan bir vaqtning o'zida olib tashlash uchun: `graphify uninstall` (`graphify-out/` ni ham o'chirish uchun `--purge` qo'shing). Yoki har bir platforma buyrug'idan foydalaning (masalan `graphify claude uninstall`).
 

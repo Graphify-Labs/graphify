@@ -298,7 +298,7 @@ Pi 에는 `PreToolUse` hook 이 없으므로, `graphify pi guard install` 은 (P
 
 `GRAPH_REPORT.md` 는 폭넓은 아키텍처 검토에 여전히 사용할 수 있습니다.
 
-각 플랫폼이 정확히 어떤 파일을 기록하는지(CodeBuddy 의 `CODEBUDDY.md` + `PreToolUse` hooks, Codex 의 `AGENTS.md`, Kilo 의 네이티브 `.kilo` 플러그인, Cursor 의 `alwaysApply` 규칙 등)는 **[Always-on setup](https://docs.graphify.com/guides/always-on)** 에서 다룹니다.
+각 플랫폼이 정확히 어떤 파일을 기록하는지(CodeBuddy 의 `CODEBUDDY.md` + `PreToolUse` hooks, Codex 의 `AGENTS.md`, Kilo 의 네이티브 `.kilo` 플러그인, Cursor 의 `alwaysApply` 규칙 등)는 **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** 에서 다룹니다.
 
 모든 플랫폼에서 graphify 를 한 번에 제거하려면: `graphify uninstall`(`--purge` 를 추가하면 `graphify-out/` 도 삭제). 또는 플랫폼별 명령(예: `graphify claude uninstall`)을 사용하세요.
 

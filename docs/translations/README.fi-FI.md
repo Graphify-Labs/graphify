@@ -306,7 +306,7 @@ Tämä kirjoittaa pienen konfiguraatiotiedoston, joka kehottaa avustajaasi konsu
 
 `GRAPH_REPORT.md` on edelleen käytettävissä laajaan arkkitehtuurikatselmointiin.
 
-Tarkalleen mitkä tiedostot kukin alusta kirjoittaa (CodeBuddyn `CODEBUDDY.md` + `PreToolUse`-hookit, Codexin `AGENTS.md`, Kilon natiivi `.kilo`-liitännäinen, Cursorin `alwaysApply`-sääntö ja niin edelleen) on käsitelty kohdassa **[Aina päällä -asetus](https://docs.graphify.com/guides/always-on)**.
+Tarkalleen mitkä tiedostot kukin alusta kirjoittaa (CodeBuddyn `CODEBUDDY.md` + `PreToolUse`-hookit, Codexin `AGENTS.md`, Kilon natiivi `.kilo`-liitännäinen, Cursorin `alwaysApply`-sääntö ja niin edelleen) on käsitelty kohdassa **[Aina päällä -asetus](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Poistaaksesi graphifyn kaikilta alustoilta kerralla: `graphify uninstall` (lisää `--purge` poistaaksesi myös `graphify-out/`). Tai käytä alustakohtaista komentoa (esim. `graphify claude uninstall`).
 
