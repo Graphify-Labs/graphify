@@ -2310,6 +2310,25 @@ def _swift_receiver_name(recv_node, source: bytes) -> str | None:
                             return _read_text(sc, source)
     return None
 
+
+def _swift_operand_tail(node):
+    """Return the operand a misplaced Swift call suffix really applies to.
+
+    tree-sitter-swift parses ``a + f()`` as ``(a + f)()`` and ``!f()`` as
+    ``(!f)()``: the call's callee slot (or a member call's receiver) holds the
+    whole operator expression. The call belongs to its last operand. An
+    implicit member ``.make()`` is also a ``prefix_expression``; it names no
+    receiver, so it is left as is.
+    """
+    while node is not None:
+        if node.type in ("additive_expression", "multiplicative_expression"):
+            node = node.child_by_field_name("rhs")
+        elif node.type == "prefix_expression" and node.children and node.children[0].type != ".":
+            node = node.child_by_field_name("target")
+        else:
+            break
+    return node
+
 _C_PRIMITIVE_TYPE_NODES = frozenset({
     "primitive_type", "sized_type_specifier", "auto", "placeholder_type_specifier",
 })
@@ -11123,7 +11142,7 @@ def _extract_generic(
                             callee_name = _read_text(child, source)
                             break
                 # Swift: first child may be simple_identifier or navigation_expression
-                first = node.children[0] if node.children else None
+                first = _swift_operand_tail(node.children[0]) if node.children else None
                 if node.type != "macro_invocation" and first:
                     if first.type == "simple_identifier":
                         callee_name = _read_text(first, source)
@@ -11138,7 +11157,7 @@ def _extract_generic(
                                         callee_name = _read_text(sc, source)
                         # #1356: capture the receiver so the cross-file pass can
                         # resolve it through the file's type table.
-                        recv_node = first.children[0] if first.children else None
+                        recv_node = _swift_operand_tail(first.children[0]) if first.children else None
                         swift_receiver = _swift_receiver_name(recv_node, source)
                         if recv_node is not None and recv_node.type == "self_expression":
                             self_receiver = "self"

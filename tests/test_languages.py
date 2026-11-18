@@ -1697,6 +1697,34 @@ def test_swift_call_edges_have_call_context():
     assert all(e.get("context") == "call" for e in call_edges)
 
 
+def test_swift_call_that_is_an_operator_operand_is_kept(tmp_path):
+    """tree-sitter-swift parses `base + bonus()` as `(base + bonus)()` and
+    `!isEmpty()` as `(!isEmpty)()`: the callee slot holds the operator
+    expression, so the call to its last operand was dropped."""
+    f = tmp_path / "Validator.swift"
+    f.write_text("""\
+final class Validator {
+    var base: Int { 1 }
+    func check() -> Bool { return !isEmpty() }
+    func total() -> Int { return base + bonus() }
+    func scaled() -> Int { return base * self.factor() }
+    func mixed() -> Int { return base + base * factor() }
+    func implicit() -> Other { return .make() }
+    func isEmpty() -> Bool { false }
+    func bonus() -> Int { 1 }
+    func factor() -> Int { 2 }
+    func make() -> Int { 3 }
+}
+""")
+    calls = _calls(extract_swift(f))
+    assert (".check()", ".isEmpty()") in calls
+    assert (".total()", ".bonus()") in calls
+    assert (".scaled()", ".factor()") in calls
+    assert (".mixed()", ".factor()") in calls
+    # `.make()` is an implicit member of `Other`, not a call on self.
+    assert (".implicit()", ".make()") not in calls
+
+
 def test_swift_extension_across_files_merges_into_canonical_type():
     """`extension Foo` in a separate file from `class Foo` must resolve to a
     single Foo node. tree-sitter-swift parses both as `class_declaration` and
