@@ -4273,6 +4273,34 @@ def _merge_go_package_types(
     if drop_objs:
         all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
 
+    # A file in ANOTHER package that names the type (`svc *alpha.Service` in a field,
+    # parameter or return type) mints a sourceless `alpha.Service` stub, and
+    # `_make_id` folds that label onto the very id the declaration carries
+    # (`alpha_service`). The stub's origin_file then makes
+    # `_disambiguate_colliding_node_ids` see two source paths and salt BOTH apart,
+    # so the declaration's id changes while the `method` edges a sibling file emitted
+    # (keyed by that sibling's own path, which is in neither salt) stay on the dead
+    # bare id, and every member call through the type is dropped (#5304). Move such a
+    # stub to an id of its own before that pass: it is still a qualified stub, so
+    # `_resolve_go_type_references` re-points its edges through the referencing
+    # file's import exactly as before; it just no longer collides with the
+    # declaration it may well resolve to.
+    stub_renames: dict[tuple[str, str], str] = {}
+    for n in all_nodes:
+        nid = n.get("id")
+        label = str(n.get("label", ""))
+        origin = str(n.get("origin_file", ""))
+        if (nid in by_id and not n.get("source_file") and "." in label
+                and Path(origin).suffix.lower() == ".go"):
+            new_id = _make_id("go", "ref", label)
+            stub_renames[(nid, origin)] = new_id
+            n["id"] = new_id
+    if stub_renames:
+        for e in all_edges:
+            renamed = stub_renames.get((str(e.get("target", "")), str(e.get("source_file", ""))))
+            if renamed:
+                e["target"] = renamed
+
 
 def _resolve_cross_file_java_imports(
     per_file: list[dict],
