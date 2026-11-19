@@ -18,8 +18,8 @@ from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
 # and CREATE PROCEDURE [dbo].[usp_Load] ... are both recovered. A bare [\w$.]+
 # stops dead at the leading delimiter, which silently dropped every quoted
 # PL/pgSQL routine (#2180) and every bracket-named T-SQL procedure. T-SQL's
-# AS BEGIN...END body idiom always lands in recovery — the grammar has no
-# create_procedure parse for it — and T-SQL spells re-creation CREATE OR ALTER
+# AS BEGIN...END body idiom lands in recovery (from tree-sitter-sql 0.3.12 it
+# may also partially parse; see #5236 below) — and T-SQL spells re-creation CREATE OR ALTER
 # (it has no OR REPLACE), so accept that form too, mirroring fb_proc_or_trigger.
 # Inside a bracket-delimited part, a literal ] is escaped by doubling
 # ([a]]b] names the identifier a]b), so consume ]] before treating a
@@ -1227,12 +1227,37 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # name a genuine statement captures is allowed to be a delimited
         # identifier; its CREATE never is.
         masked_src, ident_spans = _scan_sql(src_text)
-        for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
-            if any(s <= m.start() < e for s, e in ident_spans):
-                continue
+        routine_matches = [
+            m for m in _ROUTINE_RECOVERY_RX.finditer(masked_src)
+            if not any(s <= m.start() < e for s, e in ident_spans)
+        ]
+        # Every routine the scan finds, by line. A walk routine on a CREATE's
+        # line is a misread only when no match on that line carries its id: two
+        # routines can share a line, and the other one is real.
+        recovered_on_line: dict[int, set[str]] = {}
+        for m in routine_matches:
+            recovered_on_line.setdefault(
+                src_text[: m.start()].count("\n") + 1, set()
+            ).add(_make_id(stem, m.group(1)))
+        for m in routine_matches:
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
             fn_nid = _make_id(stem, fn_name)
+            # From tree-sitter-sql 0.3.12 a T-SQL header can partially parse as
+            # create_procedure with a misread name: unparenthesised params are
+            # absorbed (`p @x INT`) or taken as the name (`INT`), and a ""/]]
+            # escape truncates it. The walk then minted a second routine with
+            # the wrong id and its own copy of the edges (#5236). A walk routine
+            # on this CREATE's line under another id is that misread: drop it
+            # and its edges, and let this match own the node and re-derive refs.
+            for dup in [nid for nid, ln in structured_routine_lines.items()
+                        if ln == fn_line and nid not in recovered_on_line[fn_line]]:
+                nodes[:] = [n for n in nodes if n["id"] != dup]
+                edges[:] = [e for e in edges if e["source"] != dup and e["target"] != dup]
+                structured_routine_lines.pop(dup)
+                for key in [k for k, v in routine_nids.items() if v == dup]:
+                    del routine_nids[key]
+                seen_ids.discard(dup)
             # A routine the tree already produced (a cleanly parsed function)
             # keeps its tree-based reads_from; scanning it too would double them.
             from_tree = fn_nid in seen_ids
