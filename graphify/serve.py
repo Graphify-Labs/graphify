@@ -2289,7 +2289,13 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
     in the middle of an unrelated label (`MailController` -> `EmailController`),
     which is a search hit, so it comes back as a near miss with suggestions
     instead of a different node presented as the answer (#3917).
+
+    A node id names exactly one node, so it resolves before any ranking: the
+    refusals tell the caller to retry with the id, and an id that tokenizes
+    like a source path must not lose to that file's node (#5343).
     """
+    if label in G:
+        return label, None
     source_exact, exact, prefix, substring = _find_node_tiers(G, label)
     if not (source_exact or exact or prefix):
         if not substring:

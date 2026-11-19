@@ -1884,6 +1884,24 @@ def test_resolve_single_node_still_takes_a_prefix_shorthand():
     assert _resolve_single_node(G, "email") == ("mail", None)
 
 
+def test_resolve_single_node_takes_an_exact_node_id_before_ranking():
+    """An id that tokenizes like its source path lost to that file's L1 node, so
+    the "Retry with the full node id" advice itself failed (#5343)."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.MultiDiGraph()
+    G.add_node("docs_example_skill_skill", label="example-skill/SKILL.md",
+               source_file="docs/example-skill/SKILL.md", source_location="L1")
+    G.add_node("docs_example-skill_SKILL.md", label="example-skill/SKILL.md",
+               source_file="docs/example-skill/SKILL.md")
+
+    for nid in G:
+        assert _resolve_single_node(G, nid) == (nid, None)
+    nid, err = _resolve_single_node(G, "example-skill/SKILL.md")
+    assert nid is None
+    assert err is not None and err.startswith("Ambiguous:")
+
+
 def test_resolve_single_node_prefers_an_exact_name_over_a_substring():
     from graphify.serve import _resolve_single_node
 
