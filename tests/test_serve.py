@@ -799,6 +799,13 @@ def test_edge_matches_context_falls_back_to_relation():
     assert _edge_matches_context({"context": "call", "relation": "uses"}, {"call"}) is True
 
 
+def test_edge_matches_context_explicit_context_blocks_relation_fallback():
+    # A Dart bloc event edge is a ``calls`` edge with its own context; a
+    # ``call`` filter must not pull it in through the relation fallback.
+    assert _edge_matches_context({"context": "bloc_event", "relation": "calls"}, {"call"}) is False
+    assert _edge_matches_context({"context": "bloc_event", "relation": "calls"}, {"bloc_event"}) is True
+
+
 def test_filter_graph_by_context_matches_relation_when_context_absent():
     G = nx.Graph()
     G.add_node("a", label="A")

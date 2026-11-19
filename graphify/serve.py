@@ -1236,6 +1236,11 @@ def _edge_matches_context(data: dict, filters: set[str]) -> bool:
     ctx = data.get("context")
     if ctx in filters:
         return True
+    if ctx:
+        # An explicit context that names another filter wins over the relation
+        # fallback, so a ``calls`` edge tagged ``bloc_event`` stays out of a
+        # ``call`` traversal.
+        return False
     rel = data.get("relation")
     if not isinstance(rel, str) or not rel:
         return False
