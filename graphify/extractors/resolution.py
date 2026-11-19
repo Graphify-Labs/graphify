@@ -1154,23 +1154,24 @@ def _disambiguate_colliding_node_ids(
         if len(candidates) == 1:
             unambiguous_remaps[old_id] = next(iter(candidates))
 
-    # A C/ObjC/C++ `#include "foo.h"` / `#import "foo.h"` resolves to the header's
-    # file node, but `foo.h` and its sibling `foo.c`/`foo.m`/`foo.cpp` collapse to
-    # the same `foo` file id, so disambiguation salts them apart by path. A
-    # cross-file import edge from a THIRD file carries neither salt's source_key, so
-    # the (target, edge_source_key) lookup misses and the edge dangles on the now
-    # dead `foo` id. Repoint those import edges to the HEADER variant (the include
-    # always targeted the header), keyed by the original colliding id (#1475).
-    _HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
+    # #1475: an unhinted native include targets the header variant, even
+    # when its own implementation file has the same original ID.
+    from graphify.extract import _lang_family
+
+    header_suffixes = {".h", ".hpp", ".hh", ".hxx"}
     header_remaps: dict[str, str] = {}
+    file_remaps: dict[tuple[str, str], set[str]] = {}
     for old_id in ambiguous_ids:
-        for node in by_id.get(old_id, []):
-            sk = _node_disambiguation_source_key(node, root)
-            if sk and Path(sk).suffix.lower() in _HEADER_SUFFIXES:
-                new_id = remap.get((old_id, sk))
-                if new_id:
-                    header_remaps[old_id] = new_id
-                    break
+        for node in by_id[old_id]:
+            source = _node_disambiguation_source_key(node, root)
+            new_id = remap.get((old_id, source))
+            if not source or not new_id:
+                continue
+            if Path(source).suffix.lower() in header_suffixes:
+                header_remaps.setdefault(old_id, new_id)
+            family = _lang_family(source)
+            if family and node.get("label") == Path(source).name:
+                file_remaps.setdefault((old_id, family), set()).add(new_id)
 
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
@@ -1193,14 +1194,16 @@ def _disambiguate_colliding_node_ids(
             edge["source"] = remap[source_key]
         elif edge.get("source") in unambiguous_remaps:
             edge["source"] = unambiguous_remaps[str(edge["source"])]
-        # imports/imports_from always target a header file, so they must resolve to
-        # the header variant BEFORE the same-source-file salt is considered. Keying
-        # the import target by the importer's own source file mis-points a `.m`
-        # importing its own `.h` back at itself (self-loop), and is wrong for any
-        # cross-file import whose importer shares the colliding id (#1475).
-        if (edge.get("relation") in ("imports", "imports_from")
-                and edge.get("target") in header_remaps):
-            edge["target"] = header_remaps[str(edge["target"])]
+        target = str(edge.get("target", ""))
+        if (not target_file and target in header_remaps
+                and edge.get("relation") in ("imports", "imports_from")):
+            family = _lang_family(edge_source_key)
+            if family == "native" or effective_suffix(edge_source_key) in header_suffixes:
+                edge["target"] = header_remaps[target]
+            elif family:
+                candidates = file_remaps.get((target, family), set())
+                if len(candidates) == 1:
+                    edge["target"] = next(iter(candidates))
         elif target_key in remap:
             edge["target"] = remap[target_key]
         elif edge.get("target") in unambiguous_remaps:
