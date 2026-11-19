@@ -63,6 +63,11 @@ Absolute and relative spellings and symlinked scan roots identify the same
 corpus entry; distinct symlink aliases inside that root remain separate entries.
 Excluding one alias must preserve any still-included target or sibling alias.
 
+Hook rebuilds reconcile persisted sources against the current corpus even
+when no changed file is eligible for extraction. Changes to in-scope ignore
+files also refresh the eligible AST corpus so newly included files can enter
+the graph.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
