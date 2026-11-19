@@ -11,8 +11,14 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **elixir** defs whose names differ only by a leading/trailing `_`, a `!`/`?` suffix, or case (`_name`/`name`, `get`/`get!`, `__schema__`/`schema`) get distinct node ids, so a `get!` call no longer lands on `get` (#5298, thanks @rohit-jsfreaky).
 - Fix: **rust** a prelude trait's type argument (`Celsius` in `impl From<Celsius>` or a `T: Into<Celsius>` bound) is read as a generic-argument reference instead of being mistaken for the trait itself, so it no longer emits a wrong `implements`/`inherits` edge (#5332, thanks @azeemshaik025).
 - Fix: **go** a member call is kept when another package in the corpus names a sibling-file type: the colliding sourceless stub is moved to its own id instead of salting the real declaration and orphaning its method edges, which had dropped the call (#5304, thanks @Yi-111-a).
+- Fix: **ruby** a method written inline after an access modifier (`private def validate`, `private_class_method def self.audit`) keeps its membership of the enclosing class instead of being emitted as a file-level function, so calls to it resolve to the method (#5310, thanks @Synvoya).
+- Fix: **swift** a call that is the last operand of an operator expression (`base + bonus()`, `!isEmpty()`), which the grammar parses as the callee, is extracted instead of dropped (#5311, thanks @Synvoya).
+- Fix: **kotlin** a call under a prefix operator (`!isReady()`, `-compute()`) is extracted instead of dropped, including stacked prefixes and `!obj.ready()` (#5312, thanks @Synvoya).
+- Fix: **vbnet** a parameter with a default value is counted as Optional regardless of modifier order (`ByVal Optional x As Integer = 0`, `ByRef Optional ...`), so method arity and overload resolution are correct (#5320, thanks @Deepjyoti-Sarmah).
+- Fix: **cpp** include identities are kept when the AST cache is on another drive than the source (a Windows cross-drive case where `os.path.relpath` raised and every file got an empty key), so declaration/definition folding still works; the normal same-drive path is unchanged (#5145, thanks @Ayushraj06-bit).
+- Fix: **llm** label-generation retries keep a 512-token output floor, so the single-community recovery pass is no longer starved below the batch it is recovering from; an explicit `GRAPHIFY_MAX_OUTPUT_TOKENS` still overrides (#2086, thanks @Synvoya).
 
-The AST cache schema is bumped to 49; warm caches re-run the affected Ruby, Lua, Scala, Elixir and Rust extractions.
+The AST cache schema is bumped to 49; warm caches re-run the affected Ruby, Lua, Scala, Elixir, Rust, Swift, Kotlin and VB.NET extractions.
 
 ## 0.9.112 (2026-11-17)
 
