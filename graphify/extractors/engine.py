@@ -2818,6 +2818,12 @@ def _python_base_name_node(arg):
     A parameterized base (`Base[T]`, `Repo[User]`) parses as a `subscript`
     whose `value` field is the base itself; the `[...]` holds only type
     arguments. `mod.Base`, `mod.Base[T]` and calls stay None.
+
+    Known limitation: a subscript whose value is a plain identifier that is not
+    a type (`class Dyn(registry['k'])`) is indistinguishable from `Base[int]`
+    at the AST level, so it yields the identifier (`registry`) here and may emit
+    a spurious `inherits` edge. Harmless unless a corpus class is literally named
+    `registry`; the common generic case dominates.
     """
     if arg.type == "subscript":
         arg = arg.child_by_field_name("value")
