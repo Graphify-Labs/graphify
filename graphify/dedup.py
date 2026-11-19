@@ -249,6 +249,22 @@ def _crossfile_fileanchored_blocked(node: dict, neighbor: dict) -> bool:
     return (node.get("source_file") or "") != (neighbor.get("source_file") or "")
 
 
+# Reference ids name one record wherever they are cited (#5207): ADR-0007,
+# "ADR 7" and adr-007 are one decision. Their labels are short and repetitive,
+# so the entropy gate meant for generic words ("API") rejected them, and their
+# spellings normalize apart. A fixed prefix list keeps "Phase 2" style labels
+# out: only these kinds are known to be global, numbered identifiers.
+_REFERENCE_ID_RE = re.compile(r"^\s*(ADR|RFC|REQ)[\s_-]?0*(\d{1,6})\s*$", re.IGNORECASE)
+
+
+def _reference_key(node: dict) -> str | None:
+    """Canonical key ``adr-7`` for a concept whose whole label is a reference id."""
+    if node.get("file_type") != "concept":
+        return None
+    m = _REFERENCE_ID_RE.match(str(node.get("label") or ""))
+    return f"\x00{m.group(1).lower()}-{int(m.group(2))}" if m else None
+
+
 # ── union-find ────────────────────────────────────────────────────────────────
 
 class _UF:
@@ -1245,7 +1261,7 @@ def deduplicate_entities(
         # distinct same-named symbols are never merged by string similarity (#1205).
         if _is_code(node):
             continue
-        key = _norm(node.get("label", node.get("id", "")))
+        key = _reference_key(node) or _norm(node.get("label", node.get("id", "")))
         if key:
             norm_to_nodes[key].append(node)
 
@@ -1354,7 +1370,8 @@ def deduplicate_entities(
                  or (n.get("file_type") in _FILE_ANCHORED_NONCODE
                      and _reads_as_file_entity(n)))
              and (n.get("source_file") or "")
-             and _entropy(n.get("label", "")) >= _ENTROPY_THRESHOLD),
+             and (_entropy(n.get("label", "")) >= _ENTROPY_THRESHOLD
+                  or _reference_key(n) is not None)),
             key=lambda n: n["id"],
         )
         if len(mergeable) > 1:
