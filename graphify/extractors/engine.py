@@ -1692,6 +1692,79 @@ def _php_member_nid(class_nid: str, member_node, name: str, source: bytes,
 _JAVA_MEMBER_CALLABLE_TYPES = ("method_declaration", "constructor_declaration")
 
 
+_JAVA_LOMBOK_IMPORT_RE = re.compile(
+    rb"^\s*import\s+lombok\s*\.\s*(?:Getter|\*)\s*;", re.MULTILINE
+)
+
+
+def _java_lombok_getter_annotation(declaration_node, source: bytes):
+    """The ``@Getter`` annotation on a declaration when it is Lombok's.
+
+    ``@lombok.Getter`` always is; a bare ``@Getter`` only when the file
+    imports ``lombok.Getter`` or ``lombok.*``. ``@Getter(AccessLevel.NONE)``
+    asks for no getter, so it returns None.
+    """
+    for anno in _java_annotation_nodes(declaration_node):
+        name_node = anno.child_by_field_name("name")
+        raw = _read_text(name_node, source) if name_node is not None else ""
+        if raw == "Getter" and not _JAVA_LOMBOK_IMPORT_RE.search(source):
+            continue
+        if raw not in ("Getter", "lombok.Getter"):
+            continue
+        args = anno.child_by_field_name("arguments")
+        if args is not None and re.search(r"\bNONE\b", _read_text(args, source)):
+            return None
+        return anno
+    return None
+
+
+def _java_lombok_getters(field_node, source: bytes) -> list[str]:
+    """Names of the getters Lombok ``@Getter`` writes for a field (#5148).
+
+    A field annotation covers static and instance fields; a class annotation
+    covers instance fields only. The name is ``get`` + the capitalised field
+    name, or ``is`` for a primitive ``boolean`` (a ``boolean isX`` keeps its
+    own name). Lombok skips a getter when the class already declares a
+    zero-argument method of that name, ignoring case.
+    """
+    body = field_node.parent
+    owner = body.parent if body is not None else None
+    if owner is None:
+        return []
+    own = _java_lombok_getter_annotation(field_node, source)
+    if own is None:
+        if any(
+            a.child_by_field_name("name") is not None
+            and _read_text(a.child_by_field_name("name"), source) in ("Getter", "lombok.Getter")
+            for a in _java_annotation_nodes(field_node)
+        ):
+            return []  # @Getter(AccessLevel.NONE) on the field wins over the class
+        if (_java_has_modifier(field_node, "static")
+                or _java_lombok_getter_annotation(owner, source) is None):
+            return []
+    type_node = field_node.child_by_field_name("type")
+    is_boolean = type_node is not None and _read_text(type_node, source) == "boolean"
+    declared = set()
+    for c in body.children:
+        if c.type != "method_declaration":
+            continue
+        params = c.child_by_field_name("parameters")
+        name_node = c.child_by_field_name("name")
+        if name_node is not None and params is not None and not any(
+            p.type in ("formal_parameter", "spread_parameter") for p in params.children
+        ):
+            declared.add(_read_text(name_node, source).lower())
+    names = []
+    for field in _java_declarator_names(field_node, source):
+        if is_boolean and field.startswith("is") and field[2:3].isupper():
+            getter = field
+        else:
+            getter = ("is" if is_boolean else "get") + field[:1].upper() + field[1:]
+        if getter.lower() not in declared:
+            names.append(getter)
+    return names
+
+
 def _java_member_nid(class_nid: str, member_node, name: str, source: bytes,
                      groups_cache: dict) -> str:
     """Node id for a Java method or constructor, salted when a sibling collides.
@@ -9417,6 +9490,18 @@ def _extract_generic(
                         static_fields = java_static_field_types.setdefault(parent_class_nid, {})
                         for field_name in field_names:
                             static_fields[field_name] = receiver_type
+                # Lombok @Getter (#5148): the getter is real at compile time,
+                # so it gets the node a hand-written one would, and its return
+                # type types a chain such as `Model.getInstance().work()`.
+                for getter in _java_lombok_getters(node, source):
+                    getter_nid = _make_id(parent_class_nid, getter)
+                    if any(n["id"] == getter_nid for n in nodes):
+                        continue
+                    getter_line = node.start_point[0] + 1
+                    add_node(getter_nid, f".{getter}()", getter_line,
+                             metadata={"arity": 0, "signature": "", "lombok": "Getter"})
+                    add_edge(parent_class_nid, getter_nid, "method", getter_line)
+                    java_return_types[getter_nid] = receiver_type
                 line = node.start_point[0] + 1
                 refs: list[tuple[str, str]] = []
                 _java_collect_type_refs(type_node, source, False, refs)
