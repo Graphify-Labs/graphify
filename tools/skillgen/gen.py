@@ -476,6 +476,22 @@ def _rm_to_remove_item(cmd: str) -> str:
     return f"Remove-Item -Force -ErrorAction SilentlyContinue {joined}"
 
 
+def _cat_to_get_content(line: str) -> str:
+    """Translate ``$(cat FILE)`` sidecar reads inside a CLI call to Get-Content.
+
+    The emitted ``$((Get-Content ... -Raw).TrimEnd("`r","`n"))`` evaluates both
+    bare and inside a double-quoted PowerShell string — a plain
+    ``(Get-Content ...)`` inside ``"..."`` is a literal, not a call — and the
+    CR/LF-only ``TrimEnd`` matches bash ``$(...)`` semantics, which strip
+    trailing newlines while preserving intentional boundary spaces.
+    """
+    return re.sub(
+        r"\$\(cat ([^)]+)\)",
+        lambda m: f"$((Get-Content {m.group(1).replace('/', chr(92))} -Raw).TrimEnd(\"`r\",\"`n\"))",
+        line,
+    )
+
+
 def _translate_bash_block(lines: list[str]) -> list[str]:
     """Translate the body of one ```` ```bash ```` fence to PowerShell."""
     out: list[str] = []
@@ -496,8 +512,10 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
             out.append(_FIND_CHUNKS_PS)
         elif line.strip().startswith("rm -f "):
             out.append(_rm_to_remove_item(line))
-        elif not line.strip() or line.lstrip().startswith("#") or line.startswith("graphify "):
-            out.append(line)  # blank lines, comments, and graphify CLI calls are shell-neutral
+        elif line.strip().startswith("graphify "):
+            out.append(_cat_to_get_content(line))  # CLI calls are shell-neutral bar sidecar reads
+        elif not line.strip() or line.lstrip().startswith("#"):
+            out.append(line)  # blank lines and comments pass through
         else:
             raise ValueError(f"cannot translate bash line to PowerShell: {line!r}")
     if in_py:
@@ -506,10 +524,16 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
 
 
 def _translate_prose_line(line: str) -> str:
-    """Translate inline `` `rm -f ...` `` code spans in prose to Remove-Item."""
-    return re.sub(
+    """Translate inline code spans in prose: ``rm -f`` and ``$(cat FILE)`` reads."""
+    line = re.sub(
         r"`rm -f ([^`]+)`",
         lambda m: "`" + _rm_to_remove_item("rm -f " + m.group(1)) + "`",
+        line,
+    )
+    return re.sub(
+        r'`([^`]*)\$\(cat ([^)]+)\)([^`]*)`',
+        lambda m: "`" + m.group(1)
+        + f"$((Get-Content {m.group(2).replace('/', chr(92))} -Raw).TrimEnd(\"`r\",\"`n\"))" + m.group(3) + "`",
         line,
     )
 
@@ -1294,6 +1318,47 @@ def _is_input_path_sidecar_fix_line(line: str) -> bool:
     )
 
 
+def _is_add_labels_sidecar_fix_line(line: str) -> bool:
+    """Whether a line is part of the LABELS_DICT / add-URL value-transport fix.
+
+    Step 5 pasted the agent-built community-labels dict straight into Python
+    source (``labels = LABELS_DICT``) and ``/graphify add`` pasted the URL,
+    author and contributor into string literals — a label or URL containing
+    a quote or brace broke the literal and ran as code, the same injection
+    class as #4762. Both now travel through sidecar files the agent writes
+    first (``.graphify_labels.json``, ``.graphify_add_url`` and the optional
+    ``.graphify_add_author``/``.graphify_add_contributor``); the blocks read
+    them back and a missing optional file maps to ``None``. Both the removed
+    paste lines and the added read/prose lines match here.
+    """
+    stripped = line.strip()
+    return (
+        ".graphify_labels.json" in stripped
+        or ".graphify_add_" in stripped
+        or stripped == "labels = LABELS_DICT"
+        or stripped.startswith("Replace `LABELS_DICT`")
+        or stripped.startswith("# LABELS -")
+        or stripped == "def _opt(name):"
+        or stripped == "p = Path('graphify-out') / name"
+        # Generic lines stay scoped to the _opt body / except tails by column:
+        # a future paste like ingest('URL', ...) must NOT pass this guard.
+        or line == "    if not p.exists():"
+        or line == "        return None"
+        or stripped == "return p.read_text(encoding='utf-8-sig').strip() or None"
+        or "out = ingest(Path(" in stripped
+        # The removed v8 paste line — sanctioned only in its exact old shape.
+        or stripped == "out = ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')"
+        or stripped.startswith("Replace `URL`")
+        # The read raises FileNotFoundError when the agent forgot the url
+        # sidecar, and a finally: unlinks all three add sidecars so a later
+        # /graphify add cannot silently reuse a prior run's author/contributor.
+        or stripped == "except FileNotFoundError:"
+        or stripped == "finally:"
+        or line == "    sys.exit(1)"
+        or stripped.endswith(").unlink(missing_ok=True)")
+    )
+
+
 def _is_worktree_visibility_note_line(line: str) -> bool:
     """Whether a line is the Step 9 working-tree note (#3941).
 
@@ -1506,6 +1571,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
+    _is_add_labels_sidecar_fix_line,
 )
 
 

@@ -1390,8 +1390,11 @@ def test_step4_skill_honors_force_flag_on_shrink(tmp_path, capsys, monkeypatch):
     assert len(persisted["nodes"]) == 10
 
     # 3. Subsequent Step 5 re-export succeeds because graph.json was updated
-    step5_body = _substituted(_step_body(core, "labels = LABELS_DICT"), tmp_path)
-    step5_exec = step5_body.replace("IS_DIRECTED", "False").replace("LABELS_DICT", "{0: 'Test Community'}")
+    step5_body = _substituted(_step_body(core, "labels = {int(k): v"), tmp_path)
+    (out / ".graphify_labels.json").write_text(
+        _json.dumps({"0": "Test Community"}), encoding="utf-8"
+    )
+    step5_exec = step5_body.replace("IS_DIRECTED", "False")
     exec(compile(step5_exec, "step-5-exec", "exec"), {"__name__": "__main__"})
     assert "Report updated with community labels" in capsys.readouterr().out
     persisted5 = _json.loads((out / "graph.json").read_text(encoding="utf-8"))
