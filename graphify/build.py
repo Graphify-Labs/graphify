@@ -2312,18 +2312,32 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     _fold_also_seen(existing_attrs, attrs)
                     continue
                 if existing_rank == incoming_rank:
-                    if existing_attrs.get("source_location") and not attrs.get("source_location"):
+                    # An AST edge keeps its pair against a semantic copy of the same
+                    # relation (#5334). Otherwise a copy with a line number won by
+                    # arrival order, the edge moved to the document, and the next
+                    # --update of that document deleted the code fact. Strict
+                    # _origin, not _is_ast_tier: inside a build the only unstamped
+                    # items are fresh semantic chunks (see the ghost-collapse note).
+                    existing_ast = existing_attrs.get("_origin") == "ast"
+                    incoming_ast = attrs.get("_origin") == "ast"
+                    if existing_ast != incoming_ast:
+                        if existing_ast:
+                            _fold_also_seen(existing_attrs, attrs)
+                            continue
+                        # The incoming AST edge replaces the semantic copy below.
+                    elif existing_attrs.get("source_location") and not attrs.get("source_location"):
                         _fold_also_seen(existing_attrs, attrs)
                         continue
-                    existing_score = existing_attrs.get("confidence_score")
-                    incoming_score = attrs.get("confidence_score")
-                    if (
-                        existing_score is not None
-                        and incoming_score is not None
-                        and existing_score > incoming_score
-                    ):
-                        _fold_also_seen(existing_attrs, attrs)
-                        continue
+                    else:
+                        existing_score = existing_attrs.get("confidence_score")
+                        incoming_score = attrs.get("confidence_score")
+                        if (
+                            existing_score is not None
+                            and incoming_score is not None
+                            and existing_score > incoming_score
+                        ):
+                            _fold_also_seen(existing_attrs, attrs)
+                            continue
                 _fold_also_seen(attrs, existing_attrs)
                 # add_edge merges into the stored dict: a field only the loser
                 # carried (its score, its line) would otherwise stay on the winner.
