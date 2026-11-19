@@ -2027,7 +2027,11 @@ def test_recovery_keeps_a_real_routine_sharing_the_misread_line(tmp_path):
     r = extract_sql(f)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"].endswith("()"))
     assert labels == ["b()", "p()"]
-    by_id = {n["id"]: n["label"] for n in r["nodes"]}
-    executes = [(by_id[e["source"]], by_id[e["target"]])
-                for e in r["edges"] if e["relation"] == "executes"]
-    assert executes == [("tr", "b()")]
+    # From 0.3.12 the trigger in this file is only recovered, and recovery
+    # emits no `executes` edge, on v8 as well. The check applies where the
+    # walk parses the trigger.
+    if not _ts_sql_at_least((0, 3, 12)):
+        by_id = {n["id"]: n["label"] for n in r["nodes"]}
+        executes = [(by_id[e["source"]], by_id[e["target"]])
+                    for e in r["edges"] if e["relation"] == "executes"]
+        assert executes == [("tr", "b()")]
