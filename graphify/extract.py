@@ -35,6 +35,7 @@ from .pascal_resolution import resolve_pascal_inherited_calls
 from .pascal_singleton_resolution import resolve_pascal_singleton_calls
 from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
+from .doc_ref_resolution import resolve_doc_refs
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.rcfile import (
@@ -10075,6 +10076,11 @@ register_language_resolver(
     LanguageResolver(
         "markdown_mentions", MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
     )
+)
+# ADR/RFC citation stubs from JS/TS comments -> the one decision document that
+# claims the id (#5227). Only JS/TS mints doc_ref stubs, so it gates on them.
+register_language_resolver(
+    LanguageResolver("doc_ref_citations", frozenset(_JS_TS_SUFFIXES), resolve_doc_refs)
 )
 
 
