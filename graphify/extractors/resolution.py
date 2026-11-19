@@ -1154,23 +1154,24 @@ def _disambiguate_colliding_node_ids(
         if len(candidates) == 1:
             unambiguous_remaps[old_id] = next(iter(candidates))
 
-    # A C/ObjC/C++ `#include "foo.h"` / `#import "foo.h"` resolves to the header's
-    # file node, but `foo.h` and its sibling `foo.c`/`foo.m`/`foo.cpp` collapse to
-    # the same `foo` file id, so disambiguation salts them apart by path. A
-    # cross-file import edge from a THIRD file carries neither salt's source_key, so
-    # the (target, edge_source_key) lookup misses and the edge dangles on the now
-    # dead `foo` id. Repoint those import edges to the HEADER variant (the include
-    # always targeted the header), keyed by the original colliding id (#1475).
-    _HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
+    # #1475: an unhinted native include targets the header variant, even
+    # when its own implementation file has the same original ID.
+    from graphify.extract import _lang_family
+
+    header_suffixes = {".h", ".hpp", ".hh", ".hxx"}
     header_remaps: dict[str, str] = {}
+    file_remaps: dict[tuple[str, str], set[str]] = {}
     for old_id in ambiguous_ids:
-        for node in by_id.get(old_id, []):
-            sk = _node_disambiguation_source_key(node, root)
-            if sk and Path(sk).suffix.lower() in _HEADER_SUFFIXES:
-                new_id = remap.get((old_id, sk))
-                if new_id:
-                    header_remaps[old_id] = new_id
-                    break
+        for node in by_id[old_id]:
+            source = _node_disambiguation_source_key(node, root)
+            new_id = remap.get((old_id, source))
+            if not source or not new_id:
+                continue
+            if Path(source).suffix.lower() in header_suffixes:
+                header_remaps.setdefault(old_id, new_id)
+            family = _lang_family(source)
+            if family and node.get("label") == Path(source).name:
+                file_remaps.setdefault((old_id, family), set()).add(new_id)
 
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
@@ -1193,14 +1194,16 @@ def _disambiguate_colliding_node_ids(
             edge["source"] = remap[source_key]
         elif edge.get("source") in unambiguous_remaps:
             edge["source"] = unambiguous_remaps[str(edge["source"])]
-        # imports/imports_from always target a header file, so they must resolve to
-        # the header variant BEFORE the same-source-file salt is considered. Keying
-        # the import target by the importer's own source file mis-points a `.m`
-        # importing its own `.h` back at itself (self-loop), and is wrong for any
-        # cross-file import whose importer shares the colliding id (#1475).
-        if (edge.get("relation") in ("imports", "imports_from")
-                and edge.get("target") in header_remaps):
-            edge["target"] = header_remaps[str(edge["target"])]
+        target = str(edge.get("target", ""))
+        if (not target_file and target in header_remaps
+                and edge.get("relation") in ("imports", "imports_from")):
+            family = _lang_family(edge_source_key)
+            if family == "native" or effective_suffix(edge_source_key) in header_suffixes:
+                edge["target"] = header_remaps[target]
+            elif family:
+                candidates = file_remaps.get((target, family), set())
+                if len(candidates) == 1:
+                    edge["target"] = next(iter(candidates))
         elif target_key in remap:
             edge["target"] = remap[target_key]
         elif edge.get("target") in unambiguous_remaps:
@@ -3786,7 +3789,13 @@ def _cpp_source_key(source_file: str | Path, root: Path) -> str:
     if not source_file:
         return ""
     try:
-        return os.path.relpath((root / source_file).resolve(), root.resolve()).replace("\\", "/")
+        path = (root / source_file).resolve()
+        try:
+            return os.path.relpath(path, root.resolve()).replace("\\", "/")
+        except ValueError:
+            # No relative path to a root on another Windows drive; the absolute
+            # path is still a distinct identity for the file.
+            return path.as_posix()
     except (OSError, RuntimeError, ValueError):
         return ""
 
@@ -3935,9 +3944,16 @@ def _merge_cpp_member_declarations(
             continue
         scope, name = qualified.rsplit("::", 1)
         classes = owners.get(scope, [])
-        if len(classes) != 1 or classes[0].get("_cpp_class_kind") != "definition":
+        # A plain forward declares no members, so one that
+        # _merge_cpp_forward_classes left unfolded (no include path to the
+        # definition) is not a rival owner. Any other kind beside the single
+        # definition (a second definition, a template or conditional class)
+        # keeps the scope uncertain.
+        definitions = [c for c in classes if c.get("_cpp_class_kind") == "definition"]
+        if len(definitions) != 1 or any(
+                c.get("_cpp_class_kind") not in {"forward", "definition"} for c in classes):
             continue
-        owner = classes[0]
+        owner = definitions[0]
         if any(len(n["_cpp_member_records"]) != 1
                or not n["_cpp_member_records"][0].get("signature")
                or (n.get("metadata") or {}).get("cpp_conditions") for n in group):
@@ -4272,6 +4288,34 @@ def _merge_go_package_types(
 
     if drop_objs:
         all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
+
+    # A file in ANOTHER package that names the type (`svc *alpha.Service` in a field,
+    # parameter or return type) mints a sourceless `alpha.Service` stub, and
+    # `_make_id` folds that label onto the very id the declaration carries
+    # (`alpha_service`). The stub's origin_file then makes
+    # `_disambiguate_colliding_node_ids` see two source paths and salt BOTH apart,
+    # so the declaration's id changes while the `method` edges a sibling file emitted
+    # (keyed by that sibling's own path, which is in neither salt) stay on the dead
+    # bare id, and every member call through the type is dropped (#5304). Move such a
+    # stub to an id of its own before that pass: it is still a qualified stub, so
+    # `_resolve_go_type_references` re-points its edges through the referencing
+    # file's import exactly as before; it just no longer collides with the
+    # declaration it may well resolve to.
+    stub_renames: dict[tuple[str, str], str] = {}
+    for n in all_nodes:
+        nid = n.get("id")
+        label = str(n.get("label", ""))
+        origin = str(n.get("origin_file", ""))
+        if (nid in by_id and not n.get("source_file") and "." in label
+                and Path(origin).suffix.lower() == ".go"):
+            new_id = _make_id("go", "ref", label)
+            stub_renames[(nid, origin)] = new_id
+            n["id"] = new_id
+    if stub_renames:
+        for e in all_edges:
+            renamed = stub_renames.get((str(e.get("target", "")), str(e.get("source_file", ""))))
+            if renamed:
+                e["target"] = renamed
 
 
 def _resolve_cross_file_java_imports(
