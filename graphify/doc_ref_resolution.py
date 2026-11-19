@@ -96,7 +96,9 @@ def resolve_doc_refs(per_file: list[dict], all_nodes: list[dict], all_edges: lis
     # Flag, don't filter: on an incremental rebuild ``all_nodes`` is a scratch
     # copy whose removals never reach the real list, but the node dicts are
     # shared, so extract() drops flagged stubs after every resolver has run.
-    still_used = {e.get("source") for e in all_edges} | {e.get("target") for e in all_edges}
+    still_used = {
+        end for e in all_edges for end in (e.get("source"), e.get("target")) if end in target
+    }
     for n in all_nodes:
         if n["id"] in target and n["id"] not in still_used:
             n[DROP_FLAG] = True
