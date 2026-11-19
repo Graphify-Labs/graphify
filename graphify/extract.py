@@ -35,6 +35,7 @@ from .pascal_resolution import resolve_pascal_inherited_calls
 from .pascal_singleton_resolution import resolve_pascal_singleton_calls
 from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
+from .yaml_resolution import YAML_REF_SUFFIXES, resolve_yaml_value_refs
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.rcfile import (
@@ -10076,6 +10077,13 @@ register_language_resolver(
         "markdown_mentions", MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
     )
 )
+# YAML values that name a package script or a local file (a workflow's
+# `pnpm run check`, a compose bind mount) become key --references--> target
+# edges, but only to a target that was scanned (#5225). The shared call pass
+# skips these raw_calls, so a script name is never matched as a call.
+register_language_resolver(
+    LanguageResolver("yaml_value_refs", YAML_REF_SUFFIXES, resolve_yaml_value_refs)
+)
 
 
 # Inline markdown link: [text](target "optional title"). The negative lookbehind
@@ -13185,6 +13193,9 @@ def extract(
         # cited file as evidence; a global name match here would mint a `calls`
         # edge from a heading to whatever shares the name.
         if rc.get("language") == "markdown":
+            continue
+        # A YAML value names a script or file; yaml_value_refs resolves it.
+        if rc.get("language") == "yaml":
             continue
         # A Solidity name is visible only through the caller contract's own
         # bases; resolve_solidity_inherited_calls binds those. A corpus-wide

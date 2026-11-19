@@ -20,6 +20,7 @@ from typing import Any
 
 from graphify.extractors.base import _file_stem, _make_id
 from graphify.ids import normalize_id
+from graphify.extractors.yaml_refs import value_refs
 
 _YAML_MAX_BYTES = 1_048_576  # 1 MiB
 _MAX_PAIRS = 500
@@ -254,6 +255,19 @@ def extract_yaml(path: Path) -> dict:
     add_node(file_nid, path.name, 1)
 
     pair_count = [0]
+    # Scalar values that name a script or a local file (#5225). Recorded as
+    # raw_calls so the yaml_value_refs resolver can match them against the
+    # scanned corpus once every file is extracted; the cache keeps them.
+    refs: dict[int, list] = {}
+    raw_calls: list[dict] = []
+
+    def record(holder_nid: str, value_node: Any) -> None:
+        for kind, target, name in refs.get(id(value_node), ()):
+            raw_calls.append({
+                "language": "yaml", "caller_nid": holder_nid, "ref_kind": kind,
+                "target_path": target, "callee": name, "source_file": str_path,
+                "source_location": f"L{value_node.start_mark.line + 1}",
+            })
 
     def walk(node: Any, parent_nid: str, parent_key: str | None, depth: int) -> None:
         if depth > _MAX_DEPTH:
@@ -273,15 +287,20 @@ def extract_yaml(path: Path) -> dict:
                 add_edge(parent_nid, key_nid, "contains", line)
                 if isinstance(val, (yaml.MappingNode, yaml.SequenceNode)):
                     walk(val, key_nid, key_str, depth + 1)
+                else:
+                    record(key_nid, val)
         elif isinstance(node, yaml.SequenceNode):
             # Lists of scalars carry no key structure; only recurse into
             # structured items without minting index nodes (avoids explosion).
             for item in node.value:
                 if isinstance(item, (yaml.MappingNode, yaml.SequenceNode)):
                     walk(item, parent_nid, parent_key, depth + 1)
+                else:
+                    record(parent_nid, item)
 
     multi = len(config_docs) > 1
     for index, (doc, tree) in enumerate(config_docs):
+        refs = value_refs(path, tree)
         if multi:
             # Keep each document of a multi-document stream distinct (a k8s file
             # holding a Deployment and a Service must not merge their metadata).
@@ -296,4 +315,7 @@ def extract_yaml(path: Path) -> dict:
         else:
             walk(tree, file_nid, None, 0)
 
-    return {"nodes": nodes, "edges": edges}
+    result: dict = {"nodes": nodes, "edges": edges}
+    if raw_calls:
+        result["raw_calls"] = raw_calls
+    return result
