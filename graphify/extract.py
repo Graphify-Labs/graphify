@@ -35,7 +35,7 @@ from .pascal_resolution import resolve_pascal_inherited_calls
 from .pascal_singleton_resolution import resolve_pascal_singleton_calls
 from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
-from .doc_ref_resolution import resolve_doc_refs
+from .doc_ref_resolution import DROP_FLAG as DOC_REF_DROP_FLAG, resolve_doc_refs
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.rcfile import (
@@ -13638,6 +13638,7 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+    all_nodes[:] = [n for n in all_nodes if not n.pop(DOC_REF_DROP_FLAG, False)]
     # Every call is resolved. Half of the corpus's rows are these.
     del all_raw_calls, per_file
 

@@ -26,6 +26,7 @@ from typing import Any
 
 _ID_RE = re.compile(r"^\s*(ADR|RFC)[- ]?0*(\d{1,5})\b", re.IGNORECASE)
 _FILE_NUMBER_RE = re.compile(r"^0*(\d{1,5})[-_]")
+DROP_FLAG = "_doc_ref_resolved"
 _FOLDER_KIND = {
     "adr": "ADR", "adrs": "ADR", "decisions": "ADR",
     "rfc": "RFC", "rfcs": "RFC",
@@ -92,5 +93,10 @@ def resolve_doc_refs(per_file: list[dict], all_nodes: list[dict], all_edges: lis
             e["confidence"] = "INFERRED"
             e["confidence_score"] = 0.95
 
+    # Flag, don't filter: on an incremental rebuild ``all_nodes`` is a scratch
+    # copy whose removals never reach the real list, but the node dicts are
+    # shared, so extract() drops flagged stubs after every resolver has run.
     still_used = {e.get("source") for e in all_edges} | {e.get("target") for e in all_edges}
-    all_nodes[:] = [n for n in all_nodes if not (n["id"] in target and n["id"] not in still_used)]
+    for n in all_nodes:
+        if n["id"] in target and n["id"] not in still_used:
+            n[DROP_FLAG] = True
