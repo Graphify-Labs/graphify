@@ -49,17 +49,35 @@ def resolve_yaml_value_refs(
         return
     root = _active_scan_root()
 
+    # File nodes only: a file node's label is its path's last segment. The
+    # endswith test is a cheap filter so the path split runs only on
+    # candidates, not on every symbol in the corpus.
     file_nid: dict[str, str] = {}
+    label: dict[str, str] = {}
     for n in all_nodes:
-        sf, nid = n.get("source_file"), n.get("id")
-        if sf and nid and str(n.get("label", "")) == posixpath.basename(str(sf).replace("\\", "/")):
+        sf, nid, lb = n.get("source_file"), n.get("id"), str(n.get("label", ""))
+        if not nid:
+            continue
+        label[nid] = lb
+        if sf and lb and str(sf).endswith(lb) \
+                and lb == posixpath.basename(str(sf).replace("\\", "/")):
             file_nid.setdefault(_norm(str(sf), root), nid)
 
-    label = {n.get("id"): str(n.get("label", "")) for n in all_nodes}
-    children: dict[str, dict[str, str]] = {}
-    for e in all_edges:
-        if e.get("relation") == "contains":
-            children.setdefault(e.get("source"), {}).setdefault(label.get(e.get("target"), ""), e.get("target"))
+    # `contains` children, kept only under package.json files and their
+    # `scripts` key: the one chain a script reference walks.
+    packages = {nid for nid in file_nid.values() if label.get(nid) == "package.json"}
+    # Two passes, so the result does not depend on edge order.
+    contains = [e for e in all_edges if e.get("relation") == "contains"]
+    scripts_of = {
+        e.get("source"): e.get("target") for e in contains
+        if e.get("source") in packages and label.get(e.get("target")) == "scripts"
+    }
+    script_keys = set(scripts_of.values())
+    by_script_name: dict[str, dict[str, str]] = {}
+    for e in contains:
+        if e.get("source") in script_keys:
+            by_script_name.setdefault(e.get("source"), {}).setdefault(
+                label.get(e.get("target"), ""), e.get("target"))
 
     seen = {(e.get("source"), e.get("target"), e.get("relation")) for e in all_edges}
     for rc in calls:
@@ -72,8 +90,8 @@ def resolve_yaml_value_refs(
         if target_file is None:
             continue
         if rc.get("ref_kind") == "script":
-            scripts = children.get(target_file, {}).get("scripts")
-            target = children.get(scripts, {}).get(str(rc.get("callee") or "")) if scripts else None
+            scripts = scripts_of.get(target_file)
+            target = by_script_name.get(scripts, {}).get(str(rc.get("callee") or "")) if scripts else None
         else:
             target = target_file
         if not target or target == caller or (caller, target, "references") in seen:
