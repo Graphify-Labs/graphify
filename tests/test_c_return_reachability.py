@@ -96,6 +96,36 @@ def test_return_inside_if_does_not_skip_following_sibling(tmp_path: Path, suffix
 
 
 @pytest.mark.parametrize("suffix", [".c", ".cpp"])
+def test_return_inside_preproc_if_skips_later_siblings(tmp_path: Path, suffix: str) -> None:
+    """CubeMX: USER CODE return and dead Error_Handler share a #if body."""
+    root = _real(tmp_path)
+    main = root / f"main{suffix}"
+    eth = root / f"eth{suffix}"
+    main.write_text(
+        "void Error_Handler(void) {}\n"
+        "void eth_phy_config(void) {}\n",
+        encoding="utf-8",
+    )
+    eth.write_text(
+        "void Error_Handler(void);\n"
+        "void eth_phy_config(void);\n"
+        "#define FEATURE 1\n"
+        "void low_level_init(void) {\n"
+        "#if FEATURE\n"
+        "  eth_phy_config();\n"
+        "  return;\n"
+        "  Error_Handler();\n"
+        "#endif\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract([main, eth], root=root, cache_root=root)
+    targets = _call_targets(result, "low_level_init()")
+    assert "eth_phy_config()" in targets
+    assert "Error_Handler()" not in targets
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
 def test_call_inside_return_expression_is_kept(tmp_path: Path, suffix: str) -> None:
     root = _real(tmp_path)
     main = root / f"main{suffix}"
