@@ -1,6 +1,7 @@
 """Structural extraction for Visual Basic .NET source files."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,12 @@ def resolve_vbnet_partial_calls(
             })
 
 
+# A line whose last " opens a string that the line never closes, with no '
+# comment before it. Only such a line can start a multi-line string; the
+# check runs in C so clean files skip the Python scan below.
+_OPEN_STRING_LINE = re.compile(rb"""(?m)^(?:[^'"\r\n]|"[^"\r\n]*")*"[^"\r\n]*\r?$""")
+
+
 def _flatten_multiline_strings(source: bytes) -> bytes:
     """Rewrite string literals that span lines so the VB grammar can parse them.
 
@@ -151,14 +158,11 @@ def extract_vbnet(path: Path) -> dict:
     try:
         source = _read_source_bytes(path)
         parser = Parser(Language(tree_sitter_vb_dotnet.language()))
+        # Flatten multi-line strings before parsing: the grammar's error
+        # recovery on them is both lossy and slow (seconds on a large file).
+        if _OPEN_STRING_LINE.search(source):
+            source = _flatten_multiline_strings(source)
         root = parser.parse(source).root_node
-        if root.has_error:
-            # A multi-line string can lose the rest of the file; reparse with
-            # those strings flattened. A no-op once the grammar handles them.
-            flattened = _flatten_multiline_strings(source)
-            if flattened != source:
-                source = flattened
-                root = parser.parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"VB.NET grammar failed to load: {exc}"}
 
