@@ -39,7 +39,9 @@ to the code node that defines it:
   citing section to cite that file or a symbol from it (#4804). Evidence is
   section-scoped. Classes, snake_case, camelCase, trailing ``()``, or PascalCase
   in export languages carry sufficient evidence on their own. Links to scanned
-  source files also mint doc->file references edges.
+  source files also mint doc->file references edges, and so do code spans
+  holding a scanned source file's path, read relative to the document, else
+  to the scan root, never by suffix (#5224).
   The match is INFERRED (0.95, a named cross-file reference).
 
 An explicit relative cite (``./`` or ``../``) resolves against the document's
@@ -454,6 +456,44 @@ def resolve_markdown_mentions(
         existing.add((caller, target))
         all_edges.append({
             "source": caller,
+            "target": target,
+            "relation": "references",
+            "context": rc.get("context", ""),
+            "confidence": "EXTRACTED",
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+    # Mint page --references--> file edges for code spans holding a scanned
+    # source file's path (#5224), as a link to it would: read relative to the
+    # document, then (unless `./` or `../`) relative to the scan root, never by
+    # suffix. Matched against the scanned corpus, not the disk, so the answer
+    # does not depend on what the extraction cache saw.
+    for rc in mentions:
+        cited = _posix(str(rc.get("path") or ""))
+        if rc.get("file_link") or rc.get("callee") or not cited:
+            continue
+        page = next((nid for nid in _section_chain(str(rc.get("caller_nid", "")))
+                     if nodes_by_id.get(nid, {}).get("node_kind") == "page"), None)
+        if page is None:
+            continue
+        doc = _posix(str(rc.get("source_file", "")))
+        target_file = None
+        for reading in (cited, rc.get("root_path")):
+            if reading and target_file is None:
+                target_file = _match_file_link(
+                    str(reading), doc, citable_files,
+                    form_mismatch=os.path.isabs(doc) and corpus_has_relative_paths,
+                    scan_root=root,
+                )
+        target = code_file_nodes.get(target_file) if target_file else None
+        if target is None or (page, target) in existing:
+            continue
+        existing.add((page, target))
+        all_edges.append({
+            "source": page,
             "target": target,
             "relation": "references",
             "context": rc.get("context", ""),

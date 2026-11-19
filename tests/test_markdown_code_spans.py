@@ -15,7 +15,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from graphify.extract import extract
+from graphify.extract import collect_files, extract
 from graphify.extractors.markdown import _code_span_mention, extract_markdown
 from graphify.markdown_resolution import _match_cited_file
 
@@ -86,6 +86,21 @@ def _extract(tmp_path, files: dict[str, str]):
     try:
         os.chdir(tmp_path)
         return extract([Path(n) for n in files],
+                       cache_root=tmp_path / ".cache", parallel=False)
+    finally:
+        os.chdir(old)
+
+
+def _extract_rooted(tmp_path, files: dict[str, str]):
+    """``_extract`` with the scan root set, as the CLI and watch rebuilds run it."""
+    for name, body in files.items():
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+    old = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        return extract([Path(n) for n in files], root=Path("."),
                        cache_root=tmp_path / ".cache", parallel=False)
     finally:
         os.chdir(old)
@@ -803,6 +818,121 @@ def test_file_citation_evidence_survives_a_rebuild(tmp_path):
     assert payload["third"] == expected, "code re-extracted"
 
 
+def test_file_path_span_references_survive_a_rebuild_and_go_with_the_span(tmp_path):
+    """Span file references survive incremental rebuilds and are pruned with the span (#5224).
+
+    Subprocess for the same reason as the test above.
+    """
+    corpus = tmp_path / "corpus"
+    (corpus / "docs").mkdir(parents=True)
+    (corpus / "src").mkdir()
+    (corpus / "src" / "app.ts").write_text("export function sample() { return 1; }\n")
+    (corpus / "docs" / "other.md").write_text("# Other\n")
+    (corpus / "docs" / "spans.md").write_text(
+        "# Spans\n\nSee `src/app.ts` and `docs/other.md`.\n")
+    result_file = tmp_path / "result.json"
+
+    script = '''
+        import json, sys
+        from pathlib import Path
+        from graphify.watch import _rebuild_code
+
+        corpus = Path(sys.argv[1])
+        result_file = Path(sys.argv[2])
+        spans = corpus / "docs" / "spans.md"
+        other = corpus / "docs" / "other.md"
+        graph_path = corpus / "graphify-out" / "graph.json"
+
+        def reference_edges():
+            data = json.loads(graph_path.read_text(encoding="utf-8"))
+            files = {n["id"]: n.get("source_file") for n in data["nodes"]}
+            return sorted((files[e["source"]], files[e["target"]]) for e in data["links"]
+                          if e.get("relation") == "references")
+
+        def rebuild(*changed):
+            kwargs = {"changed_paths": list(changed)} if changed else {}
+            assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False,
+                                 **kwargs) is True
+            return reference_edges()
+
+        steps = {"first": rebuild()}
+        spans.write_text(spans.read_text() + "\\nMore prose.\\n")
+        steps["doc"] = rebuild(spans)
+        other.write_text("# Other\\n\\nMore.\\n")
+        steps["target"] = rebuild(other)
+        spans.write_text("# Spans\\n\\nSee `src/app.ts`.\\n")
+        steps["removed"] = rebuild(spans)
+        result_file.write_text(json.dumps(steps), encoding="utf-8")
+    '''
+    completed = _run_isolated(script, str(corpus), str(result_file))
+    assert completed.returncode == 0, completed.stderr[-2000:]
+
+    steps = json.loads(result_file.read_text(encoding="utf-8"))
+    both = [["docs/spans.md", "docs/other.md"], ["docs/spans.md", "src/app.ts"]]
+    assert steps["first"] == both
+    assert steps["doc"] == both, "citing document re-extracted"
+    assert steps["target"] == both, "cited document re-extracted"
+    assert steps["removed"] == [["docs/spans.md", "src/app.ts"]], "span removed"
+
+
+def test_explicit_relative_spans_resolve_the_same_in_a_partial_rebuild(tmp_path):
+    """A partial rebuild resolves `./` and `../` document spans like a full build (#5224).
+
+    `./notes.md` from `docs/guide.md` names `docs/notes.md`, which does not
+    exist, so it must not fall through to the root `notes.md`; `./other.md`
+    names the sibling and `../notes.md` the root file. Checked in a corpus with
+    code and in a docs-only corpus.
+    """
+    corpora = {
+        "with_code": {"app.ts": "export const a = 1;\n", "notes.md": "# Notes\n",
+                      "docs/other.md": "# Other\n", "docs/guide.md": "# Guide\n"},
+        "docs_only": {"notes.md": "# Notes\n", "docs/other.md": "# Other\n",
+                      "docs/guide.md": "# Guide\n"},
+    }
+    cited = "# Guide\n\nSee `./notes.md`, `./other.md` and `../notes.md`.\n"
+    for name, files in corpora.items():
+        for variant in ("partial", "full"):
+            root = tmp_path / name / variant
+            for rel, body in files.items():
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(body)
+    result_file = tmp_path / "result.json"
+
+    script = '''
+        import json, sys
+        from pathlib import Path
+        from graphify.watch import _rebuild_code
+
+        base, cited, result_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+
+        def reference_edges(root):
+            data = json.loads((root / "graphify-out" / "graph.json").read_text("utf-8"))
+            files = {n["id"]: n.get("source_file") for n in data["nodes"]}
+            return sorted((files[e["source"]], files[e["target"]]) for e in data["links"]
+                          if e.get("relation") == "references")
+
+        out = {}
+        for name in ("with_code", "docs_only"):
+            partial, full = base / name / "partial", base / name / "full"
+            assert _rebuild_code(partial, no_cluster=True, acquire_lock=False) is True
+            guide = partial / "docs" / "guide.md"
+            guide.write_text(cited)
+            assert _rebuild_code(partial, changed_paths=[guide], no_cluster=True,
+                                 acquire_lock=False) is True
+            (full / "docs" / "guide.md").write_text(cited)
+            assert _rebuild_code(full, no_cluster=True, acquire_lock=False) is True
+            out[name] = {"partial": reference_edges(partial), "full": reference_edges(full)}
+        result_file.write_text(json.dumps(out), encoding="utf-8")
+    '''
+    completed = _run_isolated(script, str(tmp_path), cited, str(result_file))
+    assert completed.returncode == 0, completed.stderr[-2000:]
+
+    expected = [["docs/guide.md", "docs/other.md"], ["docs/guide.md", "notes.md"]]
+    for name, result in json.loads(result_file.read_text(encoding="utf-8")).items():
+        assert result["full"] == expected, name
+        assert result["partial"] == expected, name
+
+
 def test_bare_function_mention_in_a_sibling_section_needs_its_own_evidence(tmp_path):
     """Evidence is section-scoped: a citation in one h1 does not license a sibling h1 (#4804)."""
     r = _extract(tmp_path, {
@@ -864,18 +994,96 @@ def test_pascal_case_in_a_lowercase_convention_language_needs_evidence(tmp_path)
     assert (notes["id"], token["id"]) in _references(r)
 
 
-def test_file_span_is_evidence_but_not_a_doc_file_edge(tmp_path):
-    """A source-file code span licenses bare mentions; only a link is a doc->file reference (#4804)."""
-    r = _extract(tmp_path, {
+def test_file_span_is_evidence_and_a_doc_file_edge(tmp_path):
+    """A source-file code span licenses bare mentions (#4804) and is a doc->file reference (#5224)."""
+    r = _extract_rooted(tmp_path, {
         "web/charts.js": "export function token(name) { return name; }\n",
         "docs/span.md": "# Span\n\n- `web/charts.js` — uses `token` to read styles.\n",
     })
 
     span_node = _node(r, "Span")
+    page = _node(r, "span.md")
     token = _node(r, "token()", "charts.js")
+    charts_file = _node(r, "charts.js", "charts.js")
+    assert set(_references(r)) == {(span_node["id"], token["id"]), (page["id"], charts_file["id"])}
+
+
+def test_file_path_spans_reference_code_and_document_files(tmp_path):
+    """Backticked paths to scanned files are references, exactly like the equivalent links (#5224)."""
+    r = _extract_rooted(tmp_path, {
+        "src/app.ts": "export function sample() { return 1; }\n",
+        "docs/other.md": "# Other\n",
+        "docs/spans.md": "# Spans\n\nSee `src/app.ts` and `docs/other.md`.\n",
+        "docs/links.md": "# Links\n\nSee [code](../src/app.ts) and [doc](./other.md).\n",
+    })
+
+    app_file = _node(r, "app.ts", "app.ts")
+    other_page = _node(r, "other.md")
     refs = _references(r)
-    assert (span_node["id"], token["id"]) in refs
-    assert len(refs) == 1, "a span is evidence, not a link: no doc->file edge"
+    assert set(refs) == {
+        (_node(r, doc)["id"], target["id"])
+        for doc in ("spans.md", "links.md") for target in (app_file, other_page)
+    }
+    for key in refs:
+        assert refs[key]["confidence"] == "EXTRACTED"
+        assert refs[key]["source_location"] == "L3"
+
+
+def test_file_path_span_resolves_relative_to_the_document_first(tmp_path):
+    """A span names the document's sibling before a same-named file elsewhere (#5224)."""
+    r = _extract_rooted(tmp_path, {
+        "docs/notes.md": "# Notes\n",
+        "notes.md": "# Root notes\n",
+        "docs/guide.md": "# Guide\n\nSee `notes.md` and `./notes.md`.\n",
+    })
+
+    guide = _node(r, "guide.md")
+    sibling = _node(r, "notes.md", "docs/")
+    assert set(_references(r)) == {(guide["id"], sibling["id"])}
+
+
+def test_file_path_spans_that_do_not_name_one_scanned_file_yield_no_edge(tmp_path):
+    """Missing, escaping, explicit-relative, fenced, self and non-file spans stay unlinked (#5224).
+
+    A span is read relative to the document, then to the scan root: it is never
+    matched by suffix against a same-named file elsewhere (`x/readme.md`,
+    `config.py`).
+    """
+    # `../../a/x/readme.md` names this file outside the corpus; a suffix match
+    # would wrongly land it on the scanned `a/x/readme.md`.
+    (tmp_path / "a" / "x").mkdir(parents=True)
+    (tmp_path / "a" / "x" / "readme.md").write_text("# Outside\n")
+    r = _extract_rooted(tmp_path / "corpus", {
+        "a/x/readme.md": "# A\n",
+        "b/x/readme.md": "# B\n",
+        "lib/config.py": "def load():\n    pass\n",
+        "top.md": "# Top\n",
+        "top.ts": "export const t = 1;\n",
+        "docs/guide.md": (
+            "# Guide\n\n"
+            "`./top.md` and `./top.ts` name `docs/` files that do not exist,\n"
+            "`x/readme.md` names no file, `docs/missing.md` and `src/missing.ts` do not exist,\n"
+            "`../../a/x/readme.md` escapes the corpus, `docs/guide.md` is this page,\n"
+            "`config.py` has no sibling or root-level file,\n"
+            "and `git log docs/guide.md` or `notes.md#intro` are not file paths.\n\n"
+            "```\n`a/x/readme.md` inside a fence\n```\n"
+        ),
+    })
+
+    assert _references(r) == {}
+
+
+def test_document_span_lands_on_the_page_not_a_heading_named_like_the_file(tmp_path):
+    """A heading whose text is the file name is not the document's node (#5224)."""
+    r = _extract_rooted(tmp_path, {
+        "docs/README.md": "# Intro\n\n## README.md\n",
+        "docs/guide.md": "# Guide\n\nSee `docs/README.md`.\n",
+    })
+
+    guide = _node(r, "guide.md")
+    page = next(n for n in r["nodes"]
+                if n.get("node_kind") == "page" and n["source_file"].endswith("README.md"))
+    assert set(_references(r)) == {(guide["id"], page["id"])}
 
 
 def test_cited_file_fallback_respects_explicit_relative_discipline():
@@ -1014,3 +1222,91 @@ def test_reference_style_use_shared_by_multiple_sections(tmp_path):
     refs = _references(r)
     assert (charts["id"], token["id"]) in refs
     assert (token_notes["id"], token["id"]) in refs
+
+
+def test_file_path_spans_resolve_under_a_symlinked_absolute_root(tmp_path):
+    """An absolute scan root reached through a symlink still links spans (#5224).
+
+    macOS temp dirs live under /var -> /private/var; the extractor sees the
+    resolved root but the document's own path.
+    """
+    real = tmp_path / "real"
+    for rel, body in {
+        "src/app.ts": "export function sample() { return 1; }\n",
+        "docs/other.md": "# Other\n",
+        "docs/spans.md": "# Spans\n\n- `src/app.ts` uses `sample()`; see `docs/other.md`.\n",
+    }.items():
+        (real / rel).parent.mkdir(parents=True, exist_ok=True)
+        (real / rel).write_text(body)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    r = extract(collect_files(link, root=link), root=link,
+                cache_root=tmp_path / ".cache", parallel=False)
+
+    def node(label):
+        return next(n for n in r["nodes"] if n["label"] == label)
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    page = node("spans.md")["id"]
+    assert (page, node("app.ts")["id"]) in refs
+    assert (page, node("other.md")["id"]) in refs
+    assert (node("Spans")["id"], node("sample()")["id"]) in refs, "mention still resolves"
+
+
+def test_file_path_spans_follow_the_scanned_corpus_not_the_cache(tmp_path):
+    """Targets created after the first build are linked on the next full rebuild (#5224).
+
+    The citing document's cached extraction must not freeze the answer: a
+    warm-cache rebuild matches a fresh build of the same tree.
+    """
+    spans_doc = "# Spans\n\nSee `src/new.ts` and `docs/new.md`.\n"
+    for name in ("warm", "fresh"):
+        (tmp_path / name / "docs").mkdir(parents=True)
+        (tmp_path / name / "docs" / "spans.md").write_text(spans_doc)
+    for target in ("src/new.ts", "docs/new.md"):
+        (tmp_path / "fresh" / target).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "fresh" / target).write_text("export const n = 1;\n"
+                                                 if target.endswith(".ts") else "# New\n")
+
+    script = '''
+        import json, sys
+        from pathlib import Path
+        from graphify.watch import _rebuild_code
+
+        root, create, out = Path(sys.argv[1]), sys.argv[2] == "1", Path(sys.argv[3])
+        assert _rebuild_code(root, no_cluster=True, acquire_lock=False) is True
+        if create:
+            (root / "src").mkdir()
+            (root / "src" / "new.ts").write_text("export const n = 1;\\n")
+            (root / "docs" / "new.md").write_text("# New\\n")
+            assert _rebuild_code(root, no_cluster=True, acquire_lock=False) is True
+        data = json.loads((root / "graphify-out" / "graph.json").read_text("utf-8"))
+        files = {n["id"]: n.get("source_file") for n in data["nodes"]}
+        out.write_text(json.dumps(sorted(
+            (files[e["source"]], files[e["target"]]) for e in data["links"]
+            if e.get("relation") == "references")), encoding="utf-8")
+    '''
+    results = {}
+    for name, create in (("warm", "1"), ("fresh", "0")):
+        out = tmp_path / f"{name}.json"
+        completed = _run_isolated(script, str(tmp_path / name), create, str(out))
+        assert completed.returncode == 0, completed.stderr[-2000:]
+        results[name] = json.loads(out.read_text(encoding="utf-8"))
+
+    expected = [["docs/spans.md", "docs/new.md"], ["docs/spans.md", "src/new.ts"]]
+    assert results["fresh"] == expected
+    assert results["warm"] == expected
+
+
+def test_unscanned_file_does_not_shadow_a_scanned_one_or_its_evidence(tmp_path):
+    """A same-named file on disk that is not scanned changes nothing (#5224, #4804)."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "charts.js").write_text("export function token() {}\n")
+    r = _extract_rooted(tmp_path, {
+        "web/charts.js": "export function token(name) { return name; }\n",
+        "docs/span.md": "# Span\n\n- `charts.js` uses `token` to read styles.\n",
+    })
+
+    span_node = _node(r, "Span")
+    token = _node(r, "token()", "web/charts.js")
+    assert set(_references(r)) == {(span_node["id"], token["id"])}
