@@ -2799,6 +2799,12 @@ def _rebuild_code(
                         }
                         if fwd_metadata:
                             ctx_node["metadata"] = fwd_metadata
+                    # #5227: the ADR/RFC citation pass finds a decision
+                    # document by its page node and first heading.
+                    if node.get("file_type") == "document":
+                        for doc_key in ("node_kind", "source_location"):
+                            if node.get(doc_key):
+                                ctx_node[doc_key] = node[doc_key]
                     resolution_context_nodes.append(ctx_node)
                 # #2437: the member-call resolvers map receiver type -> owning
                 # class -> method through contains/method edges; hand over the
