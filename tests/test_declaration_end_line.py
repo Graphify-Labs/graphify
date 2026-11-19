@@ -65,10 +65,10 @@ def test_declaration_ranges(tmp_path, suffix, source, label, start, end):
     node = _node(result, label)
     assert node["source_file"] == str(path)
     assert node["source_location"] == f"L{start}"
-    assert node.get("metadata", {}).get("end_line") == end, node
+    assert node.get("source_end_location") == f"L{end}", node
     for other in result["nodes"]:
         if other["label"] == path.name or not other.get("source_file"):
-            assert "end_line" not in other.get("metadata", {}), other
+            assert "source_end_location" not in other, other
 
 
 @pytest.mark.parametrize("end_point, expected", [((4, 0), 4), ((4, 3), 5), ((0, 5), 1)])
@@ -84,7 +84,8 @@ def test_go_interface_marker_preserves_range(tmp_path):
     path.write_text("package p\ntype Runner interface {\n Run()\n}\n", encoding="utf-8")
     node = _node(_extract_file(path), "Runner")
     assert node["source_location"] == "L2"
-    assert node["metadata"] == {"end_line": 4, "language": "go", "kind": "interface"}
+    assert node["metadata"] == {"language": "go", "kind": "interface"}
+    assert node["source_end_location"] == "L4"
 
 
 def test_go_receiver_owner_has_no_range_and_real_type_wins(tmp_path):
@@ -95,13 +96,13 @@ def test_go_receiver_owner_has_no_range_and_real_type_wins(tmp_path):
     )
     result = _extract_file(path)
     method = _node(result, ".Run()")
-    assert method.get("metadata", {}).get("end_line") == 3
+    assert method.get("source_end_location") == "L3"
     owner = _node(result, "Box")
     assert owner["source_location"] == "L4"
-    assert owner.get("metadata", {}).get("end_line") == 6
+    assert owner.get("source_end_location") == "L6"
     path.write_text("package p\nfunc (b Foreign) Run() {}\n", encoding="utf-8")
     owner = _node(_extract_file(path), "Foreign")
-    assert "end_line" not in owner.get("metadata", {})
+    assert "source_end_location" not in owner
 
 
 def test_objc_declaration_and_definition_ranges_survive_pipeline(tmp_path, monkeypatch):
@@ -121,8 +122,8 @@ def test_objc_declaration_and_definition_ranges_survive_pipeline(tmp_path, monke
         assert node["source_location"] == f"L{source_start}"
         assert node["definition_file"] == "Box.m"
         assert node["definition_location"] == f"L{def_start}"
-        assert node.get("metadata", {}).get("end_line") == source_end
-        assert node.get("metadata", {}).get("definition_end_line") == def_end
+        assert node.get("source_end_location") == f"L{source_end}"
+        assert node.get("definition_end_location") == f"L{def_end}"
     before = copy.deepcopy(result)
     _merge_decl_def_classes(result["nodes"], result["edges"])
     assert result == before
@@ -130,12 +131,13 @@ def test_objc_declaration_and_definition_ranges_survive_pipeline(tmp_path, monke
     prefixed = prefix_graph_for_global(graph, "example")
     for node in result["nodes"]:
         if node["label"] in {"Box", "-run"}:
-            assert graph.nodes[node["id"]]["metadata"] == node["metadata"]
-            assert prefixed.nodes[f"example::{node['id']}"]["metadata"] == node["metadata"]
+            for key in ("source_end_location", "definition_end_location"):
+                assert graph.nodes[node["id"]][key] == node[key]
+                assert prefixed.nodes[f"example::{node['id']}"][key] == node[key]
     output = tmp_path / "graph.json"
     assert to_json(graph, {}, str(output))
     saved = json.loads(output.read_text())
-    assert _node(saved, "-run")["metadata"]["definition_end_line"] == 6
+    assert _node(saved, "-run")["definition_end_location"] == "L6"
     import graphify.global_graph as global_graph
 
     global_dir = tmp_path / "global"
@@ -145,7 +147,7 @@ def test_objc_declaration_and_definition_ranges_survive_pipeline(tmp_path, monke
     global_graph.global_add(output, "example")
     stored = global_graph._load_global_graph()
     method_id = _node(result, "-run")["id"]
-    assert stored.nodes[f"example::{method_id}"]["metadata"]["definition_end_line"] == 6
+    assert stored.nodes[f"example::{method_id}"]["definition_end_location"] == "L6"
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -166,10 +168,10 @@ def test_objc_extension_definition_ranges_survive_header_merge(tmp_path, reverse
         node = _node(result, label)
         assert node["source_file"] == "Box.h"
         assert node["source_location"] == f"L{source_start}"
-        assert node["metadata"]["end_line"] == source_end
+        assert node["source_end_location"] == f"L{source_end}"
         assert node["definition_file"] == "Box.m"
         assert node["definition_location"] == f"L{definition_start}"
-        assert node["metadata"]["definition_end_line"] == definition_end
+        assert node["definition_end_location"] == f"L{definition_end}"
     before = copy.deepcopy(result)
     _merge_decl_def_classes(result["nodes"], result["edges"])
     assert result == before
@@ -180,15 +182,16 @@ def test_duplicate_merge_fills_range_only_for_matching_location(reverse):
     from graphify.dedup import _merge_missing_attributes
 
     keeper = {"source_file": "sample.py", "source_location": "L2", "metadata": {"kind": "fn"}}
-    same = {"source_file": "sample.py", "source_location": "L2", "metadata": {"end_line": 4}}
+    same = {"source_file": "sample.py", "source_location": "L2", "source_end_location": "L4"}
     first, second = (same, keeper) if reverse else (keeper, same)
     merged = _merge_missing_attributes(first, second)
-    assert merged["metadata"]["end_line"] == 4
+    assert merged["source_end_location"] == "L4"
     assert first == (same if reverse else keeper)
     different = {**same, "source_location": "L8"}
-    assert "end_line" not in _merge_missing_attributes(keeper, different)["metadata"]
-    no_metadata = {k: v for k, v in keeper.items() if k != "metadata"}
-    assert "end_line" not in _merge_missing_attributes(no_metadata, different)["metadata"]
+    assert "source_end_location" not in _merge_missing_attributes(keeper, different)
+    no_location = {k: v for k, v in keeper.items() if k != "source_location"}
+    other_file = {**same, "source_file": "other.py"}
+    assert "source_end_location" not in _merge_missing_attributes(no_location, other_file)
 
 
 def test_objc_same_file_keeps_both_sites(tmp_path):
@@ -203,10 +206,10 @@ def test_objc_same_file_keeps_both_sites(tmp_path):
         ("Box", 3, 4, 8), ("-run", 2, 5, 7),
     ]:
         node = _node(result, label)
-        assert node["metadata"]["end_line"] == source_end
+        assert node["source_end_location"] == f"L{source_end}"
         assert node.get("definition_file") == str(path)
         assert node.get("definition_location") == f"L{definition_start}"
-        assert node["metadata"].get("definition_end_line") == definition_end
+        assert node.get("definition_end_location") == f"L{definition_end}"
 
 
 def test_objc_enum_uses_original_declaration(tmp_path):
@@ -220,8 +223,8 @@ def test_objc_enum_uses_original_declaration(tmp_path):
     result = extract_objc(path)
     enum = _node(result, "Color")
     assert enum["source_location"] == "L1"
-    assert enum.get("metadata", {}).get("end_line") == 5
-    assert _node(result, "Red").get("metadata", {}).get("end_line") == 2
+    assert enum.get("source_end_location") == "L5"
+    assert _node(result, "Red").get("source_end_location") == "L2"
 
 
 def test_cached_extraction_retains_ranges(tmp_path):
@@ -229,7 +232,7 @@ def test_cached_extraction_retains_ranges(tmp_path):
     path.write_text("def run():\n    return 1\n", encoding="utf-8")
     first = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
     second = extract([path], root=tmp_path, cache_root=tmp_path, parallel=False)
-    assert _node(first, "run()")["metadata"]["end_line"] == 2
+    assert _node(first, "run()")["source_end_location"] == "L2"
     assert _node(second, "run()") == _node(first, "run()")
 
 
@@ -249,15 +252,16 @@ def test_previous_schema_cache_is_retired(tmp_path, monkeypatch):
 def test_build_duplicate_preserves_range_with_existing_metadata(reverse):
     complete = {
         "id": "run", "label": "run()", "source_file": "sample.py",
-        "source_location": "L2", "file_type": "code", "metadata": {"end_line": 4},
+        "source_location": "L2", "file_type": "code", "source_end_location": "L4",
     }
-    duplicate = {**complete, "metadata": {"kind": "function", "arity": 0}}
+    duplicate = {k: v for k, v in complete.items() if k != "source_end_location"}
+    duplicate["metadata"] = {"kind": "function", "arity": 0}
     nodes = [complete, duplicate]
     if reverse:
         nodes.reverse()
     graph = build([{"nodes": nodes, "edges": []}])
-    assert graph.nodes["run"]["metadata"]["end_line"] == 4
-    assert complete["metadata"] == {"end_line": 4}
+    assert graph.nodes["run"]["source_end_location"] == "L4"
+    assert "metadata" not in complete
 
 
 @pytest.mark.parametrize("header_has_definition", [False, True])
@@ -265,26 +269,26 @@ def test_build_duplicate_preserves_range_with_existing_metadata(reverse):
 def test_definition_merge_uses_explicit_implementation_site(header_has_definition, known_end):
     header = {
         "id": "box", "label": "Box", "file_type": "code", "source_file": "Box.h",
-        "source_location": "L1", "metadata": {"end_line": 3},
+        "source_location": "L1", "source_end_location": "L3",
     }
     if header_has_definition:
-        header.update(definition_file="Box.m", definition_location="L8")
-        header["metadata"]["definition_end_line"] = 12
+        header.update(definition_file="Box.m", definition_location="L8", definition_end_location="L12")
     impl = {
-        **header, "source_file": "Box.m", "source_location": "L2",
-        "definition_file": "Box.m", "definition_location": "L5", "metadata": {"end_line": 4},
+        **header, "source_file": "Box.m", "source_location": "L2", "source_end_location": "L4",
+        "definition_file": "Box.m", "definition_location": "L5",
     }
+    impl.pop("definition_end_location", None)
     if known_end:
-        impl["metadata"]["definition_end_line"] = 9
+        impl["definition_end_location"] = "L9"
     nodes = [header, impl]
     _merge_decl_def_classes(nodes, [])
     assert nodes == [header]
     assert header["source_file"] == "Box.h"
     assert header["source_location"] == "L1"
-    assert header["metadata"]["end_line"] == 3
+    assert header["source_end_location"] == "L3"
     assert header["definition_file"] == "Box.m"
     assert header["definition_location"] == "L5"
-    assert header["metadata"].get("definition_end_line") == (9 if known_end else None)
+    assert header.get("definition_end_location") == ("L9" if known_end else None)
     before = copy.deepcopy(header)
     _merge_decl_def_classes(nodes, [])
     assert header == before
@@ -294,25 +298,25 @@ def test_definition_merge_uses_explicit_implementation_site(header_has_definitio
 def test_definition_merge_keeps_separate_ranges(reverse):
     header = {
         "id": "box", "label": "Box", "file_type": "code", "source_file": "Box.h",
-        "source_location": "L1", "metadata": {"end_line": 3},
+        "source_location": "L1", "source_end_location": "L3",
     }
     impl = {
         **header, "source_file": "Box.m", "source_location": "L10",
-        "metadata": {"end_line": 20},
+        "source_end_location": "L20",
     }
     nodes = [header, impl]
     if reverse:
         nodes.reverse()
     _merge_decl_def_classes(nodes, [])
     assert nodes == [header]
-    assert header["metadata"] == {"end_line": 3, "definition_end_line": 20}
+    assert (header["source_end_location"], header["definition_end_location"]) == ("L3", "L20")
     _merge_decl_def_classes(nodes, [])
-    assert header["metadata"] == {"end_line": 3, "definition_end_line": 20}
-    unknown_end = {**impl, "metadata": {}}
+    assert (header["source_end_location"], header["definition_end_location"]) == ("L3", "L20")
+    unknown_end = {k: v for k, v in impl.items() if k != "source_end_location"}
     nodes.append(unknown_end)
     _merge_decl_def_classes(nodes, [])
-    assert "definition_end_line" not in header["metadata"]
-    assert header["metadata"]["end_line"] == 3
+    assert "definition_end_location" not in header
+    assert header["source_end_location"] == "L3"
 
 
 def test_query_and_get_node_print_the_declaration_range(tmp_path):
@@ -328,5 +332,5 @@ def test_query_and_get_node_print_the_declaration_range(tmp_path):
     assert "loc=L1-L3 " in text
     # A one-line declaration keeps the start-only form.
     assert "loc=L6 " in text
-    assert serve._node_location({"source_location": "L4", "metadata": {"end_line": "9"}}) == "L4"
-    assert serve._node_location({"source_location": "L4", "metadata": "x"}) == "L4"
+    assert serve._node_location({"source_location": "L4", "source_end_location": 9}) == "L4"
+    assert serve._node_location({"source_location": "L4", "source_end_location": "L2"}) == "L4"

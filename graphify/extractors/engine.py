@@ -7736,8 +7736,6 @@ def _extract_generic(
             return
         seen_ids.add(nid)
         merged = dict(metadata or {})
-        if ast_node is not None:
-            merged["end_line"] = _inclusive_end_line(ast_node)
         if namespace_stack:
             merged.setdefault("namespace", ".".join(namespace_stack))
         if scope_stack and node_type != "namespace":
@@ -7749,6 +7747,8 @@ def _extract_generic(
             "source_file": str_path,
             "source_location": f"L{line}",
         }
+        if ast_node is not None:
+            node["source_end_location"] = f"L{_inclusive_end_line(ast_node)}"
         if node_type:
             node["type"] = node_type
         if merged:

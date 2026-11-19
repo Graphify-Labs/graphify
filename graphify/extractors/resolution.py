@@ -4151,18 +4151,12 @@ def _merge_decl_def_classes(
             # An ObjC implementation record may retain a class extension as its source site.
             site = ("definition" if definition.get("definition_file") and definition.get("definition_location")
                     else "source")
-            for field in ("file", "location"):
+            # A missing implementation end must not leave the declaration's end in place.
+            keeper.pop("definition_end_location", None)
+            for field in ("file", "location", "end_location"):
                 value = definition.get(f"{site}_{field}")
                 if value:
                     keeper[f"definition_{field}"] = value
-            metadata = dict(keeper.get("metadata") or {})
-            metadata.pop("definition_end_line", None)
-            range_key = "definition_end_line" if site == "definition" else "end_line"
-            end_line = (definition.get("metadata") or {}).get(range_key)
-            if end_line is not None:
-                metadata["definition_end_line"] = end_line
-            if metadata:
-                keeper["metadata"] = metadata
 
         for node in group:
             if node is not keeper:

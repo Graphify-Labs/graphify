@@ -137,7 +137,7 @@ def extract_objc(path: Path) -> dict:
             node: dict = {"id": nid, "label": label, "file_type": "code",
                     "source_file": str_path, "source_location": f"L{line}"}
             if ast_node is not None:
-                node["metadata"] = {"end_line": _inclusive_end_line(ast_node)}
+                node["source_end_location"] = f"L{_inclusive_end_line(ast_node)}"
             for marker in markers:
                 node[marker] = True
             nodes.append(node)
@@ -148,9 +148,7 @@ def extract_objc(path: Path) -> dict:
             if not record.get("definition_file"):
                 record["definition_file"] = str_path
                 record["definition_location"] = f"L{line}"
-                record.setdefault("metadata", {})["definition_end_line"] = (
-                    _inclusive_end_line(ast_node)
-                )
+                record["definition_end_location"] = f"L{_inclusive_end_line(ast_node)}"
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,

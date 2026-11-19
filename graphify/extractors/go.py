@@ -360,10 +360,10 @@ def extract_go(path: Path) -> dict:
             nodes.append(record)
             node_by_id[nid] = record
         record = node_by_id.get(nid)
-        if ast_node is not None and record is not None and "metadata" not in record:
+        if ast_node is not None and record is not None and "source_end_location" not in record:
             # A receiver owner may precede its real type declaration in this file.
             record["source_location"] = f"L{line}"
-            record["metadata"] = {"end_line": _inclusive_end_line(ast_node)}
+            record["source_end_location"] = f"L{_inclusive_end_line(ast_node)}"
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -832,7 +832,7 @@ def extract_go(path: Path) -> dict:
                 if package_path:
                     n["_go_package_path"] = package_path
         if n["id"] in interface_nids:
-            n.setdefault("metadata", {}).update(language="go", kind="interface")
+            n["metadata"] = {"language": "go", "kind": "interface"}
 
     # The field types of the structs this file declares ride on the file node, keyed by
     # struct id, so a method in a sibling file can type `s.field` (#3368). Not on the

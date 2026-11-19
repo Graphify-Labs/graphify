@@ -252,16 +252,15 @@ class _GraphContextCache:
 
 
 def _node_location(d: dict) -> str:
-    """``L42-L58`` when the node records its declaration end, else its ``source_location``.
+    """``L42-L58`` when the node records ``source_end_location``, else its ``source_location``.
 
     The range is printed so an agent reads the declaration, not the whole file.
     """
     loc = str(d.get("source_location") or "")
-    metadata = d.get("metadata")
-    end = metadata.get("end_line") if isinstance(metadata, dict) else None
-    m = re.fullmatch(r"L(\d+)", loc)
-    if m and type(end) is int and end > int(m.group(1)):
-        return f"{loc}-L{end}"
+    start = re.fullmatch(r"L(\d+)", loc)
+    end = re.fullmatch(r"L(\d+)", str(d.get("source_end_location") or ""))
+    if start and end and int(end.group(1)) > int(start.group(1)):
+        return f"{loc}-{end.group(0)}"
     return loc
 
 
