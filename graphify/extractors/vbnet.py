@@ -150,7 +150,15 @@ def extract_vbnet(path: Path) -> dict:
 
     try:
         source = _read_source_bytes(path)
-        root = Parser(Language(tree_sitter_vb_dotnet.language())).parse(source).root_node
+        parser = Parser(Language(tree_sitter_vb_dotnet.language()))
+        root = parser.parse(source).root_node
+        if root.has_error:
+            # A multi-line string can lose the rest of the file; reparse with
+            # those strings flattened. A no-op once the grammar handles them.
+            flattened = _flatten_multiline_strings(source)
+            if flattened != source:
+                source = flattened
+                root = parser.parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"VB.NET grammar failed to load: {exc}"}
 
