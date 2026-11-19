@@ -35,6 +35,7 @@ from .pascal_resolution import resolve_pascal_inherited_calls
 from .pascal_singleton_resolution import resolve_pascal_singleton_calls
 from .cpp_resolution import CppTypeLookup
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
+from .doc_ref_resolution import DROP_FLAG as DOC_REF_DROP_FLAG, resolve_doc_refs
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.rcfile import (
@@ -10076,6 +10077,11 @@ register_language_resolver(
         "markdown_mentions", MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
     )
 )
+# ADR/RFC citation stubs from JS/TS comments -> the one decision document that
+# claims the id (#5227). Only JS/TS mints doc_ref stubs, so it gates on them.
+register_language_resolver(
+    LanguageResolver("doc_ref_citations", frozenset(_JS_TS_SUFFIXES), resolve_doc_refs)
+)
 
 
 # Inline markdown link: [text](target "optional title"). The negative lookbehind
@@ -13632,6 +13638,7 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+    all_nodes[:] = [n for n in all_nodes if not n.pop(DOC_REF_DROP_FLAG, False)]
     # Every call is resolved. Half of the corpus's rows are these.
     del all_raw_calls, per_file
 

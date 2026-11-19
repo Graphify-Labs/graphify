@@ -2718,6 +2718,29 @@ def _rebuild_code(
                     available_paths=code_files,
                     changed_paths=[Path(p) for p in deleted_source_identities],
                 )
+                # #5227: a JS/TS `cites` edge resolves against whichever doc
+                # claims the ADR/RFC id. When a doc is added, edited or
+                # deleted, re-extract the files that cite, or their edges keep
+                # pointing at the old answer (or at a deleted page).
+                from graphify.markdown_resolution import MARKDOWN_MENTION_SUFFIXES
+                if any(
+                    Path(str(p)).suffix.lower() in MARKDOWN_MENTION_SUFFIXES
+                    for p in [*extract_targets, *deleted_source_identities]
+                ):
+                    citing = {
+                        ctx_paths.absolute_identity(e.get("source_file"), project_root)
+                        for e in ctx_graph.get("links", ctx_graph.get("edges", []))
+                        if e.get("relation") == "cites" and e.get("source_file")
+                    }
+                    citing.discard(None)
+                    targets = {
+                        ctx_paths.absolute_identity(str(p), project_root) for p in extract_targets
+                    }
+                    extract_targets = [*extract_targets, *(
+                        p for p in code_files
+                        if (i := ctx_paths.absolute_identity(str(p), project_root)) in citing
+                        and i not in targets
+                    )]
                 ctx_live = {
                     ctx_paths.absolute_identity(str(p), project_root) for p in code_files
                 }
@@ -2799,6 +2822,12 @@ def _rebuild_code(
                         }
                         if fwd_metadata:
                             ctx_node["metadata"] = fwd_metadata
+                    # #5227: the ADR/RFC citation pass finds a decision
+                    # document by its page node and first heading.
+                    if node.get("file_type") == "document":
+                        for doc_key in ("node_kind", "source_location"):
+                            if node.get(doc_key):
+                                ctx_node[doc_key] = node[doc_key]
                     resolution_context_nodes.append(ctx_node)
                 # #2437: the member-call resolvers map receiver type -> owning
                 # class -> method through contains/method edges; hand over the
