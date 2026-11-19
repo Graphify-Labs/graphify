@@ -47,7 +47,7 @@ Napište `/graphify` ve svém AI programovacím asistentovi a ten zmapuje celý 
   <em>Kódová báze FastAPI zmapovaná nástrojem graphify. Každý uzel je koncept, barvy jsou detekované komunity a celek je klikatelný v graph.html.</em>
 </p>
 
-**Začínáme** (30 sekund). Vyžaduje Python 3.10+ a uv (nebo pipx):
+**Začínáme** (30 sekund). Vyžaduje Python 3.11+ a uv (nebo pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Každý systém běžel na stejném harnessu se stejným modelem a rozpočty, ho
 
 | Požadavek | Minimum | Kontrola | Instalace |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(doporučeno)* | jakékoli | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativa)* | jakékoli | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Toto zapíše malý konfigurační soubor, který řekne vašemu asistentovi, ab
 
 `GRAPH_REPORT.md` je stále k dispozici pro širokou architektonickou revizi.
 
-Přesně které soubory každá platforma zapisuje (CodeBuddy `CODEBUDDY.md` + hooky `PreToolUse`, Codex `AGENTS.md`, nativní plugin `.kilo` u Kilo, pravidlo `alwaysApply` u Cursoru a tak dále) je pokryto v **[Nastavení vždy zapnuto](https://docs.graphify.com/guides/always-on)**.
+Přesně které soubory každá platforma zapisuje (CodeBuddy `CODEBUDDY.md` + hooky `PreToolUse`, Codex `AGENTS.md`, nativní plugin `.kilo` u Kilo, pravidlo `alwaysApply` u Cursoru a tak dále) je pokryto v **[Nastavení vždy zapnuto](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Chcete-li odebrat graphify ze všech platforem najednou: `graphify uninstall` (přidejte `--purge`, chcete-li také smazat `graphify-out/`). Nebo použijte příkaz pro jednotlivou platformu (např. `graphify claude uninstall`).
 

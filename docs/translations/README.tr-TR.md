@@ -47,7 +47,7 @@ Yapay zeka destekli kodlama asistanınıza `/graphify` yazın; tüm projenizi (k
   <em>graphify tarafından eşlenen FastAPI kod tabanı. Her düğüm bir kavram, renkler tespit edilen topluluklar ve bütün yapı graph.html içinde tıklanabilir.</em>
 </p>
 
-**Başlayın** (30 saniye). Python 3.10+ ve uv (ya da pipx) gerektirir:
+**Başlayın** (30 saniye). Python 3.11+ ve uv (ya da pipx) gerektirir:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Tam kılavuzlar ve başvuru kaynakları **[docs.graphify.com](https://docs.graph
 
 | Gereksinim | Minimum | Kontrol | Kurulum |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(önerilir)* | herhangi | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatif)* | herhangi | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Bu, asistanınıza kod tabanı soruları için bilgi grafiğine başvurmasını 
 
 `GRAPH_REPORT.md` geniş mimari inceleme için hâlâ kullanılabilir.
 
-Her platformun tam olarak hangi dosyaları yazdığı (CodeBuddy'nin `CODEBUDDY.md` + `PreToolUse` hook'ları, Codex'in `AGENTS.md`'si, Kilo'nun yerel `.kilo` eklentisi, Cursor'un `alwaysApply` kuralı vb.) şurada ele alınır: **[Daima açık kurulum](https://docs.graphify.com/guides/always-on)**.
+Her platformun tam olarak hangi dosyaları yazdığı (CodeBuddy'nin `CODEBUDDY.md` + `PreToolUse` hook'ları, Codex'in `AGENTS.md`'si, Kilo'nun yerel `.kilo` eklentisi, Cursor'un `alwaysApply` kuralı vb.) şurada ele alınır: **[Daima açık kurulum](https://docs.graphify.com/open-source/vibe-coding)**.
 
 graphify'ı tüm platformlardan aynı anda kaldırmak için: `graphify uninstall` (`graphify-out/` dizinini de silmek için `--purge` ekleyin). Veya platform bazlı komutu kullanın (ör. `graphify claude uninstall`).
 

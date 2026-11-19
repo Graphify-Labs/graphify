@@ -49,7 +49,7 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
   <em>The FastAPI codebase mapped by graphify. Every node is a concept, colors are detected communities, and the whole thing is clickable in graph.html.</em>
 </p>
 
-**Get started** (30 seconds). Needs Python 3.10+ and uv (or pipx):
+**Get started** (30 seconds). Needs Python 3.11+ and uv (or pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -161,7 +161,7 @@ Full guides and reference live at **[docs.graphify.com](https://docs.graphify.co
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -313,7 +313,7 @@ This writes a small config file that tells your assistant to consult the knowled
 
 `GRAPH_REPORT.md` is still available for broad architecture review.
 
-Exactly which files each platform writes (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, Kilo's native `.kilo` plugin, Cursor's `alwaysApply` rule, and so on) is covered in **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Exactly which files each platform writes (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, Kilo's native `.kilo` plugin, Cursor's `alwaysApply` rule, and so on) is covered in **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
 

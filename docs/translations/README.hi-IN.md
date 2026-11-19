@@ -47,7 +47,7 @@
   <em>graphify द्वारा मैप किया गया FastAPI कोडबेस। हर नोड एक अवधारणा है, रंग पहचाने गए समुदाय हैं, और पूरी चीज़ graph.html में क्लिक करने योग्य है।</em>
 </p>
 
-**शुरू करें** (30 सेकंड)। Python 3.10+ और uv (या pipx) चाहिए:
+**शुरू करें** (30 सेकंड)। Python 3.11+ और uv (या pipx) चाहिए:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | आवश्यकता | न्यूनतम | जांचें | इंस्टॉल करें |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(अनुशंसित)* | कोई भी | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(वैकल्पिक)* | कोई भी | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Pi के पास कोई `PreToolUse` hook नहीं है, इसल�
 
 `GRAPH_REPORT.md` व्यापक आर्किटेक्चर समीक्षा के लिए अब भी उपलब्ध है।
 
-हर प्लेटफॉर्म वास्तव में कौन-सी फाइलें लिखता है (CodeBuddy की `CODEBUDDY.md` + `PreToolUse` hooks, Codex की `AGENTS.md`, Kilo का नेटिव `.kilo` प्लगइन, Cursor का `alwaysApply` नियम, इत्यादि) यह **[Always-on setup](https://docs.graphify.com/guides/always-on)** में शामिल है।
+हर प्लेटफॉर्म वास्तव में कौन-सी फाइलें लिखता है (CodeBuddy की `CODEBUDDY.md` + `PreToolUse` hooks, Codex की `AGENTS.md`, Kilo का नेटिव `.kilo` प्लगइन, Cursor का `alwaysApply` नियम, इत्यादि) यह **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** में शामिल है।
 
 सभी प्लेटफॉर्म से graphify को एक साथ हटाने के लिए: `graphify uninstall` (`graphify-out/` को भी हटाने के लिए `--purge` जोड़ें)। या प्रति-प्लेटफॉर्म कमांड उपयोग करें (उदा. `graphify claude uninstall`)।
 

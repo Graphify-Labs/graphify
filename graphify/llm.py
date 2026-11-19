@@ -1198,8 +1198,8 @@ def _json_object_candidates(text: str) -> list[int]:
     return preferred + rest
 
 
-def _json_fragment_candidates(text: str) -> "Iterator[str]":
-    """Yield candidate JSON texts from a model reply, most-likely first.
+def _json_fragment_candidates(text: str) -> "Iterator[tuple[str, int, int]]":
+    """Yield candidate JSON texts and source spans, most-likely first.
 
     Two sources, in order:
 
@@ -1215,14 +1215,15 @@ def _json_fragment_candidates(text: str) -> "Iterator[str]":
     handling did, cutting from the first ``` to the last — let a fence in the
     narration truncate the real answer before it was ever parsed (#2882).
     """
-    for _lang, body in sorted(
-        _FENCE_RE.findall(text), key=lambda b: b[0].strip().lower() not in ("json", "")
+    for match in sorted(
+        _FENCE_RE.finditer(text),
+        key=lambda m: m.group(1).strip().lower() not in ("json", ""),
     ):
-        yield body.strip()
+        yield match.group(2).strip(), match.start(2), match.end(2)
     for start in _json_object_candidates(text):
         blob = _balanced_object(text, start)
         if blob is not None:
-            yield blob
+            yield blob, start, start + len(blob)
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -1238,6 +1239,12 @@ def _parse_llm_json(raw: str) -> dict:
     extraction keys is kept only as a last resort — reasoning-first models
     routinely restate the schema (``{"description": "graph fragment"}``) before
     answering, and the narration must never shadow the answer that follows it.
+
+    Independent nonempty fragments are ambiguous: returning only the first
+    would cache missing content as complete, while merging could promote a
+    reasoning sketch to fact. Return empty so hollow retry handles the response.
+    Source spans exclude nested candidates; identical graph payloads discovered
+    more than once are one answer, not ambiguity.
     """
     if len(raw) > _LLM_JSON_MAX_BYTES:
         print(
@@ -1253,9 +1260,21 @@ def _parse_llm_json(raw: str) -> dict:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
             return _sanitize_fragment(parsed)
-        # Top-level array/scalar (common LLM output) is not a usable graph
-        # fragment; fall through rather than returning a non-dict that callers
-        # will try to subscript (e.g. result["input_tokens"]).
+        if isinstance(parsed, list):
+            frags = [
+                item for item in parsed
+                if isinstance(item, dict)
+                and any(_sanitize_fragment(item).get(k) for k in _FRAGMENT_KEYS)
+            ]
+            # A single-element array wrapping one valid fragment is unambiguous;
+            # unwrap it. Zero or two-plus fragments are refused (fail closed).
+            if len(frags) == 1:
+                return _sanitize_fragment(frags[0])
+            print(
+                "[graphify] LLM returned an array instead of one graph fragment; "
+                "refusing to accept only its first object.", file=sys.stderr,
+            )
+            return {"nodes": [], "edges": [], "hyperedges": []}
     except json.JSONDecodeError:
         pass
 
@@ -1266,11 +1285,31 @@ def _parse_llm_json(raw: str) -> dict:
     # object would (#2882).
     empty_fragment: dict | None = None   # right shape, nothing in it
     fallback: dict | None = None         # parses, but not a fragment at all
-    for candidate in _json_fragment_candidates(stripped):
+    content: list[tuple[dict, int, int]] = []
+    for candidate, start, end in _json_fragment_candidates(stripped):
+        if any(left <= start and end <= right for _, left, right in content):
+            continue
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError:
             continue
+        if isinstance(parsed, list):
+            frags = [
+                item for item in parsed
+                if isinstance(item, dict)
+                and any(_sanitize_fragment(item).get(k) for k in _FRAGMENT_KEYS)
+            ]
+            if len(frags) > 1:
+                print(
+                    "[graphify] LLM returned an array of graph fragments; "
+                    "refusing to accept only its first object.", file=sys.stderr,
+                )
+                return {"nodes": [], "edges": [], "hyperedges": []}
+            # A single-element array wrapping one valid fragment is unambiguous;
+            # unwrap and process it as that object. An array with no fragment
+            # falls through to the non-dict guard below, which skips it.
+            if len(frags) == 1:
+                parsed = frags[0]
         if not isinstance(parsed, dict):
             continue
         if any(k in parsed for k in _FRAGMENT_KEYS):
@@ -1283,11 +1322,28 @@ def _parse_llm_json(raw: str) -> dict:
             # empty-fragment tier so the genuine fragment below still wins.
             cand = _sanitize_fragment(parsed)
             if any(cand.get(k) for k in _FRAGMENT_KEYS):
-                return cand
+                content.append((cand, start, end))
+                continue
             if empty_fragment is None:
                 empty_fragment = cand
         elif fallback is None:
             fallback = parsed
+
+    distinct: dict[str, dict] = {}
+    for cand, start, end in content:
+        if any(left <= start and end <= right and (left, right) != (start, end)
+               for _, left, right in content):
+            continue
+        signature = json.dumps({k: cand.get(k, []) for k in _FRAGMENT_KEYS}, sort_keys=True)
+        distinct.setdefault(signature, cand)
+    if len(distinct) > 1:
+        print(
+            "[graphify] LLM returned multiple independent graph fragments; "
+            "refusing to cache only the first as a complete extraction.", file=sys.stderr,
+        )
+        return {"nodes": [], "edges": [], "hyperedges": []}
+    if distinct:
+        return next(iter(distinct.values()))
 
     # A genuinely empty extraction is still a valid answer, and still reads as
     # hollow downstream, so it outranks an object that is not a fragment at all.
@@ -3027,21 +3083,32 @@ def extract_corpus_parallel(
         results_by_idx: dict[int, dict] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(_run_one, idx, chunk) for idx, chunk in enumerate(chunks)]
-            for future in as_completed(futures):
-                idx, result, exc = future.result()
-                if exc is not None:
-                    print(
-                        f"[graphify] chunk {idx + 1}/{total} failed: {exc}",
-                        file=sys.stderr,
-                    )
-                    merged["failed_chunks"] += 1
-                    failed_files.update(unit_path(f) for f in chunks[idx])
-                    continue
-                assert result is not None
-                results_by_idx[idx] = result
-                _checkpoint_chunk(idx, result, chunks[idx])
-                if callable(on_chunk_done):
-                    on_chunk_done(idx, total, result)
+            try:
+                for future in as_completed(futures):
+                    idx, result, exc = future.result()
+                    if exc is not None:
+                        print(
+                            f"[graphify] chunk {idx + 1}/{total} failed: {exc}",
+                            file=sys.stderr,
+                        )
+                        merged["failed_chunks"] += 1
+                        failed_files.update(unit_path(f) for f in chunks[idx])
+                        continue
+                    assert result is not None
+                    results_by_idx[idx] = result
+                    _checkpoint_chunk(idx, result, chunks[idx])
+                    if callable(on_chunk_done):
+                        on_chunk_done(idx, total, result)
+            except Exception:
+                # Every chunk was submitted above, and the callback runs only
+                # after one returns. Cancel work that has not started so a
+                # callback failure does not keep queued model calls running
+                # (#5184). cancel() leaves anything already running alone; the
+                # pool then drains that in-flight work and this exception
+                # propagates unchanged.
+                for pending in futures:
+                    pending.cancel()
+                raise
         for idx in sorted(results_by_idx):
             _merge_into(merged, results_by_idx[idx])
 

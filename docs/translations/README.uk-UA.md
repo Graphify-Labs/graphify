@@ -47,7 +47,7 @@
   <em>Кодова база FastAPI, відображена graphify. Кожен вузол - це поняття, кольори - це виявлені спільноти, і все це клікабельне у graph.html.</em>
 </p>
 
-**Початок роботи** (30 секунд). Потрібні Python 3.10+ та uv (або pipx):
+**Початок роботи** (30 секунд). Потрібні Python 3.11+ та uv (або pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | Вимога | Мінімум | Перевірка | Встановлення |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(рекомендовано)* | будь-яка | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(альтернатива)* | будь-яка | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Pi не має хука `PreToolUse`, тож `graphify pi guard install` реє�
 
 `GRAPH_REPORT.md` досі доступний для широкого огляду архітектури.
 
-Які саме файли записує кожна платформа (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, нативний плагін Kilo `.kilo`, правило Cursor `alwaysApply` тощо) описано в **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Які саме файли записує кожна платформа (CodeBuddy's `CODEBUDDY.md` + `PreToolUse` hooks, Codex's `AGENTS.md`, нативний плагін Kilo `.kilo`, правило Cursor `alwaysApply` тощо) описано в **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Щоб видалити graphify з усіх платформ одразу: `graphify uninstall` (додайте `--purge`, щоб також видалити `graphify-out/`). Або використайте команду для конкретної платформи (наприклад, `graphify claude uninstall`).
 

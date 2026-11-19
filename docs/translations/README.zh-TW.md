@@ -47,7 +47,7 @@
   <em>由 graphify 映射的 FastAPI 程式碼庫。每個節點是一個概念，顏色代表偵測到的社群，整張圖在 graph.html 中都可點擊。</em>
 </p>
 
-**開始使用**（30 seconds）。需要 Python 3.10+ 和 uv（或 pipx）：
+**開始使用**（30 seconds）。需要 Python 3.11+ 和 uv（或 pipx）：
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -157,7 +157,7 @@ Shortest path (3 hops):
 
 | 需求 | 最低 | 檢查 | 安裝 |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -298,7 +298,7 @@ Pi 沒有 `PreToolUse` 掛鉤，因此 `graphify pi guard install` 會註冊一�
 
 `GRAPH_REPORT.md` 仍然可用於廣泛的架構審查。
 
-每個平台具體寫入哪些檔案（CodeBuddy 的 `CODEBUDDY.md` + `PreToolUse` 掛鉤、Codex 的 `AGENTS.md`、Kilo 的原生 `.kilo` 外掛、Cursor 的 `alwaysApply` 規則等等）在 **[Always-on setup](https://docs.graphify.com/guides/always-on)** 中有介紹。
+每個平台具體寫入哪些檔案（CodeBuddy 的 `CODEBUDDY.md` + `PreToolUse` 掛鉤、Codex 的 `AGENTS.md`、Kilo 的原生 `.kilo` 外掛、Cursor 的 `alwaysApply` 規則等等）在 **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** 中有介紹。
 
 要一次性從所有平台移除 graphify：`graphify uninstall`（加 `--purge` 還會刪除 `graphify-out/`）。或者使用各平台的命令（例如 `graphify claude uninstall`）。
 

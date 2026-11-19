@@ -47,7 +47,7 @@
   <em>کدبیس FastAPI که توسط graphify نگاشت شده است. هر گره یک مفهوم است، رنگ‌ها جامعه‌های شناسایی‌شده هستند، و همهٔ آن در graph.html قابل کلیک است.</em>
 </p>
 
-**شروع کنید** (30 ثانیه). به Python 3.10+ و uv (یا pipx) نیاز دارد:
+**شروع کنید** (30 ثانیه). به Python 3.11+ و uv (یا pipx) نیاز دارد:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Shortest path (3 hops):
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Pi هیچ قلاب `PreToolUse` ندارد، بنابراین `graphify pi guard
 
 `GRAPH_REPORT.md` همچنان برای بازبینی گستردهٔ معماری در دسترس است.
 
-اینکه دقیقاً هر پلتفرم چه فایل‌هایی می‌نویسد (`CODEBUDDY.md` + قلاب‌های `PreToolUse` برای CodeBuddy، `AGENTS.md` برای Codex، افزونهٔ بومی `.kilo` برای Kilo، قاعدهٔ `alwaysApply` برای Cursor، و غیره) در **[Always-on setup](https://docs.graphify.com/guides/always-on)** پوشش داده شده است.
+اینکه دقیقاً هر پلتفرم چه فایل‌هایی می‌نویسد (`CODEBUDDY.md` + قلاب‌های `PreToolUse` برای CodeBuddy، `AGENTS.md` برای Codex، افزونهٔ بومی `.kilo` برای Kilo، قاعدهٔ `alwaysApply` برای Cursor، و غیره) در **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** پوشش داده شده است.
 
 برای حذف graphify از همهٔ پلتفرم‌ها به‌یک‌باره: `graphify uninstall` (برای حذف `graphify-out/` نیز `--purge` را اضافه کنید). یا از فرمان هر پلتفرم استفاده کنید (برای مثال `graphify claude uninstall`).
 

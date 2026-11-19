@@ -1,4 +1,5 @@
 """Tests for token-aware chunking and parallel chunk execution in graphify.llm."""
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -977,6 +978,78 @@ def test_corpus_parallel_uses_adaptive_retry(tmp_path):
     assert len(chunk_done_args) == 1
     assert chunk_done_args[0] == (0, 1, 4)
     assert len(result["nodes"]) == 4
+
+
+def test_corpus_parallel_cancels_queued_chunks_when_callback_raises(tmp_path, monkeypatch):
+    """A raising on_chunk_done must not run chunks that are still queued (#5184).
+
+    The pool submits every chunk before the first callback. Two workers take
+    the first pair and the callback rejects the first result. Work already
+    inside the model may finish; a chunk that has not started must not be
+    called, and the callback's own exception must propagate.
+    """
+    from graphify.llm import extract_corpus_parallel
+
+    monkeypatch.setenv("GRAPHIFY_NO_INCREMENTAL_CACHE", "1")
+    files = [tmp_path / f"d{index}.md" for index in range(6)]
+    for path in files:
+        path.write_text("Cedar requires Beacon approval.\n")
+
+    pair = threading.Barrier(2)
+    failed = threading.Event()
+    lock = threading.Lock()
+    calls = []
+    callbacks = []
+    # Long enough that cancel wins over the worker picking up the rest of the
+    # queue, short enough that the pre-fix run still finishes in this test.
+    hold_s = 0.3
+
+    def _result(path: Path) -> dict:
+        return {
+            "nodes": [{"id": path.stem, "label": path.stem, "source_file": str(path)}],
+            "edges": [],
+            "hyperedges": [],
+            "finish_reason": "stop",
+        }
+
+    def fake(chunk, **kwargs):
+        index = int(chunk[0].stem[1:])
+        with lock:
+            calls.append(index)
+        if index >= 2:
+            time.sleep(hold_s)
+            return _result(chunk[0])
+        pair.wait(5)
+        if index != 0:
+            time.sleep(hold_s)
+        return _result(chunk[0])
+
+    def reject(idx, total, result):
+        callbacks.append(idx)
+        failed.set()
+        raise RuntimeError("callback rejected chunk")
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake):
+        with pytest.raises(RuntimeError, match="callback rejected chunk"):
+            extract_corpus_parallel(
+                files,
+                backend="kimi",
+                api_key="unused",
+                model="unused",
+                root=tmp_path,
+                chunk_size=1,
+                token_budget=None,
+                max_concurrency=2,
+                max_retry_depth=0,
+                on_chunk_done=reject,
+            )
+
+    assert callbacks == [0]
+    assert failed.is_set()
+    # 0 and 1 were in flight. The worker freed by chunk 0 may enter chunk 2
+    # before the callback returns. 3, 4, and 5 are still queued.
+    assert 0 in calls and 1 in calls, calls
+    assert all(index < 3 for index in calls), calls
 
 
 # ---- #1685: special-token strings in docs must not crash token estimation ----

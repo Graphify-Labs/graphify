@@ -47,7 +47,7 @@ Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemb
   <em>La base de code FastAPI cartographiée par graphify. Chaque nœud est un concept, les couleurs sont des communautés détectées, et l'ensemble est cliquable dans graph.html.</em>
 </p>
 
-**Pour démarrer** (30 secondes). Nécessite Python 3.10+ et uv (ou pipx) :
+**Pour démarrer** (30 secondes). Nécessite Python 3.11+ et uv (ou pipx) :
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
@@ -159,7 +159,7 @@ Guides complets et référence disponibles sur **[docs.graphify.com](https://doc
 
 | Exigence | Minimum | Vérifier | Installer |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommandé)* | toute version | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | toute version | `pipx --version` | `pip install pipx` |
 
@@ -306,7 +306,7 @@ Cela écrit un petit fichier de configuration qui indique à votre assistant de 
 
 `GRAPH_REPORT.md` reste disponible pour une revue d'architecture globale.
 
-Exactement quels fichiers chaque plateforme écrit (le `CODEBUDDY.md` + les hooks `PreToolUse` de CodeBuddy, l'`AGENTS.md` de Codex, le plugin natif `.kilo` de Kilo, la règle `alwaysApply` de Cursor, et ainsi de suite) est couvert dans **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Exactement quels fichiers chaque plateforme écrit (le `CODEBUDDY.md` + les hooks `PreToolUse` de CodeBuddy, l'`AGENTS.md` de Codex, le plugin natif `.kilo` de Kilo, la règle `alwaysApply` de Cursor, et ainsi de suite) est couvert dans **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Pour retirer graphify de toutes les plateformes d'un coup : `graphify uninstall` (ajoutez `--purge` pour supprimer aussi `graphify-out/`). Ou utilisez la commande par plateforme (par ex. `graphify claude uninstall`).
 
