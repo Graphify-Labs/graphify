@@ -13186,6 +13186,9 @@ def extract(
         # edge from a heading to whatever shares the name.
         if rc.get("language") == "markdown":
             continue
+        # A YAML value names a script or file; yaml_value_refs resolves it.
+        if rc.get("language") == "yaml":
+            continue
         # A Solidity name is visible only through the caller contract's own
         # bases; resolve_solidity_inherited_calls binds those. A corpus-wide
         # name match would link `_transfer()` to any contract's `_transfer`.
