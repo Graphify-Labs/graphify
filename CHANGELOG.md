@@ -17,8 +17,14 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: **vbnet** a parameter with a default value is counted as Optional regardless of modifier order (`ByVal Optional x As Integer = 0`, `ByRef Optional ...`), so method arity and overload resolution are correct (#5320, thanks @Deepjyoti-Sarmah).
 - Fix: **cpp** include identities are kept when the AST cache is on another drive than the source (a Windows cross-drive case where `os.path.relpath` raised and every file got an empty key), so declaration/definition folding still works; the normal same-drive path is unchanged (#5145, thanks @Ayushraj06-bit).
 - Fix: **llm** label-generation retries keep a 512-token output floor, so the single-community recovery pass is no longer starved below the batch it is recovering from; an explicit `GRAPHIFY_MAX_OUTPUT_TOKENS` still overrides (#2086, thanks @Synvoya).
+- Fix: **ruby** an `include`/`prepend`/`extend` of a module written inside a `class << self` block emits its `mixes_in` edge, instead of being missed because only direct class-body statements were scanned (#5317, thanks @Synvoya).
+- Fix: **python** a class with a parameterized base (`class C(Base[T])`, `class D(Mapping[str, int])`) emits the `inherits` edge to the base type and is walked for inherited-method calls, instead of being dropped and marked opaque; a nested generic argument, a call base, and `mod.Base[T]` are still not treated as parents (#5318, thanks @Synvoya).
+- Fix: **tsconfig** a `tsconfig.json` `extends` and exact `compilerOptions.paths` mapping resolve to the real scanned config/file they name rather than a dangling stub; a non-corpus package extends, a wildcard path, and a circular extends fail closed (#5223, thanks @Deepjyoti-Sarmah).
+- Fix: **cpp** an unreachable class forward declaration (one no include path reaches) no longer blocks the fold of a member's declaration into its out-of-line definition; genuinely ambiguous cases (a template or a second definition) still stay separate (#5337, thanks @winesoft-namjin-yun).
+- Fix: **extract** an import that targets a header involved in an id collision is no longer unconditionally repointed to the header variant: the repoint is gated by the importing file's language family, so a Python `import foo` beside a colliding `foo.h`/`foo.py` keeps its edge to `foo.py` instead of being dropped as cross-language (#5328, thanks @sdivyanshu90).
+- Fix: **serve** a query that is an exact node id resolves straight to that node instead of being out-ranked by a different node that shares its tokenized source path (#5343, thanks @Ayushraj06-bit).
 
-The AST cache schema is bumped to 49; warm caches re-run the affected Ruby, Lua, Scala, Elixir, Rust, Swift, Kotlin and VB.NET extractions.
+The AST cache schema is bumped to 49; warm caches re-run the affected Ruby, Lua, Scala, Elixir, Rust, Swift, Kotlin, VB.NET, Python and TypeScript-config extractions.
 
 ## 0.9.112 (2026-11-17)
 
