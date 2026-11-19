@@ -1231,13 +1231,18 @@ print(f'  type: {data_n.get(\"file_type\",\"unknown\")}')
 print(f'  degree: {G.degree(nid)}')
 print()
 print('CONNECTIONS:')
-for neighbor in G.neighbors(nid):
-    _raw = G[nid][neighbor]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
+# neighbors() lists only successors on a directed graph (--directed), so add the
+# incoming edges too (callers, importers), drawn with the arrow reversed.
+links = [(nb, G[nid][nb], '--', '-->') for nb in G.neighbors(nid)]
+if G.is_directed():
+    links += [(nb, G[nb][nid], '<--', '--') for nb in G.predecessors(nid)]
+for neighbor, _raw, head, tail in links:
+    edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
     nlabel = G.nodes[neighbor].get('label', neighbor)
     rel = edge.get('relation', '')
     conf = edge.get('confidence', '')
     src_file = G.nodes[neighbor].get('source_file', '')
-    print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
+    print(f'  {head}{rel}{tail} {nlabel} [{conf}] ({src_file})')
 "
 ```
 
@@ -1329,7 +1334,7 @@ Run once per project to make graphify always-on in Claude Code sessions:
 graphify claude install
 ```
 
-This writes a `## graphify` section to the local `CLAUDE.md` that instructs Claude to check the graph before answering codebase questions and rebuild it after code changes. No manual `/graphify` needed in future sessions.
+This writes a `## graphify` section to the local `CLAUDE.md` that instructs Claude to check the graph before answering codebase questions and rebuild it after code changes. If the project has an `AGENTS.md` and neither it nor any parent directory has a `CLAUDE.md` or `CLAUDE.local.md`, the section goes into that `AGENTS.md` instead and no `CLAUDE.md` is created, because one would hide `AGENTS.md` from Claude Code. No manual `/graphify` needed in future sessions.
 
 ```bash
 graphify claude uninstall  # remove the section

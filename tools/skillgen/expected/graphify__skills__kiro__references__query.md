@@ -22,7 +22,7 @@ If it fails, stop and tell the user to run `/graphify <path>` first.
 
 ### Step 0 — Constrained query expansion (REQUIRED before traversal)
 
-graphify's `query` CLI matches nodes via case-folded substring + IDF — there is **no stemming, no synonyms, no cross-language match** inside the binary, and the inline fallback below matches the same way. If the user's question uses different language or different domain vocabulary than the graph's labels (user says "обработчик" / graph says "handler"; user says "authentication" / graph says "Guardian"), the literal matcher returns 0 hits and the answer collapses to noise.
+graphify's `query` CLI matches nodes via case-folded substring + IDF — there is **no stemming, no synonyms, no cross-language match** inside the binary. The inline fallback below is just as literal, and simpler still: it counts case-folded substring hits in labels, with no IDF weighting. If the user's question uses different language or different domain vocabulary than the graph's labels (user says "обработчик" / graph says "handler"; user says "authentication" / graph says "Guardian"), the literal matcher returns 0 hits and the answer collapses to noise.
 
 Fix this **without inventing tokens** by expanding the query against the actual graph vocabulary first:
 
@@ -300,13 +300,18 @@ print(f'  type: {data_n.get(\"file_type\",\"unknown\")}')
 print(f'  degree: {G.degree(nid)}')
 print()
 print('CONNECTIONS:')
-for neighbor in G.neighbors(nid):
-    _raw = G[nid][neighbor]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
+# neighbors() lists only successors on a directed graph (--directed), so add the
+# incoming edges too (callers, importers), drawn with the arrow reversed.
+links = [(nb, G[nid][nb], '--', '-->') for nb in G.neighbors(nid)]
+if G.is_directed():
+    links += [(nb, G[nb][nid], '<--', '--') for nb in G.predecessors(nid)]
+for neighbor, _raw, head, tail in links:
+    edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
     nlabel = G.nodes[neighbor].get('label', neighbor)
     rel = edge.get('relation', '')
     conf = edge.get('confidence', '')
     src_file = G.nodes[neighbor].get('source_file', '')
-    print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
+    print(f'  {head}{rel}{tail} {nlabel} [{conf}] ({src_file})')
 "
 ```
 

@@ -1471,6 +1471,56 @@ def _is_get_section_tool_line(line: str) -> bool:
     }
 
 
+def _is_explain_direction_fix_line(line: str) -> bool:
+    """Whether a line is part of the explain fallback's directed-graph fix (#5340).
+
+    On a directed graph ``G.neighbors()`` yields successors only, so the inline
+    ``explain`` fallback listed no callers or importers. The loop now also walks
+    ``G.predecessors()`` when ``G.is_directed()`` and draws those edges with the
+    arrow reversed. Both the removed loop lines and their replacements are
+    sanctioned; the four unchanged body lines cancel out in the multiset diff.
+    """
+    return line.strip() in {
+        "for neighbor in G.neighbors(nid):",
+        "_raw = G[nid][neighbor]; edge = next(iter(_raw.values()), {})"
+        " if isinstance(G, nx.MultiGraph) else _raw",
+        "print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')",
+        "# neighbors() lists only successors on a directed graph (--directed), so add the",
+        "# incoming edges too (callers, importers), drawn with the arrow reversed.",
+        "links = [(nb, G[nid][nb], '--', '-->') for nb in G.neighbors(nid)]",
+        "if G.is_directed():",
+        "links += [(nb, G[nb][nid], '<--', '--') for nb in G.predecessors(nid)]",
+        "for neighbor, _raw, head, tail in links:",
+        "edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw",
+        "print(f'  {head}{rel}{tail} {nlabel} [{conf}] ({src_file})')",
+    }
+
+
+_CLAUDE_INSTALL_LINE = (
+    "This writes a `## graphify` section to the local `CLAUDE.md` that instructs Claude to"
+    " check the graph before answering codebase questions and rebuild it after code changes."
+    "{agents_md} No manual `/graphify` needed in future sessions."
+)
+
+
+def _is_claude_install_agents_md_line(line: str) -> bool:
+    """Whether a line is the `graphify claude install` sentence before or after #5340.
+
+    ``claude install`` writes to the project's AGENTS.md instead of creating a
+    CLAUDE.md when the project has an AGENTS.md and no CLAUDE.md-style file
+    (``install._claude_instructions_file``); the sentence now says so.
+    """
+    agents_md = (
+        " If the project has an `AGENTS.md` and neither it nor any parent directory has a"
+        " `CLAUDE.md` or `CLAUDE.local.md`, the section goes into that `AGENTS.md` instead"
+        " and no `CLAUDE.md` is created, because one would hide `AGENTS.md` from Claude Code."
+    )
+    return line.strip() in {
+        _CLAUDE_INSTALL_LINE.format(agents_md=""),
+        _CLAUDE_INSTALL_LINE.format(agents_md=agents_md),
+    }
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1506,6 +1556,8 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
+    _is_explain_direction_fix_line,
+    _is_claude_install_agents_md_line,
 )
 
 
