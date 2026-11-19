@@ -3935,9 +3935,16 @@ def _merge_cpp_member_declarations(
             continue
         scope, name = qualified.rsplit("::", 1)
         classes = owners.get(scope, [])
-        if len(classes) != 1 or classes[0].get("_cpp_class_kind") != "definition":
+        # A plain forward declares no members, so one that
+        # _merge_cpp_forward_classes left unfolded (no include path to the
+        # definition) is not a rival owner. Any other kind beside the single
+        # definition (a second definition, a template or conditional class)
+        # keeps the scope uncertain.
+        definitions = [c for c in classes if c.get("_cpp_class_kind") == "definition"]
+        if len(definitions) != 1 or any(
+                c.get("_cpp_class_kind") not in {"forward", "definition"} for c in classes):
             continue
-        owner = classes[0]
+        owner = definitions[0]
         if any(len(n["_cpp_member_records"]) != 1
                or not n["_cpp_member_records"][0].get("signature")
                or (n.get("metadata") or {}).get("cpp_conditions") for n in group):
