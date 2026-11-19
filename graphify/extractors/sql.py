@@ -597,6 +597,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # structured walk mints a plain node for it; the package recovery below uses
     # this to drop that duplicate once it owns the package-qualified member.
     structured_routine_lines: dict[str, int] = {}
+    error_routines: set[str] = set()  # walk routines whose node holds an ERROR
 
     def _read(n) -> str:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
@@ -725,6 +726,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 structured_routine_lines[nid] = line
                 _walk_from_refs(node, nid, line)
                 _walk_writes(node, nid)
+                if node.has_error:
+                    error_routines.add(nid)
 
         elif t == "create_procedure":
             name = _obj_name(node)
@@ -735,6 +738,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 structured_routine_lines[nid] = line
                 _walk_from_refs(node, nid, line)
                 _walk_writes(node, nid)
+                if node.has_error:
+                    error_routines.add(nid)
 
         elif t == "alter_table":
             name = _obj_name(node)
@@ -1233,14 +1238,19 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
             fn_nid = _make_id(stem, fn_name)
-            # A routine the tree already produced (a cleanly parsed function)
-            # keeps its tree-based reads_from; scanning it too would double them.
+            # A routine the tree parsed cleanly keeps its tree-based edges and is
+            # not scanned. One whose node holds an ERROR (a PL/pgSQL
+            # `RETURN QUERY SELECT ... FROM t` puts t inside one, #5349) is
+            # scanned too, adding only the edges the walk missed.
             from_tree = fn_nid in seen_ids
             _add_node(fn_nid, f"{_clean_ident(fn_name)}()", fn_line)
-            if from_tree:
+            if from_tree and fn_nid not in error_routines:
                 continue
             end = _BODY_END_RX.search(masked_src, m.end())
-            seen_refs: set[tuple[str, str]] = set()
+            # A walk routine with an ERROR in it keeps the edges the walk found;
+            # the scan adds only what the ERROR hid.
+            seen_refs: set[tuple[str, str]] = {
+                (e["relation"], e["target"]) for e in edges if e["source"] == fn_nid}
             for relation, tbl, pos in _routine_body_refs(masked_src[m.end():end.start() if end else len(masked_src)]):
                 tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
                 if (relation, tbl_nid) in seen_refs:
