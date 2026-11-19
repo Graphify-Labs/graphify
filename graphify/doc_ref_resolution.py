@@ -51,10 +51,11 @@ def _claims(source_file: str, title: str | None) -> set[str]:
             out.add(_label(m.group(1), m.group(2)))
     path = PurePosixPath(source_file.replace("\\", "/"))
     m = _FILE_NUMBER_RE.match(path.name)
-    if m:
-        kinds = {_FOLDER_KIND[p.lower()] for p in path.parts[:-1] if p.lower() in _FOLDER_KIND}
-        if len(kinds) == 1:
-            out.add(_label(kinds.pop(), m.group(1)))
+    # Only the immediate folder counts: paths may be absolute, and a checkout
+    # under ~/adr/ must not turn every numbered file into a decision record.
+    kind = _FOLDER_KIND.get(path.parent.name.lower())
+    if m and kind:
+        out.add(_label(kind, m.group(1)))
     return out
 
 
