@@ -12360,8 +12360,24 @@ def _extract_generic(
                 if loop_locals:
                     extra_locals = extra_locals | frozenset(loop_locals)
 
-        for child in node.children:
-            walk_calls(child, caller_nid, receiver_types, extra_locals)
+        # C/C++: an unconditional `return` in a compound statement makes every
+        # later sibling unreachable. Without this gate, call_expression nodes
+        # after `return;` (common CubeMX dead tails left behind USER CODE early
+        # exits) still become calls edges and pollute bridge / surprising-connection
+        # analysis. Walk the return itself first so `return foo()` keeps its call;
+        # then stop. Conditional returns stay inside if/switch bodies, so their
+        # siblings in the outer block remain reachable and are still walked.
+        if (
+            config.ts_module in ("tree_sitter_c", "tree_sitter_cpp")
+            and node.type == "compound_statement"
+        ):
+            for child in node.children:
+                walk_calls(child, caller_nid, receiver_types, extra_locals)
+                if child.type == "return_statement":
+                    break
+        else:
+            for child in node.children:
+                walk_calls(child, caller_nid, receiver_types, extra_locals)
 
     # Python: type `self.X` per class from the bindings in its methods so
     # `self.X.m()` can resolve corpus-side (#2860). Conflicting or untypable
