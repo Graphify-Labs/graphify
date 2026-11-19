@@ -2622,6 +2622,8 @@ def _rebuild_code(
                             f"[graphify watch] Incremental: none of the {scanned} scanned "
                             "files differ from the last build."
                         )
+                        if not excluded_rows:
+                            return True
 
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
@@ -2745,6 +2747,7 @@ def _rebuild_code(
             # an incremental rebuild, or their semantic nodes would be wiped.
             semantic_doc_set = {Path(os.path.abspath(p)) for p in semantic_doc_files}
             wanted: list[Path] = []
+            ignore_rules_changed = False
             change_root = Path.cwd().resolve()
             for raw in changed_paths:
                 candidates = _changed_path_candidates(
@@ -2752,6 +2755,12 @@ def _rebuild_code(
                     change_root=change_root,
                     watch_root=watch_root,
                 )
+                if any(
+                    cand.name in {".graphifyignore", ".gitignore"}
+                    and _is_relative_to(cand, watch_root)
+                    for cand in candidates
+                ):
+                    ignore_rules_changed = True
                 tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
                 if tracked is not None:
                     if tracked not in wanted and tracked not in semantic_doc_set:
@@ -2789,8 +2798,13 @@ def _rebuild_code(
                     _add_deleted_source(deleted_in_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
-            if not wanted and not deleted_paths:
-                print("[graphify watch] No tracked code files in change set - skipping rebuild.")
+            # Ignore changes can introduce sources absent from the prior graph.
+            # Cached extraction still avoids reparsing unchanged ASTs.
+            if ignore_rules_changed:
+                wanted = [p for p in code_files if p not in semantic_doc_files]
+            # With an existing graph, an empty batch can still have stale sources
+            # (for example a destination-only rename to an unsupported suffix).
+            if not wanted and not deleted_paths and not existing_graph.exists():
                 return True
             extract_targets = wanted
         else:

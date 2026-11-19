@@ -67,6 +67,11 @@ When an import target ID collides with a C-family header, an explicit target
 path takes priority. Unhinted native includes keep the header fallback. Other
 languages require a unique compatible file candidate before remapping.
 
+Hook rebuilds reconcile persisted sources against the current corpus even
+when no changed file is eligible for extraction. Changes to in-scope ignore
+files also refresh the eligible AST corpus so newly included files can enter
+the graph.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
