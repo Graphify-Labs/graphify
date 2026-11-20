@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Ajan token harcamanızı %80 azaltın.</b> Graphify Cloud, ajanlarınızı yöneten, kod kalitesini yüksek tutan ve biçimsel doğrulama ile doğruluğu kanıtlayan daima açık bir bellektir. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Ücretsiz başlayın, kart gerekmez &rarr;</b></a>
+  <b>Ajanlar ve insanlar için paylaşılan kod tabanı bağlamı.</b>
+  <br/>
+  Kod tabanınızı sorgulanabilir bir bilgi grafiğine dönüştürün. Bağımlılıkları izleyin, bileşenlerin nasıl bağlandığını anlayın ve kodlama ajanınıza oturumlar arasında yeniden kullanılabilir bağlam verin.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Ücretsiz başlayın, kart gerekmez &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> o grafiği tüm SDLC'niz boyunca daima açık tutar.
 </p>
 
 Yapay zeka destekli kodlama asistanınıza `/graphify` yazın; tüm projenizi (kod, belgeler, PDF'ler, görseller, videolar) dosyalar arasında **grep yapmak yerine sorgulayabileceğiniz** bir **bilgi grafiğine** eşler.
@@ -41,18 +47,27 @@ Yapay zeka destekli kodlama asistanınıza `/graphify` yazın; tüm projenizi (k
 > **Bunun daima açık olmasını mı istiyorsunuz?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss), grafiği tüm SDLC'niz boyunca canlı tutar: monorepo ve repolar arası destek, biçimsel doğrulama ve SDLC'nize kuşbakışı bakışla kod incelemesi; ayrıca Sentry, Jira ve daha fazlası için konektörler sayesinde olaylar ve biletler kodunuzla aynı grafikte yer alır. **[Ücretsiz başlayın, kart gerekmez](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>graphify tarafından eşlenen FastAPI kod tabanı. Her düğüm bir kavram, renkler tespit edilen topluluklar ve bütün yapı graph.html içinde tıklanabilir.</em>
+  <em>graphify tarafından eşlenen FastAPI kod tabanı. Her düğüm bir kavram, renkler tespit edilen alt sistemler ve bütün yapı graph.html içinde tıklanabilir.</em>
 </p>
 
-**Başlayın** (30 saniye). Python 3.11+ ve uv (ya da pipx) gerektirir:
+**Başlayın** (30 saniye). Python 3.11.5–3.14 ve uv (ya da pipx) gerektirir:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Farklı bir asistan mı kullanıyorsunuz? Onu açıkça belirtin:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Tüm 20'den fazla asistan için [platformunuzu seçin](#install) bölümüne bakın.
 
 Ardından, yapay zeka asistanınızda:
 
@@ -114,8 +129,8 @@ Kutudan çıktığı haliyle elde ettikleriniz:
 
 | Yetenek | Elde ettikleriniz |
 |---|---|
-| **Tanrı düğümleri** | En çok bağlantılı kavramlar; böylece her şeyin neyin üzerinden aktığını görürsünüz |
-| **Topluluklar** | Grafiğin alt sistemlere ayrılmış hali (Leiden), LLM gerektirmeyen etiketlerle |
+| **En çok bağlantılı bileşenler** | Her şeyin üzerinden aktığı kavramlar — grafiğin hub'ları (ayrıca *god nodes* olarak da bilinir) |
+| **Alt sistemler** | Grafiğin uyumlu gruplara ayrılmış hali (Leiden *toplulukları*), her biri LLM gerektirmeyen bir etiketle |
 | **Dosyalar arası bağlantılar** | `calls` / `imports` / `inherits` / `mixes_in`, tree-sitter AST aracılığıyla ~40 dilde çözümlenir |
 | **Sorgula, yol, açıkla** | Bir soru sorun, iki şey arasındaki yolu izleyin veya tek bir kavramı açıklayın; tümü `graph.json` üzerinde |
 | **Gerekçe + belge atıfları** | `# NOTE:` / `# WHY:` yorumları ve ADR/RFC atıfları, koda bağlı birinci sınıf düğümler haline gelir |
@@ -159,7 +174,7 @@ Tam kılavuzlar ve başvuru kaynakları **[docs.graphify.com](https://docs.graph
 
 | Gereksinim | Minimum | Kontrol | Kurulum |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(önerilir)* | herhangi | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatif)* | herhangi | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +242,7 @@ Proje kapsamlı kurulumları destekleyen platform bazlı komutlar aynı bayrağ�
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (`$graphify` ile çağırın) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -361,7 +376,7 @@ Sunucu ayrıca PR araçlarını da (`list_prs`, `get_pr_impact`, `triage_prs`) s
 
 ## Raporda neler var
 
-`GRAPH_REPORT.md`, geniş mimari inceleme için tanrı düğümlerini, toplulukları ve anahtar yolları özetler. Grafiğin nasıl oluşturulduğu ve neler içerdiği: **[graphify nasıl çalışır](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md`, geniş mimari inceleme için en çok bağlantılı bileşenleri, alt sistemleri ve anahtar yolları özetler. Grafiğin nasıl oluşturulduğu ve neler içerdiği: **[graphify nasıl çalışır](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -377,8 +392,8 @@ graphify, ~40 programlama dilini yerel olarak tree-sitter AST ile ayrıştırır
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -396,7 +411,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Aşağıdaki [tam komut başvurusuna](#full-command-reference) bakın.

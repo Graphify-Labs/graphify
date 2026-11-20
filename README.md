@@ -129,7 +129,7 @@ What you get out of the box:
 
 | Capability | What you get |
 |---|---|
-| **Most-connected components** | The concepts everything flows through — the hubs of the graph (also called *god nodes*) |
+| **Most-connected components** | The concepts everything flows through, the hubs of the graph (also called *god nodes*) |
 | **Subsystems** | The graph split into cohesive groups (Leiden *communities*), each with an LLM-free label |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` resolved across ~40 languages via tree-sitter AST |
 | **Query, path, explain** | Ask a question, trace the path between two things, or explain one concept, all against `graph.json` |

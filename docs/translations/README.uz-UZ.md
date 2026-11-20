@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Agent token sarfini 80% ga qisqartiring.</b> Graphify Cloud sizning agentlaringizni boshqaradigan, kod sifatini yuqori saqlaydigan va to'g'rilikni rasmiy verifikatsiya bilan isbotlaydigan doimiy yoniq xotiradir. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bepul boshlang, karta shart emas &rarr;</b></a>
+  <b>Agentlar va odamlar uchun umumiy kod bazasi konteksti.</b>
+  <br/>
+  Kod bazangizni so'rov qilinadigan bilim grafiga aylantiring. Bog'liqliklarni kuzating, komponentlar qanday bog'lanishini tushuning va kod agentingizga seanslar bo'ylab qayta ishlatiladigan kontekst bering.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bepul boshlang, karta shart emas &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> o'sha grafni butun SDLC bo'ylab doimiy yoniq saqlaydi.
 </p>
 
 AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujjatlar, PDF-lar, rasmlar, videolar) **bilim grafiga** aylantiradi, uni fayllarni grep qilish o'rniga **so'rov qilishingiz mumkin**.
@@ -41,18 +47,27 @@ AI kod yordamchingizda `/graphify` deb yozing va u butun loyihangizni (kod, hujj
 > **Buni doimiy yoniq holda xohlaysizmi?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) grafni butun SDLC bo'ylab jonli saqlaydi: monorepo va repolararo qo'llab-quvvatlash, rasmiy verifikatsiya hamda SDLC-ga qush nigohi bilan kod ko'rib chiqish, shuningdek Sentry, Jira va boshqalar uchun konnektorlar, shunda hodisalar va chiptalar kodingiz bilan bir xil grafda joylashadi. **[Bepul boshlang, karta shart emas](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>graphify tomonidan xaritalangan FastAPI kod bazasi. Har bir tugun tushunchadir, ranglar aniqlangan jamoalardir, butun narsa esa graph.html da bosiladi.</em>
+  <em>graphify tomonidan xaritalangan FastAPI kod bazasi. Har bir tugun tushunchadir, ranglar aniqlangan quyi tizimlardir, butun narsa esa graph.html da bosiladi.</em>
 </p>
 
-**Ishni boshlang** (30 soniya). Python 3.11+ va uv (yoki pipx) talab qilinadi:
+**Ishni boshlang** (30 soniya). Python 3.11.5–3.14 va uv (yoki pipx) talab qilinadi:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Boshqa yordamchidan foydalanyapsizmi? Uni aniq nomlang:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Barcha 20+ yordamchi uchun [platformangizni tanlang](#install) ni ko'ring.
 
 Keyin, AI yordamchingizda:
 
@@ -114,8 +129,8 @@ Qutidan chiqib nima olasiz:
 
 | Imkoniyat | Nima olasiz |
 |---|---|
-| **Xudo tugunlar** | Eng ko'p bog'langan tushunchalar, shunday qilib hamma narsa nima orqali oqishini ko'rasiz |
-| **Jamoalar** | Graf quyi tizimlarga bo'lingan (Leiden), LLM-siz yorliqlar bilan |
+| **Eng ko'p bog'langan komponentlar** | Hamma narsa ular orqali oqadigan tushunchalar — grafning markazlari (shuningdek *god nodes* deb ataladi) |
+| **Quyi tizimlar** | Graf uyg'un guruhlarga bo'lingan (Leiden *communities*), har biri LLM-siz yorliq bilan |
 | **Fayllararo bog'lanishlar** | `calls` / `imports` / `inherits` / `mixes_in` ~40 tilda tree-sitter AST orqali aniqlanadi |
 | **Query, path, explain** | Savol bering, ikki narsa o'rtasidagi yo'lni kuzating yoki bitta tushunchani tushuntiring, barchasi `graph.json` ga nisbatan |
 | **Asos + hujjat havolalari** | `# NOTE:` / `# WHY:` izohlari va ADR/RFC iqtiboslari kodga bog'langan birinchi darajali tugunlarga aylanadi |
@@ -159,7 +174,7 @@ To'liq qo'llanmalar va ma'lumotnoma **[docs.graphify.com](https://docs.graphify.
 
 | Talab | Minimum | Tekshirish | O'rnatish |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(tavsiya etiladi)* | istalgan | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(muqobil)* | istalgan | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +242,7 @@ masalan `graphify claude install --project` yoki `graphify codex install --proje
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (avtomatik aniqlanadi) yoki `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (`$graphify` bilan chaqiring) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -361,7 +376,7 @@ Server shuningdek pull so'rovi vositalarini (`list_prs`, `get_pr_impact`, `triag
 
 ## Hisobotda nima bor
 
-`GRAPH_REPORT.md` keng arxitektura ko'rib chiqish uchun xudo tugunlar, jamoalar va asosiy yo'llarni jamlaydi. Graf qanday quriladi va u nimani o'z ichiga oladi: **[graphify qanday ishlaydi](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` keng arxitektura ko'rib chiqish uchun eng ko'p bog'langan komponentlar, quyi tizimlar va asosiy yo'llarni jamlaydi. Graf qanday quriladi va u nimani o'z ichiga oladi: **[graphify qanday ishlaydi](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -377,8 +392,8 @@ graphify ~40 dasturlash tilini tree-sitter AST bilan lokal tarzda tahlil qiladi 
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -396,7 +411,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Quyida [to'liq buyruqlar ma'lumotnomasi](#full-command-reference) ga qarang.

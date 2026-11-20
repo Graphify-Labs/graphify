@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Cắt giảm chi phí token của agent đi 80%.</b> Graphify Cloud là bộ nhớ luôn bật, giúp quản trị các agent của bạn, giữ chất lượng code ở mức cao, và chứng minh tính đúng đắn bằng kiểm chứng hình thức. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bắt đầu miễn phí, không cần thẻ &rarr;</b></a>
+  <b>Ngữ cảnh mã nguồn dùng chung cho agent và con người.</b>
+  <br/>
+  Biến mã nguồn của bạn thành một đồ thị tri thức có thể truy vấn. Lần theo các phụ thuộc, hiểu cách các thành phần kết nối với nhau, và trao cho agent lập trình của bạn ngữ cảnh có thể tái sử dụng xuyên suốt các phiên.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Bắt đầu miễn phí, không cần thẻ &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> giữ đồ thị đó luôn bật xuyên suốt toàn bộ SDLC của bạn.
 </p>
 
 Gõ `/graphify` trong trợ lý lập trình AI của bạn và nó ánh xạ toàn bộ dự án của bạn (code, tài liệu, PDF, hình ảnh, video) thành một **đồ thị tri thức** mà bạn có thể **truy vấn thay vì grep** xuyên qua các tệp.
@@ -41,18 +47,27 @@ Gõ `/graphify` trong trợ lý lập trình AI của bạn và nó ánh xạ to
 > **Muốn cái này luôn bật?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) giữ đồ thị luôn sống xuyên suốt toàn bộ SDLC của bạn: hỗ trợ monorepo và liên repo, kiểm chứng hình thức, và rà soát code với góc nhìn bao quát toàn cảnh SDLC của bạn, cùng các trình kết nối cho Sentry, Jira và nhiều hơn nữa để sự cố và ticket nằm trong cùng đồ thị với code của bạn. **[Bắt đầu miễn phí, không cần thẻ](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graph.html tương tác của graphify hiển thị mã nguồn FastAPI dưới dạng đồ thị tri thức bố trí theo lực, kèm chú giải các cộng đồng được phát hiện" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graph.html tương tác của graphify hiển thị mã nguồn FastAPI dưới dạng đồ thị tri thức bố trí theo lực, kèm chú giải các hệ thống con được phát hiện" width="900">
 </p>
 <p align="center">
-  <em>Mã nguồn FastAPI được graphify ánh xạ. Mỗi nút là một khái niệm, màu sắc là các cộng đồng được phát hiện, và toàn bộ có thể nhấp được trong graph.html.</em>
+  <em>Mã nguồn FastAPI được graphify ánh xạ. Mỗi nút là một khái niệm, màu sắc là các hệ thống con được phát hiện, và toàn bộ có thể nhấp được trong graph.html.</em>
 </p>
 
-**Bắt đầu** (30 seconds). Cần Python 3.11+ và uv (hoặc pipx):
+**Bắt đầu** (30 seconds). Cần Python 3.11.5–3.14 và uv (hoặc pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # thiết lập Claude Code (mặc định)
 ```
+
+Dùng một trợ lý khác? Hãy chỉ định rõ nó:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (gọi bằng $graphify, không phải /graphify)
+```
+
+Xem [chọn nền tảng của bạn](#install) cho tất cả 20+ trợ lý.
 
 Sau đó, trong trợ lý AI của bạn:
 
@@ -112,8 +127,8 @@ Những gì bạn nhận được ngay từ đầu:
 
 | Khả năng | Bạn nhận được gì |
 |---|---|
-| **God nodes** | Các khái niệm được kết nối nhiều nhất, để bạn thấy mọi thứ chảy qua đâu |
-| **Communities** | Đồ thị được chia thành các hệ thống con (Leiden), với nhãn không cần LLM |
+| **Các thành phần được kết nối nhiều nhất** | Các khái niệm mà mọi thứ chảy qua — các hub của đồ thị (còn gọi là *god nodes*) |
+| **Hệ thống con** | Đồ thị được chia thành các nhóm gắn kết (Leiden *communities*), mỗi nhóm có một nhãn không cần LLM |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` được giải quyết xuyên qua ~40 languages thông qua tree-sitter AST |
 | **Query, path, explain** | Hỏi một câu hỏi, lần theo đường đi giữa hai thứ, hoặc giải thích một khái niệm, tất cả đều dựa trên `graph.json` |
 | **Rationale + doc refs** | Các chú thích `# NOTE:` / `# WHY:` và trích dẫn ADR/RFC trở thành các nút hạng nhất được liên kết với code |
@@ -157,7 +172,7 @@ Hướng dẫn và tài liệu tham khảo đầy đủ nằm tại **[docs.grap
 
 | Yêu cầu | Tối thiểu | Kiểm tra | Cài đặt |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -219,7 +234,7 @@ Cài đặt theo phạm vi dự án ghi vào bên dưới thư mục hiện tạ
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (gọi bằng `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -353,7 +368,7 @@ Máy chủ cũng cung cấp bộ công cụ PR (`list_prs`, `get_pr_impact`, `tr
 
 ## Có gì trong báo cáo
 
-`GRAPH_REPORT.md` tóm tắt các god nodes, cộng đồng, và các đường đi chính cho việc rà soát kiến trúc trên diện rộng. Cách đồ thị được dựng và nó chứa gì: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` tóm tắt các thành phần được kết nối nhiều nhất, các hệ thống con, và các đường đi chính cho việc rà soát kiến trúc trên diện rộng. Cách đồ thị được dựng và nó chứa gì: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -369,8 +384,8 @@ graphify phân tích ~40 programming languages một cách cục bộ bằng tre
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # các hệ thống con chi tiết hơn
+/graphify . --cluster-only --exclude-hubs 99     # loại bỏ các super-hub tiện ích khỏi xếp hạng thành phần được kết nối nhiều nhất
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -388,7 +403,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # các PR dùng chung hệ thống con của đồ thị: rủi ro thứ tự merge
 ```
 
 Xem [tham khảo lệnh đầy đủ](#full-command-reference) bên dưới.

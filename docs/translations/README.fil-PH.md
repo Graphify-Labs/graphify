@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Bawasan ang paggastos ng token ng agent nang 80%.</b> Ang Graphify Cloud ay laging-nakabukas na memory na namamahala sa iyong mga agent, pinapanatiling mataas ang kalidad ng code, at pinapatunayan ang pagiging tama gamit ang formal verification. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Magsimula nang libre, walang card &rarr;</b></a>
+  <b>Ibinahaging konteksto ng codebase para sa mga agent at tao.</b>
+  <br/>
+  Gawing isang knowledge graph na maaaring i-query ang iyong codebase. Subaybayan ang mga dependency, unawain kung paano nag-uugnay ang mga component, at bigyan ang iyong coding agent ng nagagamit-muli na konteksto sa kabuuan ng mga session.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Magsimula nang libre, walang card &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> pinapanatiling laging-nakabukas ang graph na iyon sa buong SDLC mo.
 </p>
 
 I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong proyekto mo (code, docs, PDF, mga larawan, video) sa isang **knowledge graph** na maaari mong **i-query sa halip na mag-grep** sa mga file.
@@ -41,18 +47,27 @@ I-type ang `/graphify` sa iyong AI coding assistant at imumapa nito ang buong pr
 > **Gusto mo bang laging-nakabukas ito?** Pinapanatili ng [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) na buhay ang graph sa buong SDLC mo: suporta sa monorepo at cross-repo, formal verification, at code review na may bird's-eye view ng iyong SDLC, kasama ang mga connector para sa Sentry, Jira, at iba pa upang ang mga insidente at ticket ay nasa iisang graph kasama ng iyong code. **[Magsimula nang libre, walang card](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>Ang FastAPI codebase na inimapa ng graphify. Bawat node ay isang konsepto, ang mga kulay ay mga natukoy na community, at ang buong bagay ay naki-click sa graph.html.</em>
+  <em>Ang FastAPI codebase na inimapa ng graphify. Bawat node ay isang konsepto, ang mga kulay ay mga natukoy na subsystem, at ang buong bagay ay naki-click sa graph.html.</em>
 </p>
 
-**Magsimula** (30 segundo). Kailangan ng Python 3.11+ at uv (o pipx):
+**Magsimula** (30 segundo). Kailangan ng Python 3.11.5–3.14 at uv (o pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Gumagamit ng ibang assistant? Pangalanan ito nang tahasan:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Tingnan ang [piliin ang iyong platform](#install) para sa lahat ng 20+ assistant.
 
 Pagkatapos, sa iyong AI assistant:
 
@@ -114,8 +129,8 @@ Ang makukuha mo nang out of the box:
 
 | Kakayahan | Ano ang makukuha mo |
 |---|---|
-| **God nodes** | Ang pinaka-nakakonektang mga konsepto, para makita mo kung saan dumadaloy ang lahat |
-| **Communities** | Ang graph na hinati sa mga subsystem (Leiden), na may mga label na walang LLM |
+| **Pinaka-nakakonektang mga component** | Ang mga konseptong dinadaluyan ng lahat — ang mga hub ng graph (tinatawag ding *god nodes*) |
+| **Mga subsystem** | Ang graph na hinati sa magkakaugnay na mga grupo (Leiden *community*), bawat isa ay may label na walang LLM |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` na nireresolba sa ~40 na wika sa pamamagitan ng tree-sitter AST |
 | **Query, path, explain** | Magtanong, subaybayan ang landas sa pagitan ng dalawang bagay, o ipaliwanag ang isang konsepto, lahat laban sa `graph.json` |
 | **Rationale + doc refs** | Ang mga komentong `# NOTE:` / `# WHY:` at mga sitas na ADR/RFC ay nagiging first-class na node na naka-link sa code |
@@ -159,7 +174,7 @@ Ang buong gabay at reference ay nasa **[docs.graphify.com](https://docs.graphify
 
 | Kinakailangan | Minimum | Suriin | Install |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(inirerekomenda)* | kahit ano | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatibo)* | kahit ano | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +242,7 @@ halimbawa `graphify claude install --project` o `graphify codex install --projec
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (tawagin gamit ang `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -361,7 +376,7 @@ Inilalantad din ng server ang PR tooling (`list_prs`, `get_pr_impact`, `triage_p
 
 ## Ano ang nasa ulat
 
-Binubuod ng `GRAPH_REPORT.md` ang mga god node, community, at pangunahing landas para sa malawak na pagsusuri ng arkitektura. Kung paano itinatayo ang graph at kung ano ang nilalaman nito: **[Paano gumagana ang graphify](https://docs.graphify.com/concepts/architecture)**.
+Binubuod ng `GRAPH_REPORT.md` ang mga pinaka-nakakonektang component, mga subsystem, at pangunahing landas para sa malawak na pagsusuri ng arkitektura. Kung paano itinatayo ang graph at kung ano ang nilalaman nito: **[Paano gumagana ang graphify](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -377,8 +392,8 @@ Pini-parse ng graphify ang ~40 na programming language nang lokal gamit ang tree
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -396,7 +411,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Tingnan ang [buong command reference](#full-command-reference) sa ibaba.

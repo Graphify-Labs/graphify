@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Скоротіть витрати токенів агентів на 80%.</b> Graphify Cloud - це завжди активна памʼять, яка керує вашими агентами, підтримує високу якість коду та доводить коректність за допомогою формальної верифікації. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Почніть безкоштовно, без картки &rarr;</b></a>
+  <b>Спільний контекст кодової бази для агентів і людей.</b>
+  <br/>
+  Перетворіть свою кодову базу на запитуваний граф знань. Відстежуйте залежності, розумійте, як поєднуються компоненти, і давайте своєму агенту для кодування багаторазовий контекст між сесіями.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Почніть безкоштовно, без картки &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> підтримує цей граф завжди активним упродовж усього вашого SDLC.
 </p>
 
 Введіть `/graphify` у вашому AI-асистенті для кодування, і він відобразить увесь ваш проєкт (код, документацію, PDF, зображення, відео) у **граф знань**, який ви можете **запитувати замість того, щоб грепати** файли.
@@ -41,18 +47,27 @@
 > **Хочете, щоб це було завжди активним?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) підтримує граф живим упродовж усього вашого SDLC: підтримка монорепозиторіїв і крос-репозиторіїв, формальна верифікація та код-рев'ю з висоти пташиного польоту над вашим SDLC, а також конектори для Sentry, Jira та інших, тож інциденти й тикети перебувають у тому самому графі, що й ваш код. **[Почніть безкоштовно, без картки](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>Кодова база FastAPI, відображена graphify. Кожен вузол - це поняття, кольори - це виявлені спільноти, і все це клікабельне у graph.html.</em>
+  <em>Кодова база FastAPI, відображена graphify. Кожен вузол - це поняття, кольори - це виявлені підсистеми, і все це клікабельне у graph.html.</em>
 </p>
 
-**Початок роботи** (30 секунд). Потрібні Python 3.11+ та uv (або pipx):
+**Початок роботи** (30 секунд). Потрібні Python 3.11.5–3.14 та uv (або pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Використовуєте іншого асистента? Вкажіть його явно:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Див. [оберіть свою платформу](#install) для всіх 20+ асистентів.
 
 Потім у вашому AI-асистенті:
 
@@ -114,8 +129,8 @@ Shortest path (3 hops):
 
 | Можливість | Що ви отримуєте |
 |---|---|
-| **Божественні вузли** | Найбільш звʼязані поняття, тож ви бачите, через що все проходить |
-| **Спільноти** | Граф, розділений на підсистеми (Leiden), з мітками без LLM |
+| **Найбільш звʼязані компоненти** | Поняття, через які проходить усе — хаби графа (також відомі як *god nodes*) |
+| **Підсистеми** | Граф, розділений на згуртовані групи (Leiden *communities*), кожна з міткою без LLM |
 | **Міжфайлові звʼязки** | `calls` / `imports` / `inherits` / `mixes_in`, розвʼязані між ~40 мовами через tree-sitter AST |
 | **Запит, шлях, пояснення** | Поставте питання, простежте шлях між двома речами або поясніть одне поняття, усе проти `graph.json` |
 | **Обґрунтування + посилання на документи** | Коментарі `# NOTE:` / `# WHY:` та цитати ADR/RFC стають повноцінними вузлами, повʼязаними з кодом |
@@ -159,7 +174,7 @@ Shortest path (3 hops):
 
 | Вимога | Мінімум | Перевірка | Встановлення |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(рекомендовано)* | будь-яка | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(альтернатива)* | будь-яка | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +242,7 @@ sidecar `references/`, який скіл завантажує на вимогу)
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (викликається через `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -361,7 +376,7 @@ gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-exten
 
 ## Що є у звіті
 
-`GRAPH_REPORT.md` узагальнює божественні вузли, спільноти та ключові шляхи для широкого огляду архітектури. Як будується граф і що він містить: **[Як працює graphify](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` узагальнює найбільш звʼязані компоненти, підсистеми та ключові шляхи для широкого огляду архітектури. Як будується граф і що він містить: **[Як працює graphify](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -377,8 +392,8 @@ graphify розбирає ~40 мов програмування локально
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -396,7 +411,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Дивіться [повний довідник команд](#full-command-reference) нижче.

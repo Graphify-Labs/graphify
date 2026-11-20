@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>هزینه توکن عامل‌ها را 80% کاهش دهید.</b> Graphify Cloud یک حافظهٔ همیشه‌روشن است که عامل‌های شما را مدیریت می‌کند، کیفیت کد را بالا نگه می‌دارد و درستی را با وارسی صوری اثبات می‌کند. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>رایگان شروع کنید، بدون کارت &rarr;</b></a>
+  <b>زمینهٔ مشترک کدبیس برای عامل‌ها و انسان‌ها.</b>
+  <br/>
+  کدبیس خود را به یک گراف دانش قابل‌پرس‌وجو تبدیل کنید. وابستگی‌ها را ردیابی کنید، بفهمید اجزا چگونه به هم متصل می‌شوند، و به عامل برنامه‌نویسی خود زمینه‌ای قابل‌استفادهٔ مجدد در میان نشست‌ها بدهید.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>رایگان شروع کنید، بدون کارت &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> آن گراف را در سراسر کل SDLC شما همیشه‌روشن نگه می‌دارد.
 </p>
 
 در دستیار کدنویسی هوش مصنوعی خود `/graphify` را تایپ کنید تا کل پروژهٔ شما (کد، مستندات، فایل‌های PDF، تصاویر، ویدیوها) را به یک **گراف دانش** نگاشت کند که می‌توانید به‌جای grep کردن در فایل‌ها **از آن پرس‌وجو کنید**.
@@ -41,18 +47,27 @@
 > **این را همیشه‌روشن می‌خواهید؟** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) گراف را در سراسر چرخهٔ عمر توسعهٔ نرم‌افزار شما زنده نگه می‌دارد: پشتیبانی از مونوریپو و چند-مخزنی، وارسی صوری، و بازبینی کد با نگاهی از بالا به کل SDLC شما، به‌علاوهٔ اتصال‌دهنده‌هایی برای Sentry و Jira و موارد دیگر، تا رخدادها و تیکت‌ها در همان گرافی قرار گیرند که کد شما در آن است. **[رایگان شروع کنید، بدون کارت](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>کدبیس FastAPI که توسط graphify نگاشت شده است. هر گره یک مفهوم است، رنگ‌ها جامعه‌های شناسایی‌شده هستند، و همهٔ آن در graph.html قابل کلیک است.</em>
+  <em>کدبیس FastAPI که توسط graphify نگاشت شده است. هر گره یک مفهوم است، رنگ‌ها زیرسیستم‌های شناسایی‌شده هستند، و همهٔ آن در graph.html قابل کلیک است.</em>
 </p>
 
-**شروع کنید** (30 ثانیه). به Python 3.11+ و uv (یا pipx) نیاز دارد:
+**شروع کنید** (30 ثانیه). به Python 3.11.5–3.14 و uv (یا pipx) نیاز دارد:
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+از دستیار دیگری استفاده می‌کنید؟ آن را به‌صراحت نام ببرید:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+برای همهٔ 20+ دستیار، [پلتفرم خود را انتخاب کنید](#install) را ببینید.
 
 سپس، در دستیار هوش مصنوعی خود:
 
@@ -114,8 +129,8 @@ Shortest path (3 hops):
 
 | Capability | What you get |
 |---|---|
-| **گره‌های خدا** | پرارتباط‌ترین مفاهیم، تا ببینید همه‌چیز از میان چه چیزی جریان می‌یابد |
-| **جامعه‌ها** | گراف تقسیم‌شده به زیرسیستم‌ها (Leiden)، با برچسب‌های بدون مدل زبانی |
+| **پرارتباط‌ترین اجزا** | مفاهیمی که همه‌چیز از میان آن‌ها جریان می‌یابد — هاب‌های گراف (که *god nodes* نیز نامیده می‌شوند) |
+| **زیرسیستم‌ها** | گراف تقسیم‌شده به گروه‌های منسجم (Leiden *communities*)، هر کدام با یک برچسب بدون مدل زبانی |
 | **پیوندهای میان‌فایلی** | `calls` / `imports` / `inherits` / `mixes_in` برطرف‌شده در حدود 40 زبان از طریق AST tree-sitter |
 | **پرس‌وجو، مسیر، توضیح** | سؤالی بپرسید، مسیر میان دو چیز را ردیابی کنید، یا یک مفهوم را توضیح دهید، همه در برابر `graph.json` |
 | **منطق + ارجاع‌های مستند** | توضیحات `# NOTE:` / `# WHY:` و استنادهای ADR/RFC به گره‌های درجه‌یک پیوندخورده به کد تبدیل می‌شوند |
@@ -159,7 +174,7 @@ Shortest path (3 hops):
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +242,7 @@ graphify install --project --platform codex
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (با `$graphify` فراخوانی کنید) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -361,7 +376,7 @@ gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-exten
 
 ## What's in the report
 
-`GRAPH_REPORT.md` گره‌های خدا، جامعه‌ها و مسیرهای کلیدی را برای بازبینی گستردهٔ معماری خلاصه می‌کند. اینکه گراف چگونه ساخته می‌شود و چه چیزی در بر دارد: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` پرارتباط‌ترین اجزا، زیرسیستم‌ها و مسیرهای کلیدی را برای بازبینی گستردهٔ معماری خلاصه می‌کند. اینکه گراف چگونه ساخته می‌شود و چه چیزی در بر دارد: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -377,8 +392,8 @@ graphify حدود 40 زبان برنامه‌نویسی را به‌صورت م�
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -396,7 +411,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 [مرجع کامل فرمان‌ها](#full-command-reference) را در زیر ببینید.

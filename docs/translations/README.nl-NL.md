@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Verlaag het tokenverbruik van je agents met 80%.</b> Graphify Cloud is altijd-aan geheugen dat je agents aanstuurt, de codekwaliteit hoog houdt en correctheid bewijst met formele verificatie. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Begin gratis, geen kaart nodig &rarr;</b></a>
+  <b>Gedeelde codebasecontext voor agents en mensen.</b>
+  <br/>
+  Maak van je codebase een bevraagbare kennisgraaf. Traceer afhankelijkheden, begrijp hoe componenten met elkaar verbonden zijn, en geef je codeerassistent herbruikbare context over sessies heen.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Begin gratis, geen kaart nodig &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> houdt die graaf altijd-aan gedurende je hele SDLC.
 </p>
 
 Typ `/graphify` in je AI-codeerassistent en die brengt je hele project (code, documentatie, PDF's, afbeeldingen, video's) in kaart als een **kennisgraaf** die je kunt **bevragen in plaats van door bestanden te grepen**.
@@ -41,18 +47,27 @@ Typ `/graphify` in je AI-codeerassistent en die brengt je hele project (code, do
 > **Wil je dit altijd-aan?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) houdt de graaf live gedurende je hele SDLC: ondersteuning voor monorepo's en repo-overstijgende verbanden, formele verificatie en code review met een vogelvluchtperspectief op je SDLC, plus connectoren voor Sentry, Jira en meer, zodat incidenten en tickets in dezelfde graaf zitten als je code. **[Begin gratis, geen kaart nodig](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>De FastAPI-codebase in kaart gebracht door graphify. Elke node is een concept, kleuren zijn gedetecteerde communities, en het geheel is klikbaar in graph.html.</em>
+  <em>De FastAPI-codebase in kaart gebracht door graphify. Elke node is een concept, kleuren zijn gedetecteerde subsystemen, en het geheel is klikbaar in graph.html.</em>
 </p>
 
-**Aan de slag** (30 seconden). Vereist Python 3.11+ en uv (of pipx):
+**Aan de slag** (30 seconden). Vereist Python 3.11.5–3.14 en uv (of pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Gebruik je een andere assistent? Benoem die expliciet:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Zie [kies je platform](#install) voor alle 20+ assistenten.
 
 Vervolgens, in je AI-assistent:
 
@@ -114,8 +129,8 @@ Wat je meteen uit de doos krijgt:
 
 | Capability | What you get |
 |---|---|
-| **God-nodes** | De meest verbonden concepten, zodat je ziet waar alles doorheen stroomt |
-| **Communities** | De graaf opgedeeld in subsystemen (Leiden), met LLM-vrije labels |
+| **Meest verbonden componenten** | De concepten waar alles doorheen stroomt — de hubs van de graaf (ook wel *god nodes*) |
+| **Subsystemen** | De graaf opgedeeld in samenhangende groepen (Leiden *communities*), elk met een LLM-vrij label |
 | **Cross-file-verbanden** | `calls` / `imports` / `inherits` / `mixes_in` opgelost over ~40 talen via tree-sitter AST |
 | **Query, path, explain** | Stel een vraag, traceer het pad tussen twee dingen, of laat één concept uitleggen, allemaal tegen `graph.json` |
 | **Onderbouwing + docverwijzingen** | `# NOTE:` / `# WHY:`-opmerkingen en ADR/RFC-citaten worden eersterangs nodes die aan de code zijn gekoppeld |
@@ -159,7 +174,7 @@ Volledige handleidingen en naslag staan op **[docs.graphify.com](https://docs.gr
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(aanbevolen)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatief)* | any | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +242,7 @@ bijvoorbeeld `graphify claude install --project` of `graphify codex install --pr
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (aanroepen met `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -361,7 +376,7 @@ De server stelt ook PR-tooling beschikbaar (`list_prs`, `get_pr_impact`, `triage
 
 ## Wat er in het rapport staat
 
-`GRAPH_REPORT.md` vat de god-nodes, communities en belangrijkste paden samen voor een brede architectuurbeoordeling. Hoe de graaf wordt gebouwd en wat die bevat: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` vat de meest verbonden componenten, subsystemen en belangrijkste paden samen voor een brede architectuurbeoordeling. Hoe de graaf wordt gebouwd en wat die bevat: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -377,8 +392,8 @@ graphify parset ~40 programmeertalen lokaal met tree-sitter AST, en brengt docum
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -396,7 +411,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Zie de [volledige commandoreferentie](#full-command-reference) hieronder.
