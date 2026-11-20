@@ -7890,8 +7890,8 @@ def _resolve_php_member_calls(
     — the keyword names it as unambiguously as a literal class name would).
     ``parent::`` resolves through a single `inherits` edge from the enclosing
     class. Whatever the scope, the method is looked up the `inherits` chain
-    level by level: the nearest class that declares it wins, and a tie on that
-    level binds nothing. Each call site gets its own edge, so a repeat call
+    level by level: the nearest class that provides it wins (its own method,
+    else one from a trait it uses), and a tie on that level binds nothing. Each call site gets its own edge, so a repeat call
     keeps its line (the build folds it into `also_seen`). A
     ``$var::method()`` dynamic scope is left unresolved — PHP has no
     declared-type table for it to resolve against, and guessing would risk the
@@ -7933,9 +7933,12 @@ def _resolve_php_member_calls(
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
     inherits_bases: dict[str, list[str]] = {}
+    used_traits: dict[str, list[str]] = {}
     for edge in all_edges:
         if edge.get("relation") == "inherits":
             inherits_bases.setdefault(edge["source"], []).append(edge["target"])
+        elif edge.get("relation") == "mixes_in":
+            used_traits.setdefault(edge["source"], []).append(edge["target"])
 
     type_table_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
@@ -7943,14 +7946,29 @@ def _resolve_php_member_calls(
         if tt and tt.get("path"):
             type_table_by_file[str(tt["path"])] = tt.get("table", {})
 
-    def declared_from(type_nid: str, name: str) -> str | None:
-        # The nearest class up the `inherits` chain that declares NAME wins; two
-        # declarations on that nearest level tie and bind nothing, as in Java.
+    def provided_by(type_nid: str, name: str) -> set[str]:
+        # PHP precedence: the class's own method, then its traits' (nearest
+        # `use` first, through traits that use traits), then the parent's.
         level, seen = [type_nid], {type_nid}
         while level:
             found: set[str] = set()
             for nid in level:
                 found |= method_index.get((nid, name), set())
+            if found:
+                return found
+            traits = [t for nid in level for t in used_traits.get(nid, []) if t not in seen]
+            seen.update(traits)
+            level = list(dict.fromkeys(traits))
+        return set()
+
+    def declared_from(type_nid: str, name: str) -> str | None:
+        # The nearest class up the `inherits` chain that provides NAME wins; two
+        # on that nearest level tie and bind nothing, as in Java.
+        level, seen = [type_nid], {type_nid}
+        while level:
+            found: set[str] = set()
+            for nid in level:
+                found |= provided_by(nid, name)
             if found:
                 return next(iter(found)) if len(found) == 1 else None
             bases = [base for nid in level for base in inherits_bases.get(nid, []) if base not in seen]
