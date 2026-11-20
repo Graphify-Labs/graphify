@@ -7956,12 +7956,19 @@ def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None,
     scan_root: Path | None = None,
     preserve_call_sites: bool = False,
+    parse_sink: list | None = None,
 ) -> dict:
     """Generic AST extractor driven by LanguageConfig.
 
     ``source_override`` parses the given bytes instead of reading ``path``, while
     still keying nodes/edges off ``path``. Lets container formats (e.g. Vue SFCs)
     mask the wrapper and parse just the embedded ``<script>``.
+
+    ``parse_sink`` (a list) receives one ``(source, tree, appended_newline)`` tuple
+    after a successful parse, so a post-pass can walk the same tree instead of
+    parsing the file again. ``appended_newline`` is True when a trailing newline
+    was added to the parsed bytes; such a tree must not be reused for byte-exact
+    slicing.
     """
     parser, parser_error = _get_parser(config.ts_module, config.ts_language_fn)
     if parser_error is not None:
@@ -7975,12 +7982,15 @@ def _extract_generic(
         # In C and C++, if the .h file does not end with a newline '\n' an error
         # is throwed even if the file is valid. In order to avoid this, a new line
         # char is added only if the original file does not end with it.
-        if source and not source.endswith(b"\n"):
+        appended_newline = bool(source) and not source.endswith(b"\n")
+        if appended_newline:
             source = source + b"\n"
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
+    if parse_sink is not None:
+        parse_sink.append((source, tree, appended_newline))
 
     stem = _file_stem(path)
     str_path = str(path)
