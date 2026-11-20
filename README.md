@@ -363,7 +363,7 @@ graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-r
 /graphify add https://arxiv.org/abs/1706.03762   # fetch a paper and add it
 /graphify add <youtube-url>                       # transcribe and add a video
 
-graphify hook install              # auto-rebuild on commit + branch checkout (run `graphify update .` after `git pull`: see "Recommended workflow" below)
+graphify hook install              # auto-rebuild on commit, branch checkout, merge/pull and rebase (skipped in linked worktrees: see "Team setup")
 graphify merge-graphs a.json b.json              # combine two graphs
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
@@ -434,6 +434,11 @@ The query command always reads that project's `.graphifyrc`. An invalid recogniz
 ## Team setup
 
 Commit or share the graph so your whole team queries the same context, and review pull requests with graph context. See **[Share context with your team](https://docs.graphify.com/guides/team-workflows)** and **[Review pull requests](https://docs.graphify.com/guides/pull-requests)**.
+
+**Git hooks and linked worktrees.** `graphify hook install` adds `post-commit`, `post-checkout`, `post-merge` and `post-rewrite` hooks, so commits, branch switches, `git pull` (merge or `--rebase`) and rebases rebuild the graph in the background. The hooks deliberately do nothing inside a linked worktree (`git worktree add`). Worktrees share one hooks directory, so without this guard every commit in every worktree would write its own partial graph, and CI or deploy jobs that create a worktree and then `git clean` it would race the background rebuild. The primary checkout keeps updating as usual. To work with a graph inside a worktree, either:
+
+- copy the primary checkout's graph in and refresh it by hand when you need it: `cp -r ../main-checkout/graphify-out . && graphify update .` (with the default output dir the stored root is relative, so the copy works in its new location), or
+- point every checkout at one shared graph by exporting an absolute `GRAPHIFY_OUT` in your environment; the primary checkout's hooks keep it current.
 
 ---
 

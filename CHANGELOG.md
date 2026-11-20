@@ -13,6 +13,8 @@ Performance work on the extract/build/update pipeline. All of these preserve gra
 - Perf: **watch** the no-change topology comparison uses an order-independent content hash computed in one pass instead of sorting and re-serializing the whole graph; ~1.4x on that compare.
 - Perf: **cluster** the community partition is cached by a topology hash and reused when the graph is unchanged (~9x on a cluster cache hit), and the deterministic edge-sort key drops a per-edge `json.dumps` in favour of a cheap tuple key (identical ordering).
 
+- Docs: **hooks** the README now explains that the git hooks deliberately skip linked worktrees (and why), how to seed and refresh a worktree's graph from the primary checkout or share one through `GRAPHIFY_OUT`, and no longer tells you to run `graphify update .` after `git pull`, which the post-merge and post-rewrite hooks already cover (#5130).
+
 ## 0.9.113 (2026-11-19)
 
 - Change: **packaging** the minimum Python is now 3.11.5 (was 3.11), and soupsieve is pinned to 4.1.1 for every interpreter. soupsieve's patched releases require 3.11.5, so raising the floor clears the open soupsieve advisories (ReDoS and recursion/polynomial-DoS in the CSS selector parser, reached transitively through beautifulsoup4 in the optional `svg`/`all`/`pdf` extras). Installs on Python 3.11.0-3.11.4 keep resolving to 0.9.112; everyone on 3.11.5 and up is unaffected (#5301, thanks @TPAteeq).
