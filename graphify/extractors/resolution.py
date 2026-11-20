@@ -1254,7 +1254,7 @@ def _matlab_inheritance_edges(nodes: list[dict]) -> list[dict]:
     for key in files.keys() | classes.keys():
         repo, source = key
         path = Path(source)
-        if path.suffix != ".m" or not identifier.fullmatch(path.stem):
+        if path.suffix.lower() != ".m" or not identifier.fullmatch(path.stem):
             continue
         if any(part == "private" or part.startswith("@") for part in path.parts[:-1]):
             continue
@@ -1311,7 +1311,11 @@ def _matlab_inheritance_edges(nodes: list[dict]) -> list[dict]:
             if "." in name:
                 matches = qualified.get((repo, name), [])
             elif not namespaces[key]:
-                matches = [(repo, str(Path(source).with_name(f"{name}.m")))]
+                path = Path(source)
+                matches = [
+                    sibling for suffix in (".m", ".M")
+                    if (sibling := (repo, str(path.with_name(name + suffix)))) in namespaces
+                ]
             else:
                 continue
             if len(matches) != 1:

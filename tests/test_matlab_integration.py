@@ -48,9 +48,10 @@ def test_language_remaps_keep_matlab_and_objc_dispatch_contract(
     assert result["nodes"], "the selected remap must reach a real language extractor"
 
 
-def test_matlab_calls_and_exact_source_inheritance_survive_build(tmp_path: Path) -> None:
-    base = tmp_path / "Base.m"
-    child = tmp_path / "Derived.m"
+@pytest.mark.parametrize("suffix", [".m", ".M"])
+def test_matlab_calls_and_exact_source_inheritance_survive_build(tmp_path: Path, suffix: str) -> None:
+    base = tmp_path / f"Base{suffix}"
+    child = tmp_path / f"Derived{suffix}"
     calls = tmp_path / "Calls.m"
     base.write_text("classdef Base\nend\n", encoding="utf-8")
     child.write_text("classdef Derived < Base\nend\n", encoding="utf-8")
@@ -80,7 +81,7 @@ def test_matlab_calls_and_exact_source_inheritance_survive_build(tmp_path: Path)
     )
     assert raw_call.get("source_file") == "Calls.m"
     assert raw_call.get("source_location") == "L2"
-    assert raw_inherits.get("source_file") == "Derived.m"
+    assert raw_inherits.get("source_file") == f"Derived{suffix}"
 
     graph = build([result], dedup=False, root=tmp_path)
     path = tmp_path / "built.json"
@@ -95,7 +96,7 @@ def test_matlab_calls_and_exact_source_inheritance_survive_build(tmp_path: Path)
         for edge in stored_edges
     }
     assert ("caller", "helper", "calls", "Calls.m", "L2") in relations
-    assert ("Derived", "Base", "inherits", "Derived.m", "L1") in relations
+    assert ("Derived", "Base", "inherits", f"Derived{suffix}", "L1") in relations
 
 def test_pre_upgrade_matlab_cache_does_not_mask_current_extraction(tmp_path, monkeypatch):
     from graphify import cache

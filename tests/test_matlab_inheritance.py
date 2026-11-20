@@ -89,7 +89,7 @@ def test_exact_source_matches_preserve_written_bases_and_input_records():
         ("private/Child.m", "", "+pkg/Base.m", "pkg", "pkg.Base"),
         ("Child.m", "", "+outer/ordinary/+pkg/Base.m", "pkg", "outer.pkg.Base"),
         ("Child.m", "", "+bad-name/Base.m", "bad-name", "bad-name.Base"),
-        ("Child.m", "", "Base.M", "", "Base"),
+        ("Child.m", "", "Base.invalid", "", "Base"),
     ],
 )
 def test_only_exact_namespace_or_unpacked_sibling_matches(
