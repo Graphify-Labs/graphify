@@ -194,12 +194,22 @@ def test_interface_hierarchy_is_not_walked_transitively(tmp_path):
 
 
 def test_java_interface_and_implementation_are_untouched(tmp_path):
-    # The resolver is registered for .cs; a Java corpus must not gain the edge.
-    dispatch, _ = _extract(tmp_path, {
-        "IReport.java": "public interface IReport { void build(); }\n",
-        "Report.java": "public class Report implements IReport { public void build() { } }\n",
-    })
-    assert not dispatch
+    # The C# pass is gated on .cs; a Java pair is the Java pass's job.
+    from graphify.csharp_dispatch import resolve_csharp_interface_dispatch
+
+    nodes = [
+        {"id": "iface", "label": "IReport", "source_file": "IReport.java", "_callable_class": True},
+        {"id": "impl", "label": "Report", "source_file": "Report.java", "_callable_class": True},
+        {"id": "iface_m", "label": ".build()", "source_file": "IReport.java", "_callable": True},
+        {"id": "impl_m", "label": ".build()", "source_file": "Report.java", "_callable": True},
+    ]
+    edges = [
+        {"source": "impl", "target": "iface", "relation": "implements"},
+        {"source": "iface", "target": "iface_m", "relation": "method"},
+        {"source": "impl", "target": "impl_m", "relation": "method"},
+    ]
+    resolve_csharp_interface_dispatch([], nodes, edges)
+    assert not any(e["relation"] == "dispatches_to" for e in edges)
 
 def test_case_only_member_difference_is_not_a_match(tmp_path):
     # C# is case sensitive: an implementation must spell the member exactly, so
@@ -294,7 +304,7 @@ def test_a_gate_failing_implementer_does_not_dilute_confidence(tmp_path):
     assert dispatch_edges[0]["confidence_score"] == 0.85
 
 
-def test_mixed_corpus_links_only_the_csharp_pair(tmp_path):
+def test_mixed_corpus_links_each_pair_within_its_own_language(tmp_path):
     dispatch, r = _extract(tmp_path, {
         "IReport.cs": "public interface IReport { void Build(); }\n",
         "Report.cs": "public class Report : IReport { public void Build() { } }\n",
@@ -303,7 +313,7 @@ def test_mixed_corpus_links_only_the_csharp_pair(tmp_path):
     })
     by_id = {n["id"]: n for n in r["nodes"]}
     linked = {(by_id[s].get("source_file"), by_id[t].get("source_file")) for s, t in dispatch}
-    assert linked == {("IReport.cs", "Report.cs")}
+    assert linked == {("IReport.cs", "Report.cs"), ("IJob.java", "Job.java")}
 
 def test_member_name_is_read_up_to_the_first_parenthesis(tmp_path):
     # The pair match is keyed on this string. C# labels are `.Name()` today, so

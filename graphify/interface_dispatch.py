@@ -29,8 +29,9 @@ forced, the source text just never names it — 0.75 for two, and a 0.65 floor
 ("weak inference") from three on, rather than inventing finer-grained
 precision the rubric does not have.
 
-The mechanism knows no language. Each language registers a thin wrapper
-(`graphify.csharp_dispatch` for C# interfaces, #3003) that fixes the file
+The mechanism knows no language. Each language registers a wrapper
+(`graphify.csharp_dispatch` for C# interfaces, #3003; Swift, Go and Java
+alongside it) that fixes the file
 suffixes both ends of a pair must be declared in: `implements` is resolved by
 name, so a same-named type from another language is a collision, not an
 implementation. A language whose interfaces have the same shape (Swift
