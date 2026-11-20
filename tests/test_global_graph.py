@@ -4,6 +4,7 @@ graphify/dedup.py."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import pytest
 import networkx as nx
 from unittest.mock import patch
@@ -385,3 +386,228 @@ def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
         from graphify.global_graph import global_add
         with pytest.raises(ValueError, match="exceeds"):
             global_add(src_graph, "repoA")
+
+
+def test_global_add_records_built_at_commit_and_basis(tmp_path):
+    """Manifest must record built_at_commit and commit_basis='built_at_commit'
+    when the source graph.json carries an explicit build commit stamp."""
+    repo_dir = tmp_path / "repoA"
+    out_dir = repo_dir / "graphify-out"
+    out_dir.mkdir(parents=True)
+    src_graph = out_dir / "graph.json"
+
+    G = _make_graph([{"id": "a", "label": "A", "source_file": "a.py"}])
+    _graph_to_json(G, src_graph)
+    raw = json.loads(src_graph.read_text(encoding="utf-8"))
+    raw["built_at_commit"] = "1111111deadbeef"
+    src_graph.write_text(json.dumps(raw), encoding="utf-8")
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.watch._git_head", return_value="2222222cafebabe"):
+        from graphify.global_graph import global_add
+        global_add(src_graph, "repoA")
+
+    manifest = json.loads((global_dir / "global-manifest.json").read_text(encoding="utf-8"))
+    entry = manifest["repos"]["repoA"]
+    assert entry["built_at_commit"] == "1111111deadbeef"
+    assert entry["head_at_merge"] == "2222222cafebabe"
+    assert entry["commit_basis"] == "built_at_commit"
+
+
+def test_global_add_falls_back_to_head_at_merge_when_graph_has_no_commit(tmp_path):
+    """When graph.json carries no built_at_commit (e.g. --no-cluster raw output),
+    manifest records head_at_merge with commit_basis='head_at_merge' rather than
+    conflating git HEAD with extracted graph provenance."""
+    repo_dir = tmp_path / "repoB"
+    out_dir = repo_dir / "graphify-out"
+    out_dir.mkdir(parents=True)
+    src_graph = out_dir / "graph.json"
+
+    G = _make_graph([{"id": "b", "label": "B", "source_file": "b.py"}])
+    _graph_to_json(G, src_graph)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.watch._git_head", return_value="abcdef0123456789"):
+        from graphify.global_graph import global_add
+        global_add(src_graph, "repoB")
+
+    manifest = json.loads((global_dir / "global-manifest.json").read_text(encoding="utf-8"))
+    entry = manifest["repos"]["repoB"]
+    assert entry["built_at_commit"] is None
+    assert entry["head_at_merge"] == "abcdef0123456789"
+    assert entry["commit_basis"] == "head_at_merge"
+
+
+def test_settled_detects_in_flight_writes_and_converges(tmp_path, monkeypatch):
+    """settled() must return False when file size/mtime keeps changing across the
+    polling budget, and True once two consecutive samples match."""
+    from graphify.global_graph import settled
+
+    target = tmp_path / "graph.json"
+    target.write_text("{}", encoding="utf-8")
+
+    # Simulate a file that keeps changing on every stat() call
+    counter = {"n": 0}
+    orig_stat = Path.stat
+
+    class _ChangingStat:
+        def __init__(self, size: int, mtime: float, mtime_ns: int):
+            self.st_size = size
+            self.st_mtime = mtime
+            self.st_mtime_ns = mtime_ns
+
+    import time as _time
+    now = _time.time()
+
+    def _changing_stat(self, *args, **kwargs):
+        if self == target:
+            counter["n"] += 1
+            return _ChangingStat(100 + counter["n"], now, int(now * 1e9) + counter["n"])
+        return orig_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _changing_stat)
+    monkeypatch.setattr("graphify.global_graph.time.sleep", lambda _s: None)
+    assert settled(target, 0.5, quiet_s=10.0, poll_interval_s=0.2) is False
+
+    # Now simulate a file that settles after 1 change
+    seq = [
+        _ChangingStat(100, now, 1000),
+        _ChangingStat(120, now, 2000),
+        _ChangingStat(120, now, 2000),
+    ]
+    idx = {"i": 0}
+
+    def _settling_stat(self, *args, **kwargs):
+        if self == target:
+            val = seq[min(idx["i"], len(seq) - 1)]
+            idx["i"] += 1
+            return val
+        return orig_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _settling_stat)
+    assert settled(target, 1.0, quiet_s=10.0, poll_interval_s=0.2) is True
+
+
+def test_global_add_skips_unsettled_file_without_touching_manifest(tmp_path):
+    """When settle_s > 0 and the source graph is still being written by a
+    background hook, global_add must skip and leave the manifest untouched."""
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([{"id": "a", "label": "A", "source_file": "a.py"}])
+    _graph_to_json(G, src_graph)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.global_graph.settled", return_value=False):
+        from graphify.global_graph import global_add
+        res = global_add(src_graph, "repoA", settle_s=1.5)
+
+    assert res["skipped"] is True
+    assert res["unsettled"] is True
+    assert not (global_dir / "global-manifest.json").exists()
+
+
+def test_global_status_detects_hash_drift_and_commit_lag(tmp_path):
+    """global_status() must report in-sync initially, then flag stale when either
+    the on-disk graph.json changes or git HEAD advances past the merged commit."""
+    repo_dir = tmp_path / "repoA"
+    out_dir = repo_dir / "graphify-out"
+    out_dir.mkdir(parents=True)
+    src_graph = out_dir / "graph.json"
+
+    G = _make_graph([{"id": "a", "label": "A", "source_file": "a.py"}])
+    _graph_to_json(G, src_graph)
+    raw = json.loads(src_graph.read_text(encoding="utf-8"))
+    raw["built_at_commit"] = "aaa1111"
+    src_graph.write_text(json.dumps(raw), encoding="utf-8")
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.watch._git_head", return_value="aaa1111"), \
+         patch("graphify.global_graph._commits_between", return_value=0):
+        from graphify.global_graph import global_add, global_status
+        global_add(src_graph, "repoA")
+        st_clean = global_status()
+
+    assert st_clean["all_in_sync"] is True
+    assert st_clean["repos"]["repoA"]["stale"] is False
+    assert st_clean["repos"]["repoA"]["commits_behind"] == 0
+
+    # Advance git HEAD by 3 commits without rebuilding/merging
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.watch._git_head", return_value="bbb2222"), \
+         patch("graphify.global_graph._commits_between", return_value=3):
+        from graphify.global_graph import global_status
+        st_lag = global_status()
+
+    assert st_lag["all_in_sync"] is False
+    assert st_lag["repos"]["repoA"]["stale"] is True
+    assert st_lag["repos"]["repoA"]["commits_behind"] == 3
+
+    # Modify graph.json on disk so hash drifts from manifest
+    G2 = _make_graph([
+        {"id": "a", "label": "A", "source_file": "a.py"},
+        {"id": "b", "label": "B", "source_file": "b.py"},
+    ])
+    _graph_to_json(G2, src_graph)
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.watch._git_head", return_value="aaa1111"), \
+         patch("graphify.global_graph._commits_between", return_value=0):
+        from graphify.global_graph import global_status
+        st_hash = global_status()
+
+    assert st_hash["all_in_sync"] is False
+    assert st_hash["repos"]["repoA"]["hash_in_sync"] is False
+    assert st_hash["repos"]["repoA"]["stale"] is True
+
+
+def test_global_sync_remerges_modified_and_reports_missing(tmp_path):
+    """global_sync() re-merges modified registered repos, skips unchanged ones,
+    and reports registered repos whose source_path is missing."""
+    g1 = tmp_path / "repo1" / "graphify-out" / "graph.json"
+    g2 = tmp_path / "repo2" / "graphify-out" / "graph.json"
+    g1.parent.mkdir(parents=True)
+    g2.parent.mkdir(parents=True)
+
+    _graph_to_json(_make_graph([{"id": "a", "label": "A", "source_file": "a.py"}]), g1)
+    _graph_to_json(_make_graph([{"id": "b", "label": "B", "source_file": "b.py"}]), g2)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, global_sync
+        global_add(g1, "repo1")
+        global_add(g2, "repo2")
+
+        # Update g1 on disk, leave g2 unchanged
+        _graph_to_json(
+            _make_graph([
+                {"id": "a", "label": "A", "source_file": "a.py"},
+                {"id": "a2", "label": "A2", "source_file": "a2.py"},
+            ]),
+            g1,
+        )
+        sync_res = global_sync()
+        assert sync_res["updated"] == ["repo1"]
+        assert sync_res["skipped"] == ["repo2"]
+        assert sync_res["missing"] == []
+
+        # Remove g2 on disk -> global_sync must report it in missing
+        g2.unlink()
+        sync_missing = global_sync()
+        assert sync_missing["missing"] == ["repo2"]
+
