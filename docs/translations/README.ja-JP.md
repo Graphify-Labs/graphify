@@ -47,6 +47,11 @@ AI コーディングアシスタントで `/graphify` と入力すると、プ�
   <em>graphify がマッピングした FastAPI コードベース。すべてのノードは概念であり、色は検出されたコミュニティを表し、全体が graph.html でクリック可能です。</em>
 </p>
 
+## ChatGPT または Codex にインストール
+
+- **ChatGPT、および ChatGPT デスクトップアプリの Codex:** [OpenAI のプラグインディレクトリから Graphify](https://chatgpt.com/plugins/plugin_asdk_app_6abe89f7f5d88191b9422522bb8562a4) をインストールし、Graphify にサインインしてください。
+- **Codex CLI:** `/plugins` を実行し、**Graphify** を検索してインストールし、新しいセッションを開始してください。セットアップガイド: [docs.graphify.com/integrations/codex](https://docs.graphify.com/integrations/codex)
+
 **始め方**（30 seconds）。Python 3.11+ と uv（または pipx）が必要です。
 
 ```bash
