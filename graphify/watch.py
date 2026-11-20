@@ -2810,14 +2810,20 @@ def _rebuild_code(
                             wanted_set.add(abs_path)
                 except Exception:
                     pass
-            if not wanted and not deleted_paths and not existing_graph.exists():
-                print("[graphify watch] No tracked code files in change set - skipping rebuild.")
-                return True
-            # An existing graph still needs reconciliation: a change list can
-            # be only a rename destination that is not a tracked code file
-            # (util.py -> util.py.bak) or only an ignore file, and either one
-            # can leave stale nodes if we return here (#5329). An empty
-            # extract_targets list is already handled below.
+            if not wanted and not deleted_paths:
+                # An empty change list is a no-op even when a graph exists:
+                # continuing would restamp .graphify_build_state.json and
+                # fail a copied-checkout incremental update. A nonempty
+                # change list with no extract or delete targets still needs
+                # reconciliation when a graph exists: it can be only a
+                # rename destination that is not a tracked code file
+                # (util.py -> util.py.bak) or only an ignore file, and
+                # either one can leave stale nodes if we return here
+                # (#5329). An empty extract_targets list is already
+                # handled below.
+                if not changed_paths or not existing_graph.exists():
+                    print("[graphify watch] No tracked code files in change set - skipping rebuild.")
+                    return True
             extract_targets = wanted
         else:
             # Full rebuild: skip the AST quick-scan for semantic-backed docs
