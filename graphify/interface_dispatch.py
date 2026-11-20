@@ -97,13 +97,16 @@ def resolve_interface_dispatch(
     all_edges: list[dict],
     *,
     suffixes: tuple[str, ...],
+    match_arity: bool = False,
 ) -> None:
     """Link each interface method to every implementation that owns it unambiguously.
 
     Purely additive: the existing call edge to the interface method is left in
     place, since the call site really does name the interface. ``suffixes`` is
     the language gate: the interface and each implementer must both be
-    declared in a file with one of these extensions.
+    declared in a file with one of these extensions. ``match_arity`` makes a
+    lone interface method and a lone implementer method of one name pair only
+    when both record the same parameter count.
     """
     if not any(
         declared_in(result, suffixes)
@@ -175,7 +178,8 @@ def resolve_interface_dispatch(
             impl_methods = methods_of.get(impl_nid, {})
             for name, declared in interface_methods.items():
                 for source, target in _implementing_pairs(
-                    declared, impl_methods.get(name, set()), interface_name, node_by_id
+                    declared, impl_methods.get(name, set()), interface_name, node_by_id,
+                    match_arity=match_arity,
                 ):
                     if source == target or (source, target) in existing_pairs:
                         continue
@@ -196,7 +200,8 @@ def resolve_interface_dispatch(
 
 
 def _implementing_pairs(
-    declared: set[str], candidates: set[str], interface_name: str, node_by_id: dict
+    declared: set[str], candidates: set[str], interface_name: str, node_by_id: dict,
+    *, match_arity: bool = False,
 ) -> list[tuple[str, str]]:
     """Pair an interface's methods of one name with the implementer's members.
 
@@ -214,15 +219,16 @@ def _implementing_pairs(
 
     own = {c for c in candidates if _explicit(c) == interface_name}
     ordinary = {c for c in candidates if not _explicit(c)}
-    pairs = _overload_pairs(declared, own, node_by_id) if own else []
+    pairs = _overload_pairs(declared, own, node_by_id, match_arity=match_arity) if own else []
     left = declared - {source for source, _ in pairs}
     if left and ordinary:
-        pairs += _overload_pairs(left, ordinary, node_by_id)
+        pairs += _overload_pairs(left, ordinary, node_by_id, match_arity=match_arity)
     return pairs
 
 
 def _overload_pairs(
-    declared: set[str], candidates: set[str], node_by_id: dict
+    declared: set[str], candidates: set[str], node_by_id: dict,
+    *, match_arity: bool = False,
 ) -> list[tuple[str, str]]:
     """Pair an interface's methods of one name with an implementer's.
 
@@ -231,14 +237,18 @@ def _overload_pairs(
     signature, else of the same parameter count among those no signature
     claimed; no unique match, no edge. An implementer method takes at most one
     interface method, so an overload implemented on a base class is not pinned
-    on a sibling of the same count.
+    on a sibling of the same count. With ``match_arity``, the one-of-each pair
+    also needs the same recorded parameter count.
     """
-    if len(declared) == 1 and len(candidates) == 1:
-        return [(next(iter(declared)), next(iter(candidates)))]
-
     def _meta(nid: str) -> dict:
         meta = (node_by_id.get(nid) or {}).get("metadata")
         return meta if isinstance(meta, dict) else {}
+
+    if len(declared) == 1 and len(candidates) == 1:
+        source, target = next(iter(declared)), next(iter(candidates))
+        if match_arity and _meta(source).get("arity") != _meta(target).get("arity"):
+            return []
+        return [(source, target)]
 
     pairs: dict[str, str] = {}
     for key in ("signature", "arity"):

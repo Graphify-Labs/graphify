@@ -19,9 +19,11 @@ Known limits, each pinned by a test:
 - An interface that extends another is not walked transitively.
 - A `default` method nobody overrides owns no candidate in the implementer, so
   the call really does land on the interface and gets no edge.
-- One interface method and one implementer method of a name pair up without
-  comparing signatures (the shared one-to-one rule), so `send(int, int)` is
-  linked even when the real `send(String)` is inherited from a base class.
+- One interface method and one implementer method of a name pair up when
+  their parameter counts match, without comparing types: signatures are
+  erased (a type variable becomes its bound), so `send(int)` is linked even
+  when the real `send(String)` is inherited from a base class. A different
+  count (`send(int, int)`) gets no edge.
 - `implements a.Worker` written fully qualified, with no import, binds to a
   sourceless stub, so it gets no edge; the imported form links.
 """
@@ -38,4 +40,6 @@ def resolve_java_interface_dispatch(
     all_edges: list[dict],
 ) -> None:
     """Link each Java interface method to every implementation that owns it unambiguously."""
-    resolve_interface_dispatch(per_file, all_nodes, all_edges, suffixes=_JAVA_SUFFIXES)
+    resolve_interface_dispatch(
+        per_file, all_nodes, all_edges, suffixes=_JAVA_SUFFIXES, match_arity=True
+    )

@@ -191,11 +191,10 @@ def test_two_candidates_neither_matching_get_no_edge(tmp_path):
     assert not dispatch
 
 
-def test_a_lone_same_named_method_is_linked_whatever_its_signature(tmp_path):
-    # Known limit: one interface method and one implementer method of a name
-    # pair up without comparing signatures (the shared one-to-one rule), so a
-    # send(int, int) beside an inherited send(String) still gets the edge.
-    dispatch, r = _extract(tmp_path, {
+def test_a_lone_method_with_another_parameter_count_is_not_linked(tmp_path):
+    # send(String) is inherited from Base; the declared send(int, int) is an
+    # overload that does not implement the interface method.
+    dispatch, _ = _extract(tmp_path, {
         "Sender.java": "public interface Sender { void send(String to); }\n",
         "Base.java": "public class Base { public void send(String to) { } }\n",
         "MailSender.java": (
@@ -204,8 +203,23 @@ def test_a_lone_same_named_method_is_linked_whatever_its_signature(tmp_path):
             "}\n"
         ),
     })
+    assert dispatch == set()
+
+
+def test_a_lone_method_with_the_same_parameter_count_is_linked(tmp_path):
+    # Known limit: signatures are erased (a type variable becomes its bound), so
+    # with one method on each side only the parameter count is compared.
+    dispatch, r = _extract(tmp_path, {
+        "Sender.java": "public interface Sender { void send(String to); }\n",
+        "Base.java": "public class Base { public void send(String to) { } }\n",
+        "MailSender.java": (
+            "public class MailSender extends Base implements Sender {\n"
+            "    public void send(int n) { }\n"
+            "}\n"
+        ),
+    })
     iface, impl = _sends(r, "sender_sender"), _sends(r, "mailsender_mailsender")
-    assert dispatch == {(iface["String"], impl["int,int"])}
+    assert dispatch == {(iface["String"], impl["int"])}
 
 
 def test_constructor_is_not_a_dispatch_target(tmp_path):
