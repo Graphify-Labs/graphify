@@ -332,6 +332,8 @@ codex mcp add graphify --url https://api.graphify.com/mcp
 gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
 ```
 
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
 Muốn ở lại cục bộ? Cài máy chủ stdio bằng `uv tool install "graphifyy[mcp]"` và chạy `graphify-mcp` trên `graph.json` của riêng bạn, không cần tài khoản.
 
 Sau khi kết nối, agent của bạn nhận được các công cụ sau:

@@ -340,6 +340,8 @@ codex mcp add graphify --url https://api.graphify.com/mcp
 gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
 ```
 
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
 Chcete zůstat lokálně? Nainstalujte stdio server pomocí `uv tool install "graphifyy[mcp]"` a spusťte `graphify-mcp` proti vlastnímu `graph.json`: žádný účet není potřeba.
 
 Po připojení váš agent získá tyto nástroje:

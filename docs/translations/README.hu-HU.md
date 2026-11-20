@@ -340,6 +340,8 @@ codex mcp add graphify --url https://api.graphify.com/mcp
 gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
 ```
 
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
 Inkább helyben maradna? Telepítse a stdio-kiszolgálót a `uv tool install "graphifyy[mcp]"` paranccsal, és futtassa a `graphify-mcp`-t a saját `graph.json` fájlja ellenében; nincs szükség fiókra.
 
 A csatlakozás után az ügynöke ezeket az eszközöket kapja:

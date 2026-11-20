@@ -332,6 +332,8 @@ codex mcp add graphify --url https://api.graphify.com/mcp
 gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
 ```
 
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
 อยากทำงานในเครื่องมากกว่าใช่ไหม? ติดตั้งเซิร์ฟเวอร์ stdio ด้วย `uv tool install "graphifyy[mcp]"` และรัน `graphify-mcp` กับ `graph.json` ของคุณเอง — ไม่ต้องมีบัญชี
 
 เมื่อเชื่อมต่อแล้ว เอเจนต์ของคุณจะได้เครื่องมือเหล่านี้:
