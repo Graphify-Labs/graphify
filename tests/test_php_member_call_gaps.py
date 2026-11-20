@@ -148,28 +148,106 @@ def test_this_call_with_no_declaring_class_in_the_chain_binds_nothing(tmp_path):
     assert (".run()", ".helper()") not in _calls(result)
 
 
+_TRAIT_AND_PARENT = {
+    "Base.php": (
+        "<?php\nclass Base {\n"
+        "    public function helper() { return 1; }\n}\n"),
+    "Mixin.php": (
+        "<?php\ntrait Mixin {\n"
+        "    public function helper() { return 2; }\n}\n"),
+}
+
+
+def test_a_trait_method_wins_over_the_inherited_one(tmp_path):
+    """PHP runs the used trait's method, not the parent's."""
+    result = _extract(tmp_path, {**_TRAIT_AND_PARENT, "Child.php": (
+        "<?php\nclass Child extends Base {\n"
+        "    use Mixin;\n"
+        "    public function run() { return $this->helper(); }\n}\n")})
+    edges = _calls(result).get((".run()", ".helper()"), [])
+    assert len(edges) == 1
+    assert _owner_of(result, edges[0]["target"]) == "Mixin"
+
+
+def test_the_class_own_method_wins_over_its_trait(tmp_path):
+    result = _extract(tmp_path, {**_TRAIT_AND_PARENT, "Child.php": (
+        "<?php\nclass Child extends Base {\n"
+        "    use Mixin;\n"
+        "    public function helper() { return 3; }\n"
+        "    public function run() { return $this->helper(); }\n}\n")})
+    edges = _calls(result).get((".run()", ".helper()"), [])
+    assert len(edges) == 1
+    assert _owner_of(result, edges[0]["target"]) == "Child"
+
+
+def test_a_method_from_a_trait_used_by_a_trait_is_found(tmp_path):
+    result = _extract(tmp_path, {
+        "Inner.php": (
+            "<?php\ntrait Inner {\n"
+            "    public function helper() { return 1; }\n}\n"),
+        "Outer.php": "<?php\ntrait Outer {\n    use Inner;\n}\n",
+        "Child.php": (
+            "<?php\nclass Child {\n"
+            "    use Outer;\n"
+            "    public function run() { return $this->helper(); }\n}\n"),
+    })
+    edges = _calls(result).get((".run()", ".helper()"), [])
+    assert len(edges) == 1
+    assert _owner_of(result, edges[0]["target"]) == "Inner"
+
+
 def _node(nid, label, source_file="a.php"):
     return {"id": nid, "label": label, "source_file": source_file}
+
+
+def _resolve(edges, raw_overrides=None, source_file="a.php"):
+    nodes = [_node("f", source_file, source_file), _node("child", "Child", source_file),
+             _node("run", ".run()", source_file),
+             _node("b1", "BaseOne", source_file), _node("b1_h", ".helper()", source_file),
+             _node("b2", "BaseTwo", source_file), _node("b2_h", ".helper()", source_file)]
+    edges = [{"source": "f", "target": t, "relation": "contains"} for t in ("child", "b1", "b2")] + [
+        {"source": "child", "target": "run", "relation": "method"}] + edges
+    raw = {"caller_nid": "run", "receiver": "this", "callee": "helper",
+           "is_member_call": True, "source_file": source_file, "source_location": "L3",
+           **(raw_overrides or {})}
+    _resolve_php_member_calls([{"raw_calls": [raw]}], nodes, edges)
+    return [e for e in edges if e["relation"] == "calls"]
+
+
+_TWO_BASES = [
+    {"source": "b1", "target": "b1_h", "relation": "method"},
+    {"source": "b2", "target": "b2_h", "relation": "method"},
+    {"source": "child", "target": "b1", "relation": "inherits"},
+    {"source": "child", "target": "b2", "relation": "inherits"},
+]
 
 
 def test_a_tie_on_the_nearest_level_binds_nothing():
     """Two bases on one level both declare the method: no edge, as the Java
     resolver does."""
-    nodes = [_node("f", "a.php"), _node("child", "Child"), _node("run", ".run()"),
-             _node("b1", "BaseOne"), _node("b1_h", ".helper()"),
-             _node("b2", "BaseTwo"), _node("b2_h", ".helper()")]
-    edges = [{"source": "f", "target": t, "relation": "contains"} for t in ("child", "b1", "b2")]
-    edges += [
-        {"source": "child", "target": "run", "relation": "method"},
-        {"source": "b1", "target": "b1_h", "relation": "method"},
-        {"source": "b2", "target": "b2_h", "relation": "method"},
+    assert _resolve(list(_TWO_BASES)) == []
+
+
+def test_an_inherits_cycle_ends_without_an_edge():
+    """`Child -> BaseOne -> Child` with no declaration: the walk stops."""
+    assert _resolve([
         {"source": "child", "target": "b1", "relation": "inherits"},
-        {"source": "child", "target": "b2", "relation": "inherits"},
-    ]
-    raw = {"caller_nid": "run", "receiver": "this", "callee": "helper",
-           "is_member_call": True, "source_file": "a.php", "source_location": "L3"}
-    _resolve_php_member_calls([{"raw_calls": [raw]}], nodes, edges)
-    assert not [e for e in edges if e["relation"] == "calls"]
+        {"source": "b1", "target": "child", "relation": "inherits"},
+    ]) == []
+
+
+def test_a_member_call_outside_php_is_left_alone():
+    one_base = [{"source": "b1", "target": "b1_h", "relation": "method"},
+                {"source": "child", "target": "b1", "relation": "inherits"}]
+    assert [e["target"] for e in _resolve(list(one_base))] == ["b1_h"]
+    assert _resolve(list(one_base), source_file="a.py") == []
+
+
+def test_this_with_a_scope_operator_stays_unresolved():
+    """`$this::m()` is a dynamic scope, not `$this->m()`."""
+    one_base = [{"source": "b1", "target": "b1_h", "relation": "method"},
+                {"source": "child", "target": "b1", "relation": "inherits"}]
+    assert _resolve(one_base, {"php_scoped": True}) == []
 
 
 # ---------------------------------------------------------------------------
