@@ -18,6 +18,7 @@ from pathlib import Path
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from graphify.paths import os_long_path as _os_long_path
+from graphify.paths import stash_preread_bytes as _stash_preread_bytes
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 # AST cache entries are the output of graphify's own extractor code, so they
@@ -616,6 +617,12 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # changed while we were reading it (see _stat_sig_fresh).
     observed_at_ns = time.time_ns()
     raw = src.read_bytes()
+    # Hand these exact bytes to the extractor's _read_source_bytes() so a cold
+    # build reads each file once, not once here and again to parse (#perf). Keyed
+    # by the caller's path (raw_path), which the extraction worker also passes to
+    # the extractor; the \\?\ long-path form is for I/O only. The cache key below
+    # is still the SHA256 of these same raw bytes, unchanged.
+    _stash_preread_bytes(raw_path, raw)
     content = _body_content(raw) if src.suffix.lower() == ".md" else raw
     h = hashlib.sha256()
     h.update(content)
@@ -724,24 +731,37 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
                 source = item.get(key)
                 if not source:
                     continue
-                sp = Path(source)
-                if not sp.is_absolute():
-                    # os.path.abspath is lexical (no symlink resolution),
-                    # matching the symbolic relativization below.
-                    cwd_form = Path(os.path.abspath(sp))
-                    try:
-                        if cwd_form == root_resolved / sp or not cwd_form.exists():
-                            continue  # already root-relative, or a ghost path
-                    except OSError:
-                        continue
-                    sp = cwd_form
-                try:
-                    rel = os.path.relpath(sp, root_resolved)
-                except (ValueError, OSError):
-                    continue  # out-of-root (e.g. Windows cross-drive)
-                if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
-                    continue  # escaped root — keep absolute
-                item[key] = rel.replace(os.sep, "/")
+                rel = _relativized_source_value(source, root_resolved)
+                if rel is not None:
+                    item[key] = rel
+
+
+def _relativized_source_value(source: str, root_resolved: Path) -> "str | None":
+    """Portable form of one ``source_file``/``definition_file`` value, or
+    ``None`` when the value must be left untouched.
+
+    Single source of truth for the per-field rule in
+    :func:`_relativize_source_files_in` so the copy-on-write write path
+    (:func:`_save_cached_on_disk`) reproduces it byte-for-byte.
+    """
+    sp = Path(source)
+    if not sp.is_absolute():
+        # os.path.abspath is lexical (no symlink resolution),
+        # matching the symbolic relativization below.
+        cwd_form = Path(os.path.abspath(sp))
+        try:
+            if cwd_form == root_resolved / sp or not cwd_form.exists():
+                return None  # already root-relative, or a ghost path
+        except OSError:
+            return None
+        sp = cwd_form
+    try:
+        rel = os.path.relpath(sp, root_resolved)
+    except (ValueError, OSError):
+        return None  # out-of-root (e.g. Windows cross-drive)
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return None  # escaped root — keep absolute
+    return rel.replace(os.sep, "/")
 
 
 def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
@@ -960,6 +980,16 @@ def _relativize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
     if not id_anchors and not path_anchors:
         return
 
+    anchor = _make_id_anchor_fn(id_anchors, path_anchors)
+    _rewrite_strings(payload, anchor)
+    _rewrite_id_keyed_table_keys(payload, anchor)
+
+
+def _make_id_anchor_fn(id_anchors: list, path_anchors: list):
+    """Build the id/path -> marker rewriter used by both the in-place
+    (:func:`_relativize_ids_in`) and copy-on-write (:func:`_save_cached_on_disk`)
+    write paths, so the two stay byte-identical."""
+
     def anchor(value: str) -> str:
         # Path form first: it requires a separator, which an id never contains.
         for a in path_anchors:
@@ -973,8 +1003,7 @@ def _relativize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
                 return _ROOT_MARKER + "_" + value[len(a) + 1:]
         return value
 
-    _rewrite_strings(payload, anchor)
-    _rewrite_id_keyed_table_keys(payload, anchor)
+    return anchor
 
 
 def _absolutize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
@@ -1227,6 +1256,157 @@ def _present_target_files(result: dict, root: Path) -> list[str]:
     return sorted(present)
 
 
+def _rewrite_strings_cow(obj: object, fn):
+    """Copy-on-write counterpart of :func:`_rewrite_strings`.
+
+    Returns ``obj`` itself when ``fn`` changes no reachable string VALUE, and
+    otherwise a NEW dict/list that shares every unchanged child by reference and
+    holds fresh containers only on the paths where something changed. Same
+    value-only traversal rule as :func:`_rewrite_strings` (dict keys and the id-
+    keyed ``objc_field_types["tables"]`` bucket are handled separately), so the
+    produced value is byte-identical to deep-copying then rewriting in place —
+    without ever mutating ``obj``.
+    """
+    if isinstance(obj, dict):
+        new: "dict | None" = None
+        for key, value in obj.items():
+            if isinstance(value, str):
+                nv = fn(value)
+                if nv != value:
+                    if new is None:
+                        new = dict(obj)
+                    new[key] = nv
+            elif isinstance(value, (dict, list)):
+                nv = _rewrite_strings_cow(value, fn)
+                if nv is not value:
+                    if new is None:
+                        new = dict(obj)
+                    new[key] = nv
+        return new if new is not None else obj
+    if isinstance(obj, list):
+        new_list: "list | None" = None
+        for i, value in enumerate(obj):
+            if isinstance(value, str):
+                nv = fn(value)
+                if nv != value:
+                    if new_list is None:
+                        new_list = list(obj)
+                    new_list[i] = nv
+            elif isinstance(value, (dict, list)):
+                nv = _rewrite_strings_cow(value, fn)
+                if nv is not value:
+                    if new_list is None:
+                        new_list = list(obj)
+                    new_list[i] = nv
+        return new_list if new_list is not None else obj
+    return obj
+
+
+def _relativize_source_files_cow(payload: dict, root: Path) -> dict:
+    """Copy-on-write counterpart of :func:`_relativize_source_files_in`.
+
+    Returns ``payload`` unchanged (same object) when no ``source_file`` /
+    ``definition_file`` field needs rewriting, else a new payload that shallow-
+    copies only the affected buckets and their affected item dicts, sharing the
+    rest by reference. Never mutates ``payload``.
+    """
+    try:
+        root_resolved = Path(root).resolve()
+    except OSError:
+        return payload
+    new_payload: "dict | None" = None
+    for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
+        items = payload.get(bucket)
+        if not items:
+            continue
+        new_items: "list | None" = None
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            new_item: "dict | None" = None
+            for key in ("source_file", "definition_file"):
+                source = item.get(key)
+                if not source:
+                    continue
+                rel = _relativized_source_value(source, root_resolved)
+                if rel is not None and rel != source:
+                    if new_item is None:
+                        new_item = dict(item)
+                    new_item[key] = rel
+            if new_item is not None:
+                if new_items is None:
+                    new_items = list(items)
+                new_items[i] = new_item
+        if new_items is not None:
+            if new_payload is None:
+                new_payload = dict(payload)
+            new_payload[bucket] = new_items
+    return new_payload if new_payload is not None else payload
+
+
+def _relativize_ids_cow(payload: dict, path: "str | Path", root: Path) -> dict:
+    """Copy-on-write counterpart of :func:`_relativize_ids_in`.
+
+    Returns ``payload`` unchanged when nothing anchors, else a new payload with
+    fresh containers only where ids/paths (and the id-keyed
+    ``objc_field_types["tables"]`` keys) were anchored. Never mutates ``payload``.
+    """
+    id_anchors, _, path_anchors, _ = _portability_anchors(path, root)
+    if not id_anchors and not path_anchors:
+        return payload
+    anchor = _make_id_anchor_fn(id_anchors, path_anchors)
+    new = _rewrite_strings_cow(payload, anchor)
+
+    # Mirror _rewrite_id_keyed_table_keys: rewrite objc_field_types["tables"]
+    # KEYS, copy-on-write along payload -> objc_field_types -> tables so the
+    # caller's objects are never mutated.
+    if isinstance(new, dict):
+        orig_ft = payload.get("objc_field_types") if isinstance(payload, dict) else None
+        ft = new.get("objc_field_types")
+        tables = ft.get("tables") if isinstance(ft, dict) else None
+        if isinstance(tables, dict):
+            rebuilt = {
+                (anchor(k) if isinstance(k, str) else k): v for k, v in tables.items()
+            }
+            # Values are shared by reference, so inequality means a key changed.
+            # When equal, the rebuilt dict preserves order and serializes
+            # identically, so sharing the original is byte-equivalent.
+            if rebuilt != tables:
+                if new is payload:
+                    new = dict(payload)
+                if new.get("objc_field_types") is orig_ft:
+                    new["objc_field_types"] = dict(orig_ft)
+                new["objc_field_types"]["tables"] = rebuilt
+    return new
+
+
+def _save_cached_on_disk(result: dict, p: Path, root: Path, kind: str) -> dict:
+    """Build the portable on-disk payload for :func:`save_cached` WITHOUT
+    mutating the caller's ``result``.
+
+    Replaces the former ``copy.deepcopy(result)`` + three in-place rewrites with
+    a copy-on-write transform: fresh dicts/lists are allocated only for the
+    sub-objects whose fields actually change (``source_file``/``definition_file``
+    relativization and root-marker id/path anchoring), and everything else is
+    shared by reference. The returned object is byte-identical to the old
+    deepcopy path's output. ``result`` is left exactly as the caller passed it.
+    """
+    work = result
+    # target_file presence stamp (#, AST only). Read-only over ``result``; the
+    # stamp is added to a fresh top-level dict and is itself anchored by the
+    # id/path pass below, exactly as the old deepcopy path did.
+    if kind == "ast":
+        targets = _present_target_files(result, root)
+        if targets:
+            work = {**result, _CACHED_TARGETS_KEY: targets}
+    # source_file/definition_file -> bare relative (#777). Owns that field's
+    # format, so it runs strictly before the id/path anchoring.
+    work = _relativize_source_files_cow(work, root)
+    # Root -> marker inside ids and remaining paths (#2257).
+    work = _relativize_ids_cow(work, p, root)
+    return work
+
+
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
                 prompt_file: "str | Path | None" = None,
@@ -1268,24 +1448,16 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     # source_file field's original absolute form. Mutating the input here would
     # silently break those remaps on the first extraction pass.
     #
-    # The copy is unconditional (it used to be gated on a non-empty
-    # nodes/edges/hyperedges/raw_calls bucket): a truthiness gate skips the copy
-    # for a result whose only payload lives in another bucket — an empty
-    # ``nodes`` beside a populated ``bash_sources`` — and the id/path anchoring
-    # below would then mutate the caller's dict for real.
+    # This used to ``copy.deepcopy(result)`` and rewrite in place. deepcopy is a
+    # heavy per-file cost on every cold-build cache write; :func:`_save_cached_on_disk`
+    # instead builds the same portable payload copy-on-write — allocating fresh
+    # dicts/lists only for the sub-objects whose fields are actually rewritten and
+    # sharing the rest by reference — so ``result`` is still never mutated (the
+    # anchoring would otherwise corrupt the caller's absolute source_file/ids) and
+    # the on-disk bytes are unchanged.
     on_disk = result
     if isinstance(result, dict):
-        import copy as _copy
-        on_disk = _copy.deepcopy(result)
-        if kind == "ast":
-            targets = _present_target_files(on_disk, root)
-            if targets:
-                on_disk[_CACHED_TARGETS_KEY] = targets
-        _relativize_source_files_in(on_disk, root)
-        # Then replace the absolute root inside the ids and remaining paths, so
-        # the entry replays portably under any root (#2257). Strictly after the
-        # source_file pass, which owns that field's bare-relative format.
-        _relativize_ids_in(on_disk, p, root)
+        on_disk = _save_cached_on_disk(result, p, root, kind)
     h = _salted_key(file_hash(p, root, cache_root=cache_root), salt)
     location = cache_root if cache_root is not None else root
     # Extended-length form: under a deep root the entry, and its longer temp
@@ -1619,7 +1791,7 @@ def save_semantic_cache(
         source_file arrived absolute (Windows detect() output) can never be
         cached verbatim. A shallow copy keeps the caller's dicts untouched —
         downstream steps may still rely on the original absolute shape (same
-        reasoning as :func:`save_cached`'s on-disk deepcopy).
+        reasoning as :func:`save_cached`'s on-disk copy-on-write transform).
         """
         src = item.get("source_file")
         if not src:

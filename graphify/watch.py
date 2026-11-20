@@ -1693,6 +1693,99 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
     return canonical
 
 
+# Sentinel: a normalizer returns this to skip an element (matches the old
+# _canonical_topology_for_compare's ``continue`` for non-dict nodes/edges).
+_SKIP = object()
+
+
+def _topology_signature_for_compare(graph_data: dict) -> dict:
+    """Order-independent topology fingerprint, equivalent to comparing the
+    sorted canonical form of ``_canonical_topology_for_compare`` but computed in
+    a single O(N+E) pass with no global sort and no full-graph re-serialize.
+
+    For each node/edge/hyperedge we hash *exactly* the same canonical per-element
+    JSON that ``_canonical_topology_for_compare`` used as its sort key (same field
+    stripping: nodes drop community/community_name/norm_label; links & edges
+    normalise _src/_tgt -> source/target and drop confidence_score), then combine
+    the per-element digests order-independently (modular SUM, which — unlike XOR —
+    preserves multiset multiplicity so duplicate/parallel elements can't cancel).
+    Each list is replaced by a tiny {count, digest} summary; the surrounding
+    metadata (built_at_commit dropped, graph schema_version/graphify_version
+    dropped) is carried through unchanged so the overall equality verdict is
+    identical to the old sort-and-serialize compare.
+    """
+    import hashlib
+
+    _MASK = (1 << 128) - 1
+
+    def _elem_digest(item) -> int:
+        payload = json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+        return int.from_bytes(
+            hashlib.blake2b(payload.encode("utf-8"), digest_size=16).digest(),
+            "big",
+        )
+
+    def _combine(items, normalize) -> dict:
+        total = 0
+        count = 0
+        for item in items:
+            norm = normalize(item)
+            if norm is _SKIP:
+                continue
+            total = (total + _elem_digest(norm)) & _MASK
+            count += 1
+        return {"__topo_count__": count, "__topo_digest__": f"{total:032x}"}
+
+    canonical = dict(graph_data)
+    canonical.pop("built_at_commit", None)
+
+    graph_meta = canonical.get("graph")
+    if isinstance(graph_meta, dict):
+        graph_meta = dict(graph_meta)
+        graph_meta.pop("schema_version", None)
+        graph_meta.pop("graphify_version", None)
+        canonical["graph"] = graph_meta
+
+    def _norm_node(node):
+        if not isinstance(node, dict):
+            return _SKIP
+        n = dict(node)
+        n.pop("community", None)
+        n.pop("community_name", None)
+        n.pop("norm_label", None)
+        return n
+
+    nodes = canonical.get("nodes")
+    if isinstance(nodes, list):
+        canonical["nodes"] = _combine(nodes, _norm_node)
+
+    def _norm_edge(edge):
+        if not isinstance(edge, dict):
+            return _SKIP
+        e = dict(edge)
+        true_src = e.pop("_src", None)
+        true_tgt = e.pop("_tgt", None)
+        if true_src is not None and true_tgt is not None:
+            e["source"] = true_src
+            e["target"] = true_tgt
+        e.pop("confidence_score", None)
+        return e
+
+    for key in ("links", "edges"):
+        items = canonical.get(key)
+        if not isinstance(items, list):
+            continue
+        canonical[key] = _combine(items, _norm_edge)
+
+    hyperedges = canonical.get("hyperedges")
+    if isinstance(hyperedges, list):
+        # _canonical_topology_for_compare sorts hyperedges verbatim (no field
+        # stripping, no dict filtering), so hash each element as-is.
+        canonical["hyperedges"] = _combine(hyperedges, lambda h: h)
+
+    return canonical
+
+
 def _topology_from_graph(G) -> dict:
     from networkx.readwrite import json_graph
     try:
@@ -3131,8 +3224,8 @@ def _rebuild_code(
         if existing_graph_data and not legacy_layout:
             try:
                 same_topology = (
-                    json.dumps(_canonical_topology_for_compare(existing_graph_data), sort_keys=True, ensure_ascii=False)
-                    == json.dumps(_canonical_topology_for_compare(candidate_topology), sort_keys=True, ensure_ascii=False)
+                    json.dumps(_topology_signature_for_compare(existing_graph_data), sort_keys=True, ensure_ascii=False, default=str)
+                    == json.dumps(_topology_signature_for_compare(candidate_topology), sort_keys=True, ensure_ascii=False, default=str)
                 )
             except Exception:
                 same_topology = False
@@ -3167,7 +3260,7 @@ def _rebuild_code(
                 _stamp_build_state()
                 return True
 
-        communities = cluster(G)
+        communities = cluster(G, cache_dir=out)
         previous_node_community = _node_community_map(existing_graph_data)
         if previous_node_community:
             communities = remap_communities_to_previous(communities, previous_node_community)

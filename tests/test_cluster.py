@@ -231,3 +231,61 @@ def test_partition_is_invariant_to_edge_endpoint_orientation():
     assert _grouping(_partition(forward, 1.0)) == _grouping(_partition(flipped, 1.0)), (
         "partition drifted with edge-endpoint orientation / insertion order"
     )
+
+
+# --- partition cache (topology-keyed) ---------------------------------------
+
+def test_cache_hit_matches_fresh_recompute(tmp_path):
+    """A warm cache must return byte-identical community assignment to a fresh
+    (uncached) recompute on the same graph."""
+    G = make_graph()
+    fresh = cluster(G)
+    cluster(G, cache_dir=tmp_path)  # warm the cache
+    cache_file = tmp_path / ".graphify_partition_cache.json"
+    assert cache_file.exists()
+    cached = cluster(G, cache_dir=tmp_path)  # hit
+    assert cached == fresh
+
+
+def test_cache_miss_on_topology_change_recomputes(tmp_path, monkeypatch):
+    """When the graph topology changes, the stale cache must be ignored and the
+    fresh partition recomputed and re-persisted."""
+    G = make_graph()
+    cluster(G, cache_dir=tmp_path)
+    old_hash = json.loads(
+        (tmp_path / ".graphify_partition_cache.json").read_text()
+    )["topology_hash"]
+
+    # Add a node+edge: topology changes -> different hash -> recompute.
+    H = G.copy()
+    victim = sorted(H.nodes(), key=str)[0]
+    H.add_node("brand_new_node")
+    H.add_edge(victim, "brand_new_node")
+
+    recompute_sentinel = {"called": False}
+    import graphify.cluster as _cm
+    real_partition = _cm._partition
+
+    def _spy(*a, **kw):
+        recompute_sentinel["called"] = True
+        return real_partition(*a, **kw)
+
+    monkeypatch.setattr(_cm, "_partition", _spy)
+    out = cluster(H, cache_dir=tmp_path)
+    assert recompute_sentinel["called"], "topology change must force a recompute"
+    assert "brand_new_node" in {n for nodes in out.values() for n in nodes}
+    new_hash = json.loads(
+        (tmp_path / ".graphify_partition_cache.json").read_text()
+    )["topology_hash"]
+    assert new_hash != old_hash
+
+
+def test_cache_fails_open_on_corrupt_sidecar(tmp_path):
+    """A corrupt cache file must not raise: cluster() falls back to recompute."""
+    G = make_graph()
+    fresh = cluster(G)
+    (tmp_path / ".graphify_partition_cache.json").write_text("{not valid json")
+    out = cluster(G, cache_dir=tmp_path)
+    assert out == fresh  # recomputed, and valid cache rewritten
+    # the corrupt file was replaced by a valid one
+    json.loads((tmp_path / ".graphify_partition_cache.json").read_text())

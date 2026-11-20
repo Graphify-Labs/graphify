@@ -12995,7 +12995,32 @@ def extract(
         resolution_nodes = all_nodes + [n for n in resolution_context_nodes if n.get("id") not in fresh_ids]
     else:
         resolution_nodes = all_nodes
+    # Single fused pass over resolution_nodes building three indexes that were
+    # formerly three independent full scans (global_label_to_nids[_ci],
+    # callable_nids, class_nids). No node mutation happens between the original
+    # scans, so one pass is behaviourally identical.
+    #   - callable_nids: callable-def ids for the indirect_call callable guard,
+    #     read from the `_callable` marker on the FINAL (post-remap) nodes — so a
+    #     callback resolves only to a real function/method/class, never a
+    #     same-named data symbol, and the guard never goes stale when node ids
+    #     were relativized/disambiguated above (#1566). Read from
+    #     `resolution_nodes`, not `all_nodes` (#2438): an unchanged callee's
+    #     context node carries the marker persisted in graph.json, so an
+    #     incremental rebuild keeps resolving callbacks into unchanged files
+    #     while data symbols stay excluded.
+    #   - class_nids: class defs are callable only via their constructor; they
+    #     are frequently passed as descriptive values (`select(Model)`, exception
+    #     tuples), not invoked. Excluded from the indirect_call guard below to
+    #     avoid false edges (#2137).
+    # The callable/class markers are read for EVERY node (no rationale/namespace
+    # or C#-constructor skip), so they are collected before the label-index skips.
+    callable_nids: set[str] = set()
+    class_nids: set[str] = set()
     for n in resolution_nodes:
+        if n.get("_callable"):
+            callable_nids.add(n["id"])
+        if n.get("_callable_class"):
+            class_nids.add(n["id"])
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
         # A C# constructor is named like its type but never called by name;
@@ -13012,19 +13037,6 @@ def extract(
             global_label_to_nids.setdefault(normalised, []).append(n["id"])
             if _lang_is_case_insensitive(n.get("source_file")):
                 global_label_to_nids_ci.setdefault(normalised.lower(), []).append(n["id"])
-
-    # Callable-def ids for the indirect_call callable guard, read from the `_callable`
-    # marker on the FINAL (post-remap) nodes — so a callback resolves only to a real
-    # function/method/class, never a same-named data symbol, and the guard never goes
-    # stale when node ids were relativized/disambiguated above (#1566). Read from
-    # `resolution_nodes`, not `all_nodes` (#2438): an unchanged callee's context node
-    # carries the marker persisted in graph.json, so an incremental rebuild keeps
-    # resolving callbacks into unchanged files while data symbols stay excluded.
-    callable_nids = {n["id"] for n in resolution_nodes if n.get("_callable")}
-    # Class defs are callable only via their constructor; they are frequently passed
-    # as descriptive values (`select(Model)`, exception tuples), not invoked. Exclude
-    # them from the indirect_call guard below to avoid false edges (#2137).
-    class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
 
     # JVM name resolution: Java and Kotlin share one package/type namespace.
     # Run before the Kotlin-only resolver and before call evidence is built.
@@ -13058,10 +13070,26 @@ def extract(
     # confirm the caller pulled in the callee's source file.
     file_to_symbol_imports: dict[str, set[str]] = {}
     file_to_module_imports: dict[str, set[str]] = {}
+    # Fused single pass over all_edges. Besides the import-evidence maps this also
+    # builds `existing_pairs` and `call_like_pairs` (formerly two more full edge
+    # scans further down). all_edges is not mutated between here and their former
+    # build sites, so the fused maps are identical:
+    #   - existing_pairs: every (source, target) edge, used (and extended) by the
+    #     direct-call loop below as a dedup set.
+    #   - call_like_pairs: call-like pairs only, for the indirect_call dedup — an
+    #     `imports` edge from a file to the symbol it imports is EXPECTED and must
+    #     not suppress an indirect_call to that same symbol (JS/TS named imports
+    #     create such an edge).
+    existing_pairs: set[tuple] = set()
+    call_like_pairs: set[tuple] = set()
     for e in all_edges:
-        if e.get("relation") == "imports":
+        rel = e.get("relation")
+        existing_pairs.add((e["source"], e["target"]))
+        if rel in ("calls", "indirect_call"):
+            call_like_pairs.add((e["source"], e["target"]))
+        if rel == "imports":
             file_to_symbol_imports.setdefault(e["source"], set()).add(e["target"])
-        elif e.get("relation") == "imports_from" and not e.get("_rust_use_binding"):
+        elif rel == "imports_from" and not e.get("_rust_use_binding"):
             file_to_module_imports.setdefault(e["source"], set()).add(e["target"])
 
     # Map each node back to its containing file node id so we can ask
@@ -13084,7 +13112,18 @@ def extract(
     # file-node-id map because tie-breaking compares the actual file paths.
     _rust_nid_to_label: "dict[str, str] | None" = None
     nid_to_source_file: dict[str, str] = {}
+    # nid -> label, so a resolved Rust call target can be told apart from a
+    # constructor: a function/method node is labelled `name()` / `.name()`, a
+    # data definition (struct/enum/trait) carries the bare name. A cross-file
+    # `Foo(x)` onto a bare-name node constructs a value; it is not a function
+    # call and must not count as one. Built in the SAME pass as the file-node
+    # maps (formerly a separate full scan); unlike nid_to_source_file it covers
+    # every id-bearing node, so it is set before the no-source_file skip.
+    nid_to_label: dict[str, str] = {}
     for n in resolution_nodes:
+        _nid = n.get("id")
+        if _nid:
+            nid_to_label[_nid] = str(n.get("label", ""))
         sf = n.get("source_file")
         if not sf:
             continue
@@ -13102,22 +13141,8 @@ def extract(
             sf_rel = sf_path
         nid_to_file_nid[n["id"]] = _file_node_id(sf_rel)
 
-    existing_pairs = {(e["source"], e["target"]) for e in all_edges}
-    # nid -> label, so a resolved Rust call target can be told apart from a
-    # constructor: a function/method node is labelled `name()` / `.name()`, a
-    # data definition (struct/enum/trait) carries the bare name. A cross-file
-    # `Foo(x)` onto a bare-name node constructs a value; it is not a function
-    # call and must not count as one.
-    nid_to_label: dict[str, str] = {
-        n["id"]: str(n.get("label", "")) for n in resolution_nodes if n.get("id")
-    }
-    # Call-like pairs only, for the indirect_call dedup: an `imports` edge from a
-    # file to the symbol it imports is EXPECTED and must not suppress an
-    # indirect_call to that same symbol (JS/TS named imports create such an edge).
-    call_like_pairs = {
-        (e["source"], e["target"]) for e in all_edges
-        if e.get("relation") in ("calls", "indirect_call")
-    }
+    # existing_pairs, nid_to_label and call_like_pairs are built above in their
+    # fused passes (edge pass and the file-node node pass).
     # JS/TS/JSX modules have no implicit cross-module scope: a call into another
     # file is real ONLY if the caller imported it. So a cross-file call from one
     # of these files with no import evidence is gated below (#1659).
@@ -13131,13 +13156,21 @@ def extract(
 
     # C# `new X()` constructs. Same exclusion the C# type-definition index uses
     # (#3815); without it a `new List<T>()` binds to an enum member named `List`.
-    _member_nids = {
-        e.get("target") for e in all_edges if e.get("relation") in ("case_of", "defines")
-    }
-    _method_nids = {
-        e.get("target") for e in all_edges + list(resolution_context_edges or [])
-        if e.get("relation") == "method"
-    }
+    # Fused: one pass over all_edges builds both _member_nids and _method_nids
+    # (an edge relation is a single value, so the two sets never overlap), then a
+    # second pass folds the context edges into _method_nids. This replaces a
+    # second full all_edges scan plus the `all_edges + list(...)` concatenation.
+    _member_nids: set = set()
+    _method_nids: set = set()
+    for e in all_edges:
+        rel = e.get("relation")
+        if rel in ("case_of", "defines"):
+            _member_nids.add(e.get("target"))
+        elif rel == "method":
+            _method_nids.add(e.get("target"))
+    for e in (resolution_context_edges or []):
+        if e.get("relation") == "method":
+            _method_nids.add(e.get("target"))
     # Top-level Elixir module names per file, for scoping unqualified Elixir
     # calls below. Read from `resolution_nodes` so an unchanged file's modules
     # stay visible on an incremental rebuild (`_elixir_module` is carried by the

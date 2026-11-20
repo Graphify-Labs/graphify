@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 from graphify.ids import _file_stem, make_id  # noqa: F401  (_file_stem re-exported)
+from graphify.paths import take_preread_bytes as _take_preread_bytes
 
 # Ambient scan root of the extraction in flight. extract.py's
 # _safe_extract_with_xaml_root sets it around every per-file extraction; the
@@ -171,7 +172,13 @@ def _read_source_bytes(path: Path, *, warn: bool = True) -> bytes:
     once per process on that last, guessed path — pass ``warn=False`` from
     secondary passes that re-read a file the extractor already read.
     """
-    raw = path.read_bytes()
+    # Reuse the bytes cache.file_hash() just read for the cache key, when the
+    # current context holds them for this path, so a cold build reads the file
+    # once instead of twice (#perf). Falls back to a disk read for any path the
+    # key hash did not read (warm stat fastpath, direct extractor calls, tests).
+    raw = _take_preread_bytes(path)
+    if raw is None:
+        raw = path.read_bytes()
     if raw.isascii():
         return raw
     try:

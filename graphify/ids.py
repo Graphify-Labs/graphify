@@ -41,6 +41,7 @@ how many times the caller has already casefolded.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 import unicodedata
@@ -48,7 +49,16 @@ from pathlib import Path
 
 __all__ = ["normalize_id", "make_id", "decl_salt", "DeclIdRegistry"]
 
+# Pre-compiled at module level so the hot path (hundreds of thousands of calls
+# per large-repo extract) doesn't re-parse the pattern on every call. ``re`` caches
+# compiled patterns internally, but compiling once here skips even the cache lookup
+# and makes the UNICODE semantics explicit. ``\w`` on a ``str`` pattern already
+# matches Unicode word characters, so ``re.UNICODE`` is redundant but kept for intent.
+_NONWORD_RE = re.compile(r"[^\w]+", re.UNICODE)
+_COLLAPSE_UNDERSCORE_RE = re.compile(r"_+")
 
+
+@functools.lru_cache(maxsize=1 << 17)
 def normalize_id(s: str) -> str:
     r"""Normalize a single ID string to its canonical form.
 
@@ -73,15 +83,31 @@ def normalize_id(s: str) -> str:
     with a hard cap as a termination guard. Only then apply the ``[^\w]+`` filter,
     so every combining mark casefold introduced has been fully normalized before
     it is filtered (#2614 and its combining-mark follow-on).
+
+    Performance: the result is memoised (``functools.lru_cache``) because the same
+    id strings recur across the AST extractor, the builder's edge-endpoint
+    reconciliation and the dedup pass, and pure-ASCII inputs — the overwhelming
+    majority of real identifiers — take an ASCII fast-path. For a pure-ASCII ``s``,
+    ``s.casefold() == s.lower()`` stays ASCII, NFKC is the identity on ASCII, and the
+    loop therefore reaches its fixpoint at ``s.lower()`` in two passes; computing
+    ``s.lower()`` directly is byte-identical to running the loop, verified by a
+    differential check over every identifier harvested from this source tree plus an
+    adversarial Unicode set. Non-ASCII inputs still run the full fixpoint loop, so
+    semantics are unchanged for every input.
     """
-    cur = s
-    for _ in range(6):
-        nxt = unicodedata.normalize("NFKC", cur.casefold())
-        if nxt == cur:
-            break
-        cur = nxt
-    cur = re.sub(r"[^\w]+", "_", cur, flags=re.UNICODE)
-    cur = re.sub(r"_+", "_", cur)
+    if s.isascii():
+        # ASCII fast-path: casefold==lower and NFKC is the identity on ASCII, so the
+        # fixpoint loop would converge to exactly s.lower() (see docstring).
+        cur = s.lower()
+    else:
+        cur = s
+        for _ in range(6):
+            nxt = unicodedata.normalize("NFKC", cur.casefold())
+            if nxt == cur:
+                break
+            cur = nxt
+    cur = _NONWORD_RE.sub("_", cur)
+    cur = _COLLAPSE_UNDERSCORE_RE.sub("_", cur)
     return cur.strip("_")
 
 

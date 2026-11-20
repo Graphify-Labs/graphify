@@ -2,8 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
-## Unreleased
+## 0.9.114 (unreleased)
 
+Performance work on the extract/build/update pipeline. All of these preserve graph output exactly (byte-identical) and the AST cache schema is unchanged; they are pure speedups, largest on big repos.
+
+- Perf: **ids** `normalize_id` gets an ASCII fast-path, pre-compiled regexes and an LRU cache, so the common (ASCII, repeated) identifier case skips the Unicode normalization loop. ~1.26x on the compute path and a large win on repeated ids, which recurs heavily across a corpus.
+- Perf: **cache** `save_cached` builds the portable on-disk payload copy-on-write instead of `copy.deepcopy`-ing every per-file result; ~20% faster on the cache-write transform, scaling with per-file graph size. The input is never mutated and the on-disk bytes are identical.
+- Perf: **extract** each source file is read from disk once (the key hash and the parse share one buffer) instead of twice on a cold build, and the tree-sitter `Parser` is reused per language within a worker instead of rebuilt per file (file reads roughly halved on the worker path).
+- Perf: **extract** the cross-file resolution finalize builds its shared node/edge indexes in a few fused passes instead of ~6 independent full scans of the graph; ~15% faster on the finalize stage.
+- Perf: **watch** the no-change topology comparison uses an order-independent content hash computed in one pass instead of sorting and re-serializing the whole graph; ~1.4x on that compare.
+- Perf: **cluster** the community partition is cached by a topology hash and reused when the graph is unchanged (~9x on a cluster cache hit), and the deterministic edge-sort key drops a per-edge `json.dumps` in favour of a cheap tuple key (identical ordering).
 - Fix: **query** a heuristic `--context` inferred from ordinary wording (`modules`, `template`, `return`, …) is discarded when it matches no edges, or leaves the seed nodes with no remaining edges, instead of collapsing the traversal to the seeds and reading as a confident empty answer. `--context call` also keeps `calls` edges on graphs that never set a `context` attribute (#2529).
 
 ## 0.9.113 (2026-11-19)
