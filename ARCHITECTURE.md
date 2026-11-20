@@ -63,6 +63,10 @@ Absolute and relative spellings and symlinked scan roots identify the same
 corpus entry; distinct symlink aliases inside that root remain separate entries.
 Excluding one alias must preserve any still-included target or sibling alias.
 
+When an import target ID collides with a C-family header, an explicit target
+path takes priority. Unhinted native includes keep the header fallback. Other
+languages require a unique compatible file candidate before remapping.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
