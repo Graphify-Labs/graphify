@@ -61,7 +61,7 @@ from graphify.extractors.base import (
     active_scan_root as _active_scan_root,
 )
 
-MARKDOWN_MENTION_SUFFIXES = frozenset({".md", ".mdx", ".qmd", ".skill"})
+MARKDOWN_MENTION_SUFFIXES = frozenset({".md", ".mdx", ".qmd", ".skill", ".adoc", ".asciidoc"})
 
 _CONTAINMENT_RELATIONS = frozenset({"contains", "method"})
 
