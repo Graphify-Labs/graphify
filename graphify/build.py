@@ -240,16 +240,21 @@ def _dedup_shrink_allowance(saved_ids: set, new_ids: set, dedup_remap: dict[str,
 # exception is _STRUCTURAL_MEMBER_RELATIONS.
 _GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
 # Membership of a type or file. On an undirected graph these share a node pair
-# with a `calls` edge in the opposite direction when a member calls or constructs
-# its owner (`static Report Fault() { return new Report(); }`). Last-write kept
-# `calls` whenever the member id sorted after the owner id, so the membership
-# edge never reached graph.json and the member disappeared from type walks
-# (member lookup, explain, call resolution into the type). The membership edge
-# wins; the call is what this collapse drops. The same holds for any other fact a
-# member records back to its owner (a PHP `uses_static_prop` on `Counter::$limit`,
-# #2391, #2791). Directed graphs keep both, because the two directions are
-# different arcs. Same-direction `contains`/`method` vs `calls` is not ranked here.
+# with a usage edge in the opposite direction when a member uses its owner: it
+# calls or constructs it (`static Report Fault() { return new Report(); }`), or
+# reads its static property or constant (`return Counter::$limit;`, #2391, #2791).
+# Last-write kept the usage edge whenever the member id sorted after the owner
+# id, so the membership edge never reached graph.json and the member disappeared
+# from type walks (member lookup, explain, call resolution into the type). The
+# membership edge wins; the usage edge is what this collapse drops. Only the
+# usage relations below lose: any other relation (`inherits` for a nested
+# subclass of its owner, an unknown one) keeps the plain last-write rule.
+# Directed graphs keep both, because the two directions are different arcs.
+# Same-direction `contains`/`method` vs `calls` is not ranked here.
 _STRUCTURAL_MEMBER_RELATIONS: frozenset[str] = frozenset({"method", "contains"})
+_MEMBER_USAGE_RELATIONS: frozenset[str] = frozenset({
+    "calls", "indirect_call", "instantiates", "uses_static_prop", "references_constant",
+})
 _CONFIDENCE_RANK: dict[str, int] = {"EXTRACTED": 3, "INFERRED": 2, "AMBIGUOUS": 1}
 # The fields that say how sure the graph is of an edge and where that came from.
 # A same-relation collision keeps one edge; the loser's copy of these fields is
@@ -2273,15 +2278,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 continue
             # Different relations in opposite directions are two facts that only
             # share a pair because the graph is undirected. A type's
-            # `method`/`contains` edge and its member's `calls` edge back are
-            # that case: last-write kept whichever source id sorted later, and
-            # when the call won the member vanished from every walk of the
-            # type. The membership edge wins. If the call is already stored,
-            # the membership edge falls through and replaces it below.
+            # `method`/`contains` edge and its member's usage edge back (a call,
+            # a static property or constant read) are that case: last-write kept
+            # whichever source id sorted later, and when the usage won the member
+            # vanished from every walk of the type. The membership edge wins. If
+            # the usage edge is already stored, the membership edge falls through
+            # and replaces it below.
             if (
                 reverse
                 and existing_rel in _STRUCTURAL_MEMBER_RELATIONS
-                and incoming_rel not in _STRUCTURAL_MEMBER_RELATIONS
+                and incoming_rel in _MEMBER_USAGE_RELATIONS
             ):
                 continue
         # A pair that already carries a SPECIFIC relation must not be downgraded
