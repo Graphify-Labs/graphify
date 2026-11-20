@@ -20,6 +20,11 @@ Usage (from the repo root)::
 The render is idempotent: the core template's per-platform slots are filled in a
 fixed order, the reference index is sorted by name, output is LF-newline, and no
 timestamp or version is ever written into a generated file.
+
+A full render also publishes ``skills/graphify/SKILL.md`` plus that directory's
+``references/`` sidecar. Those bytes are the claude render copied to the layout
+the skills CLI discovers (exact filename ``SKILL.md``, parent directory ``graphify``).
+``graphify install`` keeps reading ``graphify/skill.md`` and is unchanged.
 """
 from __future__ import annotations
 
@@ -692,12 +697,47 @@ def render_always_on() -> list[RenderedArtifact]:
     return out
 
 
+# Directory the skills CLI discovers. The filename must be exactly SKILL.md
+# (case-sensitive) and the parent directory must match the frontmatter name.
+# graphify/skill.md stays the packaged body `graphify install` copies from;
+# this bundle is a second copy of the claude render, not a second source.
+SKILL_CLI_DIR = "skills/graphify"
+
+
+def render_skill_cli_bundle(platforms: dict[str, Platform]) -> list[RenderedArtifact]:
+    """Copy the claude skill to ``skills/graphify/`` for the skills CLI.
+
+    The CLI stats ``SKILL.md`` by that exact name and requires ``name`` and
+    ``description`` frontmatter (``hasSkillMd`` / ``parseSkillMd`` in the skills
+    CLI). It does not run ``graphify install``, so the lowercase packaged
+    ``graphify/skill.md`` is invisible to it on a case-sensitive filesystem.
+    The published file is the claude core, references included, so a fragment
+    edit cannot update one and leave the other behind.
+
+    The core stays the full default pipeline (the lean split already moved
+    on-demand flows into references). Cutting that pipeline further to satisfy
+    the spec's 500-line guidance would force a normal build to open a reference,
+    which the generator's own invariant forbids. The published SKILL.md is
+    therefore the same length as ``graphify/skill.md``.
+    """
+    claude = platforms["claude"]
+    out: list[RenderedArtifact] = []
+    for art in render(claude):
+        if art.path == claude.skill_dst:
+            rel = f"{SKILL_CLI_DIR}/SKILL.md"
+        else:
+            name = art.path.rsplit("/", 1)[-1]
+            rel = f"{SKILL_CLI_DIR}/references/{name}"
+        out.append(RenderedArtifact(rel, art.content))
+    return out
+
+
 def render_all(platforms: dict[str, Platform], only: str | None = None) -> list[RenderedArtifact]:
     """Render the selected platforms (or all), flattened into one artifact list.
 
-    A full render (no ``only``) also includes the always-on blocks; a single
-    ``--platform`` render does not, since the always-on files are shared, not
-    per-platform.
+    A full render (no ``only``) also includes the always-on blocks and the
+    skills CLI bundle; a single ``--platform`` render does not, since those
+    files are shared, not per-platform.
     """
     keys = [only] if only else sorted(platforms)
     out: list[RenderedArtifact] = []
@@ -707,6 +747,7 @@ def render_all(platforms: dict[str, Platform], only: str | None = None) -> list[
         out.extend(render(platforms[key]))
     if only is None:
         out.extend(render_always_on())
+        out.extend(render_skill_cli_bundle(platforms))
     return out
 
 

@@ -745,6 +745,40 @@ def test_always_on_included_in_full_render_not_per_platform():
     assert "graphify/always_on/claude-md.md" not in claude_only
 
 
+def test_skill_cli_bundle_matches_the_packaged_skill():
+    """The skills CLI discovers skills/graphify/SKILL.md, not graphify/skill.md.
+
+    A full render publishes that directory from the packaged skill body so the
+    two cannot drift. A single-platform render leaves the bundle alone, same as
+    the always-on blocks. The filename is exactly SKILL.md, the parent directory
+    matches the frontmatter name, and name/description are non-empty strings.
+    """
+    import re
+
+    platforms = gen.load_platforms()
+    full = {a.path: a.content for a in gen.render_all(platforms)}
+    packaged = {a.path: a.content for a in gen.render(platforms["claude"])}
+    published = full["skills/graphify/SKILL.md"]
+    assert published == packaged["graphify/skill.md"]
+    assert published == (REPO_ROOT / "graphify" / "skill.md").read_text(encoding="utf-8")
+    match = re.search(r'^name: (\S+)\ndescription: "(.*)"$', published, re.M)
+    assert match, "published SKILL.md is missing name/description frontmatter"
+    assert match.group(1) == "graphify"
+    assert match.group(2)
+    assert len(match.group(2)) <= 1024
+    for path, content in packaged.items():
+        if path == "graphify/skill.md":
+            continue
+        name = path.rsplit("/", 1)[-1]
+        assert full[f"skills/graphify/references/{name}"] == content
+    per_platform = {a.path for a in gen.render_all(platforms, only="claude")}
+    assert "skills/graphify/SKILL.md" not in per_platform
+    problems = gen.check(
+        [a for a in gen.render_all(platforms) if a.path.startswith("skills/graphify/")]
+    )
+    assert problems == [], "\n".join(problems)
+
+
 def test_always_on_roundtrip_is_byte_faithful():
     """Each always_on/*.md reproduces its former __main__.py constant byte for byte.
 
