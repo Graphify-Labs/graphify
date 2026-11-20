@@ -8176,7 +8176,15 @@ def _c_block_seed_indices(node, children: list) -> list[int]:
             return cases
     if not children:
         return []
-    return [0]
+    seeds = [0]
+    # An #elif / #else is another build configuration, not code after this
+    # branch's `return`, so it is reachable on its own (#5357).
+    if node.type in ("preproc_if", "preproc_ifdef", "preproc_elif"):
+        seeds += [
+            i for i, ch in enumerate(children)
+            if ch.type in ("preproc_elif", "preproc_else")
+        ]
+    return seeds
 
 
 def _c_cpp_walk_reachable_children(
