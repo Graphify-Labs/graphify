@@ -142,6 +142,19 @@ Hvad du får ud af kassen:
 
 ---
 
+## Hvornår du skal gribe til Graphify
+
+Grib til grafen, når du har brug for at forstå en kodebase, ikke bare læse den igennem:
+
+| Situation | Hvad du spørger Graphify om |
+|---|---|
+| At komme ind i et ukendt projekt | "Forklar, hvordan hovedkomponenterne hænger sammen." |
+| At ændre en delt komponent | "Spor dens kaldere og afhængigheder." |
+| At undersøge en bug | "Vis stien mellem dette slutpunkt og lagringen." |
+| At vende tilbage til tidligere arbejde | "Find de relevante designbeslutninger og noter." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Mål | graphify | Feltet |

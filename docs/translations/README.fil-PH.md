@@ -142,6 +142,19 @@ Ang makukuha mo nang out of the box:
 
 ---
 
+## Kailan gagamitin ang Graphify
+
+Gamitin ang graph kapag kailangan mong unawain ang isang codebase, hindi lang basahin ito:
+
+| Sitwasyon | Ano ang itatanong sa Graphify |
+|---|---|
+| Sumali sa isang hindi pamilyar na proyekto | "Ipaliwanag kung paano nag-uugnay ang mga pangunahing component." |
+| Pagbabago ng isang shared na component | "Subaybayan ang mga caller at dependency nito." |
+| Pag-iimbestiga ng isang bug | "Ipakita ang landas sa pagitan ng endpoint na ito at storage." |
+| Pagbabalik sa dating gawa | "Hanapin ang kaugnay na design decisions at mga tala." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |

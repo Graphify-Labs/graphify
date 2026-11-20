@@ -142,6 +142,19 @@ Co dostanete rovnou z krabice:
 
 ---
 
+## Kdy sáhnout po Graphify
+
+Sáhněte po grafu, když potřebujete porozumět kódové základně, ne ji jen pročíst:
+
+| Situace | Na co se zeptat Graphify |
+|---|---|
+| Zapojení do neznámého projektu | „Vysvětlete, jak se propojují hlavní komponenty.“ |
+| Změna sdílené komponenty | „Vysledujte její volající a závislosti.“ |
+| Zkoumání chyby | „Ukažte cestu mezi tímto koncovým bodem a úložištěm.“ |
+| Návrat k dřívější práci | „Najděte relevantní návrhová rozhodnutí a poznámky.“ |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metrika | graphify | Pole |

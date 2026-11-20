@@ -142,6 +142,19 @@ O que você obtém de imediato:
 
 ---
 
+## Quando recorrer ao Graphify
+
+Recorra ao grafo quando você precisa entender uma base de código, não apenas lê-la de ponta a ponta:
+
+| Situação | O que perguntar ao Graphify |
+|---|---|
+| Entrar em um projeto desconhecido | "Explique como os principais componentes se conectam." |
+| Alterar um componente compartilhado | "Trace seus chamadores e dependências." |
+| Investigar um bug | "Mostre o caminho entre este endpoint e o armazenamento." |
+| Retomar um trabalho anterior | "Encontre as decisões de design e notas relevantes." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Métrica | graphify | Campo |

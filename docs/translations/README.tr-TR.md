@@ -142,6 +142,19 @@ Kutudan çıktığı haliyle elde ettikleriniz:
 
 ---
 
+## Graphify'a ne zaman başvurmalı
+
+Bir kod tabanını yalnızca baştan sona okumak değil, anlamak istediğinizde grafiğe başvurun:
+
+| Durum | Graphify'a ne sorulmalı |
+|---|---|
+| Tanımadık bir projeye katılmak | "Ana bileşenlerin nasıl bağlandığını açıklayın." |
+| Paylaşılan bir bileşeni değiştirmek | "Onu çağıranları ve bağımlılıklarını izleyin." |
+| Bir hatayı araştırmak | "Bu uç nokta ile depolama arasındaki yolu gösterin." |
+| Önceki işe geri dönmek | "İlgili tasarım kararlarını ve notları bulun." |
+
+---
+
 ## Karşılaştırmalı değerlendirmeler: 0.497 recall@10, 0 LLM credits
 
 | Karşılaştırma | Metrik | graphify | Alan |

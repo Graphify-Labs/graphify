@@ -142,6 +142,19 @@ Ciò che ottieni da subito:
 
 ---
 
+## Quando ricorrere a Graphify
+
+Ricorri al grafo quando devi capire una codebase, non solo leggerla da cima a fondo:
+
+| Situazione | Cosa chiedere a Graphify |
+|---|---|
+| Entrare in un progetto sconosciuto | «Spiega come sono collegati i componenti principali.» |
+| Modificare un componente condiviso | «Traccia i suoi chiamanti e le sue dipendenze.» |
+| Indagare su un bug | «Mostra il percorso tra questo endpoint e l'archiviazione.» |
+| Tornare su un lavoro precedente | «Trova le decisioni di progettazione e le note pertinenti.» |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metrica | graphify | Campo |

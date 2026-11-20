@@ -140,6 +140,19 @@ Những gì bạn nhận được ngay từ đầu:
 
 ---
 
+## Khi nào nên dùng Graphify
+
+Hãy dùng đồ thị khi bạn cần hiểu một mã nguồn, chứ không chỉ đọc lướt qua nó:
+
+| Tình huống | Hỏi Graphify điều gì |
+|---|---|
+| Tham gia một dự án xa lạ | “Giải thích cách các thành phần chính kết nối với nhau.” |
+| Thay đổi một thành phần dùng chung | “Lần theo các nơi gọi nó và các phụ thuộc của nó.” |
+| Điều tra một lỗi | “Hiển thị đường đi giữa endpoint này và nơi lưu trữ.” |
+| Xem lại công việc trước đó | “Tìm các quyết định thiết kế và ghi chú liên quan.” |
+
+---
+
 ## Benchmark: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |

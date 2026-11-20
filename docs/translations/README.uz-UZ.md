@@ -142,6 +142,19 @@ Qutidan chiqib nima olasiz:
 
 ---
 
+## Qachon Graphify ga murojaat qilish kerak
+
+Kod bazasini shunchaki o'qib chiqish emas, balki tushunish kerak bo'lganda grafga murojaat qiling:
+
+| Vaziyat | Graphify dan nima so'rash kerak |
+|---|---|
+| Notanish loyihaga qo'shilish | "Asosiy komponentlar qanday bog'lanishini tushuntir." |
+| Umumiy komponentni o'zgartirish | "Uning chaqiruvchilari va bog'liqliklarini kuzat." |
+| Xatoni tekshirish | "Ushbu so'nggi nuqta va saqlash o'rtasidagi yo'lni ko'rsat." |
+| Oldingi ishga qaytish | "Tegishli dizayn qarorlari va eslatmalarni top." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metrika | graphify | Soha |

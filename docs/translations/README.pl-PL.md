@@ -142,6 +142,19 @@ Co otrzymujesz od razu po instalacji:
 
 ---
 
+## Kiedy sięgnąć po Graphify
+
+Sięgnij po graf, gdy chcesz zrozumieć bazę kodu, a nie tylko ją przeczytać:
+
+| Sytuacja | O co zapytać Graphify |
+|---|---|
+| Dołączanie do nieznanego projektu | „Wyjaśnij, jak łączą się główne komponenty.” |
+| Zmiana współdzielonego komponentu | „Prześledź to, co go wywołuje, i jego zależności.” |
+| Badanie błędu | „Pokaż ścieżkę między tym punktem końcowym a pamięcią masową.” |
+| Powrót do wcześniejszej pracy | „Znajdź odpowiednie decyzje projektowe i notatki.” |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |

@@ -142,6 +142,19 @@ Vad du får direkt ur lådan:
 
 ---
 
+## När du ska ta till Graphify
+
+Ta till grafen när du behöver förstå en kodbas, inte bara läsa igenom den:
+
+| Situation | Vad du frågar Graphify |
+|---|---|
+| Att komma in i ett obekant projekt | "Förklara hur huvudkomponenterna hänger ihop." |
+| Att ändra en delad komponent | "Spåra dess anropare och beroenden." |
+| Att undersöka en bugg | "Visa vägen mellan den här slutpunkten och lagringen." |
+| Att återvända till tidigare arbete | "Hitta de relevanta designbesluten och anteckningarna." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Riktmärke | Mått | graphify | Fältet |

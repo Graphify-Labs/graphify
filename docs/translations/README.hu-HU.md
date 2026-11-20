@@ -142,6 +142,19 @@ Amit alapból kap:
 
 ---
 
+## Mikor forduljon a Graphify-hoz
+
+Forduljon a gráfhoz, amikor meg kell értenie egy kódbázist, nem csak végigolvasni:
+
+| Helyzet | Mit kérdezzen a Graphify-tól |
+|---|---|
+| Csatlakozás egy ismeretlen projekthez | „Magyarázd el, hogyan kapcsolódnak a fő komponensek." |
+| Egy megosztott komponens módosítása | „Kövesd nyomon a hívóit és a függőségeit." |
+| Egy hiba kivizsgálása | „Mutasd meg az utat e végpont és a tárolás között." |
+| Korábbi munka újbóli áttekintése | „Keresd meg a releváns tervezési döntéseket és jegyzeteket." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metrika | graphify | Mező |

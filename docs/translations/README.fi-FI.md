@@ -142,6 +142,19 @@ Mitä saat suoraan laatikosta:
 
 ---
 
+## Milloin kannattaa turvautua Graphifyyn
+
+Turvaudu graafiin, kun sinun pitää ymmärtää koodikanta, et vain lukea sitä läpi:
+
+| Tilanne | Mitä kysyä Graphifyltä |
+|---|---|
+| Tuntemattomaan projektiin liittyminen | "Selitä, miten pääkomponentit liittyvät toisiinsa." |
+| Jaetun komponentin muuttaminen | "Jäljitä sen kutsujat ja riippuvuudet." |
+| Bugin tutkiminen | "Näytä polku tämän päätepisteen ja tallennuksen välillä." |
+| Aiempaan työhön palaaminen | "Etsi olennaiset suunnittelupäätökset ja muistiinpanot." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Mittari | graphify | Vertailukenttä |

@@ -142,6 +142,19 @@ Wat je meteen uit de doos krijgt:
 
 ---
 
+## Wanneer je naar Graphify grijpt
+
+Grijp naar de graaf wanneer je een codebase moet begrijpen, niet alleen doorlezen:
+
+| Situatie | Wat je aan Graphify vraagt |
+|---|---|
+| Een onbekend project binnenkomen | "Leg uit hoe de belangrijkste componenten met elkaar verbonden zijn." |
+| Een gedeelde component wijzigen | "Traceer de aanroepers en afhankelijkheden ervan." |
+| Een bug onderzoeken | "Toon het pad tussen dit eindpunt en de opslag." |
+| Eerder werk opnieuw bekijken | "Vind de relevante ontwerpbeslissingen en notities." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |

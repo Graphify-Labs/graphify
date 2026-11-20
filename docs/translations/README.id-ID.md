@@ -142,6 +142,19 @@ Apa yang Anda dapatkan langsung dari awal:
 
 ---
 
+## Kapan harus menggunakan Graphify
+
+Gunakan graf ketika Anda perlu memahami sebuah codebase, bukan hanya membacanya:
+
+| Situasi | Apa yang harus ditanyakan ke Graphify |
+|---|---|
+| Bergabung dengan proyek yang tidak dikenal | "Jelaskan bagaimana komponen utama terhubung." |
+| Mengubah komponen bersama | "Telusuri callers dan dependencies-nya." |
+| Menyelidiki sebuah bug | "Tunjukkan jalur antara endpoint ini dan storage." |
+| Meninjau kembali pekerjaan sebelumnya | "Temukan design decisions dan catatan yang relevan." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |

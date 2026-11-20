@@ -142,6 +142,19 @@ Was Sie out of the box bekommen:
 
 ---
 
+## Wann Sie zu Graphify greifen sollten
+
+Greifen Sie zum Graphen, wenn Sie eine Codebasis verstehen müssen, nicht nur durchlesen wollen:
+
+| Situation | Was Sie Graphify fragen können |
+|---|---|
+| Einstieg in ein unbekanntes Projekt | „Erklären Sie, wie die wichtigsten Komponenten zusammenhängen." |
+| Ändern einer gemeinsam genutzten Komponente | „Verfolgen Sie ihre Aufrufer und Abhängigkeiten." |
+| Untersuchen eines Bugs | „Zeigen Sie den Pfad zwischen diesem Endpunkt und dem Speicher." |
+| Rückkehr zu früherer Arbeit | „Finden Sie die relevanten Designentscheidungen und Notizen." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metrik | graphify | Feld |

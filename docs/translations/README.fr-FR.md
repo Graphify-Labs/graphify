@@ -142,6 +142,19 @@ Ce que vous obtenez d'emblée :
 
 ---
 
+## Quand recourir à Graphify
+
+Recourez au graphe lorsque vous devez comprendre une base de code, et pas seulement la parcourir :
+
+| Situation | Quoi demander à Graphify |
+|---|---|
+| Rejoindre un projet inconnu | « Expliquez comment les principaux composants sont reliés. » |
+| Modifier un composant partagé | « Tracez ses appelants et ses dépendances. » |
+| Enquêter sur un bug | « Montrez le chemin entre cet endpoint et le stockage. » |
+| Revenir sur un travail antérieur | « Trouvez les décisions de conception et les notes pertinentes. » |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Métrique | graphify | Domaine |

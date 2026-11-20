@@ -142,6 +142,19 @@ Ce obțineți direct din cutie:
 
 ---
 
+## Când să apelați la Graphify
+
+Apelați la graf când aveți nevoie să înțelegeți o bază de cod, nu doar să o parcurgeți:
+
+| Situație | Ce să întrebați Graphify |
+|---|---|
+| Alăturarea unui proiect necunoscut | „Explicați cum se conectează componentele principale.” |
+| Modificarea unei componente partajate | „Trasați apelanții și dependențele sale.” |
+| Investigarea unui bug | „Arătați calea dintre acest endpoint și stocare.” |
+| Revenirea la o lucrare anterioară | „Găsiți deciziile de proiectare și notițele relevante.” |
+
+---
+
 ## Benchmark-uri: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metrică | graphify | Domeniu |
