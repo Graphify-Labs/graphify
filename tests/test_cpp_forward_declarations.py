@@ -190,6 +190,41 @@ def test_external_cache_anchor_keeps_distinct_source_and_include_identities(tmp_
         assert owners[0]["_cpp_reconcile_files"] == ["../source/forward.hpp", "../source/service.hpp"]
 
 
+@pytest.mark.parametrize("included", [False, True])
+def test_cache_anchor_on_another_drive_keeps_distinct_source_and_include_identities(
+    tmp_path, monkeypatch, included,
+):
+    """On Windows there is no relative path from a source to a cache_root on
+    another drive (#5145); the files keep absolute identities instead of all
+    becoming the unknown "", which can never prove an include."""
+    source = tmp_path / "source"
+    source.mkdir()
+    forward = source / "forward.hpp"
+    definition = source / "service.hpp"
+    forward.write_text("class Service;", encoding="utf-8")
+    definition.write_text(('#include "forward.hpp"\n' if included else '')
+                          + "class Service {};", encoding="utf-8")
+    cache = (tmp_path / "cache").resolve()
+    original_relpath = os.path.relpath
+
+    def cross_drive_relpath(path, start=os.curdir):
+        if Path(start) == cache:
+            raise ValueError("path is on mount 'C:', start on mount 'D:'")
+        return original_relpath(path, start)
+
+    monkeypatch.setattr(os.path, "relpath", cross_drive_relpath)
+    result = extract([forward, definition], cache_root=cache, parallel=False)
+    owners = _classes(result)
+    assert len(owners) == (1 if included else 2)
+    if included:
+        forward_key = forward.resolve().as_posix()
+        assert owners[0]["metadata"]["cpp_declaration_sites"] == [
+            {"source_file": forward_key, "source_location": "L1"},
+        ]
+        assert owners[0]["_cpp_reconcile_files"] == sorted(
+            [forward_key, definition.resolve().as_posix()])
+
+
 @pytest.mark.parametrize("source,target", [("", ""), ("", "known.hpp"), ("known.hpp", "")])
 def test_unknown_include_endpoints_never_prove_symbol_equivalence(source, target):
     from graphify.extractors.resolution import _cpp_include_path

@@ -382,3 +382,56 @@ def test_vbnet_a_class_with_no_operator_is_unaffected(tmp_path):
     labels = {node["label"] for node in result["nodes"]}
     assert {"Plain", "Run()", "Helper()"} <= labels
     assert ("Run()", "Helper()") in _edge_labels(result, "calls")
+
+
+@_needs_vbnet
+@pytest.mark.parametrize("modifiers", [
+    "Optional ByVal", "ByVal Optional", "Optional ByRef", "ByRef Optional", "Optional",
+])
+def test_vbnet_optional_parameter_accepts_the_omitted_argument_in_any_modifier_order(
+    tmp_path, modifiers
+):
+    # #5320: `ByVal Optional x` compiles (checked with .NET 8) and B() binds to B.
+    source = tmp_path / "M.vb"
+    source.write_text(
+        "Module M\n"
+        f"    Sub B({modifiers} x As Integer = 0)\n"
+        "    End Sub\n"
+        "    Sub Caller()\n"
+        "        B()\n"
+        "        B(5)\n"
+        "    End Sub\n"
+        "End Module\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    b = next(n for n in result["nodes"] if n["label"] == "B()")
+    assert b["metadata"]["accepted_arities"] == [0, 1]
+    assert ("Caller()", "B()") in _edge_labels(result, "calls")
+
+
+@_needs_vbnet
+def test_vbnet_required_parameters_after_byval_stay_required(tmp_path):
+    # Guard: no default value means required, so B() must not bind to B(x).
+    source = tmp_path / "M.vb"
+    source.write_text(
+        "Module M\n"
+        "    Sub B(ByVal x As Integer)\n"
+        "    End Sub\n"
+        "    Sub F(a As Integer, ByVal Optional b As Integer = 1)\n"
+        "    End Sub\n"
+        "    Sub Caller()\n"
+        "        B()\n"
+        "    End Sub\n"
+        "End Module\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    by_label = {n["label"]: n["metadata"] for n in result["nodes"]}
+    assert by_label["B()"]["accepted_arities"] == [1]
+    assert by_label["F()"]["accepted_arities"] == [1, 2]
+    assert ("Caller()", "B()") not in _edge_labels(result, "calls")
