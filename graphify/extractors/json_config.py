@@ -162,7 +162,10 @@ def extract_json(path: Path) -> dict:
         with path.open("rb") as _f:
             source = _f.read(_JSON_MAX_BYTES + 1)
         if len(source) > _JSON_MAX_BYTES:
-            return {"nodes": [], "edges": [], "error": "json file too large to index"}
+            # Declined by design, like the data-JSON branch below. Reporting it as
+            # an error made the file a failed source, which the manifest never
+            # stamps, so an unchanged tree re-extracted it on every update.
+            return {"nodes": [], "edges": [], "skipped": "json file over 1 MiB (not indexed)"}
         language = Language(tsjson.language())
         parser = Parser(language)
         tree = parser.parse(source)
