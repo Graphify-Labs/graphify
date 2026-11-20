@@ -142,6 +142,19 @@ What you get out of the box:
 
 ---
 
+## When to reach for Graphify
+
+Reach for the graph when you need to understand a codebase, not just read through it:
+
+| Situation | What to ask Graphify |
+|---|---|
+| Joining an unfamiliar project | "Explain how the main components connect." |
+| Changing a shared component | "Trace its callers and dependencies." |
+| Investigating a bug | "Show the path between this endpoint and storage." |
+| Revisiting previous work | "Find the relevant design decisions and notes." |
+
+---
+
 ## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Metric | graphify | Field |
