@@ -287,7 +287,15 @@ def _python_absolute_import_alias_files(paths, root) -> tuple[dict[str, set[str]
 
     aliases: dict[str, set[str]] = {}
     scan_root_aliases: set[str] = set()
+    seen_raw: set[Path | str] = set()
+    seen_paths: set[Path] = set()
     for raw_path in paths:
+        if raw_path in seen_raw:
+            continue
+        try:
+            seen_raw.add(raw_path)
+        except TypeError:
+            pass
         p = Path(raw_path)
         if p.suffix.lower() != ".py":
             # _resolve_python_module_path probes .py, not a lone .pyi file.
@@ -297,6 +305,9 @@ def _python_absolute_import_alias_files(paths, root) -> tuple[dict[str, set[str]
             rel = p.relative_to(root)
         except (ValueError, OSError, RuntimeError):
             continue
+        if p in seen_paths:
+            continue
+        seen_paths.add(p)
 
         module_path = p.parent if p.name == "__init__.py" else p.with_suffix("")
         candidate_roots = [root]
@@ -11859,9 +11870,13 @@ def extract(
             resolution_context_edges = [e for e in resolution_context_edges or []
                                         if _cpp_source_key(e.get("source_file", ""), root) not in refreshed]
     python_scan_paths = list(paths)
+    seen_context_sources: set[str] = set()
     for context_node in resolution_context_nodes or []:
         source_file = context_node.get("source_file")
-        if not source_file or Path(source_file).suffix.lower() != ".py":
+        if not source_file or source_file in seen_context_sources:
+            continue
+        seen_context_sources.add(source_file)
+        if Path(source_file).suffix.lower() != ".py":
             continue
         context_path = Path(source_file)
         if not context_path.is_absolute():
