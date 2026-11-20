@@ -1082,7 +1082,8 @@ def test_document_span_lands_on_the_page_not_a_heading_named_like_the_file(tmp_p
 
     guide = _node(r, "guide.md")
     page = next(n for n in r["nodes"]
-                if n.get("node_kind") == "page" and n["source_file"].endswith("README.md"))
+                if n.get("node_kind") == "page"
+                and str(n.get("source_file", "")).endswith("README.md"))
     assert set(_references(r)) == {(guide["id"], page["id"])}
 
 
@@ -1310,3 +1311,29 @@ def test_unscanned_file_does_not_shadow_a_scanned_one_or_its_evidence(tmp_path):
     span_node = _node(r, "Span")
     token = _node(r, "token()", "web/charts.js")
     assert set(_references(r)) == {(span_node["id"], token["id"])}
+
+
+def test_scan_root_on_another_drive_does_not_abort_the_document(tmp_path, monkeypatch):
+    """`os.path.relpath` raises ValueError across Windows drives; the document still extracts (#5224)."""
+    import graphify.extractors.markdown as md
+    from graphify.extractors.base import set_active_scan_root
+
+    doc = tmp_path / "docs" / "spans.md"
+    doc.parent.mkdir()
+    doc.write_text("# Spans\n\nSee `src/app.ts` and `docs/other.md`; `token` too.\n")
+
+    def other_drive(*_args, **_kwargs):
+        raise ValueError("path is on mount 'D:', start on mount 'C:'")
+
+    monkeypatch.setattr(md.os.path, "relpath", other_drive)
+    previous = set_active_scan_root(tmp_path)
+    try:
+        r = md.extract_markdown(doc)
+    finally:
+        set_active_scan_root(previous)
+
+    assert "error" not in r
+    assert any(n.get("node_kind") == "page" for n in r["nodes"])
+    cited = [rc for rc in r["raw_calls"] if rc.get("path") == "src/app.ts"]
+    assert cited and "root_path" not in cited[0]
+    assert [rc["callee"] for rc in r["raw_calls"] if rc.get("path") is None] == ["token"]

@@ -481,6 +481,8 @@ def resolve_markdown_mentions(
             continue
         doc = _posix(str(rc.get("source_file", "")))
         target_file = None
+        # `root_path` is recorded only for cites that do not start with `./` or
+        # `../`, so an explicit relative cite is read against the document only.
         for reading in (cited, rc.get("root_path")):
             if reading and target_file is None:
                 target_file = _match_file_link(
