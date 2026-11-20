@@ -30,7 +30,7 @@
 <p align="center">
   <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Start free, no card required &rarr;</b></a>
   <br/>
-  <b>Cut agent token spend by 80%.</b> Graphify Cloud is always-on memory that governs your agents, keeps code quality high, and proves correctness with formal verification.
+  <b>Graphify Cloud</b> is always-on memory that governs your agents, keeps code quality high, and proves correctness with formal verification.
 </p>
 
 Type `/graphify` in your AI coding assistant and it maps your entire project (code, docs, PDFs, images, videos) into a **knowledge graph** you can **query instead of grepping** through files.
@@ -125,7 +125,7 @@ What you get out of the box:
 | **Local-first** | Code is parsed locally with tree-sitter (no LLM, nothing leaves your machine); only the semantic pass over docs/media calls a backend, and only if you configure one |
 
 > [!TIP]
-> Running this across many repos or a monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) does it continuously and cuts agent token spend by 80%, with cross-repo links, SDLC-wide code review, formal verification, and Sentry/Jira connectors. [Start free, no card required &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+> Running this across many repos or a monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) does it continuously, with cross-repo links, SDLC-wide code review, formal verification, and Sentry/Jira connectors. [Start free, no card required &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
@@ -491,7 +491,7 @@ Every command and flag, with examples: **[CLI reference](https://docs.graphify.c
 
 [**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) is the always-on layer built on top of graphify. Instead of a graph you rebuild on demand per folder, it keeps one live graph across your entire software development lifecycle:
 
-- **80% fewer tokens**: always-on memory means your agents stop re-reading and re-explaining the codebase every session.
+- **Less re-reading**: always-on memory means your agents stop re-reading and re-explaining the codebase every session.
 - **Monorepo and cross-repo**: one connected graph across every service and repository, not a graph per folder.
 - **Formal verification**: check architectural and dependency invariants against the live graph.
 - **Code review with a bird's-eye view of your SDLC**: see how a change ripples across the whole system before you merge.
