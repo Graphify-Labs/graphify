@@ -1488,7 +1488,7 @@ def _is_pr_mcp_tool_desc_line(line: str) -> bool:
 def _is_svg_extra_note_line(line: str) -> bool:
     """Whether a line notes that SVG export needs the svg extra (matplotlib)."""
     return line.strip() == (
-        "Requires the `svg` extra (`pip install 'graphifyy[svg]'`), which includes matplotlib."
+        'Requires the `svg` extra (`pip install "graphifyy[svg]"`), which includes matplotlib.'
     )
 
 

@@ -650,7 +650,7 @@ print('graph.svg written - embeds in Obsidian, Notion, GitHub READMEs')
 "
 ```
 
-Requires the `svg` extra (`pip install 'graphifyy[svg]'`), which includes matplotlib.
+Requires the `svg` extra (`pip install "graphifyy[svg]"`), which includes matplotlib.
 
 ### Step 7c - GraphML export (only if --graphml flag)
 

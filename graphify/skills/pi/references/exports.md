@@ -54,7 +54,7 @@ Default URI is `falkordb://localhost:6379` (the scheme is informational - `redis
 graphify export svg
 ```
 
-Requires the `svg` extra (`pip install 'graphifyy[svg]'`), which includes matplotlib.
+Requires the `svg` extra (`pip install "graphifyy[svg]"`), which includes matplotlib.
 
 ### Step 7c - GraphML export (only if --graphml flag)
 
