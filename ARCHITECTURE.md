@@ -158,6 +158,30 @@ never leaves a stale range. Reads are confined to the project root, the body
 goes through `redact_secrets`, and the text never enters graph.json, so graphs
 built before this existed work without a rebuild.
 
+`graphify summarize` writes one short summary per file-level node to
+`graphify-out/node-summaries.json` (`graphify/summarize.py`): at most 250
+characters for a code file and 500 for a document, or one limit for both with
+`--max-chars N` (50 to 1000). It runs only when asked, calls no model, and
+never modifies graph.json; the file has no timestamp and lists entries in
+node-id order, so the same graph and files give the same bytes.
+
+A code file is summarized from the graph alone: its module docstring, the
+symbols it contains and what it imports, plus the community's name when the
+file has no docstring and someone has named the community. A Markdown document,
+which includes a converted Word file, is summarized from its title page when it
+has one, otherwise from its heading outline. The title page is the text before
+the first top-level heading, or the first top-level section when that text has
+no fields. It is recognised by its labelled fields, which are `Label: value`
+lines and the rows of a two-column table that opens the page, and it is read
+with the same confinement as `graphify section`. The summary is the title, then
+the fields; when they leave room, the short unlabelled lines above the first
+field (a document type, a study number) follow the title. The rules identify a
+file; they do not describe what a long document says.
+
+`graphify explain` shows the entry as a `Summary:` line when one exists for the
+node and its source file. `graphify summarize "<file>"` prints one file's
+summary, computed fresh, and writes nothing.
+
 Validation reports list/object enum values as schema errors. Graph assembly
 repairs structured `file_type` values to `concept` and structured `confidence`
 values to `INFERRED`, without fabricating a confidence score, so malformed

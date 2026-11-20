@@ -88,8 +88,11 @@ The output `graph.json` uses NetworkX's node-link format. Each node has:
 - `file_type` — `code`, `document`, `paper`, `image`, `rationale`
 - `source_file` — where it came from
 
-See [RFC: file-level node summaries](node-summaries-rfc.md) for two proposed
-ways to add compact optional summaries for AI navigation.
+`graphify summarize` adds an optional short summary per file for AI
+navigation. It is written to `graphify-out/node-summaries.json`, not into
+`graph.json`, and `graphify explain` shows it as a `Summary:` line.
+`graphify summarize "<file>"` prints the summary of one file without writing
+anything. The design is in [RFC: file-level node summaries](node-summaries-rfc.md).
 
 Each edge has:
 - `source`, `target` — node IDs

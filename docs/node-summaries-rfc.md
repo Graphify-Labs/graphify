@@ -3,6 +3,32 @@
 This RFC proposes an optional way for graphify to expose compact file-level
 summaries for AI coding agents.
 
+## Status
+
+The first part is implemented as `graphify summarize` (#5041), with these
+choices from the options below:
+
+- **Sidecar** (Option B): `graphify-out/node-summaries.json`. `graph.json` is
+  not modified.
+- **Explicit command only.** Nothing is generated while building a graph.
+- **Name and budget:** `summary`, at most 250 characters for a code file and
+  500 for a document, whose title alone can take 150 characters.
+  `--max-chars N` sets one limit for both, from 50 to 1000.
+- **Deterministic.** No model is called. A code file is summarized from its
+  module docstring, symbols and imports; a Markdown document (or a converted
+  Word file) from its title page when it has one (its title and labelled
+  fields, including the rows of a two-column table, and when room is left the
+  short unlabelled lines above the first field), otherwise from its heading
+  outline.
+- **Shown in** `graphify explain` as a `Summary:` line.
+- **One file at a time:** `graphify summarize "<file>"` prints that file's
+  summary and writes nothing.
+
+Each entry also carries `generated_by`, so summaries from another generator can
+share the file later. Not implemented yet: summaries written by an LLM backend,
+summaries in `graphify query` and the MCP server, and freshness metadata (rerun
+`graphify summarize` after updating the graph).
+
 ## Problem
 
 `graph.json` gives agents graph structure, source files, node labels, and
