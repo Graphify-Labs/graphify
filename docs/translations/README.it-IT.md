@@ -325,6 +325,38 @@ Entrambi incoraggiano query mirate sul grafo prima di ricerche ampie nella fonte
 
 ---
 
+## Connetti il tuo assistente tramite MCP
+
+Punta un qualsiasi assistente compatibile con MCP a un grafo Graphify e interrogherà il grafo direttamente invece di fare grep dei file. Connettiti al grafo ospitato (Graphify Cloud, piano gratuito, senza carta):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Preferisci restare in locale? Installa il server stdio con `uv tool install "graphifyy[mcp]"` ed esegui `graphify-mcp` sul tuo `graph.json` — nessun account necessario.
+
+Una volta connesso, il tuo assistente ottiene questi strumenti:
+
+| Strumento | Cosa fa |
+|---|---|
+| `query_graph` | Poni una domanda in linguaggio naturale e ricevi il sottografo pertinente |
+| `shortest_path` | Traccia come due nodi si collegano |
+| `get_node` / `get_neighbors` | Cerca un nodo e ciò con cui è in contatto |
+| `get_community` / `god_nodes` | Comunità rilevate e gli hub più connessi |
+| `get_section` | Leggi una regione etichettata del grafo |
+| `graph_stats` | Dimensione, linguaggi e ripartizione degli archi del grafo |
+
+Il server espone anche strumenti per le PR (`list_prs`, `get_pr_impact`, `triage_prs`) così il tuo assistente può revisionare le pull request con il contesto del grafo.
+
+---
+
 ## What's in the report
 
 `GRAPH_REPORT.md` riassume i god nodes, le comunità e i percorsi chiave per una revisione ampia dell'architettura. Come viene costruito il grafo e cosa contiene: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

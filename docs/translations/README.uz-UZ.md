@@ -325,6 +325,38 @@ Ikkalasi ham keng manba qidiruvlaridan oldin chegaralangan graf so'rovlarini rag
 
 ---
 
+## Agentingizni MCP orqali ulang
+
+MCP-ni qo'llab-quvvatlaydigan istalgan agentni Graphify grafiga yo'naltiring, shunda u fayllarni grep qilish o'rniga grafni to'g'ridan-to'g'ri so'rov qiladi. Joylashtirilgan grafga ulaning (Graphify Cloud, bepul reja, kartasiz):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Mahalliy qolishni afzal ko'rasizmi? stdio serverini `uv tool install "graphifyy[mcp]"` bilan o'rnating va `graphify-mcp` ni o'zingizning `graph.json` faylingizga nisbatan ishga tushiring; hisob kerak emas.
+
+Ulangandan so'ng, agentingiz ushbu vositalarni oladi:
+
+| Vosita | U nima qiladi |
+|---|---|
+| `query_graph` | Tabiiy tilda savol bering va tegishli subgrafni qaytarib oling |
+| `shortest_path` | Ikki tugun qanday bog'lanishini kuzating |
+| `get_node` / `get_neighbors` | Tugunni va u nimaga tegishini qidiring |
+| `get_community` / `god_nodes` | Aniqlangan klasterlar va eng ko'p bog'langan markazlar |
+| `get_section` | Grafning belgilangan hududini o'qing |
+| `graph_stats` | Grafning hajmi, tillari va qirralar taqsimoti |
+
+Server shuningdek pull so'rovi vositalarini (`list_prs`, `get_pr_impact`, `triage_prs`) taqdim etadi, shunda agentingiz pull so'rovlarini graf konteksti bilan ko'rib chiqishi mumkin.
+
+---
+
 ## Hisobotda nima bor
 
 `GRAPH_REPORT.md` keng arxitektura ko'rib chiqish uchun xudo tugunlar, jamoalar va asosiy yo'llarni jamlaydi. Graf qanday quriladi va u nimani o'z ichiga oladi: **[graphify qanday ishlaydi](https://docs.graphify.com/concepts/architecture)**.

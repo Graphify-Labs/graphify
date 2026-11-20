@@ -325,6 +325,38 @@ Her ikisi de geniş kaynak aramalarından önce kapsamlı grafik sorgularını t
 
 ---
 
+## Ajanınızı MCP üzerinden bağlayın
+
+MCP yeteneğine sahip herhangi bir ajanı bir Graphify grafiğine yöneltin; dosyalarda grep yapmak yerine grafiği doğrudan sorgular. Barındırılan grafiğe bağlanın (Graphify Cloud, ücretsiz plan, kart gerekmez):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Yerel kalmayı mı tercih edersiniz? stdio sunucusunu `uv tool install "graphifyy[mcp]"` ile kurun ve kendi `graph.json` dosyanıza karşı `graphify-mcp` çalıştırın — hesap gerekmez.
+
+Bağlandıktan sonra, ajanınız şu araçları elde eder:
+
+| Araç | Ne yapar |
+|---|---|
+| `query_graph` | Düz dilde bir soru sorun, ilgili alt grafiği geri alın |
+| `shortest_path` | İki düğümün nasıl bağlandığını izleyin |
+| `get_node` / `get_neighbors` | Bir düğümü ve nelere dokunduğunu arayın |
+| `get_community` / `god_nodes` | Tespit edilen kümeler ve en çok bağlantılı hub'lar |
+| `get_section` | Grafiğin etiketli bir bölgesini okuyun |
+| `graph_stats` | Grafiğin boyutu, dilleri ve kenar dökümü |
+
+Sunucu ayrıca PR araçlarını da (`list_prs`, `get_pr_impact`, `triage_prs`) sunar; böylece ajanınız çekme isteklerini grafik bağlamıyla inceleyebilir.
+
+---
+
 ## Raporda neler var
 
 `GRAPH_REPORT.md`, geniş mimari inceleme için tanrı düğümlerini, toplulukları ve anahtar yolları özetler. Grafiğin nasıl oluşturulduğu ve neler içerdiği: **[graphify nasıl çalışır](https://docs.graphify.com/concepts/architecture)**.

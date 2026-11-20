@@ -325,6 +325,38 @@ Pi не має хука `PreToolUse`, тож `graphify pi guard install` реє�
 
 ---
 
+## Підключіть свого агента через MCP
+
+Спрямуйте будь-якого агента з підтримкою MCP на граф Graphify, і він запитуватиме граф безпосередньо замість того, щоб грепати файли. Підключіться до розміщеного графа (Graphify Cloud, безкоштовний тариф, без картки):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Волієте залишитися локально? Встановіть stdio-сервер за допомогою `uv tool install "graphifyy[mcp]"` та запустіть `graphify-mcp` проти вашого власного `graph.json` - акаунт не потрібен.
+
+Щойно підключено, ваш агент отримує ці інструменти:
+
+| Інструмент | Що він робить |
+|---|---|
+| `query_graph` | Поставте питання звичайною мовою й отримайте релевантний підграф |
+| `shortest_path` | Простежте, як зʼєднуються два вузли |
+| `get_node` / `get_neighbors` | Знайдіть вузол і те, чого він торкається |
+| `get_community` / `god_nodes` | Виявлені кластери та найбільш звʼязані хаби |
+| `get_section` | Прочитайте позначену область графа |
+| `graph_stats` | Розмір, мови та розбивка ребер графа |
+
+Сервер також надає інструментарій для PR (`list_prs`, `get_pr_impact`, `triage_prs`), тож ваш агент може робити рев'ю pull-запитів з контекстом графа.
+
+---
+
 ## Що є у звіті
 
 `GRAPH_REPORT.md` узагальнює божественні вузли, спільноти та ключові шляхи для широкого огляду архітектури. Як будується граф і що він містить: **[Як працює graphify](https://docs.graphify.com/concepts/architecture)**.

@@ -325,6 +325,38 @@ Pi هیچ قلاب `PreToolUse` ندارد، بنابراین `graphify pi guard
 
 ---
 
+## عامل خود را از طریق MCP متصل کنید
+
+هر عاملِ سازگار با MCP را به یک گراف Graphify نشانه بگیرید تا به‌جای grep کردن فایل‌ها، مستقیماً گراف را پرس‌وجو کند. به گراف میزبانی‌شده متصل شوید (Graphify Cloud، طرح رایگان، بدون کارت):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+ترجیح می‌دهید محلی بمانید؟ سرور stdio را با `uv tool install "graphifyy[mcp]"` نصب کنید و `graphify-mcp` را در برابر `graph.json` خودتان اجرا کنید؛ بدون نیاز به حساب.
+
+پس از اتصال، عامل شما این ابزارها را دریافت می‌کند:
+
+| ابزار | چه کاری انجام می‌دهد |
+|---|---|
+| `query_graph` | سؤالی به زبان طبیعی بپرسید و زیرگراف مرتبط را دریافت کنید |
+| `shortest_path` | ردیابی کنید که دو گره چگونه به هم متصل می‌شوند |
+| `get_node` / `get_neighbors` | یک گره و آنچه با آن در تماس است را جستجو کنید |
+| `get_community` / `god_nodes` | خوشه‌های شناسایی‌شده و پرارتباط‌ترین هاب‌ها |
+| `get_section` | یک ناحیهٔ برچسب‌خوردهٔ گراف را بخوانید |
+| `graph_stats` | اندازه، زبان‌ها و تفکیک یال‌های گراف |
+
+سرور همچنین ابزارهای درخواست کشش (`list_prs`، `get_pr_impact`، `triage_prs`) را در دسترس قرار می‌دهد تا عامل شما بتواند درخواست‌های کشش را با زمینهٔ گراف بررسی کند.
+
+---
+
 ## What's in the report
 
 `GRAPH_REPORT.md` گره‌های خدا، جامعه‌ها و مسیرهای کلیدی را برای بازبینی گستردهٔ معماری خلاصه می‌کند. اینکه گراف چگونه ساخته می‌شود و چه چیزی در بر دارد: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

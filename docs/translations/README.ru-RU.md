@@ -325,6 +325,38 @@ graphify install --project --platform codex
 
 ---
 
+## Подключите агента через MCP
+
+Направьте любого агента с поддержкой MCP на граф Graphify, и он будет запрашивать граф напрямую, вместо того чтобы прочёсывать файлы с помощью grep. Подключитесь к размещённому графу (Graphify Cloud, бесплатный тариф, без карты):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Предпочитаете остаться локально? Установите stdio-сервер командой `uv tool install "graphifyy[mcp]"` и запустите `graphify-mcp` по вашему собственному `graph.json`: аккаунт не нужен.
+
+После подключения ваш агент получает эти инструменты:
+
+| Инструмент | Что он делает |
+|---|---|
+| `query_graph` | Задайте вопрос на естественном языке и получите релевантный подграф |
+| `shortest_path` | Проследите, как связаны два узла |
+| `get_node` / `get_neighbors` | Найдите узел и то, с чем он связан |
+| `get_community` / `god_nodes` | Обнаруженные кластеры и наиболее связанные хабы |
+| `get_section` | Прочитайте помеченную область графа |
+| `graph_stats` | Размер, языки и разбивка рёбер графа |
+
+Сервер также предоставляет инструменты для PR (`list_prs`, `get_pr_impact`, `triage_prs`), чтобы ваш агент мог проверять пул-реквесты с контекстом графа.
+
+---
+
 ## Что содержится в отчёте
 
 `GRAPH_REPORT.md` обобщает узлы-боги, сообщества и ключевые пути для широкого обзора архитектуры. Как строится граф и что он содержит: **[Как работает graphify](https://docs.graphify.com/concepts/architecture)**.

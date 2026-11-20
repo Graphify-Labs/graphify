@@ -325,6 +325,38 @@ Keduanya mendorong query graf yang dibatasi cakupannya sebelum pencarian sumber 
 
 ---
 
+## Hubungkan agen Anda melalui MCP
+
+Arahkan agen apa pun yang berkemampuan MCP ke sebuah graf Graphify dan ia akan meng-query graf secara langsung alih-alih mem-grep berkas. Hubungkan ke graf yang di-host (Graphify Cloud, paket gratis, tanpa kartu):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Lebih suka tetap lokal? Instal server stdio dengan `uv tool install "graphifyy[mcp]"` dan jalankan `graphify-mcp` terhadap `graph.json` Anda sendiri — tanpa perlu akun.
+
+Setelah terhubung, agen Anda mendapatkan tool berikut:
+
+| Tool | Apa yang dilakukannya |
+|---|---|
+| `query_graph` | Ajukan pertanyaan dalam bahasa biasa, dapatkan kembali subgraf yang relevan |
+| `shortest_path` | Telusuri bagaimana dua node terhubung |
+| `get_node` / `get_neighbors` | Cari sebuah node dan apa yang bersinggungan dengannya |
+| `get_community` / `god_nodes` | Klaster yang terdeteksi dan hub yang paling banyak terhubung |
+| `get_section` | Baca sebuah region graf yang berlabel |
+| `graph_stats` | Ukuran, bahasa, dan rincian edge dari graf |
+
+Server juga mengekspos tooling PR (`list_prs`, `get_pr_impact`, `triage_prs`) sehingga agen Anda dapat meninjau pull request dengan konteks graf.
+
+---
+
 ## Apa yang ada di laporan
 
 `GRAPH_REPORT.md` merangkum god nodes, komunitas, dan jalur utama untuk tinjauan arsitektur secara luas. Bagaimana graf dibangun dan apa isinya: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

@@ -325,6 +325,38 @@ Beide empfehlen begrenzte Graphenabfragen vor breiten Quellensuchen. Wählen Sie
 
 ---
 
+## Verbinden Sie Ihren Assistenten über MCP
+
+Richten Sie einen beliebigen MCP-fähigen Assistenten auf einen Graphify-Graphen aus, und er fragt den Graphen direkt ab, statt Dateien zu grepen. Verbinden Sie sich mit dem gehosteten Graphen (Graphify Cloud, kostenloser Plan, keine Karte):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Lieber lokal bleiben? Installieren Sie den stdio-Server mit `uv tool install "graphifyy[mcp]"` und führen Sie `graphify-mcp` gegen Ihre eigene `graph.json` aus — kein Konto erforderlich.
+
+Sobald verbunden, erhält Ihr Assistent diese Tools:
+
+| Tool | Was es tut |
+|---|---|
+| `query_graph` | Stellen Sie eine Frage in natürlicher Sprache und erhalten Sie den relevanten Teilgraphen zurück |
+| `shortest_path` | Verfolgen, wie zwei Nodes verbunden sind |
+| `get_node` / `get_neighbors` | Einen Node nachschlagen und womit er in Berührung kommt |
+| `get_community` / `god_nodes` | Erkannte Communities und die am stärksten vernetzten Hubs |
+| `get_section` | Eine beschriftete Region des Graphen lesen |
+| `graph_stats` | Größe, Sprachen und Kantenaufschlüsselung des Graphen |
+
+Der Server stellt außerdem PR-Tools bereit (`list_prs`, `get_pr_impact`, `triage_prs`), sodass Ihr Assistent Pull Requests mit Graphkontext überprüfen kann.
+
+---
+
 ## Was im Bericht steht
 
 `GRAPH_REPORT.md` fasst die God-Nodes, Communities und Schlüsselpfade für eine breite Architekturüberprüfung zusammen. Wie der Graph erstellt wird und was er enthält: **[Wie graphify funktioniert](https://docs.graphify.com/concepts/architecture)**.

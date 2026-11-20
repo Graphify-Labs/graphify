@@ -332,6 +332,38 @@ Both encourage scoped graph queries before broad source searches. Choose the ins
 
 ---
 
+## Connect your agent over MCP
+
+Point any MCP-capable agent at a Graphify graph and it queries the graph directly instead of grepping files. Connect to the hosted graph (Graphify Cloud, free plan, no card):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Prefer to stay local? Install the stdio server with `uv tool install "graphifyy[mcp]"` and run `graphify-mcp` against your own `graph.json` — no account needed.
+
+Once connected, your agent gets these tools:
+
+| Tool | What it does |
+|---|---|
+| `query_graph` | Ask a question in natural language, get back the relevant subgraph |
+| `shortest_path` | Trace how two nodes connect |
+| `get_node` / `get_neighbors` | Look up a node and what it touches |
+| `get_community` / `god_nodes` | Detected clusters and the most-connected hubs |
+| `get_section` | Read a labeled region of the graph |
+| `graph_stats` | Size, languages, and edge breakdown of the graph |
+
+The server also exposes PR tooling (`list_prs`, `get_pr_impact`, `triage_prs`) so your agent can review pull requests with graph context.
+
+---
+
 ## What's in the report
 
 `GRAPH_REPORT.md` summarizes the god nodes, communities, and key paths for broad architecture review. How the graph is built and what it contains: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

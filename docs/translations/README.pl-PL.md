@@ -325,6 +325,38 @@ Oba podejścia zachęcają do zawężonych zapytań do grafu przed szerokim prze
 
 ---
 
+## Podłącz swojego agenta przez MCP
+
+Skieruj dowolnego agenta obsługującego MCP na graf Graphify, a będzie odpytywał graf bezpośrednio, zamiast przeszukiwać pliki poleceniem grep. Połącz się z hostowanym grafem (Graphify Cloud, darmowy plan, bez karty):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Wolisz zostać lokalnie? Zainstaluj serwer stdio poleceniem `uv tool install "graphifyy[mcp]"` i uruchom `graphify-mcp` względem własnego `graph.json`: nie potrzebujesz konta.
+
+Po połączeniu Twój agent otrzymuje te narzędzia:
+
+| Narzędzie | Co robi |
+|---|---|
+| `query_graph` | Zadaj pytanie w języku naturalnym i odbierz odpowiedni podgraf |
+| `shortest_path` | Prześledź, jak łączą się dwa węzły |
+| `get_node` / `get_neighbors` | Znajdź węzeł i to, z czym się styka |
+| `get_community` / `god_nodes` | Wykryte klastry i najbardziej połączone huby |
+| `get_section` | Odczytaj oznaczony obszar grafu |
+| `graph_stats` | Rozmiar, języki i rozkład krawędzi grafu |
+
+Serwer udostępnia też narzędzia do PR (`list_prs`, `get_pr_impact`, `triage_prs`), aby Twój agent mógł przeglądać pull requesty z kontekstem grafu.
+
+---
+
 ## What's in the report
 
 `GRAPH_REPORT.md` podsumowuje god nodes, społeczności i kluczowe ścieżki na potrzeby szerokiego przeglądu architektury. Jak graf jest budowany i co zawiera: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

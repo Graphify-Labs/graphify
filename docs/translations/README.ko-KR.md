@@ -317,6 +317,38 @@ Pi 에는 `PreToolUse` hook 이 없으므로, `graphify pi guard install` 은 (P
 
 ---
 
+## MCP 로 에이전트 연결하기
+
+MCP 를 지원하는 에이전트를 Graphify 그래프로 향하게 하면, 파일을 grep 하는 대신 그래프를 직접 쿼리합니다. 호스팅된 그래프(Graphify Cloud, 무료 플랜, 카드 불필요)에 연결하세요:
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+로컬에 머물고 싶으신가요? `uv tool install "graphifyy[mcp]"` 로 stdio 서버를 설치하고, 자신의 `graph.json` 을 대상으로 `graphify-mcp` 를 실행하세요. 계정은 필요 없습니다.
+
+연결되면, 에이전트는 다음 도구를 얻습니다:
+
+| 도구 | 하는 일 |
+|---|---|
+| `query_graph` | 자연어로 질문하면, 관련된 서브그래프를 돌려받습니다 |
+| `shortest_path` | 두 노드가 어떻게 연결되는지 추적합니다 |
+| `get_node` / `get_neighbors` | 노드와 그것이 맞닿는 것을 조회합니다 |
+| `get_community` / `god_nodes` | 검출된 커뮤니티와 가장 많이 연결된 허브 |
+| `get_section` | 그래프의 라벨이 붙은 영역을 읽습니다 |
+| `graph_stats` | 그래프의 규모, 언어, 엣지 분포 |
+
+서버는 PR 도구(`list_prs`, `get_pr_impact`, `triage_prs`)도 노출하므로, 에이전트가 그래프 컨텍스트로 풀 리퀘스트를 검토할 수 있습니다.
+
+---
+
 ## 보고서에 담긴 내용
 
 `GRAPH_REPORT.md` 는 폭넓은 아키텍처 검토를 위해 god nodes, 커뮤니티, 핵심 경로를 요약합니다. 그래프가 어떻게 구축되고 무엇을 담고 있는지는 **[How graphify works](https://docs.graphify.com/concepts/architecture)** 를 참고하세요.

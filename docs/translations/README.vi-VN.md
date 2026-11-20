@@ -317,6 +317,38 @@ Cả hai đều khuyến khích các truy vấn đồ thị giới hạn phạm 
 
 ---
 
+## Kết nối agent của bạn qua MCP
+
+Trỏ bất kỳ agent nào hỗ trợ MCP vào một đồ thị Graphify và nó truy vấn đồ thị trực tiếp thay vì grep các tệp. Kết nối tới đồ thị được host (Graphify Cloud, gói miễn phí, không cần thẻ):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Muốn ở lại cục bộ? Cài máy chủ stdio bằng `uv tool install "graphifyy[mcp]"` và chạy `graphify-mcp` trên `graph.json` của riêng bạn, không cần tài khoản.
+
+Sau khi kết nối, agent của bạn nhận được các công cụ sau:
+
+| Công cụ | Nó làm gì |
+|---|---|
+| `query_graph` | Hỏi một câu hỏi bằng ngôn ngữ tự nhiên, nhận lại đồ thị con liên quan |
+| `shortest_path` | Lần theo cách hai nút kết nối với nhau |
+| `get_node` / `get_neighbors` | Tra cứu một nút và những gì nó chạm tới |
+| `get_community` / `god_nodes` | Các cộng đồng được phát hiện và các hub được kết nối nhiều nhất |
+| `get_section` | Đọc một vùng có nhãn của đồ thị |
+| `graph_stats` | Kích thước, ngôn ngữ, và phân tích cạnh của đồ thị |
+
+Máy chủ cũng cung cấp bộ công cụ PR (`list_prs`, `get_pr_impact`, `triage_prs`) để agent của bạn có thể rà soát các pull request với ngữ cảnh đồ thị.
+
+---
+
 ## Có gì trong báo cáo
 
 `GRAPH_REPORT.md` tóm tắt các god nodes, cộng đồng, và các đường đi chính cho việc rà soát kiến trúc trên diện rộng. Cách đồ thị được dựng và nó chứa gì: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

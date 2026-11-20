@@ -317,6 +317,38 @@ Pi ไม่มี `PreToolUse` hook ดังนั้น `graphify pi guard in
 
 ---
 
+## เชื่อมต่อเอเจนต์ของคุณผ่าน MCP
+
+ชี้เอเจนต์ที่รองรับ MCP ใด ๆ ไปที่กราฟ Graphify แล้วมันจะสืบค้นกราฟโดยตรงแทนการ grep ไฟล์ เชื่อมต่อกับกราฟที่โฮสต์ไว้ (Graphify Cloud, แผนฟรี, ไม่ต้องใช้บัตร):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+อยากทำงานในเครื่องมากกว่าใช่ไหม? ติดตั้งเซิร์ฟเวอร์ stdio ด้วย `uv tool install "graphifyy[mcp]"` และรัน `graphify-mcp` กับ `graph.json` ของคุณเอง — ไม่ต้องมีบัญชี
+
+เมื่อเชื่อมต่อแล้ว เอเจนต์ของคุณจะได้เครื่องมือเหล่านี้:
+
+| เครื่องมือ | สิ่งที่มันทำ |
+|---|---|
+| `query_graph` | ถามคำถามเป็นภาษาธรรมดา แล้วได้กราฟย่อยที่เกี่ยวข้องกลับมา |
+| `shortest_path` | ตามรอยว่าสองโหนดเชื่อมโยงกันอย่างไร |
+| `get_node` / `get_neighbors` | ค้นหาโหนดหนึ่งและสิ่งที่มันเชื่อมโยงด้วย |
+| `get_community` / `god_nodes` | ชุมชนที่ตรวจพบและฮับที่เชื่อมต่อมากที่สุด |
+| `get_section` | อ่านพื้นที่ที่มีป้ายกำกับของกราฟ |
+| `graph_stats` | ขนาด ภาษา และการแยกย่อยเส้นเชื่อมของกราฟ |
+
+เซิร์ฟเวอร์ยังเปิดให้ใช้เครื่องมือ PR (`list_prs`, `get_pr_impact`, `triage_prs`) ด้วย เพื่อให้เอเจนต์ของคุณรีวิว pull request ด้วยบริบทของกราฟได้
+
+---
+
 ## ในรายงานมีอะไร
 
 `GRAPH_REPORT.md` สรุป god nodes, ชุมชน และเส้นทางสำคัญ สำหรับการทบทวนสถาปัตยกรรมในวงกว้าง กราฟถูกสร้างอย่างไรและมีอะไรอยู่ในนั้น: **[How graphify works](https://docs.graphify.com/concepts/architecture)**

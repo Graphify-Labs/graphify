@@ -325,6 +325,38 @@ graphify install --project --platform codex
 
 ---
 
+## وصل وكيلك عبر MCP
+
+وجّه أي وكيل يدعم MCP إلى رسم بياني من Graphify وسيستعلم عن الرسم البياني مباشرة بدلًا من البحث في الملفات. اتصل بالرسم البياني المستضاف (Graphify Cloud، خطة مجانية، دون بطاقة):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+تفضّل البقاء محليًا؟ ثبّت خادم stdio بـ `uv tool install "graphifyy[mcp]"` وشغّل `graphify-mcp` مقابل ملف `graph.json` الخاص بك، دون الحاجة إلى حساب.
+
+بمجرد الاتصال، يحصل وكيلك على هذه الأدوات:
+
+| الأداة | ماذا تفعل |
+|---|---|
+| `query_graph` | اطرح سؤالًا بلغة طبيعية، واحصل على الرسم البياني الفرعي ذي الصلة |
+| `shortest_path` | تتبّع كيفية اتصال عقدتين |
+| `get_node` / `get_neighbors` | ابحث عن عقدة وما تتصل به |
+| `get_community` / `god_nodes` | العناقيد المكتشفة والمحاور الأكثر اتصالًا |
+| `get_section` | اقرأ منطقة موسومة من الرسم البياني |
+| `graph_stats` | الحجم واللغات وتوزيع الحواف للرسم البياني |
+
+يكشف الخادم أيضًا أدوات طلبات السحب (`list_prs`، `get_pr_impact`، `triage_prs`) حتى يتمكن وكيلك من مراجعة طلبات السحب مع سياق الرسم البياني.
+
+---
+
 ## What's in the report
 
 يلخّص `GRAPH_REPORT.md` عقد god، والمجتمعات، والمسارات الرئيسية لمراجعة معمارية عامة. كيف يُبنى الرسم البياني وما يحتويه: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

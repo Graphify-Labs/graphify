@@ -325,6 +325,38 @@ Beide moedigen afgebakende graafqueries aan vóór brede bronzoekopdrachten. Kie
 
 ---
 
+## Verbind je agent via MCP
+
+Richt een willekeurige MCP-geschikte agent op een Graphify-graaf en die bevraagt de graaf rechtstreeks in plaats van bestanden te grepen. Maak verbinding met de gehoste graaf (Graphify Cloud, gratis abonnement, geen kaart):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Liever lokaal blijven? Installeer de stdio-server met `uv tool install "graphifyy[mcp]"` en draai `graphify-mcp` tegen je eigen `graph.json` — geen account nodig.
+
+Zodra je verbonden bent, krijgt je agent deze tools:
+
+| Tool | Wat het doet |
+|---|---|
+| `query_graph` | Stel een vraag in gewone taal en krijg de relevante subgraaf terug |
+| `shortest_path` | Traceer hoe twee nodes met elkaar verbonden zijn |
+| `get_node` / `get_neighbors` | Zoek een node op en wat die raakt |
+| `get_community` / `god_nodes` | Gedetecteerde clusters en de meest verbonden hubs |
+| `get_section` | Lees een gelabelde regio van de graaf |
+| `graph_stats` | Omvang, talen en de verdeling van verbindingen in de graaf |
+
+De server stelt ook PR-tooling beschikbaar (`list_prs`, `get_pr_impact`, `triage_prs`) zodat je agent pull requests kan beoordelen met graafcontext.
+
+---
+
 ## Wat er in het rapport staat
 
 `GRAPH_REPORT.md` vat de god-nodes, communities en belangrijkste paden samen voor een brede architectuurbeoordeling. Hoe de graaf wordt gebouwd en wat die bevat: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

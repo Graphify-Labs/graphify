@@ -317,6 +317,38 @@ graphify install --project --platform codex
 
 ---
 
+## חברו את הסוכן שלכם דרך MCP
+
+כוונו כל סוכן התומך ב-MCP אל גרף של Graphify והוא יתשאל את הגרף ישירות במקום לבצע grep על הקבצים. התחברו לגרף המתארח (Graphify Cloud, תוכנית חינמית, ללא כרטיס):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+מעדיפים להישאר מקומיים? התקינו את שרת ה-stdio עם `uv tool install "graphifyy[mcp]"` והריצו את `graphify-mcp` מול ה-`graph.json` שלכם; ללא צורך בחשבון.
+
+לאחר ההתחברות, הסוכן שלכם מקבל את הכלים הבאים:
+
+| כלי | מה הוא עושה |
+|---|---|
+| `query_graph` | שאלו שאלה בשפה טבעית וקבלו בחזרה את תת-הגרף הרלוונטי |
+| `shortest_path` | עקבו אחר הדרך שבה שני צמתים מתחברים |
+| `get_node` / `get_neighbors` | חפשו צומת ואת מה שהוא נוגע בו |
+| `get_community` / `god_nodes` | אשכולות שזוהו והמרכזים המחוברים ביותר |
+| `get_section` | קראו אזור מתויג של הגרף |
+| `graph_stats` | הגודל, השפות, ופירוט הקשתות של הגרף |
+
+השרת גם חושף כלי בקשות משיכה (`list_prs`, `get_pr_impact`, `triage_prs`) כדי שהסוכן שלכם יוכל לסקור בקשות משיכה עם הקשר הגרף.
+
+---
+
 ## מה יש בדוח
 
 `GRAPH_REPORT.md` מסכם את צמתי העל, הקהילות, והנתיבים המרכזיים לסקירת ארכיטקטורה רחבה. איך הגרף נבנה ומה הוא מכיל: **[איך graphify עובד](https://docs.graphify.com/concepts/architecture)**.

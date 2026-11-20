@@ -325,6 +325,38 @@ Molemmat kannustavat rajattuihin graafikyselyihin ennen laajoja lähdehakuja. Va
 
 ---
 
+## Yhdistä agenttisi MCP:n kautta
+
+Osoita mikä tahansa MCP-yhteensopiva agentti Graphify-graafiin, niin se kyselee graafia suoraan sen sijaan, että greppaisi tiedostoja. Yhdistä isännöityyn graafiin (Graphify Cloud, ilmainen taso, ei korttia):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Pysytkö mieluummin paikallisena? Asenna stdio-palvelin komennolla `uv tool install "graphifyy[mcp]"` ja aja `graphify-mcp` omaa `graph.json`-tiedostoasi vasten — tiliä ei tarvita.
+
+Kun yhteys on muodostettu, agenttisi saa nämä työkalut:
+
+| Työkalu | Mitä se tekee |
+|---|---|
+| `query_graph` | Esitä kysymys selkokielellä ja saat takaisin relevantin aligraafin |
+| `shortest_path` | Jäljitä, miten kaksi solmua liittyvät toisiinsa |
+| `get_node` / `get_neighbors` | Hae solmu ja se, mihin se koskettaa |
+| `get_community` / `god_nodes` | Havaitut klusterit ja eniten yhteyksiä omaavat keskittymät |
+| `get_section` | Lue graafin nimetty alue |
+| `graph_stats` | Graafin koko, kielet ja kaarijakauma |
+
+Palvelin tarjoaa myös PR-työkaluja (`list_prs`, `get_pr_impact`, `triage_prs`), jotta agenttisi voi katselmoida pull requestit graafikontekstin kanssa.
+
+---
+
 ## Mitä raportissa on
 
 `GRAPH_REPORT.md` tiivistää jumalsolmut, yhteisöt ja keskeiset polut laajaan arkkitehtuurikatselmointiin. Miten graafi rakennetaan ja mitä se sisältää: **[Miten graphify toimii](https://docs.graphify.com/concepts/architecture)**.

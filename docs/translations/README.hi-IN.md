@@ -325,6 +325,38 @@ Pi के पास कोई `PreToolUse` hook नहीं है, इसल�
 
 ---
 
+## अपने एजेंट को MCP के ज़रिए कनेक्ट करें
+
+किसी भी MCP-सक्षम एजेंट को किसी Graphify ग्राफ की ओर इंगित करें और वह फाइलों में grep करने के बजाय सीधे ग्राफ को query करता है। होस्ट किए गए ग्राफ से कनेक्ट करें (Graphify Cloud, मुफ़्त प्लान, कोई कार्ड नहीं):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+लोकल रहना पसंद करते हैं? `uv tool install "graphifyy[mcp]"` के साथ stdio सर्वर इंस्टॉल करें और अपने खुद के `graph.json` के विरुद्ध `graphify-mcp` चलाएं — किसी अकाउंट की ज़रूरत नहीं।
+
+कनेक्ट होने के बाद, आपके एजेंट को ये tools मिलते हैं:
+
+| Tool | यह क्या करता है |
+|---|---|
+| `query_graph` | सहज भाषा में कोई सवाल पूछें, संबंधित subgraph वापस पाएं |
+| `shortest_path` | ट्रेस करें कि दो नोड कैसे जुड़ते हैं |
+| `get_node` / `get_neighbors` | किसी नोड और वह किससे जुड़ता है, उसे देखें |
+| `get_community` / `god_nodes` | पहचाने गए क्लस्टर और सबसे अधिक जुड़े हब |
+| `get_section` | ग्राफ के किसी लेबल किए गए क्षेत्र को पढ़ें |
+| `graph_stats` | ग्राफ का आकार, भाषाएं, और एज विभाजन |
+
+सर्वर PR टूलिंग भी एक्सपोज़ करता है (`list_prs`, `get_pr_impact`, `triage_prs`) ताकि आपका एजेंट ग्राफ कॉन्टेक्स्ट के साथ pull requests की समीक्षा कर सके।
+
+---
+
 ## रिपोर्ट में क्या है
 
 `GRAPH_REPORT.md` व्यापक आर्किटेक्चर समीक्षा के लिए god nodes, communities, और प्रमुख पथों का सारांश देता है। ग्राफ कैसे बनता है और इसमें क्या होता है: **[How graphify works](https://docs.graphify.com/concepts/architecture)**।

@@ -317,6 +317,38 @@ Pi 沒有 `PreToolUse` 掛鉤，因此 `graphify pi guard install` 會註冊一�
 
 ---
 
+## 透過 MCP 連接你的代理
+
+把任何支援 MCP 的代理指向一個 Graphify 圖譜，它就會直接查詢圖譜，而不是 grep 檔案。連接到託管圖譜（Graphify Cloud，免費方案，無需信用卡）：
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+想留在本地？用 `uv tool install "graphifyy[mcp]"` 安裝 stdio 伺服器，針對你自己的 `graph.json` 執行 `graphify-mcp` 即可，無需帳戶。
+
+連接之後，你的代理會獲得以下工具：
+
+| 工具 | 它的作用 |
+|---|---|
+| `query_graph` | 用自然語言問一個問題，取回相關的子圖 |
+| `shortest_path` | 追蹤兩個節點如何相連 |
+| `get_node` / `get_neighbors` | 查找一個節點以及它所接觸的內容 |
+| `get_community` / `god_nodes` | 偵測到的社群，以及連接最多的樞紐 |
+| `get_section` | 讀取圖譜中一個帶標籤的區域 |
+| `graph_stats` | 圖譜的規模、語言以及邊的細分 |
+
+該伺服器還公開了 PR 工具（`list_prs`、`get_pr_impact`、`triage_prs`），讓你的代理能夠在帶有圖譜脈絡的情況下審查拉取請求。
+
+---
+
 ## 報告裡有什麼
 
 `GRAPH_REPORT.md` 彙總了 god 節點、社群和關鍵路徑，供廣泛的架構審查。圖譜是如何建立的以及它包含什麼：**[How graphify works](https://docs.graphify.com/concepts/architecture)**。

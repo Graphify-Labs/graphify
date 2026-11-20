@@ -325,6 +325,38 @@ Ini-install ng `graphify install` ang lokal na assistant integration; hindi ito 
 
 ---
 
+## Ikonekta ang iyong agent sa pamamagitan ng MCP
+
+Ituro ang anumang MCP-capable na agent sa isang Graphify graph at dire-diretso nitong ini-query ang graph sa halip na mag-grep sa mga file. Kumonekta sa naka-host na graph (Graphify Cloud, libreng plano, walang card):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Mas gusto mong manatiling lokal? I-install ang stdio server gamit ang `uv tool install "graphifyy[mcp]"` at patakbuhin ang `graphify-mcp` laban sa sarili mong `graph.json` — hindi kailangan ng account.
+
+Kapag nakakonekta na, makukuha ng iyong agent ang mga tool na ito:
+
+| Tool | Ano ang ginagawa nito |
+|---|---|
+| `query_graph` | Magtanong sa natural na wika, makuha ang kaugnay na subgraph |
+| `shortest_path` | Subaybayan kung paano nag-uugnay ang dalawang node |
+| `get_node` / `get_neighbors` | Hanapin ang isang node at kung ano ang nadadait nito |
+| `get_community` / `god_nodes` | Mga natukoy na cluster at ang pinaka-nakakonektang mga hub |
+| `get_section` | Basahin ang isang may-label na rehiyon ng graph |
+| `graph_stats` | Laki, mga wika, at paghahati-hati ng edge ng graph |
+
+Inilalantad din ng server ang PR tooling (`list_prs`, `get_pr_impact`, `triage_prs`) upang masuri ng iyong agent ang mga pull request na may konteksto ng graph.
+
+---
+
 ## Ano ang nasa ulat
 
 Binubuod ng `GRAPH_REPORT.md` ang mga god node, community, at pangunahing landas para sa malawak na pagsusuri ng arkitektura. Kung paano itinatayo ang graph at kung ano ang nilalaman nito: **[Paano gumagana ang graphify](https://docs.graphify.com/concepts/architecture)**.

@@ -317,6 +317,38 @@ graphify install --project --platform codex
 
 ---
 
+## Συνδέστε τον πράκτορά σας μέσω MCP
+
+Στρέψτε οποιονδήποτε πράκτορα με δυνατότητα MCP σε έναν γράφο Graphify και θα ερωτά τον γράφο απευθείας αντί να κάνει grep στα αρχεία. Συνδεθείτε στον φιλοξενούμενο γράφο (Graphify Cloud, δωρεάν πρόγραμμα, χωρίς κάρτα):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Προτιμάτε να μείνετε τοπικά; Εγκαταστήστε τον διακομιστή stdio με `uv tool install "graphifyy[mcp]"` και εκτελέστε το `graphify-mcp` πάνω στο δικό σας `graph.json`· δεν χρειάζεται λογαριασμός.
+
+Μόλις συνδεθείτε, ο πράκτοράς σας αποκτά αυτά τα εργαλεία:
+
+| Εργαλείο | Τι κάνει |
+|---|---|
+| `query_graph` | Κάντε μια ερώτηση σε φυσική γλώσσα και λάβετε πίσω τον σχετικό υπογράφο |
+| `shortest_path` | Εντοπίστε πώς συνδέονται δύο κόμβοι |
+| `get_node` / `get_neighbors` | Αναζητήστε έναν κόμβο και με τι εφάπτεται |
+| `get_community` / `god_nodes` | Εντοπισμένες συστάδες και οι πιο διασυνδεδεμένοι κόμβοι |
+| `get_section` | Διαβάστε μια επισημασμένη περιοχή του γράφου |
+| `graph_stats` | Μέγεθος, γλώσσες και ανάλυση ακμών του γράφου |
+
+Ο διακομιστής εκθέτει επίσης εργαλεία για pull request (`list_prs`, `get_pr_impact`, `triage_prs`) ώστε ο πράκτοράς σας να μπορεί να εξετάζει pull requests με το πλαίσιο του γράφου.
+
+---
+
 ## Τι περιέχει η αναφορά
 
 Το `GRAPH_REPORT.md` συνοψίζει τους god nodes, τις κοινότητες, και τις βασικές διαδρομές για ευρύ έλεγχο αρχιτεκτονικής. Πώς κατασκευάζεται ο γράφος και τι περιέχει: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

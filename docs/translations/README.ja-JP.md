@@ -317,6 +317,38 @@ Pi には `PreToolUse` hook がないため、`graphify pi guard install` は（
 
 ---
 
+## MCP 経由でエージェントを接続する
+
+MCP 対応のエージェントを Graphify グラフに向けると、ファイルを grep する代わりにグラフを直接クエリします。ホスト型のグラフ（Graphify Cloud、無料プラン、カード不要）に接続します。
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+ローカルのままがいいですか？`uv tool install "graphifyy[mcp]"` で stdio サーバーをインストールし、自身の `graph.json` に対して `graphify-mcp` を実行してください。アカウントは不要です。
+
+接続すると、エージェントは次のツールを利用できます。
+
+| ツール | 何をするか |
+|---|---|
+| `query_graph` | 自然言語で質問すると、関連するサブグラフが返ってきます |
+| `shortest_path` | 2 つのノードがどうつながっているかをたどります |
+| `get_node` / `get_neighbors` | ノードと、それが接しているものを調べます |
+| `get_community` / `god_nodes` | 検出されたコミュニティと、最も多く接続されたハブ |
+| `get_section` | グラフのラベル付き領域を読み取ります |
+| `graph_stats` | グラフのサイズ、言語、エッジの内訳 |
+
+サーバーは PR ツール（`list_prs`、`get_pr_impact`、`triage_prs`）も公開しており、エージェントはグラフのコンテキストでプルリクエストをレビューできます。
+
+---
+
 ## レポートの中身
 
 `GRAPH_REPORT.md` は、幅広いアーキテクチャレビューのために god nodes、コミュニティ、主要なパスを要約します。グラフがどう構築され、何を含むかは **[How graphify works](https://docs.graphify.com/concepts/architecture)** を参照してください。

@@ -325,6 +325,38 @@ A `graphify install` a helyi asszisztens-integrációt telepíti; nem hoz létre
 
 ---
 
+## Csatlakoztassa ügynökét MCP-n keresztül
+
+Irányítson bármely MCP-képes ügynököt egy Graphify gráfra, és az közvetlenül a gráfot kérdezi le ahelyett, hogy a fájlokban grepelne. Csatlakozzon az üzemeltetett gráfhoz (Graphify Cloud, ingyenes csomag, bankkártya nélkül):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Inkább helyben maradna? Telepítse a stdio-kiszolgálót a `uv tool install "graphifyy[mcp]"` paranccsal, és futtassa a `graphify-mcp`-t a saját `graph.json` fájlja ellenében; nincs szükség fiókra.
+
+A csatlakozás után az ügynöke ezeket az eszközöket kapja:
+
+| Eszköz | Mit csinál |
+|---|---|
+| `query_graph` | Tegyen fel egy kérdést természetes nyelven, és kapja vissza a releváns részgráfot |
+| `shortest_path` | Kövesse nyomon, hogyan kapcsolódik két csomópont |
+| `get_node` / `get_neighbors` | Keressen meg egy csomópontot és azt, amivel érintkezik |
+| `get_community` / `god_nodes` | Az észlelt fürtök és a legtöbb kapcsolattal rendelkező csomópontok |
+| `get_section` | Olvasson el egy címkézett régiót a gráfból |
+| `graph_stats` | A gráf mérete, nyelvei és éleinek megoszlása |
+
+A kiszolgáló pull request-eszközöket is elérhetővé tesz (`list_prs`, `get_pr_impact`, `triage_prs`), így az ügynöke a gráf kontextusával tudja áttekinteni a pull requesteket.
+
+---
+
 ## What's in the report
 
 A `GRAPH_REPORT.md` összefoglalja a god node-okat, közösségeket és kulcsfontosságú utakat a széles körű architektúra-áttekintéshez. Hogyan épül fel a gráf, és mit tartalmaz: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.

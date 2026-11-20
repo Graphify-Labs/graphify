@@ -325,6 +325,38 @@ Begge oppmuntrer til avgrensede grafspørringer før brede kildesøk. Velg instr
 
 ---
 
+## Koble til agenten din via MCP
+
+Pek en hvilken som helst MCP-kompatibel agent mot en Graphify-graf, så spør den grafen direkte i stedet for å greppe filer. Koble til den vertsbaserte grafen (Graphify Cloud, gratis plan, uten kort):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Vil du heller holde deg lokal? Installer stdio-serveren med `uv tool install "graphifyy[mcp]"` og kjør `graphify-mcp` mot din egen `graph.json` – ingen konto nødvendig.
+
+Når du er tilkoblet, får agenten din disse verktøyene:
+
+| Verktøy | Hva det gjør |
+|---|---|
+| `query_graph` | Still et spørsmål i klarspråk, og få tilbake den relevante delgrafen |
+| `shortest_path` | Spor hvordan to noder henger sammen |
+| `get_node` / `get_neighbors` | Slå opp en node og hva den berører |
+| `get_community` / `god_nodes` | Detekterte klynger og de mest tilkoblede hubbene |
+| `get_section` | Les en merket region av grafen |
+| `graph_stats` | Grafens størrelse, språk og kantfordeling |
+
+Serveren eksponerer også PR-verktøy (`list_prs`, `get_pr_impact`, `triage_prs`), slik at agenten din kan gjennomgå pull requests med grafkontekst.
+
+---
+
 ## Hva som er i rapporten
 
 `GRAPH_REPORT.md` oppsummerer gudenodene, fellesskapene og nøkkelstiene for bred arkitekturgjennomgang. Hvordan grafen bygges og hva den inneholder: **[Slik fungerer graphify](https://docs.graphify.com/concepts/architecture)**.

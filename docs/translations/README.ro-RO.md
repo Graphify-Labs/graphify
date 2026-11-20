@@ -325,6 +325,38 @@ Ambele încurajează interogări delimitate ale grafului înaintea căutărilor 
 
 ---
 
+## Conectați-vă agentul prin MCP
+
+Îndreptați orice agent capabil de MCP către un graf Graphify și acesta interoghează graful direct în loc să facă grep prin fișiere. Conectați-vă la graful găzduit (Graphify Cloud, plan gratuit, fără card):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Preferați să rămâneți local? Instalați serverul stdio cu `uv tool install "graphifyy[mcp]"` și rulați `graphify-mcp` pe propriul `graph.json`: nu e nevoie de cont.
+
+Odată conectat, agentul vostru primește aceste unelte:
+
+| Unealtă | Ce face |
+|---|---|
+| `query_graph` | Puneți o întrebare în limbaj natural și primiți subgraful relevant |
+| `shortest_path` | Trasați cum se conectează două noduri |
+| `get_node` / `get_neighbors` | Căutați un nod și cu ce este în contact |
+| `get_community` / `god_nodes` | Clusterele detectate și hub-urile cele mai conectate |
+| `get_section` | Citiți o regiune etichetată a grafului |
+| `graph_stats` | Dimensiunea, limbajele și defalcarea muchiilor grafului |
+
+Serverul expune și unelte pentru PR (`list_prs`, `get_pr_impact`, `triage_prs`), astfel încât agentul vostru să poată revizui pull request-uri cu context de graf.
+
+---
+
 ## Ce este în raport
 
 `GRAPH_REPORT.md` rezumă nodurile-zeu, comunitățile și căile-cheie pentru revizuirea amplă a arhitecturii. Cum este construit graful și ce conține: **[Cum funcționează graphify](https://docs.graphify.com/concepts/architecture)**.

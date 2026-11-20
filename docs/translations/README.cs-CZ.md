@@ -325,6 +325,38 @@ Obojí podporuje omezené dotazy do grafu před širokým vyhledáváním ve zdr
 
 ---
 
+## Připojte svého agenta přes MCP
+
+Nasměrujte libovolného agenta s podporou MCP na graf Graphify a ten bude graf dotazovat přímo namísto grepování skrze soubory. Připojte se k hostovanému grafu (Graphify Cloud, bezplatný tarif, bez karty):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+Chcete zůstat lokálně? Nainstalujte stdio server pomocí `uv tool install "graphifyy[mcp]"` a spusťte `graphify-mcp` proti vlastnímu `graph.json`: žádný účet není potřeba.
+
+Po připojení váš agent získá tyto nástroje:
+
+| Nástroj | Co dělá |
+|---|---|
+| `query_graph` | Položte otázku v běžném jazyce a získejte relevantní podgraf |
+| `shortest_path` | Vysledujte, jak se dva uzly propojují |
+| `get_node` / `get_neighbors` | Vyhledejte uzel a to, čeho se dotýká |
+| `get_community` / `god_nodes` | Detekované klastry a nejvíce propojené huby |
+| `get_section` | Přečtěte si označenou oblast grafu |
+| `graph_stats` | Velikost, jazyky a rozpis hran grafu |
+
+Server také zpřístupňuje nástroje pro PR (`list_prs`, `get_pr_impact`, `triage_prs`), takže váš agent může revidovat pull requesty s kontextem grafu.
+
+---
+
 ## Co je v reportu
 
 `GRAPH_REPORT.md` shrnuje boží uzly, komunity a klíčové cesty pro širokou architektonickou revizi. Jak se graf sestavuje a co obsahuje: **[Jak graphify funguje](https://docs.graphify.com/concepts/architecture)**.

@@ -317,6 +317,38 @@ Pi 没有 `PreToolUse` hook，因此 `graphify pi guard install` 会注册一个
 
 ---
 
+## 通过 MCP 连接你的代理
+
+把任何支持 MCP 的代理指向一个 Graphify 图谱，它就会直接查询图谱，而不是 grep 文件。连接到托管图谱（Graphify Cloud，免费方案，无需信用卡）：
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+想留在本地？用 `uv tool install "graphifyy[mcp]"` 安装 stdio 服务器，针对你自己的 `graph.json` 运行 `graphify-mcp` 即可，无需账户。
+
+连接之后，你的代理会获得以下工具：
+
+| 工具 | 它的作用 |
+|---|---|
+| `query_graph` | 用自然语言提一个问题，取回相关的子图 |
+| `shortest_path` | 追踪两个节点如何相连 |
+| `get_node` / `get_neighbors` | 查找一个节点以及它所接触的内容 |
+| `get_community` / `god_nodes` | 检测到的社区，以及连接最多的枢纽 |
+| `get_section` | 读取图谱中一个带标签的区域 |
+| `graph_stats` | 图谱的规模、语言以及边的细分 |
+
+该服务器还暴露了 PR 工具（`list_prs`、`get_pr_impact`、`triage_prs`），让你的代理能够在带有图谱上下文的情况下审查 pull request。
+
+---
+
 ## 报告里有什么
 
 `GRAPH_REPORT.md` 汇总了 god nodes、社区与关键路径，供广泛的架构审查之用。图谱如何构建以及它包含什么：**[How graphify works](https://docs.graphify.com/concepts/architecture)**。
