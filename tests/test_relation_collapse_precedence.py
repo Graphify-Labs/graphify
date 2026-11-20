@@ -211,6 +211,48 @@ def test_structural_membership_beats_an_opposite_call(structural, structural_src
     assert G.number_of_edges() == 1
 
 
+@pytest.mark.parametrize("structural", ["method", "contains"])
+@pytest.mark.parametrize("back_relation", ["uses_static_prop", "references", "uses", "custom_rel"])
+@pytest.mark.parametrize("structural_src, structural_tgt", [("a", "b"), ("b", "a")])
+def test_structural_membership_beats_any_opposite_member_edge(
+    structural, back_relation, structural_src, structural_tgt
+):
+    """A member that reads its own class's static property or constant records
+    `member -uses_static_prop-> class`, which shares the pair with the class's
+    `method` edge (#2391, #2791). Any non-structural edge running back from the
+    member loses to the membership edge, in either id order."""
+    G = build_from_json(_extraction([
+        _edge(structural, src=structural_src, tgt=structural_tgt, source_location="L4"),
+        _edge(back_relation, src=structural_tgt, tgt=structural_src, source_location="L5"),
+    ]))
+    d = edge_data(G, "a", "b")
+    assert d.get("relation") == structural
+    assert (d.get("_src"), d.get("_tgt")) == (structural_src, structural_tgt)
+    assert G.number_of_edges() == 1
+
+
+def test_php_method_reading_its_own_static_property_keeps_its_method_edge(tmp_path):
+    """The reported repro: `Counter::initialize()` reads `Counter::$limit`."""
+    from graphify.extract import extract
+
+    src = tmp_path / "Counter.php"
+    src.write_text(
+        "<?php\n"
+        "class Counter {\n"
+        "    public static $limit = 3;\n"
+        "    public function initialize() {\n"
+        "        return Counter::$limit;\n"
+        "    }\n"
+        "}\n"
+    )
+    G = build_from_json(extract([src]))
+    owner = next(n for n, d in G.nodes(data=True) if d.get("label") == "Counter")
+    member = next(n for n, d in G.nodes(data=True) if "initialize" in str(d.get("label")))
+    d = edge_data(G, owner, member)
+    assert d.get("relation") == "method"
+    assert (d.get("_src"), d.get("_tgt")) == (owner, member)
+
+
 def test_directed_graph_keeps_method_and_the_reverse_call():
     """Opposite directions are different arcs once the graph is directed, so
     both facts survive. The undirected rule must not drop the call here."""
