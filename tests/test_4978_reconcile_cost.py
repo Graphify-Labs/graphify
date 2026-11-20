@@ -80,10 +80,10 @@ def test_h7_every_h_dialect_is_ast_owned(tmp_path, name):
     assert getattr(extractor, "__name__", "").startswith("extract_")
 
 
-def test_h7_m_is_the_only_suffix_where_the_sniff_decides_none_ness(tmp_path):
-    """.m can be None (MATLAB), which is why a cheap predicate must keep it."""
+def test_h7_m_dispatch_routes_matlab_and_objc(tmp_path):
+    """.m falls back to MATLAB; Objective-C and `.mm` stay AST-owned."""
     paths = _write_fixtures(tmp_path / "f")
-    assert ex._get_extractor(paths["matlab.m"]) is None
+    assert ex._get_extractor(paths["matlab.m"]) is ex.extract_matlab
     assert ex._get_extractor(paths["objc.m"]) is not None
     assert ex._get_extractor(paths["objcpp.mm"]) is not None
 
