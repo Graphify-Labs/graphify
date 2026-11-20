@@ -47,6 +47,11 @@
   <em>由 graphify 映射出的 FastAPI 代码库。每个节点都是一个概念，颜色代表检测到的社区，而整张图在 graph.html 中都可点击。</em>
 </p>
 
+## 在 ChatGPT 或 Codex 中安装
+
+- **ChatGPT，以及 ChatGPT 桌面应用中的 Codex：**从 [OpenAI 的插件目录安装 Graphify](https://chatgpt.com/plugins/plugin_asdk_app_6abe89f7f5d88191b9422522bb8562a4)，然后登录 Graphify。
+- **Codex CLI：**运行 `/plugins`，搜索 **Graphify**，安装它，然后开始新的会话。设置指南：[docs.graphify.com/integrations/codex](https://docs.graphify.com/integrations/codex)
+
 **开始使用**（30 seconds）。需要 Python 3.11+ 与 uv（或 pipx）：
 
 ```bash

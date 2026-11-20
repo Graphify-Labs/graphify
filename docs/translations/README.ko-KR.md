@@ -47,6 +47,11 @@ AI 코딩 어시스턴트에서 `/graphify` 를 입력하면, 프로젝트 전�
   <em>graphify 가 매핑한 FastAPI 코드베이스. 모든 노드는 하나의 개념이고, 색상은 검출된 커뮤니티이며, 전체가 graph.html 에서 클릭 가능합니다.</em>
 </p>
 
+## ChatGPT 또는 Codex 에 설치하기
+
+- **ChatGPT, 그리고 ChatGPT 데스크톱 앱의 Codex:** [OpenAI 의 플러그인 디렉터리에서 Graphify](https://chatgpt.com/plugins/plugin_asdk_app_6abe89f7f5d88191b9422522bb8562a4) 를 설치한 다음, Graphify 에 로그인하세요.
+- **Codex CLI:** `/plugins` 를 실행하고 **Graphify** 를 검색해 설치한 다음, 새 세션을 시작하세요. 설정 가이드: [docs.graphify.com/integrations/codex](https://docs.graphify.com/integrations/codex)
+
 **시작하기**(30 seconds). Python 3.11+ 와 uv(또는 pipx)가 필요합니다.
 
 ```bash
