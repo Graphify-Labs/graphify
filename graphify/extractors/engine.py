@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import re
+import threading
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -7674,6 +7675,58 @@ def _php_get_route_name(closure_node, src: bytes) -> str | None:
         
     return None
 
+# Thread-local cache of a built tree-sitter Parser per language module. Building
+# Language(lang_fn()) and Parser(language) is non-trivial and was repeated for
+# every file; a Parser is reusable across parse() calls, so one per language per
+# worker suffices. Thread-local, NOT a plain global/lru_cache: Parser.parse is not
+# thread-safe, and extraction can run multithreaded in one process (tests
+# monkeypatch ProcessPoolExecutor to ThreadPoolExecutor; production uses separate
+# worker processes, each single-threaded). Giving every thread its own Parser
+# keeps reuse safe in both. Keyed by (ts_module, ts_language_fn); the value is
+# (parser, None) on success or (None, error_message) so a failing grammar is not
+# retried per file.
+_parser_tls = threading.local()
+
+
+def _get_parser(ts_module: str, ts_language_fn: str):
+    cache = getattr(_parser_tls, "parsers", None)
+    if cache is None:
+        cache = {}
+        _parser_tls.parsers = cache
+    key = (ts_module, ts_language_fn)
+    entry = cache.get(key)
+    if entry is None:
+        entry = _build_parser(ts_module, ts_language_fn)
+        cache[key] = entry
+    return entry
+
+
+def _build_parser(ts_module: str, ts_language_fn: str):
+    try:
+        mod = importlib.import_module(ts_module)
+        from tree_sitter import Language, Parser
+        lang_fn = getattr(mod, ts_language_fn, None)
+        if lang_fn is None:
+            # Fallback for PHP: try "language_php" then "language"
+            lang_fn = getattr(mod, "language", None)
+        if lang_fn is None:
+            return None, f"No language function in {ts_module}"
+        language = Language(lang_fn())
+        return Parser(language), None
+    except ImportError:
+        return None, f"{ts_module} not installed"
+    except TypeError as e:
+        # tree-sitter version mismatch: old Language() expects (lib_path),
+        # new Language() expects (language_capsule, name). Surface a hint
+        # so users see the upgrade path instead of a bare TypeError.
+        return None, (
+            f"tree-sitter version mismatch for {ts_module}: {e}. "
+            "Try: pip install --upgrade tree-sitter tree-sitter-languages"
+        )
+    except Exception as e:
+        return None, str(e)
+
+
 def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None,
     scan_root: Path | None = None,
@@ -7685,32 +7738,11 @@ def _extract_generic(
     still keying nodes/edges off ``path``. Lets container formats (e.g. Vue SFCs)
     mask the wrapper and parse just the embedded ``<script>``.
     """
-    try:
-        mod = importlib.import_module(config.ts_module)
-        from tree_sitter import Language, Parser
-        lang_fn = getattr(mod, config.ts_language_fn, None)
-        if lang_fn is None:
-            # Fallback for PHP: try "language_php" then "language"
-            lang_fn = getattr(mod, "language", None)
-        if lang_fn is None:
-            return {"nodes": [], "edges": [], "error": f"No language function in {config.ts_module}"}
-        language = Language(lang_fn())
-    except ImportError:
-        return {"nodes": [], "edges": [], "error": f"{config.ts_module} not installed"}
-    except TypeError as e:
-        # tree-sitter version mismatch: old Language() expects (lib_path),
-        # new Language() expects (language_capsule, name). Surface a hint
-        # so users see the upgrade path instead of a bare TypeError.
-        hint = (
-            f"tree-sitter version mismatch for {config.ts_module}: {e}. "
-            "Try: pip install --upgrade tree-sitter tree-sitter-languages"
-        )
-        return {"nodes": [], "edges": [], "error": hint}
-    except Exception as e:
-        return {"nodes": [], "edges": [], "error": str(e)}
+    parser, parser_error = _get_parser(config.ts_module, config.ts_language_fn)
+    if parser_error is not None:
+        return {"nodes": [], "edges": [], "error": parser_error}
 
     try:
-        parser = Parser(language)
         source = _read_source_bytes(path) if source_override is None else source_override
         if config.ts_module == "tree_sitter_cpp":
             # Persisted lookup offsets and call sites must share line-ending-independent bytes.
