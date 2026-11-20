@@ -4,7 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.114 (unreleased)
 
-Performance work on the extract/build/update pipeline. All of these preserve graph output exactly (byte-identical) and the AST cache schema is unchanged; they are pure speedups, largest on big repos.
+Performance work on the extract/build/update pipeline, plus a batch of extractor and build fixes. Every entry marked Perf preserves graph output exactly (byte-identical); the extractor fixes change output and share one AST cache schema bump (see the note at the end).
 
 - Perf: **ids** `normalize_id` gets an ASCII fast-path, pre-compiled regexes and an LRU cache, so the common (ASCII, repeated) identifier case skips the Unicode normalization loop. ~1.26x on the compute path and a large win on repeated ids, which recurs heavily across a corpus.
 - Perf: **cache** `save_cached` builds the portable on-disk payload copy-on-write instead of `copy.deepcopy`-ing every per-file result; ~20% faster on the cache-write transform, scaling with per-file graph size. The input is never mutated and the on-disk bytes are identical.
@@ -12,6 +12,14 @@ Performance work on the extract/build/update pipeline. All of these preserve gra
 - Perf: **extract** the cross-file resolution finalize builds its shared node/edge indexes in a few fused passes instead of ~6 independent full scans of the graph; ~15% faster on the finalize stage.
 - Perf: **watch** the no-change topology comparison uses an order-independent content hash computed in one pass instead of sorting and re-serializing the whole graph; ~1.4x on that compare.
 - Perf: **cluster** the community partition is cached by a topology hash and reused when the graph is unchanged (~9x on a cluster cache hit), and the deterministic edge-sort key drops a per-edge `json.dumps` in favour of a cheap tuple key (identical ordering).
+- Perf: **analyze** `suggest_questions`' betweenness centrality now runs a flat-array Brandes implementation instead of networkx's dict-based one, with bit-for-bit identical scores; ~2.6x faster, growing with graph size (#5303, thanks @Max17190).
+- Perf: **watch** each preserved source path is rebased once per incremental update instead of recomputed per node and edge; the update output is byte-identical (#5322, thanks @Max17190).
+- Fix: **java** a field or class annotated with Lombok `@Getter` gets the synthesized `getX()`/`isX()` getter node javac sees, so `obj.getX()` resolves to it; boolean fields use `isX`, `@Getter(AccessLevel.NONE)` is respected, a hand-written getter is not duplicated, and a non-Lombok `@Getter` is ignored (#5148, thanks @Deepjyoti-Sarmah).
+- Fix: **kotlin** a member call on a receiver with a declared type (parameter, property, `val x: T`, or `val x = T()`) binds to that type's method across files instead of the last same-named method in the file, and interface calls dispatch to their implementers; an ambiguous or unknown receiver fails closed (#5355, thanks @xiongjianxu).
+- Fix: **sql** a PostgreSQL PL/pgSQL routine body that the grammar only parses through ERROR recovery (`RETURN QUERY SELECT ... FROM t`) has its table reads recovered as `reads_from` edges instead of dropped (#5349, thanks @Deepjyoti-Sarmah).
+- Fix: **build** when an AST-extracted edge and a semantic (LLM) copy of the same edge tie, the deterministic EXTRACTED edge is kept, so a later docs `--update` no longer deletes a code edge that a semantic copy had overwritten (#5334, thanks @Ildar-gn).
+
+The AST cache schema is bumped to 50; warm caches re-run the affected Kotlin, Java and SQL extractions.
 
 ## 0.9.113 (2026-11-19)
 
