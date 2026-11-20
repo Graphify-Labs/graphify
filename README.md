@@ -49,6 +49,11 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
   <em>The FastAPI codebase mapped by graphify. Every node is a concept, colors are detected communities, and the whole thing is clickable in graph.html.</em>
 </p>
 
+## Install in ChatGPT or Codex
+
+- **ChatGPT, and Codex in the ChatGPT desktop app:** install [Graphify from OpenAI's plugin directory](https://chatgpt.com/plugins/plugin_asdk_app_6abe89f7f5d88191b9422522bb8562a4), then sign in to Graphify.
+- **Codex CLI:** run `/plugins`, search for **Graphify**, install it, and start a new session. Setup guide: [docs.graphify.com/integrations/codex](https://docs.graphify.com/integrations/codex)
+
 **Get started** (30 seconds). Needs Python 3.11+ and uv (or pipx):
 
 ```bash
