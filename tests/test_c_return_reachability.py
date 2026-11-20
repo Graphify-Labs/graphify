@@ -621,3 +621,43 @@ def test_unreachable_warning_default_on_and_toggle(tmp_path: Path, suffix: str, 
     extract([main2, body2], root=root2, cache_root=root2)
     err_off = capsys.readouterr().err
     assert "fall-through-unreachable" not in err_off
+
+
+_ALT_BRANCHES = {
+    "else": (
+        "#if FEATURE\n  a();\n  return;\n  dead();\n"
+        "#else\n  b();\n#endif\n",
+        {"a()", "b()"},
+    ),
+    "elif-chain": (
+        "#if FEATURE\n  a();\n  return;\n  dead();\n"
+        "#elif OTHER\n  c();\n  return;\n  dead2();\n"
+        "#else\n  b();\n#endif\n",
+        {"a()", "b()", "c()"},
+    ),
+    "ifdef-else": (
+        "#ifdef FEATURE\n  a();\n  return;\n  dead();\n"
+        "#else\n  b();\n#endif\n",
+        {"a()", "b()"},
+    ),
+}
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
+@pytest.mark.parametrize("case", list(_ALT_BRANCHES))
+def test_return_in_preproc_branch_keeps_alternate_branches(
+    tmp_path: Path, suffix: str, case: str
+) -> None:
+    """#5357: #elif / #else are other build configs, not code after the return."""
+    body, live = _ALT_BRANCHES[case]
+    root = _real(tmp_path)
+    src = root / f"f{suffix}"
+    src.write_text(
+        "".join(f"void {n}(void) {{}}\n" for n in ("a", "b", "c", "dead", "dead2", "after"))
+        + "void f(void) {\n" + body + "  after();\n}\n",
+        encoding="utf-8",
+    )
+    result = extract([src], root=root, cache_root=root)
+    targets = _call_targets(result, "f()")
+    assert live | {"after()"} <= targets
+    assert not {"dead()", "dead2()"} & targets
