@@ -2491,6 +2491,7 @@ def dispatch_command(cmd: str) -> None:
         p.add_argument("--answer-file", dest="answer_file", default=None)
         p.add_argument("--type", dest="query_type", default="query")
         p.add_argument("--nodes", nargs="*", default=[])
+        p.add_argument("--nodes-file", dest="nodes_file", default=None)
         p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
         p.add_argument("--correction", default=None)
         p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
@@ -2499,6 +2500,12 @@ def dispatch_command(cmd: str) -> None:
             opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
         elif not opts.answer:
             p.error("--answer or --answer-file is required")
+        if opts.nodes_file:
+            opts.nodes += [
+                ln.strip()
+                for ln in Path(opts.nodes_file).read_text(encoding="utf-8-sig").splitlines()
+                if ln.strip()
+            ]
         from graphify.ingest import save_query_result as _sqr
 
         out = _sqr(
