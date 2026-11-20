@@ -46,7 +46,8 @@ must move first as its own coordinated batch. Pick a bespoke extractor.
    (`__main__.py`, `watch.py`, `pg_introspect.py`, tests) must not change.
 4. **Never import from `graphify.extract` inside this package.** Import
    direction is strictly extract.py -> extractors/. If you need a helper that
-   lives in extract.py, classify it (below) and move it.
+   lives in extract.py, classify it (below) and move it. Enforced by
+   `tests/test_extractor_scan_root_context.py`.
 5. **Zero test edits** outside `tests/test_extractors_registry.py`. The
    untouched language tests passing IS the proof of behavior preservation.
 

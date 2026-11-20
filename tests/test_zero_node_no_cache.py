@@ -17,13 +17,13 @@ def test_zero_node_result_not_cached_then_self_heals(tmp_path, capsys, monkeypat
     f = tmp_path / "thing.rb"
     f.write_text("class Foo\n  def bar; end\nend\n")
 
-    real = ex._safe_extract_with_xaml_root
+    real = ex._safe_extract_with_scan_root
 
     def _empty(extractor, path, root):
         return {"nodes": [], "edges": []}
 
     # First run: force a zero-node extraction for this file.
-    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", _empty)
+    monkeypatch.setattr(ex, "_safe_extract_with_scan_root", _empty)
     ex.extract([f], cache_root=tmp_path / "out", parallel=False)
 
     err = capsys.readouterr().err
@@ -31,7 +31,7 @@ def test_zero_node_result_not_cached_then_self_heals(tmp_path, capsys, monkeypat
 
     # Second run with the real extractor: because the empty was NOT cached, the
     # file re-extracts and lands in the graph (self-heal).
-    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", real)
+    monkeypatch.setattr(ex, "_safe_extract_with_scan_root", real)
     r2 = ex.extract([f], cache_root=tmp_path / "out", parallel=False)
     assert any(str(n.get("source_file", "")).endswith("thing.rb") for n in r2["nodes"])
 
