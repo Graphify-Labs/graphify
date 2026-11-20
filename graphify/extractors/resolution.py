@@ -4230,6 +4230,9 @@ def _merge_decl_def_classes(
         if src == tgt:
             continue
         k = (src, tgt, e.get("relation"), e.get("context"))
+        if e.get("relation") == "calls":
+            # A repeat call site is not a merge twin; keep it for the build's `also_seen`.
+            k += (e.get("source_file"), e.get("source_location"))
         if k in seen_keys:
             continue
         seen_keys.add(k)
