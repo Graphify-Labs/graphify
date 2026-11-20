@@ -1463,12 +1463,33 @@ _MCP_TOOLS_LINE = (
 
 
 def _is_get_section_tool_line(line: str) -> bool:
-    """Whether a line is the MCP tool list before or after `get_section` joined it."""
+    """Whether a line is the MCP tool list before or after later tools joined it."""
     rest = "`get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`"
+    rest_prs = (
+        "`get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, "
+        "`shortest_path`, `list_prs`, `get_pr_impact`, and `triage_prs`"
+    )
     return line.strip() in {
         _MCP_TOOLS_LINE.format(tools=f"`query_graph`, `get_node`, {rest}"),
         _MCP_TOOLS_LINE.format(tools=f"`query_graph`, `get_node`, `get_section`, {rest}"),
+        _MCP_TOOLS_LINE.format(tools=f"`query_graph`, `get_node`, `get_section`, {rest_prs}"),
     }
+
+
+def _is_pr_mcp_tool_desc_line(line: str) -> bool:
+    """Whether a line is a one-line serve.py description for a PR MCP tool."""
+    return line.strip() in {
+        "- `list_prs`: List open GitHub PRs with CI status, review state, and graph impact (which communities each PR touches, blast radius).",
+        "- `get_pr_impact`: Get detailed graph impact for a specific PR: which files it changes, which knowledge-graph communities are affected, and how many nodes are touched.",
+        "- `triage_prs`: Return all actionable open PRs (correct base, not stale) with full graph impact data so you can reason about review priority, merge order, and conflict risk.",
+    }
+
+
+def _is_svg_extra_note_line(line: str) -> bool:
+    """Whether a line notes that SVG export needs the svg extra (matplotlib)."""
+    return line.strip() == (
+        "Requires the `svg` extra (`pip install 'graphifyy[svg]'`), which includes matplotlib."
+    )
 
 
 # Every line that may differ between a rendered monolith and its pristine v8
@@ -1506,6 +1527,8 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
+    _is_pr_mcp_tool_desc_line,
+    _is_svg_extra_note_line,
 )
 
 

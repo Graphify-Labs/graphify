@@ -54,6 +54,8 @@ Default URI is `falkordb://localhost:6379` (the scheme is informational - `redis
 graphify export svg
 ```
 
+Requires the `svg` extra (`pip install 'graphifyy[svg]'`), which includes matplotlib.
+
 ### Step 7c - GraphML export (only if --graphml flag)
 
 ```bash
@@ -66,7 +68,11 @@ graphify export graphml
 $(cat graphify-out/.graphify_python) -m graphify.serve graphify-out/graph.json
 ```
 
-This starts a stdio MCP server that exposes tools: `query_graph`, `get_node`, `get_section`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`. Add to Claude Desktop or any MCP-compatible agent orchestrator so other agents can query the graph live.
+This starts a stdio MCP server that exposes tools: `query_graph`, `get_node`, `get_section`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`, `list_prs`, `get_pr_impact`, and `triage_prs`. Add to Claude Desktop or any MCP-compatible agent orchestrator so other agents can query the graph live.
+
+- `list_prs`: List open GitHub PRs with CI status, review state, and graph impact (which communities each PR touches, blast radius).
+- `get_pr_impact`: Get detailed graph impact for a specific PR: which files it changes, which knowledge-graph communities are affected, and how many nodes are touched.
+- `triage_prs`: Return all actionable open PRs (correct base, not stale) with full graph impact data so you can reason about review priority, merge order, and conflict risk.
 
 To configure in Claude Desktop, add to `claude_desktop_config.json`. Claude Desktop can't run `$(...)`, and under `uv tool install` the system `python3` can't import graphify — so set `command` to the **absolute interpreter path** printed by `cat graphify-out/.graphify_python`:
 ```json
