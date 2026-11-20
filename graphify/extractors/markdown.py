@@ -539,6 +539,15 @@ def extract_markdown(path: Path) -> dict:
     scan_root = _active_scan_root()
     real_root = os.path.realpath(str(scan_root)) if scan_root is not None else None
     real_source_dir = os.path.realpath(str(path.parent))
+    # The scan root as a path relative to this document's directory, for a
+    # span's scan-root reading (#5224); None when there is no root or it is on
+    # another drive (Windows).
+    root_from_doc: "str | None" = None
+    if real_root is not None:
+        try:
+            root_from_doc = os.path.relpath(real_root, real_source_dir).replace("\\", "/")
+        except ValueError:
+            root_from_doc = None
 
     def add_mention(caller_nid: str, span: str, line: int) -> None:
         mention = _code_span_mention(span)
@@ -560,13 +569,12 @@ def extract_markdown(path: Path) -> dict:
         }
         if cited_path is not None:
             raw_call["path"] = cited_path
-            if not names and real_root is not None and not cited_path.startswith(("./", "../")):
+            if (not names and root_from_doc not in (None, ".")
+                    and not cited_path.startswith(("./", "../"))):
                 # The span read from the scan root, as a path relative to this
                 # document, for the resolver to try after the document-relative
-                # reading (#5224).
-                up = os.path.relpath(real_root, real_source_dir).replace("\\", "/")
-                if up != ".":
-                    raw_call["root_path"] = f"{up}/{cited_path}"
+                # reading (#5224). An explicit `./` / `../` cite never gets one.
+                raw_call["root_path"] = f"{root_from_doc}/{cited_path}"
         if len(names) > 1:
             raw_call["qualifiers"] = names[:-1]
         if cited_path is None and _MD_NS_MENTION_RE.match(span.strip()):
@@ -703,6 +711,8 @@ def extract_markdown(path: Path) -> dict:
         The path is read relative to the document first, then (unless it is
         explicitly ``./`` or ``../``) relative to the scan root; a missing file,
         a file outside the scan root, or a non-document span is not linked.
+        With no active scan root nothing is linked: containment in the root
+        cannot be checked, so the span fails closed.
         Source-file spans are resolved against the scanned corpus instead, by
         ``graphify.markdown_resolution``.
         """
