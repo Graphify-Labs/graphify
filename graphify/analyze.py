@@ -500,6 +500,11 @@ def _betweenness_centrality(G: nx.Graph, k: int | None, seed: int) -> dict[str, 
     """
     if not _NETWORKX_RESCALES_SAMPLES_BY_SOURCE:
         return nx.betweenness_centrality(G, k=k, seed=seed)
+    if k is not None and k <= 1:
+        # A single sampled source can't be rescaled (the per-source factor divides
+        # by k-1). Defer to networkx, which handles it. suggest_questions never
+        # passes k <= 1; this only guards direct callers of the helper.
+        return nx.betweenness_centrality(G, k=k, seed=seed)
     nodes = list(G)
     n = len(nodes)
     if k == n:
