@@ -28,6 +28,7 @@ from .resolver_registry import (
 from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .go_dispatch import resolve_go_interface_dispatch
+from .kotlin_dispatch import resolve_kotlin_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_class_resolution import resolve_pascal_base_classes
 from .dfm_resolution import resolve_dfm_handlers
@@ -9741,7 +9742,8 @@ def _resolve_kotlin_member_calls(
         rc
         for result in per_file
         for rc in result.get("raw_calls", [])
-        if rc.get("lang") == "kotlin" and rc.get("kotlin_object_receiver")
+        if rc.get("lang") == "kotlin"
+        and (rc.get("kotlin_object_receiver") or rc.get("kotlin_receiver_type"))
         and rc.get("callee") and rc.get("caller_nid")
     ]
     if not raw:
@@ -9784,7 +9786,7 @@ def _resolve_kotlin_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in raw:
-        receiver = rc["kotlin_object_receiver"]
+        receiver = rc.get("kotlin_object_receiver") or rc["kotlin_receiver_type"]
         callee = rc["callee"]
         caller = rc["caller_nid"]
         type_nids = types_by_name.get(receiver, [])
@@ -10065,6 +10067,12 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "go_interface_dispatch", frozenset({".go"}), resolve_go_interface_dispatch
+    )
+)
+# Kotlin member-level interface dispatch: the C#/Swift pass for Kotlin interfaces.
+register_language_resolver(
+    LanguageResolver(
+        "kotlin_interface_dispatch", frozenset({".kt", ".kts"}), resolve_kotlin_interface_dispatch
     )
 )
 # Markdown code-span mentions (`Widget`, `mod.py::Widget::render`) become

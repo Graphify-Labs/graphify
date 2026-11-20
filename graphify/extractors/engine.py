@@ -6808,6 +6808,125 @@ def _kotlin_nav_identifier_segments(nav, source: bytes) -> list[str] | None:
     return segments
 
 
+_KOTLIN_IDENTIFIERS = ("identifier", "simple_identifier", "type_identifier")
+
+
+def _kotlin_type_name(type_node, source: bytes) -> str | None:
+    """`Greeter`, `a.b.Greeter`, `Greeter?` and `Box<T>` name `Greeter`/`Box`; other types name nothing."""
+    if type_node is not None and type_node.type == "nullable_type":
+        type_node = next((c for c in type_node.children if c.type == "user_type"), None)
+    if type_node is None or type_node.type != "user_type":
+        return None
+    # Older grammars nest each dotted segment in a simple_user_type.
+    parts = [c for c in type_node.children if c.type == "simple_user_type"] or [type_node]
+    names = [c for c in parts[-1].children if c.type in _KOTLIN_IDENTIFIERS]
+    return _read_text(names[-1 if len(parts) == 1 else 0], source) if names else None
+
+
+def _kotlin_declared_type(decl, initializer, source: bytes) -> str:
+    """The type a Kotlin binding declares, or `Name` for `= Name(...)`; "" when neither says."""
+    for child in decl.children:
+        name = _kotlin_type_name(child, source)
+        if name:
+            return name
+    if initializer is not None and initializer.type == "call_expression" and initializer.children:
+        callee = initializer.children[0]
+        if callee.type in _KOTLIN_IDENTIFIERS:
+            text = _read_text(callee, source)
+            if text[:1].isupper():
+                return text
+    return ""
+
+
+def _kotlin_binding_name(decl, source: bytes) -> str | None:
+    return next((_read_text(c, source) for c in decl.children if c.type in _KOTLIN_IDENTIFIERS), None)
+
+
+def _kotlin_variable_binding(decl, name: str, initializer, source: bytes) -> str | None:
+    """Type of `name` if this (multi-)variable declaration binds it ("" if untyped), else None."""
+    if decl.type == "variable_declaration" and _kotlin_binding_name(decl, source) == name:
+        return _kotlin_declared_type(decl, initializer, source)
+    if decl.type == "multi_variable_declaration" and any(
+        _kotlin_binding_name(v, source) == name for v in decl.children if v.type == "variable_declaration"
+    ):
+        return ""
+    return None
+
+
+def _kotlin_property_binding(prop, name: str, source: bytes) -> str | None:
+    named = [c for c in prop.children if c.is_named]
+    for i, child in enumerate(named):
+        initializer = named[i + 1] if i + 1 < len(named) else None
+        bound = _kotlin_variable_binding(child, name, initializer, source)
+        if bound is not None:
+            return bound
+    return None
+
+
+def _kotlin_receiver_type(call, name: str, source: bytes, *, this_field: bool = False) -> str | None:
+    """Declared type of receiver `name` at `call`, by Kotlin's lexical scoping.
+
+    "" means a binding in scope hides the name but gives no type, None that
+    nothing in this file binds it (an inherited or top-level property elsewhere).
+    """
+    node = call.parent
+    while node is not None:
+        t = node.type
+        if not this_field:
+            bound = None
+            if t in ("function_declaration", "anonymous_function", "secondary_constructor"):
+                for params in node.children:
+                    for param in params.children if params.type == "function_value_parameters" else ():
+                        if param.type == "parameter" and _kotlin_binding_name(param, source) == name:
+                            bound = _kotlin_declared_type(param, None, source)
+            elif t == "lambda_literal":
+                params = next((c for c in node.children if c.type == "lambda_parameters"), None)
+                if params is None:
+                    bound = "" if name == "it" else None
+                else:
+                    for decl in params.children:
+                        bound = _kotlin_variable_binding(decl, name, None, source) if bound is None else bound
+            elif t == "for_statement":
+                decl = next((c for c in node.children if c.is_named), None)
+                if decl is not None:
+                    bound = _kotlin_variable_binding(decl, name, None, source)
+            elif t == "catch_block":
+                if _kotlin_binding_name(node, source) == name:
+                    bound = ""
+            if bound is not None:
+                return bound
+            if t in ("block", "statements", "source_file", "lambda_literal"):
+                # The nearest earlier declaration in this block wins.
+                for stmt in node.children:
+                    if stmt.start_byte >= call.start_byte:
+                        break
+                    if stmt.type == "property_declaration":
+                        found = _kotlin_property_binding(stmt, name, source)
+                        bound = found if found is not None else bound
+                if bound is not None:
+                    return bound
+        if t == "class_body":
+            # Members are visible from every method, whatever their order.
+            for stmt in node.children:
+                if stmt.type == "property_declaration":
+                    bound = _kotlin_property_binding(stmt, name, source)
+                    if bound is not None:
+                        return bound
+        elif t == "class_declaration":
+            for ctor in node.children:
+                for params in ctor.children if ctor.type == "primary_constructor" else ():
+                    for param in params.children if params.type == "class_parameters" else ():
+                        # Only a `val`/`var` parameter is a property a method can read.
+                        if (param.type == "class_parameter"
+                                and any(c.type in ("val", "var") for c in param.children)
+                                and _kotlin_binding_name(param, source) == name):
+                            return _kotlin_declared_type(param, None, source)
+            if this_field:
+                return None
+        node = node.parent
+    return None
+
+
 def _first_parse_error_line(root) -> int:
     """1-based line of the first ERROR/MISSING node under ``root`` (#2551).
 
@@ -11025,6 +11144,24 @@ def _extract_generic(
                 method_owner, methods_by_owner, class_parent, csharp_interface_names,
             )
 
+    # Kotlin: this file's types by name and their methods, for `x.m()` on a typed receiver,
+    # and how many declarations share each callable name.
+    kotlin_types_by_label: dict[str, list[str]] = {}
+    kotlin_methods_by_owner: dict[tuple[str, str], str] = {}
+    kotlin_callable_counts: dict[str, int] = {}
+    if config.ts_module == "tree_sitter_kotlin":
+        kotlin_labels = {n["id"]: n["label"] for n in nodes}
+        for e in edges:
+            if e["relation"] == "method":
+                name = kotlin_labels.get(e["target"], "").strip("()").lstrip(".")
+                kotlin_methods_by_owner.setdefault((e["source"], name), e["target"])
+        for owner in {owner for owner, _ in kotlin_methods_by_owner}:
+            kotlin_types_by_label.setdefault(kotlin_labels.get(owner, ""), []).append(owner)
+        for n in nodes:
+            if n["label"].endswith("()"):
+                name = n["label"].strip("()").lstrip(".")
+                kotlin_callable_counts[name] = kotlin_callable_counts.get(name, 0) + 1
+
     def _fields_up_chain(tables: dict, class_nid) -> dict:
         if not class_nid:
             return {}
@@ -11376,6 +11513,9 @@ def _extract_generic(
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
             kotlin_object_receiver: str | None = None
+            # Kotlin `x.m()` / `this.x.m()`: the receiver variable and its declared type.
+            kotlin_receiver: str | None = None
+            kotlin_receiver_type: str | None = None
             csharp_qualified_prefix: str | None = None
             csharp_receiver_chain: list[str] | None = None
             java_receiver_chain: list | None = None
@@ -11470,6 +11610,19 @@ def _extract_generic(
                             and segments[0][:1].isupper()
                         ):
                             kotlin_object_receiver = segments[0]
+                        this_field = False
+                        if segments is not None and len(segments) == 2:
+                            kotlin_receiver = segments[0] if not segments[0][:1].isupper() else None
+                        else:
+                            head = next((c for c in first.children if c.is_named), None)
+                            parts = [c for c in head.children if c.is_named] if head is not None else []
+                            if (head is not None and head.type == "navigation_expression" and len(parts) == 2
+                                    and parts[0].type == "this_expression" and parts[1].type in _KOTLIN_IDENTIFIERS):
+                                kotlin_receiver, this_field = _read_text(parts[1], source), True
+                        if kotlin_receiver:
+                            kotlin_receiver_type = _kotlin_receiver_type(
+                                node, kotlin_receiver, source, this_field=this_field
+                            )
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
                 first = node.children[0] if node.children else None
@@ -11997,6 +12150,12 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
+                # Kotlin `x.m()` names a method of x's type. Picking whichever `m`
+                # this file declares last bound `g.greet()` on a `Greeter` to one
+                # implementer's `greet`; resolve through the type instead.
+                _kotlin_member_defer = (
+                    config.ts_module == "tree_sitter_kotlin" and is_member_call and kotlin_receiver is not None
+                )
                 _swift_defer = (
                     config.ts_module == "tree_sitter_swift"
                     and is_member_call and not self_receiver
@@ -12064,7 +12223,7 @@ def _extract_generic(
                          or (cpp_binding is None and member_receiver in cpp_unknown_fields.get(
                              method_owner.get(caller_nid, ""), ())))
                 )
-                if _python_defer or _java_defer or _csharp_defer or _swift_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                if _python_defer or _java_defer or _csharp_defer or _kotlin_member_defer or _swift_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
@@ -12073,6 +12232,14 @@ def _extract_generic(
                     )
                 ):
                     tgt_nid = None
+                    if _kotlin_member_defer and not _builtin_member_call:
+                        if kotlin_receiver_type:
+                            owners = kotlin_types_by_label.get(kotlin_receiver_type, [])
+                            if len(owners) == 1:
+                                tgt_nid = kotlin_methods_by_owner.get((owners[0], callee_name))
+                        elif kotlin_callable_counts.get(callee_name) == 1:
+                            # Untyped receiver: the bare name, only when nothing else here shares it.
+                            tgt_nid = label_to_nid.get(callee_name)
                 else:
                     if config.ts_module in (
                         "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
@@ -12384,6 +12551,9 @@ def _extract_generic(
                         if kotlin_object_receiver:
                             rc_entry["lang"] = "kotlin"
                             rc_entry["kotlin_object_receiver"] = kotlin_object_receiver
+                        if kotlin_receiver_type:
+                            rc_entry["lang"] = "kotlin"
+                            rc_entry["kotlin_receiver_type"] = kotlin_receiver_type
                         raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
