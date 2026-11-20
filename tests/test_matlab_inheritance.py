@@ -121,6 +121,12 @@ def test_duplicate_package_roots_and_class_declarations_are_ambiguous():
     assert _matlab_inheritance_edges(nodes) == []
 
 
+def test_sibling_files_differing_only_in_suffix_case_are_ambiguous():
+    child = _class("Child.m", "Child", bases=("Base",))
+    bases = _class("Base.m", "Base") + _class("Base.M", "Base")
+    assert _matlab_inheritance_edges(child + bases) == []
+
+
 @pytest.mark.parametrize(
     ("record", "field", "value"),
     [
