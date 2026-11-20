@@ -2,6 +2,30 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.113 (2026-11-19)
+
+- Change: **packaging** the minimum Python is now 3.11.5 (was 3.11), and soupsieve is pinned to 4.1.1 for every interpreter. soupsieve's patched releases require 3.11.5, so raising the floor clears the open soupsieve advisories (ReDoS and recursion/polynomial-DoS in the CSS selector parser, reached transitively through beautifulsoup4 in the optional `svg`/`all`/`pdf` extras). Installs on Python 3.11.0-3.11.4 keep resolving to 0.9.112; everyone on 3.11.5 and up is unaffected (#5301, thanks @TPAteeq).
+- Fix: **ruby** methods of one class or module whose names differ only by a leading/trailing `_` or by case (`_read_attribute`/`read_attribute`, `_where!`/`where!`), including those in a `class << self`, get distinct node ids instead of one swallowing the other (#5292, thanks @rohit-jsfreaky).
+- Fix: **lua** table-field functions whose names differ only by a leading/trailing `_` (`M._load`/`M.load`, `Runner:_start`/`Runner:start`) get distinct node ids; `M.f`/`M:f` still name one field (#5294, thanks @rohit-jsfreaky).
+- Fix: **scala** members whose names differ only by a leading `_`, a `_=` setter suffix, or case (`_enter`/`enter`, `size`/`size_=`, `forEach`/`foreach`), including across a class and its companion object, get distinct node ids (#5296, thanks @rohit-jsfreaky).
+- Fix: **elixir** defs whose names differ only by a leading/trailing `_`, a `!`/`?` suffix, or case (`_name`/`name`, `get`/`get!`, `__schema__`/`schema`) get distinct node ids, so a `get!` call no longer lands on `get` (#5298, thanks @rohit-jsfreaky).
+- Fix: **rust** a prelude trait's type argument (`Celsius` in `impl From<Celsius>` or a `T: Into<Celsius>` bound) is read as a generic-argument reference instead of being mistaken for the trait itself, so it no longer emits a wrong `implements`/`inherits` edge (#5332, thanks @azeemshaik025).
+- Fix: **go** a member call is kept when another package in the corpus names a sibling-file type: the colliding sourceless stub is moved to its own id instead of salting the real declaration and orphaning its method edges, which had dropped the call (#5304, thanks @Yi-111-a).
+- Fix: **ruby** a method written inline after an access modifier (`private def validate`, `private_class_method def self.audit`) keeps its membership of the enclosing class instead of being emitted as a file-level function, so calls to it resolve to the method (#5310, thanks @Synvoya).
+- Fix: **swift** a call that is the last operand of an operator expression (`base + bonus()`, `!isEmpty()`), which the grammar parses as the callee, is extracted instead of dropped (#5311, thanks @Synvoya).
+- Fix: **kotlin** a call under a prefix operator (`!isReady()`, `-compute()`) is extracted instead of dropped, including stacked prefixes and `!obj.ready()` (#5312, thanks @Synvoya).
+- Fix: **vbnet** a parameter with a default value is counted as Optional regardless of modifier order (`ByVal Optional x As Integer = 0`, `ByRef Optional ...`), so method arity and overload resolution are correct (#5320, thanks @Deepjyoti-Sarmah).
+- Fix: **cpp** include identities are kept when the AST cache is on another drive than the source (a Windows cross-drive case where `os.path.relpath` raised and every file got an empty key), so declaration/definition folding still works; the normal same-drive path is unchanged (#5145, thanks @Ayushraj06-bit).
+- Fix: **llm** label-generation retries keep a 512-token output floor, so the single-community recovery pass is no longer starved below the batch it is recovering from; an explicit `GRAPHIFY_MAX_OUTPUT_TOKENS` still overrides (#2086, thanks @Synvoya).
+- Fix: **ruby** an `include`/`prepend`/`extend` of a module written inside a `class << self` block emits its `mixes_in` edge, instead of being missed because only direct class-body statements were scanned (#5317, thanks @Synvoya).
+- Fix: **python** a class with a parameterized base (`class C(Base[T])`, `class D(Mapping[str, int])`) emits the `inherits` edge to the base type and is walked for inherited-method calls, instead of being dropped and marked opaque; a nested generic argument, a call base, and `mod.Base[T]` are still not treated as parents (#5318, thanks @Synvoya).
+- Fix: **tsconfig** a `tsconfig.json` `extends` and exact `compilerOptions.paths` mapping resolve to the real scanned config/file they name rather than a dangling stub; a non-corpus package extends, a wildcard path, and a circular extends fail closed (#5223, thanks @Deepjyoti-Sarmah).
+- Fix: **cpp** an unreachable class forward declaration (one no include path reaches) no longer blocks the fold of a member's declaration into its out-of-line definition; genuinely ambiguous cases (a template or a second definition) still stay separate (#5337, thanks @winesoft-namjin-yun).
+- Fix: **extract** an import that targets a header involved in an id collision is no longer unconditionally repointed to the header variant: the repoint is gated by the importing file's language family, so a Python `import foo` beside a colliding `foo.h`/`foo.py` keeps its edge to `foo.py` instead of being dropped as cross-language (#5328, thanks @sdivyanshu90).
+- Fix: **serve** a query that is an exact node id resolves straight to that node instead of being out-ranked by a different node that shares its tokenized source path (#5343, thanks @Ayushraj06-bit).
+
+The AST cache schema is bumped to 49; warm caches re-run the affected Ruby, Lua, Scala, Elixir, Rust, Swift, Kotlin, VB.NET, Python and TypeScript-config extractions.
+
 ## 0.9.112 (2026-11-17)
 
 - Docs: **python** the README, its translations, CONTRIBUTING, RELEASING, the bug-report template and the ruff/pyright targets now state Python 3.11 as the minimum, matching the floor that shipped in 0.9.111 (#5238, thanks @Deepanshu-Mehta; @Max17190 sent the same fix in #5237).

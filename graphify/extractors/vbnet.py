@@ -289,8 +289,9 @@ def extract_vbnet(path: Path) -> dict:
                 else []
             )
             arity = len(parameter_nodes)
+            # VB: a default value <=> Optional (BC32024/BC30812), whatever the modifier order (#5320)
             required_arity = sum(
-                not _read_text(parameter, source).lstrip().casefold().startswith("optional ")
+                parameter.child_by_field_name("default_value") is None
                 for parameter in parameter_nodes
             )
             accepted_arities = list(range(required_arity, arity + 1))

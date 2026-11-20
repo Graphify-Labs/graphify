@@ -63,6 +63,10 @@ Absolute and relative spellings and symlinked scan roots identify the same
 corpus entry; distinct symlink aliases inside that root remain separate entries.
 Excluding one alias must preserve any still-included target or sibling alias.
 
+When an import target ID collides with a C-family header, an explicit target
+path takes priority. Unhinted native includes keep the header fallback. Other
+languages require a unique compatible file candidate before remapping.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
@@ -158,7 +162,7 @@ pairs with the separate `definition_file` / `definition_location` site.
 Objective-C declarations and implementations in one file follow the same rule.
 Duplicate records only backfill an end location when the corresponding file and
 start location match. Build, JSON export and global graphs preserve both fields.
-AST cache schema 49 invalidates results that predate declaration ranges.
+AST cache schema 50 invalidates results that predate declaration ranges.
 
 `graphify section` and the `get_section` MCP tool return the text of a Markdown
 heading's section (`graphify/sections.py`). The section's end is found at read

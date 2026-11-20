@@ -258,6 +258,18 @@ def _rust_qualifier_type(path_node, source: bytes) -> str | None:
     return last if last[:1].isupper() or last in _RUST_PRIMITIVE_TYPES else None
 
 
+def _rust_is_trait_ref(node, idx: int, role: str) -> bool:
+    """Whether ref `idx` collected from a trait position is the trait itself.
+
+    A prelude trait is filtered out (`From<A>` leaves only `A`, as a generic
+    argument), and `Fn(A) -> R` sugar, bare or under `for<'a>`, lists its
+    parameter and return types as plain types: neither names the trait.
+    """
+    if node.type == "higher_ranked_trait_bound":
+        node = node.child_by_field_name("type") or node
+    return idx == 0 and role == "type" and node.type != "function_type"
+
+
 def _rust_type_last_segment(text: str) -> str:
     """`crate::a::Foo<T>` -> `Foo`: the last path segment, generic arguments dropped.
     A leading `&`, `&'a mut` or `dyn` (`impl Tr for &'a Foo`) is not part of it."""
@@ -606,11 +618,11 @@ def extract_rust(path: Path) -> dict:
                                 continue
                             refs: list[tuple[str, str]] = []
                             _rust_collect_type_refs(sub, source, False, refs, local_type_names)
-                            for idx, (ref_name, _role) in enumerate(refs):
+                            for idx, (ref_name, role) in enumerate(refs):
                                 tgt = ensure_named_node(ref_name, line)
                                 if tgt == item_nid:
                                     continue
-                                rel = "inherits" if idx == 0 else "references"
+                                rel = "inherits" if _rust_is_trait_ref(sub, idx, role) else "references"
                                 if rel == "inherits":
                                     add_edge(item_nid, tgt, "inherits", line)
                                 else:
@@ -780,11 +792,11 @@ def extract_rust(path: Path) -> dict:
             if trait_node is not None and impl_nid is not None:
                 refs: list[tuple[str, str]] = []
                 _rust_collect_type_refs(trait_node, source, False, refs, local_type_names)
-                for idx, (ref_name, _role) in enumerate(refs):
+                for idx, (ref_name, role) in enumerate(refs):
                     tgt = ensure_named_node(ref_name, node.start_point[0] + 1)
                     if tgt == impl_nid:
                         continue
-                    if idx == 0:
+                    if _rust_is_trait_ref(trait_node, idx, role):
                         add_edge(impl_nid, tgt, "implements", node.start_point[0] + 1)
                     else:
                         add_edge(impl_nid, tgt, "references", node.start_point[0] + 1,
