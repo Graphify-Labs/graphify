@@ -335,6 +335,10 @@ class CsharpNameResolver:
         self.static_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
         self.nested_types_by_holder: dict[str, dict[str, str]] = {}
         self.base_types_by_holder: dict[str, list[str]] = {}
+        # Lexical nesting, for simple-name lookup in enclosing types (C# 7.6.1):
+        # nested type -> the type that declares it, and member -> its owning type.
+        self.holder_of_type: dict[str, str] = {}
+        self.owner_of_member: dict[str, str] = {}
         self._holder_nid_cache: dict[str, str | None] = {}
 
         for edge in all_edges:
@@ -384,6 +388,11 @@ class CsharpNameResolver:
                     and _is_cs_file(self.node_by_id.get(holder_nid, {}).get("source_file"))
                 ):
                     self.base_types_by_holder.setdefault(holder_nid, []).append(base_nid)
+            if edge.get("relation") == "method":
+                owner_nid, member_nid = edge.get("source"), edge.get("target")
+                if isinstance(owner_nid, str) and isinstance(member_nid, str):
+                    self.owner_of_member.setdefault(member_nid, owner_nid)
+                continue
             if edge.get("relation") != "contains":
                 continue
             target_nid = edge.get("target")
@@ -403,6 +412,7 @@ class CsharpNameResolver:
             if not isinstance(holder_nid, str) or not holder_nid:
                 continue
             nested_candidates.setdefault((holder_nid, label), {})[target_nid] = target_node
+            self.holder_of_type.setdefault(target_nid, holder_nid)
 
         for (holder_nid, label), node_dict in nested_candidates.items():
             canonical_nid = sorted(
@@ -508,6 +518,72 @@ class CsharpNameResolver:
             frontier.extend(self.base_types_by_holder.get(nid, ()))
         return next(iter(hits)) if len(hits) == 1 else None
 
+    def _enclosing_type_chain(self, source_node: dict) -> list[str]:
+        """The types lexically enclosing ``source_node``, innermost first.
+
+        For a member (method, constructor, ...) the chain starts at its owning type,
+        for a type at the type itself: a field typed with the type's own nested type
+        names that nested type. (A base list that named one of the type's own nested
+        types would be a circular base, which C# rejects.)
+        """
+        nid = source_node.get("id")
+        if not isinstance(nid, str):
+            return []
+        current = self.owner_of_member.get(nid, nid)
+        chain = [current]
+        seen = {current}
+        while (holder := self.holder_of_type.get(current)) is not None and holder not in seen:
+            chain.append(holder)
+            seen.add(holder)
+            current = holder
+        return chain
+
+    def _nested_type_hits(self, holder_nid: str, name: str) -> set[str] | None:
+        """Nested types called ``name`` declared on ``holder_nid`` or inherited from its bases.
+
+        None when the base walk reaches a type outside the corpus: the name may be
+        declared there, so the lookup cannot tell.
+        """
+        hits: set[str] = set()
+        seen: set[str] = set()
+        frontier = [holder_nid]
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            node = self.node_by_id.get(nid)
+            if not node or not _is_cs_file(node.get("source_file")):
+                return None
+            declared = self.nested_types_by_holder.get(nid, {}).get(name)
+            if declared:
+                hits.add(declared)
+                continue
+            frontier.extend(self.base_types_by_holder.get(nid, ()))
+        return hits
+
+    def _resolve_in_enclosing_types(self, label: str, source_node: dict) -> tuple[str | None, bool]:
+        """Resolve a simple type name against the nested types of the enclosing types.
+
+        C# looks a simple name up in each enclosing type (and the types it inherits
+        from) before it looks at namespaces, innermost first. So inside ``Outer`` a
+        sibling nested type ``Base`` wins over a namespace-level ``Base``. Same
+        verdict shape as ``resolve_type_name``.
+
+        A level whose base chain leaves the corpus may declare the name out of
+        sight; it is skipped and the walk goes on outward, as the namespace lookup
+        after it would make the same assumption.
+        """
+        for holder_nid in self._enclosing_type_chain(source_node):
+            hits = self._nested_type_hits(holder_nid, label)
+            if hits is None:
+                continue
+            if len(hits) == 1:
+                return next(iter(hits)), True
+            if hits:
+                return None, True
+        return None, False
+
     def _resolve_holder_nid(self, target_fqn: str) -> str | None:
         base_fqn = _strip_trailing_csharp_generic_args(html.unescape(target_fqn)).strip()
         if not base_fqn:
@@ -567,6 +643,11 @@ class CsharpNameResolver:
             if qualified:
                 return qualified, True
             return (None if decisive else self._resolve_holder_nid(label)), True
+        # Enclosing types come before anything a namespace declaration brings in,
+        # `using` aliases included.
+        enclosing_hit, enclosing_decisive = self._resolve_in_enclosing_types(label, source_node)
+        if enclosing_decisive:
+            return enclosing_hit, True
         if label in self.aliases_by_file.get(source_file, {}):
             return self._resolve_alias(label, source_node, source_file), True
         candidates: list[str] = []
