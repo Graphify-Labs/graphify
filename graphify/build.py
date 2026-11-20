@@ -245,9 +245,10 @@ _GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"
 # `calls` whenever the member id sorted after the owner id, so the membership
 # edge never reached graph.json and the member disappeared from type walks
 # (member lookup, explain, call resolution into the type). The membership edge
-# wins; the call is what this collapse drops. Directed graphs keep both, because
-# the two directions are different arcs. Same-direction `contains`/`method` vs
-# `calls` is not ranked here.
+# wins; the call is what this collapse drops. The same holds for any other fact a
+# member records back to its owner (a PHP `uses_static_prop` on `Counter::$limit`,
+# #2391, #2791). Directed graphs keep both, because the two directions are
+# different arcs. Same-direction `contains`/`method` vs `calls` is not ranked here.
 _STRUCTURAL_MEMBER_RELATIONS: frozenset[str] = frozenset({"method", "contains"})
 _CONFIDENCE_RANK: dict[str, int] = {"EXTRACTED": 3, "INFERRED": 2, "AMBIGUOUS": 1}
 # The fields that say how sure the graph is of an edge and where that came from.
@@ -2280,7 +2281,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             if (
                 reverse
                 and existing_rel in _STRUCTURAL_MEMBER_RELATIONS
-                and incoming_rel == "calls"
+                and incoming_rel not in _STRUCTURAL_MEMBER_RELATIONS
             ):
                 continue
         # A pair that already carries a SPECIFIC relation must not be downgraded
