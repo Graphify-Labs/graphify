@@ -210,7 +210,7 @@ def test_a_lone_same_named_method_is_linked_whatever_its_signature(tmp_path):
 
 def test_constructor_is_not_a_dispatch_target(tmp_path):
     # The constructor is labelled after the class, so only the run() method can
-    # match the interface; this pins that a constructor never adds a candidate.
+    # match the interface; the same-named case is the next test.
     dispatch, r = _extract(tmp_path, {
         "Worker.java": "public interface Worker { void run(); }\n",
         "EmailWorker.java": (
@@ -221,6 +221,17 @@ def test_constructor_is_not_a_dispatch_target(tmp_path):
         ),
     })
     assert dispatch == {(_find(r, ".run()", "worker_worker"), _find(r, ".run()", "emailworker"))}
+
+
+def test_a_constructor_named_like_the_interface_method_is_not_a_target(tmp_path):
+    # The resolver skips constructors by `kind`, so a Java constructor must carry it.
+    dispatch, r = _extract(tmp_path, {
+        "Starter.java": "public interface Starter { void Engine(); }\n",
+        "Engine.java": "public class Engine implements Starter { public Engine() { } }\n",
+    })
+    assert dispatch == set()
+    ctor = _find(r, ".Engine()", "engine_engine")
+    assert next(n for n in r["nodes"] if n["id"] == ctor)["metadata"]["kind"] == "constructor"
 
 
 def test_no_matching_member_produces_no_edge(tmp_path):
