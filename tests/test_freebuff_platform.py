@@ -57,6 +57,38 @@ def test_freebuff_and_agents_share_one_destination(tmp_path, project):
     ) == mainmod._platform_skill_destination("agents", project=project, project_dir=tmp_path)
 
 
+def _installed_tree(base: Path) -> dict[str, bytes]:
+    skill_dir = base / ".agents" / "skills" / "graphify"
+    return {
+        str(path.relative_to(skill_dir)): path.read_bytes()
+        for path in sorted(skill_dir.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("project", [False, True])
+def test_shared_destination_installs_identical_bytes(tmp_path, project):
+    """Sharing one directory is only safe because the bytes are identical.
+
+    A path-only equality check would still pass if the two installers diverged
+    (different artifact, different references, different stamp), so compare the
+    installed trees byte for byte.
+    """
+    trees = []
+    for name in ("freebuff", "agents"):
+        home = tmp_path / name / "home"
+        work = tmp_path / name / "work"
+        home.mkdir(parents=True)
+        work.mkdir()
+        argv = ["install", *(["--project"] if project else []), "--platform", name]
+        _run(work, argv, home)
+        trees.append(_installed_tree(work if project else home))
+
+    assert trees[0] == trees[1], "shared skill directory holds different bytes per platform"
+    assert "SKILL.md" in trees[0]
+    assert any(part.endswith("extraction-spec.md") for part in trees[0])
+
+
 def test_freebuff_installs_the_agents_bundle():
     """The platform entry resolves to the generic Agent-Skills bundle verbatim."""
     cfg = installmod._PLATFORM_CONFIG["freebuff"]
@@ -185,3 +217,37 @@ def test_global_uninstall_cleans_the_shared_directory(tmp_path):
 
     assert not skill.exists()
     assert not (home / ".agents" / "skills").exists()
+
+
+def test_uninstall_reports_the_shared_agents_install(tmp_path, capsys):
+    """The shared directory means `freebuff uninstall` also removes the `agents`
+    skill: say so instead of silently taking out a second install."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+
+    _run(cwd, ["freebuff", "install"], home)
+    capsys.readouterr()
+
+    _run(cwd, ["freebuff", "uninstall"], home)
+
+    out = capsys.readouterr().out
+    assert "shared path" in out
+    assert "agents" in out
+
+
+def test_project_uninstall_reports_the_shared_agents_install(tmp_path, capsys):
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    home.mkdir()
+    proj.mkdir()
+
+    _run(proj, ["install", "--project", "--platform", "agents"], home)
+    capsys.readouterr()
+
+    _run(proj, ["uninstall", "--project", "--platform", "freebuff"], home)
+
+    out = capsys.readouterr().out
+    assert "shared path" in out
+    assert "agents" in out

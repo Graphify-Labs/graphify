@@ -419,8 +419,49 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         _write_version_stamp(skill_dst, __version__)
         print(f"  skill installed  ->  {skill_dst}")
     return skill_dst
-def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> bool:
-    """Remove a platform skill file and its version stamp without touching other scopes."""
+def _platforms_sharing_skill_path(
+    platform_name: str, skill_dst: Path, *, project: bool, project_dir: Path | None
+) -> list[str]:
+    """Other platforms whose skill destination resolves to ``skill_dst``.
+
+    ``agents`` and ``freebuff`` intentionally install one directory, so removing
+    either one removes the other's skill too. Callers report that instead of
+    letting an uninstall silently take out a second platform's install.
+    """
+    own = _PLATFORM_CONFIG.get(platform_name)
+    if own is None:
+        return []
+    own_bundle = (own.get("skill_file"), own.get("skill_refs"))
+    sharing: list[str] = []
+    for other in sorted(_PLATFORM_CONFIG):
+        if other == platform_name:
+            continue
+        cfg = _PLATFORM_CONFIG[other]
+        if (cfg.get("skill_file"), cfg.get("skill_refs")) != own_bundle:
+            # A different bundle at the same path is the ambiguous case the
+            # stale-skill refresh refuses to touch; it is not the pair we mean.
+            continue
+        try:
+            dst = _platform_skill_destination(other, project=project, project_dir=project_dir)
+        except (KeyError, ValueError, OSError):
+            continue
+        if dst == skill_dst:
+            sharing.append(other)
+    return sharing
+
+
+def _remove_skill_file(
+    platform_name: str,
+    *,
+    project: bool = False,
+    project_dir: Path | None = None,
+    report_shared: bool = True,
+) -> bool:
+    """Remove a platform skill file and its version stamp without touching other scopes.
+
+    ``report_shared=False`` silences the shared-destination note, for callers that
+    remove every platform anyway (`graphify uninstall`).
+    """
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
     removed = False
     with _skill_lock(skill_dst.parent):
@@ -441,6 +482,16 @@ def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir
                 d.rmdir()
             except OSError:
                 break
+    if removed and report_shared:
+        sharing = _platforms_sharing_skill_path(
+            platform_name, skill_dst, project=project, project_dir=project_dir
+        )
+        if sharing:
+                others = ", ".join(f"`{name}`" for name in sharing)
+                print(
+                    f"  shared path      ->  {skill_dst.parent} is also the "
+                    f"{others} install target; removed for it as well"
+            )
     return removed
 def _project_scope_root(path: Path, project_dir: Path) -> Path:
     """Return the top-level project artifact for a project-scoped skill path."""
@@ -2558,7 +2609,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # ~/.config/agents/skills for amp, ~/.agents/skills, ...) that the AGENTS.md
     # cleanup above does not touch, so remove every platform's.
     for platform_name in _PLATFORM_CONFIG:
-        _remove_skill_file(platform_name)
+        _remove_skill_file(platform_name, report_shared=False)
     # Kilo's global command sits outside its skill dir.
     for line in _kilo_uninstall_global():
         print(f"  {line}")
