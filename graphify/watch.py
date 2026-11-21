@@ -239,6 +239,15 @@ def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     return out
 
 
+def _is_corpus_ignore_path(path: Path) -> bool:
+    """True when ``path`` is an ignore file that reshapes the AST corpus (#5329)."""
+    raw = Path(path)
+    if raw.name in {".gitignore", ".graphifyignore"}:
+        return True
+    posix = raw.as_posix().replace("\\", "/")
+    return posix.endswith(".git/info/exclude")
+
+
 # msvcrt.locking reports a byte range held by another handle as EACCES
 # (EDEADLOCK is the LK_LOCK flavour). Any other errno means the lock call
 # itself is unsupported on this filesystem, so waiting for it is pointless.
@@ -1146,6 +1155,7 @@ def _reconcile_existing_graph(
     deleted_source_identities: set[str],
     is_ignored_always: Callable[[Path], bool] | None = None,
     is_ignored_full: Callable[[Path], bool] | None = None,
+    honor_vcs_ignore: bool = False,
 ) -> tuple[dict, dict]:
     """Merge fresh extraction with preserved graph entries and evict stale sources.
 
@@ -1156,7 +1166,9 @@ def _reconcile_existing_graph(
     graph-level intent, honored on every rebuild. ``is_ignored_full`` adds
     .gitignore-driven rules, honored only on a full rebuild (an explicit
     ``graphify update``) so the incremental/hook path keeps preserving a
-    deliberately-graphed .gitignore'd tree (#1795).
+    deliberately-graphed .gitignore'd tree (#1795). ``honor_vcs_ignore``
+    also honors those .gitignore rules when the change list itself contains
+    an ignore file (#5329).
     """
     existing_graph_data: dict = {}
     if not existing_graph.exists():
@@ -1255,7 +1267,8 @@ def _reconcile_existing_graph(
             """True when a live ignore rule matches this alive, corpus-absent source.
 
             .graphifyignore/--exclude matches evict on every rebuild;
-            .gitignore-driven matches only on a full rebuild (see docstring).
+            .gitignore-driven matches only on a full rebuild, or when the
+            change list itself contains an ignore file (see docstring).
             """
             ignored = _ignored_cache.get(identity)
             if ignored is None:
@@ -1263,7 +1276,7 @@ def _reconcile_existing_graph(
                 ignored = bool(
                     (is_ignored_always is not None and is_ignored_always(target))
                     or (
-                        full_rebuild
+                        (full_rebuild or honor_vcs_ignore)
                         and is_ignored_full is not None
                         and is_ignored_full(target)
                     )
@@ -2736,6 +2749,7 @@ def _rebuild_code(
             for root in (project_root, watch_root):
                 deleted_paths.add(_nsf(str(path), str(root)) or str(path))
 
+        ignore_changed = False
         if changed_paths is not None:
             code_set = {Path(os.path.abspath(p)) for p in code_files}
             # #1915: semantic-backed docs are never AST-quick-scanned; their
@@ -2789,9 +2803,54 @@ def _rebuild_code(
                     _add_deleted_source(deleted_in_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
+            ignore_changed = any(_is_corpus_ignore_path(raw) for raw in changed_paths)
+            if ignore_changed and existing_graph.exists():
+                # The ignore file itself is not an extract target, so newly
+                # included corpus files would otherwise stay unindexed (#5329).
+                try:
+                    check_graph_file_size_cap(existing_graph)
+                    ignore_graph = json.loads(existing_graph.read_text(encoding="utf-8"))
+                    ignore_paths = _StoredSourcePaths(
+                        ignore_graph,
+                        out=out,
+                        project_root=project_root,
+                        watch_root=watch_root,
+                        normalize_source=_nsf,
+                    )
+                    owned = {
+                        ignore_paths.absolute_identity(node.get("source_file"), project_root)
+                        for node in ignore_graph.get("nodes", [])
+                        if node.get("source_file")
+                    }
+                    owned.discard(None)
+                    wanted_set = {Path(os.path.abspath(p)) for p in wanted}
+                    for path in code_files:
+                        ident = ignore_paths.absolute_identity(str(path), project_root)
+                        abs_path = Path(os.path.abspath(path))
+                        if (
+                            ident
+                            and ident not in owned
+                            and abs_path not in wanted_set
+                            and abs_path not in semantic_doc_set
+                        ):
+                            wanted.append(path)
+                            wanted_set.add(abs_path)
+                except Exception:
+                    pass
             if not wanted and not deleted_paths:
-                print("[graphify watch] No tracked code files in change set - skipping rebuild.")
-                return True
+                # An empty change list is a no-op even when a graph exists:
+                # continuing would restamp .graphify_build_state.json and
+                # fail a copied-checkout incremental update. A nonempty
+                # change list with no extract or delete targets still needs
+                # reconciliation when a graph exists: it can be only a
+                # rename destination that is not a tracked code file
+                # (util.py -> util.py.bak) or only an ignore file, and
+                # either one can leave stale nodes if we return here
+                # (#5329). An empty extract_targets list is already
+                # handled below.
+                if not changed_paths or not existing_graph.exists():
+                    print("[graphify watch] No tracked code files in change set - skipping rebuild.")
+                    return True
             extract_targets = wanted
         else:
             # Full rebuild: skip the AST quick-scan for semantic-backed docs
@@ -3072,6 +3131,7 @@ def _rebuild_code(
                 deleted_source_identities=deleted_source_identities,
                 is_ignored_always=_ignored_always,
                 is_ignored_full=_ignored_full,
+                honor_vcs_ignore=ignore_changed,
             )
         except (RuntimeError, ValueError) as exc:
             # Existing graph present but unreadable — over the size cap

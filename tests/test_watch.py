@@ -1544,6 +1544,108 @@ def test_rebuild_code_prunes_renamed_ast_backed_document(tmp_path):
     assert "renamed.md" in sources
 
 
+def test_rebuild_code_prunes_destination_only_rename_to_untracked_suffix(tmp_path, capsys):
+    """#5329: a hook change list may contain only an untracked rename destination.
+
+    Renaming util.py to util.py.bak leaves the destination outside the AST
+    corpus, so the earlier empty-batch skip left util_helper in the graph.
+    Reconciliation must still run and drop the stale nodes and edges.
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def main():\n    return helper()\n", encoding="utf-8")
+    util = corpus / "util.py"
+    util.write_text("def helper():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {n.get("label") for n in before["nodes"]}
+    assert "helper()" in labels
+
+    util.rename(corpus / "util.py.bak")
+    capsys.readouterr()
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[Path("util.py.bak")],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    printed = capsys.readouterr().out
+    assert "No tracked code files in change set - skipping rebuild" not in printed
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {n.get("label") for n in after["nodes"]}
+    sources = {n.get("source_file") for n in after["nodes"]}
+    assert "helper()" not in labels
+    assert "util.py" not in sources
+    assert "main()" in labels
+    assert "app.py" in sources
+    assert not any(
+        edge.get("source_file") == "util.py"
+        for edge in after.get("links", after.get("edges", []))
+    )
+
+
+def test_rebuild_code_indexes_file_when_only_the_ignore_file_changes(tmp_path):
+    """#5329: a hook that only lists the ignore file must still index a newly included file."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    (corpus / "extra.py").write_text("def extra():\n    return 2\n", encoding="utf-8")
+    (corpus / ".graphifyignore").write_text("extra.py\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "extra.py" not in sources
+    assert "app.py" in sources
+
+    (corpus / ".graphifyignore").write_text("", encoding="utf-8")
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[Path(".graphifyignore")],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {n.get("label") for n in after["nodes"]}
+    sources = {n.get("source_file") for n in after["nodes"]}
+    assert "extra()" in labels
+    assert "extra.py" in sources
+    assert "main()" in labels
+
+
+def test_rebuild_code_prunes_when_only_the_graphifyignore_changes(tmp_path, capsys):
+    """#5329: a hook that only lists .graphifyignore must still evict the newly ignored file."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    (corpus / "vendor.py").write_text("def vendored():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    (corpus / ".graphifyignore").write_text("vendor.py\n", encoding="utf-8")
+    capsys.readouterr()
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[Path(".graphifyignore")],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "vendor.py" not in sources
+    assert "app.py" in sources
+    assert "newly-ignored file(s)" in capsys.readouterr().out
+
+
 def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
     """#1116: graphify update (_rebuild_code with no changed_paths) must prune a
     symbol removed from a file that still exists — and its inbound call edge —
