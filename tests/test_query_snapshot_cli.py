@@ -1,5 +1,6 @@
 """Exercise cache creation, use, and recovery through graphify query."""
 
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 import pytest
 
-from graphify import __main__ as mainmod, paths
+from graphify import __main__ as mainmod, paths, query_snapshot
 from graphify.cli import EXIT_AMBIGUOUS, EXIT_NOT_FOUND
 
 
@@ -86,6 +87,8 @@ def test_snapshot_recovers_from_same_size_replacement_and_broken_table(query_cli
     graph = _fixture()
     _write(path, graph)
     assert run(path, "bounded retry", "--snapshot")[0] == 0
+    first_generation = set(cache.rglob("*.sqlite3"))
+    assert len(first_generation) == 1
 
     previous_stat = path.stat()
     replacement = tmp_path / "replacement.json"
@@ -101,13 +104,43 @@ def test_snapshot_recovers_from_same_size_replacement_and_broken_table(query_cli
 
     # Leave the metadata intact so opening the cache succeeds, then fail in
     # the middle of query evaluation and verify the canonical path repairs it.
-    for index in cache.rglob("*.sqlite3"):
-        with sqlite3.connect(index) as db:
+    current_generation = set(cache.rglob("*.sqlite3")) - first_generation
+    assert len(current_generation) == 1
+    index, = current_generation
+    with closing(sqlite3.connect(index)) as db:
+        with db:
             db.execute("DROP TABLE search")
-        db.close()
     assert run(path, "digital token", "--snapshot") == expected
     monkeypatch.setattr(paths, "read_graph_json", _deny_json)
     assert run(path, "digital token", "--snapshot") == expected
+
+
+def test_unavailable_snapshot_directory_preserves_query_answer(query_cli, monkeypatch, tmp_path):
+    run, _ = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, "bounded retry")
+    assert expected[0] == 0
+
+    def unavailable_cache(_path, _identity):
+        raise RuntimeError("cannot resolve cache directory")
+
+    monkeypatch.setattr(query_snapshot, "_cache_file", unavailable_cache)
+    assert run(path, "bounded retry", "--snapshot") == expected
+
+
+def test_snapshot_build_failure_preserves_seeded_answer(query_cli, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    graph = _fixture()
+    # A seeded query can render its neighborhood without reading every node's
+    # search text. Bad data on an unrelated node only affects the optional build.
+    graph.add_node("unrelated", source_file=3)
+    _write(path, graph)
+    expected = run(path, "parser", "--seed", "one")
+    assert expected[0] == 0
+    assert run(path, "parser", "--seed", "one", "--snapshot") == expected
+    assert not list(cache.rglob("*.sqlite3"))
 
 
 @pytest.mark.parametrize("constructor", [nx.DiGraph, nx.MultiGraph])

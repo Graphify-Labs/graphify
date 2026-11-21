@@ -98,7 +98,7 @@ def open_snapshot(graph_path: Path, identity: _GraphIdentity | None) -> QuerySna
             and metadata.get("identity") == list(identity) and graph_identity(graph_path) == identity
         ):
             return QuerySnapshot(db, metadata)
-    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError):
+    except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, RuntimeError):
         pass
     if db is not None:
         db.close()
@@ -141,7 +141,7 @@ def write_snapshot(graph_path: Path, identity: _GraphIdentity, graph, legacy: bo
             )
             for stale in older[1:]:
                 stale.unlink(missing_ok=True)
-    except (OSError, sqlite3.Error, TypeError, ValueError, OverflowError, MemoryError):
+    except (OSError, sqlite3.Error, AttributeError, TypeError, ValueError, OverflowError, MemoryError, RuntimeError):
         pass  # The canonical JSON path already supplied the answer.
     finally:
         if temporary is not None:
