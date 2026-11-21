@@ -18,6 +18,11 @@ from graphify.watch import _read_build_excludes, _read_build_gitignore
 # if it runs) keeps them unstamped. Only B3.5 rewrites the list, so drop one an earlier run
 # left: it would keep a file this run serves from the cache unstamped on every run (#4807).
 Path('graphify-out/.graphify_partial.txt').unlink(missing_ok=True)
+# Nothing in this run has extracted yet, so a .graphify_extract.json on disk is left from an
+# earlier run that never reached Step 9's cleanup. A deletions-only run would merge it instead
+# of an empty extraction, and replace-on-re-extract would put its stale nodes back, even the
+# deleted files' nodes (#5340).
+Path('graphify-out/.graphify_extract.json').unlink(missing_ok=True)
 INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
 result = detect_incremental(Path(INPUT_PATH), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
