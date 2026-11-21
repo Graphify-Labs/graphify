@@ -133,6 +133,11 @@ per-file cache loading, including on changed-file extractions with unchanged
 resolution context; it does not change callback or function-local import handling.
 Explicitly supplied callers outside the scan root retain their existing fallback.
 Previously emitted false edges are removed when their caller is re-extracted.
+The binding is constrained to the module the import names directly; a call through
+a plain (non-package) module that re-exports a same-named symbol from elsewhere is
+left unresolved rather than chased one hop further, so a genuinely ambiguous
+re-export is dropped instead of guessed (package `__init__` re-exports still
+resolve through the symbol-resolution pass).
 
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
