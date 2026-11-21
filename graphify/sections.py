@@ -173,6 +173,11 @@ def format_section(section: Section, label: str) -> str:
     return "\n".join([header, *(f"Note: {n}" for n in notes), "", section.text])
 
 
+_DERIVED_CACHE_KEYS = frozenset(
+    {"_trigram_index", "_idf_cache", "_traversal_view", "_path_search_graphs"}
+)
+
+
 def resolve_section_query(G, query: str) -> "tuple[str | None, str]":
     """Resolve a heading label, node id or ``path::Heading`` to one section node.
 
