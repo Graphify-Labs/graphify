@@ -52,7 +52,9 @@ def _project(tmp_path: Path) -> str:
 def _session(client) -> dict:
     init = client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY)
     assert init.status_code == 200
-    headers = {**_MCP_HEADERS, "mcp-session-id": init.headers.get("mcp-session-id")}
+    session_id = init.headers.get("mcp-session-id")
+    assert session_id, "stateful transport should return a session id"
+    headers = {**_MCP_HEADERS, "mcp-session-id": session_id}
     client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
     return headers
 
@@ -163,3 +165,26 @@ def test_query_graph_rejects_malformed_seeds(mcp):
     client, headers = mcp
     text = _call(client, headers, "query_graph", {"question": "helper", "seeds": [1]}, 2)
     assert text.startswith("error: seeds must be a list")
+
+
+def test_query_graph_rejects_whitespace_only_seeds(mcp):
+    client, headers = mcp
+    text = _call(client, headers, "query_graph", {"question": "helper", "seeds": ["   "]}, 2)
+    assert text.startswith("error: seeds must be a list")
+
+
+def test_affected_without_any_graph_is_an_error_not_a_crash(tmp_path):
+    # A pure multi-project server (no default graph): `affected` without a
+    # project_path reports an error like every other tool, and still works when
+    # the call names a project.
+    project = tmp_path / "proj"
+    (project / "graphify-out").mkdir(parents=True)
+    (project / "graphify-out" / "graph.json").write_text(json.dumps(_GRAPH), encoding="utf-8")
+    app = serve_mod._build_http_app(str(tmp_path / "missing" / "graph.json"), json_response=True)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        headers = _session(client)
+        text = _call(client, headers, "affected", {"target": "helper()"}, 2)
+        assert text.startswith("Error executing affected")
+        ok = _call(client, headers, "affected", {"target": "helper()", "project_path": str(project)}, 3)
+        assert ok.startswith("Affected nodes for helper()")
+        assert "run_app()" in ok
