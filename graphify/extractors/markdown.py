@@ -501,6 +501,12 @@ def extract_markdown(path: Path) -> dict:
     free-function name whose label reads as prose (``token``, ``raw``) requires
     evidence from its defining file in the citing section (#4804).
     Source-file links are recorded as file citations and resolved at corpus time.
+    A code span holding a file path is a doc->file reference too (#5224): a
+    document path (``docs/other.md``) naming an existing file in the scan root
+    is linked here like an authored link; a source-file path (``src/app.ts``)
+    rides the citation raw call and is resolved against the scanned corpus.
+    Either is read relative to the document, else to the scan root, never by
+    suffix.
     The shared cross-file call pass skips these raw_calls, so a mention never
     becomes a ``calls`` edge.
 
@@ -530,6 +536,19 @@ def extract_markdown(path: Path) -> dict:
     seen_ids: set[str] = set()
     seen_mentions: set[tuple[str, "str | None", tuple[str, ...]]] = set()
 
+    scan_root = _active_scan_root()
+    real_root = os.path.realpath(str(scan_root)) if scan_root is not None else None
+    real_source_dir = os.path.realpath(str(path.parent))
+    # The scan root as a path relative to this document's directory, for a
+    # span's scan-root reading (#5224); None when there is no root or it is on
+    # another drive (Windows).
+    root_from_doc: "str | None" = None
+    if real_root is not None:
+        try:
+            root_from_doc = os.path.relpath(real_root, real_source_dir).replace("\\", "/")
+        except ValueError:
+            root_from_doc = None
+
     def add_mention(caller_nid: str, span: str, line: int) -> None:
         mention = _code_span_mention(span)
         if mention is None:
@@ -550,6 +569,12 @@ def extract_markdown(path: Path) -> dict:
         }
         if cited_path is not None:
             raw_call["path"] = cited_path
+            if (not names and root_from_doc not in (None, ".")
+                    and not cited_path.startswith(("./", "../"))):
+                # The span read from the scan root, as a path relative to this
+                # document, for the resolver to try after the document-relative
+                # reading (#5224). An explicit `./` / `../` cite never gets one.
+                raw_call["root_path"] = f"{root_from_doc}/{cited_path}"
         if len(names) > 1:
             raw_call["qualifiers"] = names[:-1]
         if cited_path is None and _MD_NS_MENTION_RE.match(span.strip()):
@@ -680,6 +705,38 @@ def extract_markdown(path: Path) -> dict:
             pass
         add_edge(file_nid, tgt_nid, "references", line, target_file=target_file)
 
+    def add_doc_span(span: str, line: int) -> None:
+        """Link a code span naming an existing document in the scan root, as a link would (#5224).
+
+        The path is read relative to the document first, then (unless it is
+        explicitly ``./`` or ``../``) relative to the scan root; a missing file,
+        a file outside the scan root, or a non-document span is not linked.
+        With no active scan root nothing is linked: containment in the root
+        cannot be checked, so the span fails closed.
+        Source-file spans are resolved against the scanned corpus instead, by
+        ``graphify.markdown_resolution``.
+        """
+        text = span.strip()
+        fm = _MD_FILE_SPAN_RE.match(text)
+        if not fm or "." + fm.group(2).lower() not in _MD_LINKABLE_EXTS or real_root is None:
+            return
+        bases = [real_source_dir]
+        if not text.startswith(("./", "../")):
+            bases.append(real_root)
+        for base in bases:
+            # Realpaths on both sides, so a symlinked scan root (/var ->
+            # /private/var) still relates the target to the document.
+            target = os.path.realpath(os.path.join(base, text))
+            try:
+                if not os.path.isfile(target):
+                    continue
+                Path(target).relative_to(real_root)
+                rel = os.path.relpath(target, real_source_dir)
+            except (OSError, ValueError):  # outside the scan root, or another drive
+                continue
+            add_link(rel.replace("\\", "/"), line, owner=file_nid)
+            return
+
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
     fence: "tuple[str, int] | None" = None  # (char, length) of the open fence
@@ -751,6 +808,7 @@ def extract_markdown(path: Path) -> dict:
                 add_link(m.group(1), line_num, owner=h_nid, wikilink=True)
             # A code span in the heading itself is that heading's mention.
             for m in _MD_CODE_SPAN_RE.finditer(title):
+                add_doc_span(m.group(2), line_num)
                 add_mention(h_nid, m.group(2), line_num)
             continue
 
@@ -775,6 +833,7 @@ def extract_markdown(path: Path) -> dict:
             if _url and not _is_code_file_link(_url, source_dir):
                 add_link(_url, line_num, owner=file_nid)
         for m in _MD_CODE_SPAN_RE.finditer(line_text):
+            add_doc_span(m.group(2), line_num)
             add_mention(owner, m.group(2), line_num)
 
     return {"nodes": nodes, "edges": edges, "raw_calls": raw_calls,
