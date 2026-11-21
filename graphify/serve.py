@@ -2979,6 +2979,24 @@ def _build_server(graph_path: str):
         G, communities = _load_ctx(path)
         active_graph_path = str(Path(path).resolve())
 
+    async def _warm_graph(project_path) -> None:
+        """Load (or reload) the target graph in a worker thread (#5371).
+
+        ``_ctx_cache.load`` parses graph.json and builds its trigram index,
+        which takes seconds on a large graph. Run on the event loop, it stops
+        every other request, so the stale entry ``load`` hands concurrent
+        callers during a rebuild (#5177) was never reachable. After this
+        returns, ``_select_graph`` is a cache hit, or gets the current
+        entry while another call's rebuild is still in flight.
+
+        Only the load leaves the loop. ``_select_graph`` and the handler still
+        run with no await between them, so the shared ``G`` cannot be rebound
+        by another call in the middle of a handler.
+        """
+        import anyio
+
+        await anyio.to_thread.run_sync(_load_ctx, _resolve_graph_path(project_path))
+
     # NOTE: no decorators here — the handlers below are plain coroutines,
     # bound to the Server at the END of this function in a version-aware way:
     # mcp 1.x exposes the @server.list_tools()/... decorator API, mcp 2.x
@@ -3464,6 +3482,7 @@ def _build_server(graph_path: str):
         ]
 
     async def read_resource(uri: AnyUrl) -> str:
+        await _warm_graph(None)
         _select_graph(None)  # resources read the server's default graph
         uri_str = str(uri)
         if uri_str == "graphify://report":
@@ -3521,6 +3540,7 @@ def _build_server(graph_path: str):
         if not handler:
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
+            await _warm_graph(project_path)
             _select_graph(project_path)  # bind G/communities to the target graph
             return [types.TextContent(type="text", text=handler(arguments))]
         except ToolError:
