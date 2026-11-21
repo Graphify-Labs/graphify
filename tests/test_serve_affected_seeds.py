@@ -62,7 +62,9 @@ def _rpc(client, headers, method, params, rid):
         "jsonrpc": "2.0", "id": rid, "method": method, "params": params,
     })
     assert resp.status_code == 200
-    return resp.json()["result"]
+    body = resp.json()
+    assert "result" in body, f"MCP error reply: {body.get('error')}"
+    return body["result"]
 
 
 def _call(client, headers, name, arguments, rid) -> str:
@@ -97,7 +99,30 @@ def test_affected_accepts_a_repo_relative_file_path(mcp):
     # Resolves through the graph root derived from <root>/graphify-out/graph.json,
     # the same rule as the CLI.
     text = _call(client, headers, "affected", {"target": "lib.py"}, 2)
-    assert "Affected nodes for" in text
+    assert text.startswith("Affected nodes for")
+    assert "run_app()" in text
+
+
+def test_affected_absolute_path_uses_the_shared_graph_root(tmp_path):
+    # A graph that lives outside `<root>/graphify-out` (shared/nested output
+    # dir) names its project root in `.graphify_root`; an absolute file path must
+    # still relativize against that root, as in the CLI.
+    project = tmp_path / "project"
+    project.mkdir()
+    shared = tmp_path / "shared-out"
+    shared.mkdir()
+    (shared / "graph.json").write_text(json.dumps(_GRAPH), encoding="utf-8")
+    (shared / ".graphify_root").write_text(str(project), encoding="utf-8")
+    app = serve_mod._build_http_app(str(shared / "graph.json"), json_response=True)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        headers = _session(client)
+        target = str(project / "lib.py")
+        text = _call(client, headers, "affected", {"target": target}, 2)
+        assert text.startswith("Affected nodes for")
+        assert "run_app()" in text
+        seeded = _call(client, headers, "query_graph", {"question": "zzqx", "seeds": [target]}, 3)
+        assert "No unique node match" not in seeded
+        assert "run_app()" in seeded
 
 
 def test_affected_ambiguous_label_is_a_candidate_list_not_a_guess(mcp):
@@ -121,10 +146,11 @@ def test_affected_rejects_bad_arguments(mcp):
 
 def test_query_graph_seeds_start_from_the_given_node(mcp):
     client, headers = mcp
-    # The question shares no keyword with the graph: only the seed can anchor it.
+    # The question shares no keyword with the graph: only the seed can anchor it,
+    # and `run_app()` (the seed's caller) is reached by traversal, not echoed.
     text = _call(client, headers, "query_graph", {"question": "zzqx", "seeds": ["helper()"]}, 2)
-    assert "helper()" in text
     assert "No unique node match" not in text
+    assert "run_app()" in text
 
 
 def test_query_graph_unresolvable_seed_fails_closed(mcp):
