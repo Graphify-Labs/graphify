@@ -191,6 +191,10 @@ def resolve_section_query(G, query: str) -> "tuple[str | None, str]":
     if nid is not None and is_section_node(G.nodes[nid]):
         return nid, ""
     sections = G.subgraph([n for n, d in G.nodes(data=True) if is_section_node(d)])
+    # A subgraph view shares G.graph, so it would reuse the full graph's search
+    # caches (ids of nodes not in the view) or store its own over the full
+    # graph's. Give the view its own dict without the derived caches (#5385).
+    sections.graph = {k: v for k, v in G.graph.items() if k not in _DERIVED_CACHE_KEYS}
     sec_nid, _ = _resolve_single_node(sections, query)
     if sec_nid is not None:
         return sec_nid, ""
