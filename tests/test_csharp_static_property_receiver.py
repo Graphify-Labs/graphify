@@ -143,3 +143,29 @@ def test_ambiguous_name_resolves_once_only_one_namespace_is_visible(tmp_path):
     targets = {t for s, t in calls if s == run}
     assert len(targets) == 1
     assert "first" in next(iter(targets)).lower()
+
+
+def test_static_readonly_field_receiver_resolves(tmp_path):
+    # A `static readonly` field is a static member like a property.
+    audio = (
+        "public class Audio\n{\n"
+        "    public static readonly Audio Shared = new Audio();\n"
+        "    public void Click() { }\n}\n"
+    )
+    calls, r = _calls(tmp_path, {
+        "Audio.cs": audio, "Decoy.cs": _DECOY, "Menu.cs": _menu("Audio.Shared.Click();"),
+    })
+    run = _find(r, ".Run()", "menu")
+    assert (run, _find(r, ".Click()", "audio")) in calls
+    assert (run, _find(r, ".Click()", "decoy")) not in calls
+
+
+def test_local_named_like_the_type_through_var_gives_no_edge(tmp_path):
+    # `Audio` is a local here, so `Audio.Instance` is a member of its value, not
+    # of the class Audio.
+    body = "var Audio = Make(); var a = Audio.Instance; a.Click();"
+    calls, r = _calls(tmp_path, {
+        "Audio.cs": _AUDIO, "Menu.cs": _menu(body, "object Make() { return null; }"),
+    })
+    run = _find(r, ".Run()", "menu")
+    assert (run, _find(r, ".Click()", "audio")) not in calls
