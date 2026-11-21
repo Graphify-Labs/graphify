@@ -2467,10 +2467,17 @@ def _resolve_path_endpoint(
     and routing from the closest-sounding label instead prints a path through
     a symbol nobody asked about.
 
+    A node id names exactly one node, so it resolves before any ranking, as
+    in `_resolve_single_node` (#5343): another node whose label tokenizes to
+    the id's words otherwise ties it in the exact tier, and the refusal tells
+    the caller to retry with the id they already gave (#5361).
+
     Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
     score fallback picked the node; ``(None, [], message)`` when ambiguous; and
     ``(None, [], None)`` when nothing matches.
     """
+    if query in G:
+        return query, [], None
     source_exact, exact, _, _ = _find_node_tiers(G, query)
     hits = source_exact or exact
     if hits:
