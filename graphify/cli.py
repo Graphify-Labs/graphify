@@ -2568,6 +2568,85 @@ def dispatch_command(cmd: str) -> None:
                 f"({c['useful']} useful, {c['dead_end']} dead ends, "
                 f"{c['corrected']} corrected) -> {out_path}"
             )
+    elif cmd == "summarize":
+        import argparse as _ap
+
+        p = _ap.ArgumentParser(
+            prog="graphify summarize",
+            description="Write a short deterministic summary of every file-level node "
+                        "to a sidecar next to graph.json. No model is called and "
+                        "graph.json is not modified. With a file name, print that "
+                        "file's summary and write nothing.",
+        )
+        p.add_argument("file", nargs="?", default=None,
+                       help="a file's name, path or node id: print its summary only")
+        p.add_argument("--graph", default=None,
+                       help="path to graph.json (default: the project's graphify-out/graph.json)")
+        p.add_argument("--out", default=None,
+                       help="where to write the summaries (default: node-summaries.json "
+                            "next to the graph, which is where graphify reads them from)")
+        from graphify.summarize import (
+            SUMMARY_DOCUMENT_MAX_CHARS,
+            SUMMARY_HARD_MAX_CHARS,
+            SUMMARY_MAX_CHARS,
+            SUMMARY_MIN_MAX_CHARS,
+            SUMMARY_SIDECAR_NAME,
+            summarize_node,
+            write_summaries,
+        )
+        p.add_argument("--max-chars", type=int, default=None, metavar="N",
+                       help=f"longest a summary may be, {SUMMARY_MIN_MAX_CHARS} to "
+                            f"{SUMMARY_HARD_MAX_CHARS} (default {SUMMARY_MAX_CHARS} for a code "
+                            f"file, {SUMMARY_DOCUMENT_MAX_CHARS} for a document)")
+        opts = p.parse_args(sys.argv[2:])
+        if opts.file is not None and opts.out is not None:
+            p.error("--out writes the summaries of every file; it cannot be used with a file name")
+        if (opts.max_chars is not None
+                and not SUMMARY_MIN_MAX_CHARS <= opts.max_chars <= SUMMARY_HARD_MAX_CHARS):
+            p.error(f"--max-chars must be between {SUMMARY_MIN_MAX_CHARS} and "
+                    f"{SUMMARY_HARD_MAX_CHARS}, got {opts.max_chars}")
+        from graphify.sections import section_root
+
+        gp = Path(opts.graph or _default_graph_path()).resolve()
+        G = _load_cli_graph(gp)
+        if opts.file is not None:
+            # One file: computed from the graph as it is now and printed. The
+            # sidecar is neither read nor written.
+            from graphify.security import sanitize_label
+            from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
+            from graphify.summarize import is_file_node
+
+            nid, refusal = _resolve_single_node(G, opts.file)
+            if nid is None:
+                print(refusal)
+                sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(refusal) else EXIT_NOT_FOUND)
+            d = G.nodes[nid]
+            label = sanitize_label(str(d.get("label", nid)))
+            if not is_file_node(d):
+                print(f"'{label}' is not a file. graphify summarize describes whole files; "
+                      f"give the file it is in: {sanitize_label(str(d.get('source_file') or ''))}",
+                      file=sys.stderr)
+                sys.exit(1)
+            print(f"Node: {label}")
+            print(f"  Source:    {sanitize_label(str(d.get('source_file') or ''))}")
+            summary = summarize_node(G, nid, section_root(gp), max_chars=opts.max_chars)
+            print(f"  Summary:   {summary or '(nothing to summarize in this file)'}")
+            return
+        out = Path(opts.out) if opts.out else gp.parent / SUMMARY_SIDECAR_NAME
+        # The graph is read-only for this command, whatever --out says.
+        if out.resolve() == gp or (out.exists() and out.samefile(gp)):
+            p.error("--out is the graph file itself; summaries are written beside "
+                    "graph.json, never into it")
+        had_sidecar = out.is_file()
+        out_path, summarized, file_nodes = write_summaries(
+            G, out, section_root(gp), opts.max_chars)
+        if summarized:
+            print(f"Summarized {summarized} of {file_nodes} file nodes -> {out_path}")
+        else:
+            what = (f"None of the {file_nodes} file nodes in {gp} has anything to summarize"
+                    if file_nodes else f"No file nodes to summarize in {gp}")
+            print(f"{what}; cleared the earlier summaries in {out_path}." if had_sidecar
+                  else f"{what}; nothing written.")
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
@@ -2795,6 +2874,16 @@ def dispatch_command(cmd: str) -> None:
         )
         print(f"  Type:      {d.get('file_type', '')}")
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
+        # Node summary: display-only, from the node-summaries.json sidecar that
+        # `graphify summarize` writes next to graph.json. No line without an
+        # entry, and none when the entry was written for another source file.
+        try:
+            from graphify.summarize import load_summaries as _ls
+            _summary = _ls(gp).get(str(nid))
+            if _summary and _summary.get("source_file", "") == str(d.get("source_file") or ""):
+                print(f"  Summary:   {_summary['summary']}")
+        except Exception:
+            pass
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
         # graph.json. No line when the node has no overlay entry.
