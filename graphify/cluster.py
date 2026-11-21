@@ -7,6 +7,7 @@ import io
 import json
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 import networkx as nx
 
@@ -594,17 +595,16 @@ def remap_communities_to_previous(
     if not communities:
         return {}
 
-    new_sets = {cid: set(nodes) for cid, nodes in communities.items()}
-    old_sets: dict[int, set[str]] = {}
-    for node, old_cid in previous_node_community.items():
-        old_sets.setdefault(old_cid, set()).add(node)
-
+    # Count only community pairs that share a node. Deduplicate members
+    # for the overlap count to preserve the original set semantics.
     overlaps: list[tuple[int, int, int]] = []
-    for old_cid, old_nodes in old_sets.items():
-        for new_cid, new_nodes in new_sets.items():
-            overlap = len(old_nodes & new_nodes)
-            if overlap > 0:
-                overlaps.append((overlap, old_cid, new_cid))
+    for new_cid, nodes in communities.items():
+        counts = Counter(
+            previous_node_community[node]
+            for node in set(nodes)
+            if node in previous_node_community
+        )
+        overlaps.extend((count, old_cid, new_cid) for old_cid, count in counts.items())
     overlaps.sort(key=lambda x: (-x[0], x[1], x[2]))
 
     new_to_final: dict[int, int] = {}
