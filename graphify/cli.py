@@ -2255,6 +2255,12 @@ def dispatch_command(cmd: str) -> None:
         _enforce_graph_size_cap_or_exit(gp)
         from graphify.query_snapshot import SnapshotReadError, graph_identity, open_snapshot, write_snapshot
 
+        if use_snapshot:
+            try:
+                for text in (question, *seeds):
+                    text.encode()
+            except UnicodeEncodeError:
+                use_snapshot = False
         generation = graph_identity(gp) if use_snapshot else None
         snapshot = open_snapshot(gp, generation) if generation is not None else None
         G, legacy = (snapshot, snapshot.legacy) if snapshot is not None else _load_query_graph(gp)

@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 import tempfile
 from typing import Literal, overload
+from unicodedata import unidata_version
 
 import networkx as nx
 
@@ -24,7 +25,7 @@ except ImportError:  # A CPython build can omit the optional SQLite module.
 
 
 # Bump when the persisted search text, label normalization, or row format changes.
-_FORMAT = 1
+_FORMAT = 2
 _BATCH = 512
 _GraphIdentity = tuple[int, int, int, int, int, str | None]
 _SCHEMA = """
@@ -73,12 +74,32 @@ def _cache_file(graph_path: Path, identity: _GraphIdentity) -> Path:
     except PackageNotFoundError:
         release = None
     scope = sha256(os.fsencode(graph_path)).hexdigest()
-    generation = sha256(_json([_FORMAT, release, sys.byteorder, identity]).encode()).hexdigest()
+    generation = sha256(_json([_FORMAT, release, sys.byteorder, unidata_version, identity]).encode()).hexdigest()
     return root.resolve() / "graphify" / "query-snapshots" / scope / f"{generation}.sqlite3"
 
 
 class SnapshotReadError(Exception):
     """A derived snapshot could not serve the request."""
+
+
+def _usable_metadata(metadata) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    for key in ("nodes", "edges", "hub"):
+        value = metadata.get(key)
+        if type(value) is not int or value < 0:
+            return False
+    signatures = metadata.get("signatures")
+    return (
+        isinstance(metadata.get("legacy"), bool)
+        and isinstance(metadata.get("learning_overlay"), (dict, type(None)))
+        and isinstance(signatures, list)
+        and all(
+            isinstance(pair, list) and len(pair) == 2
+            and not any(isinstance(part, (list, dict)) for part in pair)
+            for pair in signatures
+        )
+    )
 
 
 def open_snapshot(graph_path: Path, identity: _GraphIdentity | None) -> QuerySnapshot | None:
@@ -94,7 +115,7 @@ def open_snapshot(graph_path: Path, identity: _GraphIdentity | None) -> QuerySna
         row = db.execute("SELECT value FROM metadata").fetchone()
         metadata = json.loads(row[0]) if row else {}
         if (
-            isinstance(metadata, dict) and metadata.get("format") == _FORMAT
+            _usable_metadata(metadata) and metadata.get("format") == _FORMAT
             and metadata.get("identity") == list(identity) and graph_identity(graph_path) == identity
         ):
             return QuerySnapshot(db, metadata)
@@ -167,11 +188,16 @@ def _write_projection(db, graph, legacy: bool, identity: _GraphIdentity) -> None
 
     def search_rows():
         for i, node in enumerate(ids):
+            label = fields[node].norm_label
+            if label != label.lower():
+                # Qualified-name scoring can fold cased labels even when a
+                # case-sensitive substring lookup in the projection cannot.
+                raise ValueError("snapshot requires normalized labels")
             text = _node_search_text_from_fields(fields[node], node)
             for gram in _trigrams(text):
                 if len(gram) == 3 and "\0" not in gram:
                     postings[gram].append(i)
-            yield i, fields[node].norm_label.encode(), text.encode()
+            yield i, label.encode(), text.encode()
 
     db.executemany("INSERT INTO search VALUES (?, ?, ?)", search_rows())
     db.executemany(

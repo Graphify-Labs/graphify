@@ -446,8 +446,11 @@ The first query builds a local SQLite cache for that graph generation. Later
 queries with the flag reuse it until `graph.json` changes. The cache lives
 under `$XDG_CACHE_HOME/graphify/query-snapshots` (default `~/.cache`) or under
 `%LOCALAPPDATA%\graphify\query-snapshots` on Windows. It is disposable and can
-take more disk space than `graph.json`. Undirected simple graphs use the
-snapshot. Other graph types use the regular query path.
+take more disk space than `graph.json`. Snapshots support undirected simple
+graphs with normalized labels. Other graphs use the regular query path.
+Graphify's atomic writes invalidate the snapshot. Clear the cache if an
+external writer edits `graph.json` in place and preserves its file identity
+and timestamps.
 
 ---
 

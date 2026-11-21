@@ -81,6 +81,21 @@ def test_warm_snapshot_matches_normal_query_without_loading_json(query_cli, monk
     assert [run(path, question, *args, "--snapshot") for question, args in cases] == expected
 
 
+def test_snapshot_rebuilds_when_unicode_data_changes(query_cli, monkeypatch, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, "bounded retry")
+    assert run(path, "bounded retry", "--snapshot") == expected
+    (first,) = cache.rglob("*.sqlite3")
+
+    monkeypatch.setattr(query_snapshot, "unidata_version", "0.0.0")
+    assert run(path, "bounded retry", "--snapshot") == expected
+    assert len(set(cache.rglob("*.sqlite3")) - {first}) == 1
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", "--snapshot") == expected
+
+
 def test_snapshot_recovers_from_same_size_replacement_and_broken_table(query_cli, monkeypatch, tmp_path):
     run, cache = query_cli
     path = tmp_path / "graph.json"
@@ -141,6 +156,59 @@ def test_snapshot_build_failure_preserves_seeded_answer(query_cli, tmp_path):
     assert expected[0] == 0
     assert run(path, "parser", "--seed", "one", "--snapshot") == expected
     assert not list(cache.rglob("*.sqlite3"))
+
+
+@pytest.mark.parametrize(("field", "value"), [("nodes", "bad"), ("signatures", None)])
+def test_malformed_projection_metadata_recovers_through_json(query_cli, monkeypatch, tmp_path, field, value):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    args = ("--context", "call")
+    expected = run(path, "bounded retry", *args)
+    assert expected[0] == 0
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+
+    index, = cache.rglob("*.sqlite3")
+    with closing(sqlite3.connect(index)) as db, db:
+        metadata = json.loads(db.execute("SELECT value FROM metadata").fetchone()[0])
+        metadata[field] = value
+        db.execute("UPDATE metadata SET value = ?", (json.dumps(metadata),))
+
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+
+
+def test_case_variant_normalized_label_keeps_json_scoring(query_cli, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    graph = nx.Graph()
+    graph.add_node("opaque", label="different", norm_label="OwnerToken")
+    _write(path, graph)
+
+    expected = run(path, "token")
+    assert expected[0] == 0
+    assert run(path, "token", "--snapshot") == expected
+    assert run(path, "token", "--snapshot") == expected
+    assert not list(cache.rglob("*.sqlite3"))
+
+
+@pytest.mark.parametrize(("question", "args"), [
+    ("find bounded retry \udc80", ()),
+    ("what calls the parser", ("--seed", "one\udc80", "--seed", "one")),
+])
+def test_unencodable_input_keeps_json_query_behavior(query_cli, tmp_path, question, args):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    assert run(path, "bounded retry", "--snapshot")[0] == 0
+    index, = cache.rglob("*.sqlite3")
+    written = index.stat().st_mtime_ns
+
+    expected = run(path, question, *args)
+    assert expected[0] == 0
+    assert run(path, question, *args, "--snapshot") == expected
+    assert index.stat().st_mtime_ns == written
 
 
 @pytest.mark.parametrize("constructor", [nx.DiGraph, nx.MultiGraph])
