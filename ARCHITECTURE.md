@@ -67,6 +67,10 @@ When an import target ID collides with a C-family header, an explicit target
 path takes priority. Unhinted native includes keep the header fallback. Other
 languages require a unique compatible file candidate before remapping.
 
+Wiki community audits and relationships on directed graphs include incoming
+and outgoing edges. Each incident edge contributes once per community,
+including distinct reciprocal and parallel edges.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions

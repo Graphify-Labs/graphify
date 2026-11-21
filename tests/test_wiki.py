@@ -630,3 +630,28 @@ def test_index_links_every_article_written(tmp_path):
     assert len(articles) == n == 4, sorted(articles)
     linked = {t for _, t in _inline_links((tmp_path / "index.md").read_text())}
     assert articles <= linked, sorted(articles - linked)  # no orphaned article
+
+
+def test_directed_wiki_preserves_incoming_and_parallel_evidence(tmp_path):
+    graph = nx.MultiDiGraph()
+    for node in ("hub", "caller", "peer"):
+        graph.add_node(node, label=node, file_type="code", source_file=f"{node}.py")
+    graph.add_edge("caller", "hub", relation="calls", confidence="AMBIGUOUS")
+    graph.add_edge("caller", "hub", relation="references", confidence="INFERRED")
+    graph.add_edge("hub", "caller", relation="references", confidence="EXTRACTED")
+    graph.add_edge("peer", "hub", relation="calls", confidence="EXTRACTED")
+
+    to_wiki(graph, {0: ["hub", "peer"], 1: ["caller"]}, tmp_path,
+            community_labels={0: "Hub Group", 1: "Callers"},
+            god_nodes_data=[{"id": "hub", "label": "hub", "degree": 4}])
+
+    hub = (tmp_path / "hub.md").read_text(encoding="utf-8")
+    assert "4 connections" in hub
+    assert "- caller `AMBIGUOUS`" in hub
+    assert "- caller `INFERRED`" in hub
+    assert "- caller `EXTRACTED`" in hub
+    community = (tmp_path / "Hub_Group.md").read_text(encoding="utf-8")
+    assert "3 shared connections" in community
+    assert "- AMBIGUOUS: 1 (25%)" in community
+    assert "- INFERRED: 1 (25%)" in community
+    assert "- EXTRACTED: 2 (50%)" in community
