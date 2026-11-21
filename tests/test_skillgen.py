@@ -556,15 +556,19 @@ def test_dispatch_variants_are_host_specific():
 
 def test_pi_never_names_the_claude_general_purpose_agent():
     """pi-subagents rejects `general-purpose` as an unknown agent (#4494), so
-    neither Pi's dispatch nor its Step B3 re-run hints may name it; claude keeps
-    its own wording."""
+    neither Pi's dispatch nor its Step B3 re-run hints may name it; a host with no
+    dedicated writer agent gets the host-neutral wording instead."""
     pi, _ = _platform_artifacts("pi")
     assert "general-purpose" not in pi
     assert "Re-run with the `delegate` agent." in pi
     assert "ensure the `delegate` agent is used." in pi
     claude, _ = _platform_artifacts("claude")
-    assert "Re-run with general-purpose agent." in claude
-    assert 'ensure `subagent_type="general-purpose"` is used.' in claude
+    # Host-neutral about the parallel-subagent tool (`Task`, an `Agent` tool,
+    # Freebuff's `spawn_agents`), but Claude's concrete writer type stays spelled
+    # out: a bare `Task` can land on a read-only explorer on some setups.
+    assert "Re-run with a file-writing subagent" in claude
+    assert "`Task` with `subagent_type=\"general-purpose\"`" in claude
+    assert 'ensure a subagent that can write files to disk (Claude: `subagent_type="general-purpose"`) is used.' in claude
 
 
 def test_compact_extraction_hosts_use_the_compact_spec():

@@ -591,7 +591,11 @@ def test_claw_skill_uses_agent_tool_dispatch():
     skill = (Path(graphify.__file__).parent / "skill-claw.md").read_text()
     b2 = skill[skill.index("**Step B2"):skill.index("**Step B3")]
     assert 'subagent_type="general-purpose"' in b2
-    assert "spawn_agent" not in skill
+    # Its OWN dispatch slot must stay the Agent-tool flow. Step B3's writer hint
+    # is deliberately host-neutral and names `spawn_agents` as one option for
+    # every platform, so only the Codex/OpenClaw mechanics are banned here.
+    assert "spawn_agent" not in b2
+    assert "wait_agent" not in skill
     assert "@mention" not in skill
 
 
