@@ -955,13 +955,17 @@ def _run_cli() -> None:
         print("  prs                     PR dashboard: CI state, review status, worktree mapping")
         print("  save-result             save a Q&A result to graphify-out/memory/ for graph feedback loop")
         print("    --question Q            the question asked")
+        print("    --question-file F       read the question from a file")
         print("    --answer A              the answer to save")
+        print("    --answer-file F         read the answer from a file")
         print(
             "    --type T                query type: query|path_query|explain (default: query)"
         )
         print("    --nodes N1 N2 ...       source node labels cited in the answer")
+        print("    --nodes-file F          read node labels from a file, one per line")
         print("    --outcome O             work-memory signal: useful|dead_end|corrected")
         print("    --correction TEXT       what the right answer was (pairs with --outcome corrected)")
+        print("    --correction-file F     read the correction from a file")
         print("    --memory-dir DIR        memory directory (default: graphify-out/memory)")
         print("  reflect                 aggregate graphify-out/memory/ outcomes into a deterministic lessons doc")
         print("    --memory-dir DIR        memory directory (default: graphify-out/memory)")
