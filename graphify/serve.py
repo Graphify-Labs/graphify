@@ -3231,11 +3231,12 @@ def _build_server(graph_path: str):
 
     def _graph_root() -> Path:
         # Same rule as the CLI: <root>/<GRAPHIFY_OUT_NAME>/graph.json -> <root>;
-        # a graph outside that layout falls back to its own directory.
-        from graphify.paths import GRAPHIFY_OUT_NAME
+        # a graph outside that layout falls back to its own directory. Shared
+        # with the CLI so a shared/nested GRAPHIFY_OUT or a `.graphify_root`
+        # marker resolves file-path targets and seeds the same way.
+        from graphify.paths import graph_root_for
 
-        gp = Path(active_graph_path).resolve()
-        return gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+        return graph_root_for(Path(active_graph_path).resolve())
 
     def _tool_affected(arguments: dict) -> str:
         from graphify.affected import (
