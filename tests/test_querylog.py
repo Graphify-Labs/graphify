@@ -1,10 +1,11 @@
 """Tests for graphify.querylog."""
 import json
 import os
+import threading
 import pytest
 from pathlib import Path
 
-from graphify.querylog import log_query, nodes_from_result
+from graphify.querylog import _archive_path, log_query, nodes_from_result
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +222,147 @@ def test_log_query_writes_nothing_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     log_query(kind="query", question="secret internal ticket TICKET-123", corpus=".", result="1 node found")
     assert not (tmp_path / ".cache" / "graphify-queries.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# #3051 — optional rotation via GRAPHIFY_QUERY_LOG_MAX_RECORDS
+# ---------------------------------------------------------------------------
+
+def _rotation_env(monkeypatch, tmp_path, max_records=None):
+    log_file = tmp_path / "q.log"
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log_file))
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+    if max_records is None:
+        monkeypatch.delenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", raising=False)
+    else:
+        monkeypatch.setenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", str(max_records))
+    return log_file
+
+
+def test_rotation_unset_keeps_all_lines(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path)
+    for i in range(5):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+    lines = log_file.read_text().splitlines()
+    assert len(lines) == 5
+    assert not _archive_path(log_file).exists()
+
+
+def test_rotation_trims_live_keeps_newest(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=3)
+    for i in range(5):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+    live = [json.loads(l)["question"] for l in log_file.read_text().splitlines()]
+    archive = [json.loads(l)["question"] for l in _archive_path(log_file).read_text().splitlines()]
+    assert live == ["q2", "q3", "q4"]
+    assert archive == ["q0", "q1"]
+
+
+def test_rotation_invalid_env_is_noop(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records="abc")
+    for i in range(4):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+    assert len(log_file.read_text().splitlines()) == 4
+    assert not _archive_path(log_file).exists()
+
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", "0")
+    log_query(kind="query", question="extra", corpus="/g.json")
+    assert len(log_file.read_text().splitlines()) == 5
+
+
+def test_rotation_archive_appends_across_rotations(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=2)
+    for i in range(5):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+    archive_path = _archive_path(log_file)
+    archived = [json.loads(l)["question"] for l in archive_path.read_text().splitlines()]
+    assert archived == ["q0", "q1", "q2"]
+    live = [json.loads(l)["question"] for l in log_file.read_text().splitlines()]
+    assert live == ["q3", "q4"]
+
+
+def test_rotation_never_raises(tmp_path, monkeypatch):
+    bad_path = tmp_path / "is_a_dir"
+    bad_path.mkdir()
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(bad_path))
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", "1")
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+    log_query(kind="query", question="q", corpus="/g.json")
+
+
+def test_rotation_archive_after_live_replace(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=2)
+    log_query(kind="query", question="q0", corpus="/g.json")
+    log_query(kind="query", question="q1", corpus="/g.json")
+
+    def fail_replace(src, dst):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    log_query(kind="query", question="q2", corpus="/g.json")
+
+    archive = _archive_path(log_file)
+    assert not archive.exists() or archive.read_text() == ""
+    live = [json.loads(l)["question"] for l in log_file.read_text().splitlines()]
+    assert live == ["q0", "q1", "q2"]
+
+
+def test_rotation_concurrent_appends_preserved(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=5)
+    errors: list[Exception] = []
+
+    def worker(prefix: str) -> None:
+        try:
+            for i in range(5):
+                log_query(kind="query", question=f"{prefix}{i}", corpus="/g.json")
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(p,)) for p in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+
+    questions: set[str] = set()
+    for path in (log_file, _archive_path(log_file)):
+        if path.exists():
+            for line in path.read_text().splitlines():
+                questions.add(json.loads(line)["question"])
+    assert len(questions) == 10
+
+
+def test_rotation_lock_open_failure_still_appends(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=3)
+    real_open = open
+
+    def selective_open(file, *args, **kwargs):
+        if str(file).endswith(".lock"):
+            raise OSError("simulated lock open failure")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", selective_open)
+    log_query(kind="query", question="q0", corpus="/g.json")
+    assert log_file.exists()
+    rec = json.loads(log_file.read_text())
+    assert rec["question"] == "q0"
+
+
+def test_rotation_archive_failure_restores_overflow(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=2)
+    archive = _archive_path(log_file)
+    real_open = Path.open
+
+    def selective_open(self, *args, **kwargs):
+        if self == archive and args and args[0] == "a":
+            raise OSError("simulated archive failure")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", selective_open)
+    for i in range(3):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+
+    live = [json.loads(l)["question"] for l in log_file.read_text().splitlines()]
+    assert live == ["q1", "q2", "q0"]
+    assert not archive.exists() or archive.read_text() == ""
