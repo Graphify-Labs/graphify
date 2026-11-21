@@ -2467,10 +2467,17 @@ def _resolve_path_endpoint(
     and routing from the closest-sounding label instead prints a path through
     a symbol nobody asked about.
 
+    An exact node-id key wins outright: it cannot name another node, so the
+    tier match below must not turn it into an ambiguity with a label whose
+    tokens normalize to the same words (#5361) — the same precedence
+    `_resolve_single_node` gives an id for `explain` (#5343).
+
     Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
     score fallback picked the node; ``(None, [], message)`` when ambiguous; and
     ``(None, [], None)`` when nothing matches.
     """
+    if query in G:
+        return query, [], None
     source_exact, exact, _, _ = _find_node_tiers(G, query)
     hits = source_exact or exact
     if hits:
