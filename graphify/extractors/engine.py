@@ -4901,6 +4901,21 @@ def _csharp_deferred_call(invocation, source: bytes) -> list | None:
     return ["call", recv, _read_text(name_node, source), args]
 
 
+def _csharp_member_chain(table, head: str, member: str, call_byte: int) -> list | None:
+    """``[type of head, member]`` for a ``head.member`` receiver, else None.
+
+    A typed value gives its type (#4246). A name that is no value in scope is
+    a type, as in ``Audio.Instance.Click()`` (#5376). A value that is in
+    scope but untyped gives None: it must never be read as a type name.
+    """
+    root_type = _csharp_scoped_receiver_type(table, head, call_byte)
+    if isinstance(root_type, str):
+        return [root_type, member]
+    if root_type is None and not _csharp_receiver_is_declared(table, head, call_byte):
+        return [head, member]
+    return None
+
+
 def _csharp_method_receiver_types(
     method_node,
     source: bytes,
@@ -11864,14 +11879,12 @@ def _extract_generic(
                                 # x.F.M(): x's declared type, then the type of
                                 # its field/property F, resolved cross-file
                                 # (#4246).
-                                root_type = _csharp_scoped_receiver_type(
+                                # A head that is no value in scope names a
+                                # type: `Audio.Instance.M()` (#5376).
+                                csharp_receiver_chain = _csharp_member_chain(
                                     csharp_table, _read_text(inner, source),
-                                    node.start_byte,
+                                    _read_text(fname, source), node.start_byte,
                                 )
-                                if isinstance(root_type, str):
-                                    csharp_receiver_chain = [
-                                        root_type, _read_text(fname, source)
-                                    ]
                         elif recv is not None and recv.type == "element_access_expression":
                             # xs[i].M() on a `T[]` / `List<T>`: an element is a T
                             # (#4246).
