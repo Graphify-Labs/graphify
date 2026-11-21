@@ -7411,6 +7411,17 @@ def _resolve_csharp_member_calls(
                 continue
             type_nid = bases[0]
             type_qualified = True
+        elif rc.get("receiver_var_chain"):
+            # `var a = T.P; a.M()` (#5376): `a` has the declared type of P.
+            var_chain = rc["receiver_var_chain"]
+            type_nid = _resolve_type_name_nid(var_chain[0], caller_node, src_file)
+            for field in var_chain[1:]:
+                if not type_nid:
+                    break
+                type_nid = _field_type_nid(type_nid, field)
+            if not type_nid:
+                continue
+            type_qualified = False
         elif receiver[:1].isupper():
             # Type.M() — the type is named explicitly. A field/property/local of
             # that name in scope shadows the type (`IStore Store => ...;

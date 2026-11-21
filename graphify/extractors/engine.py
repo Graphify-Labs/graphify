@@ -4867,6 +4867,23 @@ def _csharp_return_info(method_node, source: bytes) -> list:
     return [ret, len(tparams)]
 
 
+def _csharp_deferred_member(access, source: bytes) -> list | None:
+    """``["member", receiver, name, []]`` for ``var x = T.P`` (#5376).
+
+    The variable's type is the declared type of the property or field ``P`` on
+    ``T``, which may be declared in another file, so the cross-file pass
+    resolves it. Only a plain ``identifier.identifier`` access qualifies.
+    """
+    inner = access.child_by_field_name("expression")
+    name = access.child_by_field_name("name")
+    if (
+        inner is None or name is None
+        or inner.type != "identifier" or name.type != "identifier"
+    ):
+        return None
+    return ["member", _read_text(inner, source), _read_text(name, source), []]
+
+
 def _csharp_deferred_call(invocation, source: bytes) -> list | None:
     """``[receiver, method, type args]`` for ``var x = R.M<A>(...)`` (#4266).
 
@@ -5043,6 +5060,11 @@ def _csharp_method_receiver_types(
                                 # `var v = R.M<A>()` — typed cross-file from
                                 # M's declared return type (#4266).
                                 type_name = _csharp_deferred_call(g, source)
+                                break
+                            if g.type == "member_access_expression":
+                                # `var a = T.P` — typed cross-file from P's
+                                # declared type (#5376).
+                                type_name = _csharp_deferred_member(g, source)
                                 break
                     bind(_read_text(name_node, source), type_name, scope, declared_elem)
         elif node.type == "foreach_statement":
@@ -11872,6 +11894,23 @@ def _extract_generic(
                                     csharp_receiver_chain = [
                                         root_type, _read_text(fname, source)
                                     ]
+                                elif (
+                                    root_type is None
+                                    and csharp_table is not None
+                                    and not _csharp_receiver_is_declared(
+                                        csharp_table, _read_text(inner, source),
+                                        node.start_byte,
+                                    )
+                                ):
+                                    # `T.P.M()` / `T.P?.M()` (#5376): no local,
+                                    # parameter, field or property named `T` is in
+                                    # scope, so `T` names a type and `P` is a
+                                    # static member of it -- the singleton idiom
+                                    # `Audio.Instance.Click()`. The resolver types
+                                    # `P` from its declaration, like `x.F.M()`.
+                                    csharp_receiver_chain = [
+                                        _read_text(inner, source), _read_text(fname, source)
+                                    ]
                         elif recv is not None and recv.type == "element_access_expression":
                             # xs[i].M() on a `T[]` / `List<T>`: an element is a T
                             # (#4246).
@@ -12621,7 +12660,29 @@ def _extract_generic(
                             receiver_type = _csharp_scoped_receiver_type(
                                 receiver_types, member_receiver, node.start_byte
                             )
-                            if isinstance(receiver_type, list):
+                            if isinstance(receiver_type, list) and receiver_type[0] == "member":
+                                # `var a = T.P; a.M()` (#5376): `a` has P's declared
+                                # type, resolved cross-file like `T.P.M()`. T is a
+                                # typed value here, else a type name when nothing
+                                # named T is in scope.
+                                _, recv, member, _unused = receiver_type
+                                csharp_scope = (
+                                    receiver_types if isinstance(receiver_types, tuple) else None
+                                )
+                                recv_t = _csharp_scoped_receiver_type(
+                                    csharp_scope, recv, node.start_byte
+                                )
+                                if isinstance(recv_t, str):
+                                    rc_entry["receiver_var_chain"] = [recv_t, member]
+                                elif (
+                                    recv_t is None
+                                    and csharp_scope is not None
+                                    and not _csharp_receiver_is_declared(
+                                        csharp_scope, recv, node.start_byte
+                                    )
+                                ):
+                                    rc_entry["receiver_var_chain"] = [recv, member]
+                            elif isinstance(receiver_type, list):
                                 # `var v = R.M<A>(); v.X()` (#4266): R is typed
                                 # here, M's return type in the cross-file pass.
                                 _, recv, method, targs = receiver_type
