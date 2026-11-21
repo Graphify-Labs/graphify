@@ -2035,3 +2035,40 @@ def test_recovery_keeps_a_real_routine_sharing_the_misread_line(tmp_path):
         executes = [(by_id[e["source"]], by_id[e["target"]])
                     for e in r["edges"] if e["relation"] == "executes"]
         assert executes == [("tr", "b()")]
+
+
+def test_sql_foreign_key_recovery_ignores_noncode_mentions(tmp_path):
+    import pytest
+
+    pytest.importorskip("tree_sitter_sql")
+    from graphify.extractors.sql import extract_sql
+
+    for schema in ("""
+CREATE TABLE people (id int PRIMARY KEY);
+CREATE TABLE ghost_accounts (id int PRIMARY KEY);
+CREATE TABLE also_ghost (id int PRIMARY KEY);
+CREATE TABLE accounts (
+  id int PRIMARY KEY,
+  person_id int REFERENCES people(id),
+  -- historical FK: REFERENCES ghost_accounts(id)
+  note text DEFAULT 'REFERENCES also_ghost(id)',
+  "REFERENCES ghost_accounts" text,
+  /* REFERENCES also_ghost(id) */
+  extra text DEFAULT 'starts here
+REFERENCES also_ghost(id)'
+);
+""", """
+CREATE TABLE people (id int PRIMARY KEY);
+CREATE TABLE accounts (
+  id int PRIMARY KEY,
+  person_id int,
+  name_upper COMPUTED BY (UPPER('REFERENCES ghost_accounts(id)')),
+  FOREIGN KEY (person_id) REFERENCES people(id)
+);
+"""):
+        result = extract_sql(tmp_path / "schema.sql", content=schema)
+        labels = {node["id"]: node["label"] for node in result["nodes"]}
+        assert {
+            (labels[e["source"]], labels[e["target"]])
+            for e in result["edges"] if e["relation"] == "references"
+        } == {("accounts", "people")}

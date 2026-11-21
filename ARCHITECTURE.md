@@ -67,6 +67,11 @@ When an import target ID collides with a C-family header, an explicit target
 path takes priority. Unhinted native includes keep the header fallback. Other
 languages require a unique compatible file candidate before remapping.
 
+SQL foreign-key recovery scans bare DDL tokens outside comments,
+single-quoted strings and delimited identifiers. Structural parser matches
+continue to support quoted table names. AST cache schema 51 retires records
+that may contain spurious foreign-key edges.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions

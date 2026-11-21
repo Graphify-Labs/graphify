@@ -115,7 +115,9 @@ _TABLE_RECOVERY_RX = re.compile(
 # quote), judged not worth the swallow risk in a recovery-only path.
 
 
-def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
+def _scan_sql(
+    text: str, *, multiline_strings: bool = False,
+) -> tuple[str, list[tuple[int, int]]]:
     """Blank comment and string-literal spans, preserving every offset.
 
     One output character per input character: non-newline characters inside
@@ -201,10 +203,10 @@ def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
     while i < n:
         c = text[i]
         if c == "'":
-            # Single-quoted string: blank it. '' is an escaped quote; a
-            # newline abandons the literal (see the comment above).
+            # Single-quoted string: blank it. '' is an escaped quote. DDL
+            # recovery defaults to line scope to tolerate malformed routines.
             j = i + 1
-            while j < n and text[j] != "\n":
+            while j < n and (multiline_strings or text[j] != "\n"):
                 if text[j] == "'":
                     if j + 1 < n and text[j + 1] == "'":
                         j += 2
@@ -498,6 +500,18 @@ def _mask_sql_comments(text: str) -> str:
     return _scan_sql(text)[0]
 
 
+def _foreign_key_scan_text(text: str) -> str:
+    """Keep bare DDL tokens and line offsets for the REFERENCES fallbacks."""
+    masked, identifiers = _scan_sql(text, multiline_strings=True)
+    parts = []
+    previous = 0
+    for start, end in identifiers:
+        parts.extend((masked[previous:start], "#" * (end - start)))
+        previous = end
+    parts.append(masked[previous:])
+    return "".join(parts)
+
+
 def _clean_part(part: str) -> str:
     """One name part without T-SQL brackets. The parser hands over `dbo].[Orders`
     for `[dbo].[Orders]`, so a part may keep only one of its two brackets; `]]`
@@ -699,8 +713,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                         if has_error:
                             # Dialect-specific syntax (e.g. Firebird COMPUTED BY) causes ERROR
                             # nodes that make the parser drop the trailing constraints block.
-                            # Regex-scan the raw column_definitions text as fallback.
-                            col_text = _read(col)
+                            # Recover bare REFERENCES tokens outside comments and literals.
+                            col_text = _foreign_key_scan_text(_read(col))
                             for rm in re.finditer(r"\bREFERENCES\s+([\w$]+)", col_text, re.IGNORECASE):
                                 ref_name = rm.group(1)
                                 if _norm_ident(ref_name) not in seen_refs:
@@ -1184,13 +1198,14 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # (e.g. Firebird COMPUTED BY columns push constraints out of the tree entirely).
     # Snapshot after tree walk so we don't re-emit edges already captured above.
     emitted = {(e["source"], e["target"]) for e in edges if e["relation"] == "references"}
-    for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
+    fk_scan_text = _foreign_key_scan_text(src_text)
+    for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", fk_scan_text, re.IGNORECASE):
         tbl_name = m.group(1)
         tbl_nid = table_nids.get(_norm_ident(tbl_name))
         if tbl_nid is None:
             continue
-        tbl_line = src_text[: m.start()].count("\n") + 1
-        tail = src_text[m.start():]
+        tbl_line = fk_scan_text[: m.start()].count("\n") + 1
+        tail = fk_scan_text[m.start():]
         end = re.search(r"(?:^|\n)(?:CREATE|SET\s+TERM|ALTER)\s", tail[1:], re.IGNORECASE)
         block = tail[: end.start() + 1] if end else tail
         for rm in re.finditer(r"\bREFERENCES\s+([\w$]+)", block, re.IGNORECASE):
