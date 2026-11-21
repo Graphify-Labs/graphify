@@ -72,6 +72,10 @@ when no changed file is eligible for extraction. Changes to in-scope ignore
 files also refresh the eligible AST corpus so newly included files can enter
 the graph.
 
+Wiki community audits and relationships on directed graphs include incoming
+and outgoing edges. Each incident edge contributes once per community,
+including distinct reciprocal and parallel edges.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
