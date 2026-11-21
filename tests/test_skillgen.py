@@ -1619,3 +1619,49 @@ def test_extraction_specs_require_a_coverage_entry_for_every_file():
     assert seen_variants == {"verbose", "compact", "compact-disk"}, (
         "this test must cover every spec variant, not just one"
     )
+
+
+
+def test_skill_call_forms_and_pr_mcp_tools():
+    """Examples in the skill must match the CLI, and the PR MCP tools must be listed.
+
+    ``graphify extract --force`` without a path exits 1 (a path is required).
+    SVG export is gated on the ``svg`` extra in pyproject.toml. serve.py also
+    exposes list_prs, get_pr_impact, and triage_prs, which the skill list omitted.
+    """
+    platforms = gen.load_platforms()
+    seen_split = False
+    for key, platform in sorted(platforms.items()):
+        if platform.bucket == "split":
+            seen_split = True
+            refs = _platform_artifacts(key)[1]
+            exports = refs["exports.md"]
+            assert "graphifyy[svg]" in exports, f"[{key}] exports.md omits the svg extra"
+            for tool in ("list_prs", "get_pr_impact", "triage_prs"):
+                assert f"`{tool}`" in exports, f"[{key}] exports.md omits `{tool}`"
+            assert (
+                "List open GitHub PRs with CI status, review state, and graph impact"
+                in exports
+            ), f"[{key}] missing list_prs description from serve.py"
+            assert (
+                "Get detailed graph impact for a specific PR: which files it changes"
+                in exports
+            ), f"[{key}] missing get_pr_impact description from serve.py"
+            assert (
+                "Return all actionable open PRs (correct base, not stale) with full graph impact data"
+                in exports
+            ), f"[{key}] missing triage_prs description from serve.py"
+            if platform.extraction == "verbose":
+                spec = refs["extraction-spec.md"]
+                assert "`graphify extract . --force`" in spec, (
+                    f"[{key}] verbose spec is missing a path before --force"
+                )
+                assert "`graphify extract --force`" not in spec, (
+                    f"[{key}] verbose spec still has the pathless extract --force form"
+                )
+        elif platform.bucket == "monolith":
+            core, _ = _platform_artifacts(key)
+            assert "graphifyy[svg]" in core, f"[{key}] monolith omits the svg extra"
+            for tool in ("list_prs", "get_pr_impact", "triage_prs"):
+                assert f"`{tool}`" in core, f"[{key}] monolith omits `{tool}`"
+    assert seen_split, "expected at least one split platform"
