@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.115 (2026-11-21)
+
+A security fix for a forced-SMB-authentication issue on Windows (GHSA-g6c9-j4vm-mwq4), plus the AST cache schema bump it requires.
+
+- Security: **extract/detect** indexing a repository no longer stats a corpus-chosen path that resolves outside the scan root. A `.sh` file's `source` line or script invocation (`source \\host\share\x`, `source //host/share/x`, `python3 //host/share/x.py`) and a `.git` file naming a UNC `gitdir:`/`commondir` previously made the OS resolve the attacker-chosen path; on Windows that coerces outbound SMB authentication to the named host and leaks a NetNTLMv2 response, on default offline settings with no API key or LLM call. Each probe is now gated: a corpus path is resolved and stat-ed only when it stays within the scan root, and a UNC path is refused before it is ever resolved. Legitimate in-tree `source` lines and local linked-worktree/submodule `.git` files are unaffected. The bash extractor drops the out-of-tree edges it used to emit, so the AST cache schema is bumped and bash files re-extract on the first build after upgrading. Same class as the earlier GHSA-pcc4-rvhr-2pr8, different sink (GHSA-g6c9-j4vm-mwq4, thanks @Torch4084).
+
 ## 0.9.114 (2026-11-20)
 
 Performance work on the extract/build/update pipeline, plus a batch of extractor and build fixes. Every entry marked Perf preserves graph output exactly (byte-identical); the extractor fixes change output and share one AST cache schema bump (see the note at the end).

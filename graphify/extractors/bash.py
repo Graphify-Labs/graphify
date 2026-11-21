@@ -6,7 +6,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
+from graphify.extractors.base import (
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+    _read_text,
+    active_scan_root,
+)
 
 
 # Leading `${VAR}` / `$VAR` expansion segment(s) of a `source` path argument. The
@@ -53,6 +59,57 @@ def _within_tree(ceiling: Path, target: Path) -> bool:
     c = os.path.normpath(str(ceiling))
     t = os.path.normpath(str(target))
     return t == c or t.startswith(c + os.sep)
+
+
+def _safe_to_probe(target: Path, scan_root: Path | None) -> bool:
+    """True when it is safe to stat *target*, a path named by the indexed corpus.
+
+    A ``source`` line or script invocation in a scanned file can name a path the
+    OS resolves off-host. The worst case is a UNC path (``\\\\host\\share\\x`` or
+    ``//host/share/x``): on Windows, stat-ing one coerces outbound SMB
+    authentication to an attacker-chosen host and leaks a NetNTLMv2 response, with
+    no LLM call or other setup (GHSA-g6c9-j4vm-mwq4). An absolute path that escapes
+    the indexed tree is a weaker, local information leak. The stat itself
+    (``exists()`` / ``is_file()``) is the trigger, so every caller MUST check this
+    first and short-circuit before probing.
+
+    A UNC path is refused unconditionally. When the scan root is known (the normal
+    ``extract()`` flow sets it), the target must stay within that tree. Outside a
+    known root (a direct extractor call, e.g. in a unit test), legacy behavior is
+    preserved except that UNC paths are still refused.
+    """
+    if str(target)[:2] in ("\\\\", "//"):
+        return False
+    if scan_root is None:
+        return True
+    # os.path.abspath is purely lexical (no stat, no symlink follow, no network),
+    # so a relative corpus path compares correctly against the absolute scan root
+    # and a UNC/out-of-tree path is rejected without ever being stat-ed.
+    abs_target = os.path.abspath(str(target))
+    if abs_target[:2] in ("\\\\", "//"):
+        return False
+    return _within_tree(scan_root, Path(abs_target))
+
+
+def _resolve_safe(candidate: Path, scan_root: Path | None) -> "Path | None":
+    """Resolve *candidate* (a corpus-named path) only when it is safe to stat.
+
+    Returns the resolved path when it stays within the scan root and is not UNC,
+    else None. The UNC/out-of-tree check runs on the UNRESOLVED candidate first,
+    so a hostile ``//host/share`` path is never passed to ``resolve()`` — which on
+    Windows can itself trigger the network round trip (GHSA-g6c9-j4vm-mwq4). The
+    resolved path is re-checked to catch an in-tree path that normalizes outside
+    the tree. Callers still gate the ``exists()``/``is_file()`` probe on a
+    non-None return."""
+    if not _safe_to_probe(candidate, scan_root):
+        return None
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if not _safe_to_probe(resolved, scan_root):
+        return None
+    return resolved
 
 
 # Recognise ``$(dirname "$VAR")`` (or ``$(dirname "${VAR}")``) at the start of
@@ -121,6 +178,11 @@ def extract_bash(path: Path) -> dict:
 
     stem = _file_stem(path)
     str_path = str(path)
+    # Scan root of the extraction in flight (set by extract()); None on a direct
+    # call. Used to keep corpus-chosen source/invocation paths from being stat-ed
+    # outside the indexed tree, which on Windows coerces SMB auth over a UNC path
+    # (GHSA-g6c9-j4vm-mwq4). Gated on via _safe_to_probe before every probe.
+    scan_root = active_scan_root()
     nodes: list[dict] = []
     edges: list[dict] = []
     # Cross-file resolution scaffolding consumed by resolve_bash_source_edges in
@@ -325,12 +387,14 @@ def extract_bash(path: Path) -> dict:
                         raw = _read_text(args[0], source).strip().strip("'\"")
                         line = node.start_point[0] + 1
                         if raw.startswith((".", "/")):
-                            resolved = (path.parent / raw).resolve()
                             # Only emit the edge if the target actually exists on
                             # disk — prevents graph pollution from crafted paths
                             # like `source ../../etc/passwd` that traverse outside
-                            # the project tree (B-1).
-                            if resolved.exists():
+                            # the project tree (B-1). _resolve_safe refuses (and
+                            # never resolves) a corpus-chosen UNC/out-of-tree path
+                            # before it is stat-ed (GHSA-g6c9-j4vm-mwq4).
+                            resolved = _resolve_safe(path.parent / raw, scan_root)
+                            if resolved is not None and resolved.exists():
                                 tgt_nid = _make_id(str(resolved))
                                 add_edge(file_nid, tgt_nid, "imports_from", line,
                                          context="import",
@@ -384,8 +448,8 @@ def extract_bash(path: Path) -> dict:
                                 # resolves and gets probed/recorded (#2596).
                                 if (suffix and "$" not in suffix
                                         and ".." not in suffix.split("/")):
-                                    resolved = (base / suffix).resolve()
-                                    if resolved.is_file():
+                                    resolved = _resolve_safe(base / suffix, scan_root)
+                                    if resolved is not None and resolved.is_file():
                                         add_edge(file_nid, _make_id(str(resolved)),
                                                  "imports_from", line,
                                                  confidence="INFERRED", context="import",
@@ -457,9 +521,14 @@ def extract_bash(path: Path) -> dict:
                             sibling: Path | None = None
                             if raw:
                                 try:
-                                    candidate = path.parent / raw
-                                    if candidate.is_file():
-                                        sibling = candidate.resolve()
+                                    # _resolve_safe first: a bare `source
+                                    # \\host\share\x` makes `path.parent / raw`
+                                    # the absolute UNC path; refusing it before any
+                                    # stat avoids coercing SMB auth on Windows
+                                    # (GHSA-g6c9-j4vm-mwq4).
+                                    cand = _resolve_safe(path.parent / raw, scan_root)
+                                    if cand is not None and cand.is_file():
+                                        sibling = cand
                                 except OSError:
                                     sibling = None
                             if sibling is not None:
@@ -500,8 +569,8 @@ def extract_bash(path: Path) -> dict:
                         if cand.endswith(".sh") and "$" in cand:
                             raw = _bash_source_suffix(cand) or None
                     if raw and raw.endswith(".sh"):
-                        resolved = (path.parent / raw).resolve()
-                        if resolved.is_file():
+                        resolved = _resolve_safe(path.parent / raw, scan_root)
+                        if resolved is not None and resolved.is_file():
                             target_path = resolved
                             if not path.is_absolute():
                                 try:
@@ -543,8 +612,8 @@ def extract_bash(path: Path) -> dict:
                 if (is_known_interpreter or is_interpreter_variable) and args:
                     invoked_raw = literal(args[0])
                     if invoked_raw and invoked_raw.endswith(_INVOKABLE_SCRIPT_EXTENSIONS):
-                        resolved = (path.parent / invoked_raw).resolve()
-                        if resolved.is_file():
+                        resolved = _resolve_safe(path.parent / invoked_raw, scan_root)
+                        if resolved is not None and resolved.is_file():
                             target_path = resolved
                             if not path.is_absolute():
                                 try:

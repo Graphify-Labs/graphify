@@ -1451,6 +1451,20 @@ def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
     return tracked_files, tracked_dirs
 
 
+def _is_unc_path(p: Path) -> bool:
+    """True for a UNC path (``\\\\host\\share`` or ``//host/share``).
+
+    A ``.git`` file in an indexed repo can point ``gitdir:`` (or, through its
+    ``commondir``, the shared git dir) at a UNC path. Stat-ing or reading under it
+    makes Windows authenticate to the named host over SMB and leak a NetNTLMv2
+    response, with no LLM call or other setup (GHSA-g6c9-j4vm-mwq4). Such a gitdir
+    is treated as not-a-repo rather than probed. Purely local gitdirs — including
+    the absolute local paths that legitimate linked worktrees and submodules use —
+    are unaffected.
+    """
+    return str(p)[:2] in ("\\\\", "//")
+
+
 def _git_info_exclude(vcs_root: Path) -> Path | None:
     """Resolve ``$GIT_DIR/info/exclude`` for the repo rooted at ``vcs_root``.
 
@@ -1473,6 +1487,10 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
             content = ""
         if content.startswith("gitdir:"):
             gd = Path(content[len("gitdir:"):].strip())
+            if _is_unc_path(gd):
+                # A corpus-chosen UNC gitdir would coerce SMB auth when stat-ed
+                # (GHSA-g6c9-j4vm-mwq4); treat the repo as having no exclude file.
+                return None
             if not gd.is_absolute():
                 gd = (vcs_root / gd).resolve()
             git_dir = gd
@@ -1488,6 +1506,10 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
                     cd = Path(cd_raw)
                     git_dir = cd if cd.is_absolute() else (gd / cd).resolve()
     if git_dir is None:
+        return None
+    if _is_unc_path(git_dir):
+        # The commondir pointer may itself name a UNC shared git dir; never stat
+        # under it (GHSA-g6c9-j4vm-mwq4).
         return None
     exclude = git_dir / "info" / "exclude"
     return exclude if exclude.is_file() else None
@@ -1516,6 +1538,9 @@ def _linked_worktree_main_root(directory: Path) -> Path | None:
     if not content.startswith("gitdir:"):
         return None
     gd = Path(content[len("gitdir:"):].strip())
+    if _is_unc_path(gd):
+        # A UNC gitdir would coerce SMB auth when read/stat-ed (GHSA-g6c9-j4vm-mwq4).
+        return None
     if not gd.is_absolute():
         try:
             gd = (directory / gd).resolve()
@@ -1528,6 +1553,9 @@ def _linked_worktree_main_root(directory: Path) -> Path | None:
     if not cd_raw:
         return None
     cd = Path(cd_raw)
+    if _is_unc_path(cd):
+        # A UNC commondir would coerce SMB auth when stat-ed (GHSA-g6c9-j4vm-mwq4).
+        return None
     if not cd.is_absolute():
         try:
             cd = (gd / cd).resolve()
