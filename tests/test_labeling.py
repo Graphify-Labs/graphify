@@ -1128,6 +1128,34 @@ def test_label_adds_labeling_usage_to_cost_json(tmp_path, monkeypatch):
     assert "Token cost: 12,100 input · 3,410 output" in report
 
 
+def test_label_reports_its_usage_when_the_ledger_is_unreadable(tmp_path, monkeypatch):
+    """#3658 review: a damaged cost.json can't take the labeling run, but this
+    report must still show the tokens the run spent, and the file is left alone."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    (out / "cost.json").write_text("{not json", encoding="utf-8")
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+        usage_out["input"] += 100
+        usage_out["output"] += 10
+        return {cid: f"Fresh community {cid}" for cid in communities}, "llm"
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr(
+        sys, "argv", ["graphify", "label", str(tmp_path), "--backend", "gemini", "--no-viz"],
+    )
+
+    cli.main()
+
+    report = (out / "GRAPH_REPORT.md").read_text(encoding="utf-8")
+    assert "Token cost: 100 input · 10 output" in report
+    assert (out / "cost.json").read_text(encoding="utf-8") == "{not json"
+
 def test_cluster_only_without_ledger_reports_zero_and_creates_none(tmp_path, monkeypatch):
     """No cost.json and no labeling call: the report stays at zero and no ledger
     is invented."""

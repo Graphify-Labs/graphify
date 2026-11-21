@@ -979,11 +979,12 @@ def _zero_node_stamped_semantic_sources(
 
 
 def _record_extract_cost(graphify_out: Path, input_tokens: int, output_tokens: int, files: int,
-                         command: str = "extract") -> None:
+                         command: str = "extract") -> bool:
     """Append this run's token usage to graphify-out/cost.json, the same ledger the
     skill writes, so `graphify extract` refreshes are counted too (#1769), and so
     are `cluster-only`/`label` community-labeling calls (#3658). An unreadable
-    ledger is left alone rather than replaced with one run."""
+    ledger is left alone rather than replaced with one run. Returns whether the
+    run was written."""
     from datetime import datetime, timezone
     from graphify.paths import write_json_atomic
 
@@ -1001,7 +1002,7 @@ def _record_extract_cost(graphify_out: Path, input_tokens: int, output_tokens: i
                 raise ValueError("unexpected layout")
         except (OSError, ValueError, AttributeError) as exc:
             print(f"[graphify {command}] warning: could not read {cost_path}, not updating it: {exc}", file=sys.stderr)
-            return
+            return False
     cost["runs"].append({
         "date": datetime.now(timezone.utc).isoformat(),
         "input_tokens": input_tokens,
@@ -1014,6 +1015,8 @@ def _record_extract_cost(graphify_out: Path, input_tokens: int, output_tokens: i
         write_json_atomic(cost_path, cost, indent=2, ensure_ascii=False)
     except OSError as exc:
         print(f"[graphify {command}] warning: could not write {cost_path}: {exc}", file=sys.stderr)
+        return False
+    return True
 
 
 def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
@@ -3427,12 +3430,16 @@ def dispatch_command(cmd: str) -> None:
         # The report's token cost is the cost.json ledger, as `graphify update`
         # already reports it (#5154). Reporting only this run's labeling usage
         # showed "0 input · 0 output" after a paid `extract` (#3658). Labeling
-        # calls go into the ledger first, so a later update counts them too.
+        # calls go into the ledger first, so a later update counts them too. If
+        # the ledger can't take them, this report still adds them to what it read.
+        recorded = True
         if label_token_usage["input"] or label_token_usage["output"]:
-            _record_extract_cost(out, label_token_usage["input"], label_token_usage["output"],
-                                 0, command=cmd)
+            recorded = _record_extract_cost(out, label_token_usage["input"],
+                                            label_token_usage["output"], 0, command=cmd)
         from graphify.report import load_report_token_cost as _lrtc
         tokens = _lrtc(out)
+        if not recorded:
+            tokens = {k: tokens[k] + label_token_usage[k] for k in ("input", "output")}
         from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises,
                           {"warning": "cluster-only mode — file stats not available"},
