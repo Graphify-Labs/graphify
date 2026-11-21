@@ -3201,7 +3201,7 @@ def _build_server(graph_path: str):
         if isinstance(seeds, str):
             seeds = [seeds]
         if seeds is not None and (
-            not isinstance(seeds, list) or not all(isinstance(s, str) and s for s in seeds)
+            not isinstance(seeds, list) or not all(isinstance(s, str) and s.strip() for s in seeds)
         ):
             return "error: seeds must be a list of non-empty strings (node id, label or file path)"
         _t0 = _time.perf_counter()
