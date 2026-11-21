@@ -10,10 +10,11 @@ from array import array
 from collections import OrderedDict
 from pathlib import Path
 import threading
-from typing import NamedTuple
+from typing import NamedTuple, overload
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.paths import consumed, read_graph_json
+from graphify.query_snapshot import QueryGraph, QuerySnapshot
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import _CONFIDENCE_RANK, edge_datas, edge_evidence, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json, _is_test_path
@@ -539,7 +540,44 @@ class _NodeFields(NamedTuple):
     label_len: int
 
 
-def _node_fields(G: nx.Graph) -> dict[str, _NodeFields]:
+def _fields_of(nid: str, data: dict) -> _NodeFields:
+    label = data.get("label") or ""
+    norm_label = data.get("norm_label") or _strip_diacritics(label).lower()
+    source_file = data.get("source_file") or ""
+    nid_lower = nid.lower()
+    attr_norm, attr_tokens = _node_attributes_text(data)
+    return _NodeFields(
+        norm_label=norm_label,
+        bare_label=norm_label.rstrip("()"),
+        label_tokens=" ".join(_search_tokens(label)),
+        source=source_file.lower(),
+        source_tokens=" ".join(_search_tokens(source_file)),
+        nid_lower=nid_lower,
+        nid_norm=nid_lower if nid.isascii() else _strip_diacritics(nid).lower(),
+        rationale=_node_rationale_text(data),
+        attr_norm=attr_norm,
+        attr_tokens=attr_tokens,
+        label_len=len(label or nid),
+    )
+
+
+class _SnapshotNodeFields(dict):
+    """`_node_fields` for a snapshot: each row is derived on first lookup.
+
+    A snapshot reads only the nodes a query touches, so filling the whole
+    table up front would load every node row and undo the snapshot.
+    """
+
+    def __init__(self, G: QuerySnapshot):
+        super().__init__()
+        self._graph = G
+
+    def __missing__(self, nid: str) -> _NodeFields:
+        value = self[nid] = _fields_of(nid, self._graph.nodes[nid])
+        return value
+
+
+def _node_fields(G: QueryGraph) -> dict[str, _NodeFields]:
     """Per-node query fields, memoized on the graph object.
 
     Cached exactly like `_trigram_index` / `_idf_cache`, so a hot reload that
@@ -551,26 +589,10 @@ def _node_fields(G: nx.Graph) -> dict[str, _NodeFields]:
     n = G.number_of_nodes()
     if cached is not None and cached[0] == n:
         return cached[1]
-    fields: dict[str, _NodeFields] = {}
-    for nid, data in G.nodes(data=True):
-        label = data.get("label") or ""
-        norm_label = data.get("norm_label") or _strip_diacritics(label).lower()
-        source_file = data.get("source_file") or ""
-        nid_lower = nid.lower()
-        attr_norm, attr_tokens = _node_attributes_text(data)
-        fields[nid] = _NodeFields(
-            norm_label=norm_label,
-            bare_label=norm_label.rstrip("()"),
-            label_tokens=" ".join(_search_tokens(label)),
-            source=source_file.lower(),
-            source_tokens=" ".join(_search_tokens(source_file)),
-            nid_lower=nid_lower,
-            nid_norm=nid_lower if nid.isascii() else _strip_diacritics(nid).lower(),
-            rationale=_node_rationale_text(data),
-            attr_norm=attr_norm,
-            attr_tokens=attr_tokens,
-            label_len=len(label or nid),
-        )
+    if isinstance(G, QuerySnapshot):
+        fields: dict[str, _NodeFields] = _SnapshotNodeFields(G)
+    else:
+        fields = {nid: _fields_of(nid, data) for nid, data in G.nodes(data=True)}
     G.graph["_node_fields_cache"] = (n, fields)
     return fields
 
@@ -578,7 +600,7 @@ def _node_fields(G: nx.Graph) -> dict[str, _NodeFields]:
 _QUALIFIED_UNSET = object()
 
 
-def _node_qualified(G: nx.Graph, nid: str, norm_label: str):
+def _node_qualified(G: QueryGraph, nid: str, norm_label: str):
     """`_qualified_tail(norm_label)`, memoized per node on the graph.
 
     Only `_score_query`'s qualified-name tier reads this, and only for the nodes
@@ -597,7 +619,19 @@ def _node_qualified(G: nx.Graph, nid: str, norm_label: str):
     return value
 
 
-def _degree_data(G: nx.Graph) -> tuple[dict[str, int], int]:
+class _SnapshotDegrees(dict):
+    """Degrees of a snapshot's nodes, read as each one is first needed."""
+
+    def __init__(self, G: QuerySnapshot):
+        super().__init__()
+        self._graph = G
+
+    def __missing__(self, nid: str) -> int:
+        value = self[nid] = self._graph.degree(nid)
+        return value
+
+
+def _degree_data(G: QueryGraph) -> tuple[dict[str, int], int]:
     """Per-node degree and the BFS/DFS hub threshold, computed once per graph.
 
     Every query used to materialize `[G.degree(n) for n in G.nodes()]` and sort
@@ -613,6 +647,11 @@ def _degree_data(G: nx.Graph) -> tuple[dict[str, int], int]:
     n = G.number_of_nodes()
     if cached is not None and cached[0] == n:
         return cached[1], cached[2]
+    if isinstance(G, QuerySnapshot):
+        # The snapshot stores the hub threshold; degrees load per visited node.
+        snapshot_degrees: dict[str, int] = _SnapshotDegrees(G)
+        G.graph["_degree_cache"] = (n, snapshot_degrees, G.hub_threshold())
+        return snapshot_degrees, G.graph["_degree_cache"][2]
     degrees = dict(G.degree())
     values = list(degrees.values())
     if values:
@@ -624,7 +663,7 @@ def _degree_data(G: nx.Graph) -> tuple[dict[str, int], int]:
     return degrees, hub_threshold
 
 
-def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
+def _compute_idf(G: QueryGraph, terms: list[str]) -> dict[str, float]:
     """IDF weights for query terms, cached in G.graph['_idf_cache'].
 
     Common terms like 'error' or 'exception' that match hundreds of nodes get
@@ -632,6 +671,8 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     Cache is stored on the graph object itself so it auto-invalidates when
     a hot-reload replaces G with a new object.
     """
+    if isinstance(G, QuerySnapshot):
+        return G.idf(terms)
     cache: dict[str, float] = G.graph.setdefault("_idf_cache", {})
     N = G.number_of_nodes() or 1
     uncached = [t for t in terms if t not in cache]
@@ -762,7 +803,7 @@ def _get_trigram_index(G: nx.Graph) -> dict:
     return idx
 
 
-def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 0.10) -> list[str] | None:
+def _trigram_candidates(G: QueryGraph, needles: list[str], *, guard_frac: float = 0.10) -> list[str] | None:
     """Node IDs whose text could contain any `needle` as a substring, via the
     trigram index — a *superset* the caller then re-scores with the exact predicates.
 
@@ -773,6 +814,8 @@ def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 
     falls back to the full scan, preserving the never-worse contract. The guard is
     cheap: postings-length lookups only, no set intersection.
     """
+    if isinstance(G, QuerySnapshot):
+        return G.candidates(needles)
     idx = _get_trigram_index(G)
     ids, postings, set_cache = idx["ids"], idx["postings"], idx["set_cache"]
     n = len(ids)
@@ -897,7 +940,7 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
 
 
 def _score_query(
-    G: nx.Graph,
+    G: QueryGraph,
     terms: list[str],
     *,
     collect_per_term_seeds: bool,
@@ -1150,7 +1193,7 @@ def _pick_seeds(
     max_k: int = 3,
     gap_ratio: float = 0.2,
     *,
-    G: "nx.Graph | None" = None,
+    G: QueryGraph | None = None,
     best_seed_by_term: dict[str, str] | None = None,
     term_order: "tuple[str, ...] | list[str] | None" = None,
 ) -> list[str]:
@@ -1388,13 +1431,17 @@ def _resolve_context_filters(question: str, explicit_filters: list[str] | None =
     return [], None
 
 
-def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> nx.Graph:
+def _filter_graph_by_context(
+    G: QueryGraph, context_filters: list[str] | None,
+) -> QueryGraph:
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
     relations = set(filters & _HERITAGE_RELATIONS)
     for context in filters:
         relations |= _CONTEXT_RELATIONS.get(context, frozenset())
+    if isinstance(G, QuerySnapshot):
+        return G.filtered(filters, relations)
 
     def keep(data: dict) -> bool:
         if data.get("context") in filters:
@@ -1414,7 +1461,7 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     return H
 
 
-def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tuple]) -> None:
+def _complete_induced_edges(G: QueryGraph, visited: set[str], edges_seen: list[tuple]) -> None:
     """Append edges between visited nodes that the traversal never recorded (#2323).
 
     Both traversals only record an edge that *discovers* an unvisited neighbour,
@@ -1465,7 +1512,45 @@ def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tup
         edges_seen.append((u, v))
 
 
-def _traversal_index(G: nx.Graph):
+class _SnapshotTraversalIndex:
+    """`_traversal_index` for a snapshot, numbering nodes as the walk reaches them.
+
+    Positions are assigned on first sight instead of in graph order, and a
+    node's neighbour list is read only when the walk expands it. The walks
+    and `_complete_induced_edges_indexed` order work by node id and by
+    neighbour order, never by position value, so the result is unchanged.
+    """
+
+    def __init__(self, G: QuerySnapshot):
+        graph = G
+        ids: list[str] = []
+        degrees = _degree_data(G)[0]
+
+        class Positions(dict):
+            def __missing__(self, nid: str) -> int:
+                ids.append(nid)
+                value = self[nid] = len(ids) - 1
+                return value
+
+        positions = Positions()
+
+        class Adjacency(dict):
+            def __missing__(self, i: int) -> list[int]:
+                value = self[i] = [positions[nb] for nb in graph.neighbors(ids[i])]
+                return value
+
+        class DegreeList(dict):
+            def __missing__(self, i: int) -> int:
+                value = self[i] = degrees[ids[i]]
+                return value
+
+        self.ids, self.pos, self.adj, self.deg = ids, positions, Adjacency(), DegreeList()
+
+    def as_tuple(self):
+        return self.ids, self.pos, self.adj, self.deg
+
+
+def _traversal_index(G: QueryGraph):
     """Integer-indexed adjacency for BFS/DFS, cached once per graph object.
 
     `adj[i]` is the position list for `G.neighbors(ids[i])`, in the exact order
@@ -1480,6 +1565,10 @@ def _traversal_index(G: nx.Graph):
     n = G.number_of_nodes()
     if cached is not None and cached[0] == n:
         return cached[1]
+    if isinstance(G, QuerySnapshot):
+        index = _SnapshotTraversalIndex(G).as_tuple()
+        G.graph["_adj_index"] = (n, index)
+        return index
     ids = list(G.nodes())
     pos = {nid: i for i, nid in enumerate(ids)}
     adj = [[pos[nb] for nb in G.neighbors(nid)] for nid in ids]
@@ -1523,7 +1612,7 @@ def _complete_induced_edges_indexed(
             edges_seen.append((ui, vi))
 
 
-def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
+def _bfs(G: QueryGraph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
     # Hub threshold: nodes above this degree are not expanded as transit.
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
     hub_threshold = _degree_data(G)[1]
@@ -1554,7 +1643,7 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return {ids[i] for i in visited}, [(ids[u], ids[v]) for u, v in edges_seen]
 
 
-def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
+def _dfs(G: QueryGraph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
     hub_threshold = _degree_data(G)[1]
     ids, pos, adj, deg_list = _traversal_index(G)
     start_idx = [pos[n] for n in start_nodes]
@@ -1577,7 +1666,7 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return {ids[i] for i in visited}, [(ids[u], ids[v]) for u, v in edges_seen]
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None, scores: dict[str, float] | None = None) -> str:
+def _subgraph_to_text(G: QueryGraph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None, scores: dict[str, float] | None = None) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
@@ -1600,7 +1689,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     # layers here over BOTH edge directions. Deterministic: neighbor iteration is
     # insertion-ordered and the sort key ends in str(n) (no hash-order).
     def _adj(n):
-        if G.is_directed():
+        if not isinstance(G, QuerySnapshot) and G.is_directed():
             yield from G.successors(n)
             yield from G.predecessors(n)
         else:
@@ -1916,7 +2005,15 @@ def _display_graph_path(graph_path: str) -> str:
         return str(graph_path)
 
 
-def _traversal_view(G: nx.Graph) -> nx.Graph:
+@overload
+def _traversal_view(G: nx.Graph) -> nx.Graph: ...
+
+
+@overload
+def _traversal_view(G: QuerySnapshot) -> QuerySnapshot: ...
+
+
+def _traversal_view(G: QueryGraph) -> QueryGraph:
     """Undirected copy of `G` for BFS/DFS, with true direction kept per edge.
 
     `_load_graph` forces `directed: True` so renderers can recover stored arc
@@ -1953,7 +2050,7 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
     a filter applies, and the traversals and the renderer only read. A hot
     reload swaps in a fresh `G`, so a cached view never outlives its graph.
     """
-    if not G.is_directed():
+    if isinstance(G, QuerySnapshot) or not G.is_directed():
         return G
     cached = G.graph.get("_traversal_view")
     if cached is not None:
@@ -1976,7 +2073,7 @@ _QUERY_NO_MATCH = "No matching nodes found."
 
 
 def _query_graph_text(
-    G: nx.Graph,
+    G: QueryGraph,
     question: str,
     *,
     mode: str = "bfs",
@@ -2061,7 +2158,7 @@ def _query_graph_text(
 
 
 def _render_query(
-    G: nx.Graph,
+    G: QueryGraph,
     question: str,
     start_nodes: list[str],
     *,
@@ -2109,7 +2206,7 @@ def _render_query(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes, scores=scores)
 
 
-def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:
+def _resolve_path_scoped_symbol(G: QueryGraph, path_part: str, symbol_part: str) -> list[str]:
     """Nodes whose source_file matches path_part and label/id matches symbol_part.
 
     Backs the `path::Symbol` query form (#3485): a bare path resolves to the
@@ -2158,7 +2255,7 @@ def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -
     return matches
 
 
-def _label_has_literal_exact_match(G: nx.Graph, term: str, norm_query: str) -> bool:
+def _label_has_literal_exact_match(G: QueryGraph, term: str, norm_query: str) -> bool:
     """Does the RAW, unsplit query already exact-match some node's own label/id?
 
     Mirrors the `exact` tier's own condition below, run early and standalone so
@@ -2191,7 +2288,7 @@ def _label_has_literal_exact_match(G: nx.Graph, term: str, norm_query: str) -> b
 _PY_QUALIFIED_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[.:]([A-Za-z_]\w*)(?:\(\))?$")
 
 
-def _resolve_python_qualified(G: nx.Graph, label: str) -> list[str]:
+def _resolve_python_qualified(G: QueryGraph, label: str) -> list[str]:
     """Nodes named by a dotted Python symbol such as `pkg.mod.func` (#4366)."""
     qualified = _PY_QUALIFIED_RE.match(label.strip())
     if not qualified:
@@ -2227,7 +2324,7 @@ def _split_qualified_member(label: str) -> tuple[list[str], str] | None:
     return owners, _strip_diacritics(qualified.group(2)).lower()
 
 
-def _named_nodes(G: nx.Graph, name: str) -> list[str]:
+def _named_nodes(G: QueryGraph, name: str) -> list[str]:
     candidate_ids = _trigram_candidates(G, [name])
     node_iter = (
         G.nodes(data=True) if candidate_ids is None
@@ -2236,7 +2333,7 @@ def _named_nodes(G: nx.Graph, name: str) -> list[str]:
     return [nid for nid, d in node_iter if _symbol_name(d) == name]
 
 
-def _membership_neighbors(G: nx.Graph, nid: str, *, members: bool) -> list[str]:
+def _membership_neighbors(G: QueryGraph, nid: str, *, members: bool) -> list[str]:
     """The members of *nid* (``members=True``) or the nodes that own it.
 
     Direction comes from the edge's `_src`/`_tgt` markers (#2309, and the CLI
@@ -2267,7 +2364,7 @@ def _membership_neighbors(G: nx.Graph, nid: str, *, members: bool) -> list[str]:
     return list(found)
 
 
-def _enclosed_by(G: nx.Graph, nid: str, outer: list[str]) -> bool:
+def _enclosed_by(G: QueryGraph, nid: str, outer: list[str]) -> bool:
     """Is *nid* nested in types named by *outer*, outermost first?"""
     if not outer:
         return True
@@ -2277,7 +2374,7 @@ def _enclosed_by(G: nx.Graph, nid: str, outer: list[str]) -> bool:
     )
 
 
-def _qualified_member_owners(G: nx.Graph, qualifiers: list[str]) -> list[str]:
+def _qualified_member_owners(G: QueryGraph, qualifiers: list[str]) -> list[str]:
     """Nodes named `qualifiers[-1]` that own members, nested as the rest of the chain says."""
     return [
         owner for owner in _named_nodes(G, qualifiers[-1])
@@ -2286,7 +2383,7 @@ def _qualified_member_owners(G: nx.Graph, qualifiers: list[str]) -> list[str]:
     ]
 
 
-def _members_named(G: nx.Graph, owners: list[str], member: str) -> list[str]:
+def _members_named(G: QueryGraph, owners: list[str], member: str) -> list[str]:
     hits: dict[str, None] = {}
     for owner in owners:
         for nid in _membership_neighbors(G, owner, members=True):
@@ -2295,7 +2392,7 @@ def _members_named(G: nx.Graph, owners: list[str], member: str) -> list[str]:
     return list(hits)
 
 
-def _names_source_file(G: nx.Graph, label: str) -> bool:
+def _names_source_file(G: QueryGraph, label: str) -> bool:
     """Is *label* a file name (`utils.py`) or path some node was extracted from?
 
     Case-insensitive, like the `source_exact` tier's own path match.
@@ -2311,7 +2408,7 @@ def _names_source_file(G: nx.Graph, label: str) -> bool:
     return False
 
 
-def _resolve_qualified_member(G: nx.Graph, label: str) -> list[str]:
+def _resolve_qualified_member(G: QueryGraph, label: str) -> list[str]:
     """Member nodes named by `Type.Member` through their declaring type (#4884).
 
     A file name such as `config.json` has the same shape, and names the file
@@ -2363,7 +2460,7 @@ def _no_member_match_message(G: nx.Graph, label: str) -> str | None:
 
 
 def _find_node_tiers(
-    G: nx.Graph, label: str
+    G: QueryGraph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Return match tiers in precedence order: (source_exact, exact, prefix, substring).
 
@@ -2532,7 +2629,7 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     return []
 
 
-def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
+def _rivals_across_files(G: QueryGraph, tier: list[str]) -> list[str]:
     """One node id per distinct file in *tier*, or `[]` for a single file.
 
     A file is its repo plus its source_file. A merged graph keeps source_file relative
@@ -2613,7 +2710,7 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
     return tier[0], None
 
 
-def _query_name_refusal(G: nx.Graph, label: str) -> str | None:
+def _query_name_refusal(G: QueryGraph, label: str) -> str | None:
     """Refuse a `query`/`--seed` value only when it is a literal node NAME that
     matches several nodes, not when it is merely a search keyword.
 
@@ -2635,7 +2732,7 @@ def _query_name_refusal(G: nx.Graph, label: str) -> str | None:
     return refusal if _is_ambiguity_refusal(refusal) else None
 
 
-def _tier_refusal(G: nx.Graph, label: str, tier: list[str], *, file_query: bool) -> str | None:
+def _tier_refusal(G: QueryGraph, label: str, tier: list[str], *, file_query: bool) -> str | None:
     """Refusal message when the winning *tier* names more than one node, else None.
 
     Shared by `explain`, get_node / get_neighbors and the `path` endpoints so all
@@ -2662,7 +2759,7 @@ def _is_ambiguity_refusal(message: str | None) -> bool:
     return message is not None and message.startswith(_AMBIGUOUS)
 
 
-def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
+def _ambiguity_message(G: QueryGraph, label: str, rivals: list[str]) -> str:
     # Name the repo only when the candidates span several: that is when the bare path is
     # not enough to tell them apart (#4512). One repo, or a graph with no `repo`, keeps
     # the plain path.
@@ -2693,7 +2790,7 @@ def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
     )
 
 
-def _same_file_ambiguity_message(G: nx.Graph, label: str, hits: list[str]) -> str:
+def _same_file_ambiguity_message(G: QueryGraph, label: str, hits: list[str]) -> str:
     source = G.nodes[hits[0]].get("source_file")
     where = f"in {source}" if source else "with no source file"
     listing = "\n".join(

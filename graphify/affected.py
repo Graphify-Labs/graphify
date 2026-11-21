@@ -8,6 +8,8 @@ import unicodedata
 
 import networkx as nx
 
+from graphify.query_snapshot import QueryGraph
+
 
 DEFAULT_AFFECTED_RELATIONS = (
     "calls",
@@ -114,7 +116,7 @@ def _as_repo_relative(query: str, root: Path | None = None) -> str:
 
 
 def _prefer_file_node(
-    graph: nx.Graph,
+    graph: QueryGraph,
     node_ids: list[str],
     query: str,
 ) -> str | None:
@@ -171,7 +173,7 @@ def _prefer_file_node(
     return None
 
 
-def resolve_reference_forms(graph: nx.Graph, query: str) -> str | None:
+def resolve_reference_forms(graph: QueryGraph, query: str) -> str | None:
     """Resolve the reference forms `explain` accepts but `resolve_seed` did not.
 
     `explain` resolves a `path::Symbol` reference (#3485) and a dotted Python
@@ -201,7 +203,7 @@ def resolve_reference_forms(graph: nx.Graph, query: str) -> str | None:
     return None
 
 
-def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str | None:
+def resolve_seed(graph: QueryGraph, query: str, root: Path | None = None) -> str | None:
     # A trailing path separator must not change a source-file match — serve's
     # _find_node tokenizes the path (which drops it), so strip it here for parity
     # (otherwise `affected "src/x.ts/"` returned None while `explain` resolved it).

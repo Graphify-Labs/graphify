@@ -1128,6 +1128,27 @@ def _load_cli_graph(gp: Path):
     return json_graph.node_link_graph(raw, edges="links")
 
 
+def _load_query_graph(gp: Path):
+    from networkx.readwrite import json_graph
+    from graphify.paths import consumed_graph_rows, read_graph_json
+
+    try:
+        raw = read_graph_json(gp)
+        # Leave the persisted directed flag intact. Per-edge markers preserve
+        # true arc direction when the stored graph is undirected.
+        try:
+            from graphify.build import graph_has_legacy_ids, legacy_id_source_prefix
+            legacy = graph_has_legacy_ids(raw.get("nodes", []), source_prefix=legacy_id_source_prefix(gp))
+        except Exception:
+            legacy = False
+        rows = consumed_graph_rows(dict(raw, links=raw.get("links", raw.get("edges", []))))
+        del raw
+        return json_graph.node_link_graph(rows, edges="links"), legacy
+    except Exception as exc:
+        print(f"error: could not load graph: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _hook_strict_enabled(flag: bool) -> bool:
     """Resolve strict mode: GRAPHIFY_HOOK_STRICT env overrides the baked-in flag
     (truthy forces on without a reinstall, falsy is the kill switch); unset defers
@@ -2132,7 +2153,7 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
-        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--no-doc-demotion] [--context C] [--seed X] [--budget N] [--depth N] [--graph path]"
+        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--no-doc-demotion] [--context C] [--seed X] [--budget N] [--depth N] [--graph path] [--snapshot]"
         if len(sys.argv) < 3:
             print(_query_usage, file=sys.stderr)
             sys.exit(1)
@@ -2145,8 +2166,6 @@ def dispatch_command(cmd: str) -> None:
             print(_query_usage)
             return
         from graphify.serve import _QUERY_NO_MATCH, _is_ambiguity_refusal, _query_graph_text
-        from graphify.security import sanitize_label
-        from networkx.readwrite import json_graph
         from graphify import querylog
 
         question = sys.argv[2]
@@ -2159,6 +2178,7 @@ def dispatch_command(cmd: str) -> None:
         budget: int | None = None
         depth: int | None = None
         graph_path = _default_graph_path()
+        use_snapshot = False
         context_filters: list[str] = []
         seeds: list[str] = []
         args = sys.argv[3:]
@@ -2217,6 +2237,9 @@ def dispatch_command(cmd: str) -> None:
                 # Fail closed: a --seed with no value must not quietly become a keyword query.
                 print("error: --seed needs a value (node id, label or file path)", file=sys.stderr)
                 sys.exit(1)
+            elif args[i] == "--snapshot":
+                use_snapshot = True
+                i += 1
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
@@ -2230,49 +2253,18 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: graph file must be a .json file", file=sys.stderr)
             sys.exit(1)
         _enforce_graph_size_cap_or_exit(gp)
-        try:
-            import json as _json
-            import networkx as _nx
+        from graphify.query_snapshot import SnapshotReadError, graph_identity, open_snapshot, write_snapshot
 
-            from graphify.paths import consumed_graph_rows, read_graph_json
-            _raw = read_graph_json(gp)
-            if "links" not in _raw and "edges" in _raw:
-                _raw = dict(_raw, links=_raw["edges"])
-            # `query` deliberately keeps the graph undirected (unlike `path` /
-            # `explain`, which force directed=True): BFS/DFS here must explore
-            # both callers and callees of the seed node to build useful
-            # context, and forcing a DiGraph would make G.neighbors() return
-            # successors only, silently dropping every caller-side result for
-            # a seed with no outgoing edges. Direction is instead preserved
-            # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
-            # so the *rendering* stays correct without narrowing traversal.
-            # Keep in-file markers when present (#2309): unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
-            try:
-                from graphify.build import graph_has_legacy_ids as _legacy
-                from graphify.build import legacy_id_source_prefix as _legacy_prefix
-                _legacy_ids = _legacy(
-                    _raw.get("nodes", []), source_prefix=_legacy_prefix(gp)
-                )
-            except Exception:
-                _legacy_ids = False
-            _rows = consumed_graph_rows(dict(_raw, links=_raw.get("links", [])))
-            del _raw
-            G = json_graph.node_link_graph(_rows, edges="links")
-            try:
-                if _legacy_ids:
-                    print(
-                        "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                        "rebuild with `graphify extract --force` to get path-qualified IDs "
-                        "(fixes same-name-file collisions).",
-                        file=sys.stderr,
-                    )
-            except Exception:
-                pass
-        except Exception as exc:
-            print(f"error: could not load graph: {exc}", file=sys.stderr)
-            sys.exit(1)
+        generation = graph_identity(gp) if use_snapshot else None
+        snapshot = open_snapshot(gp, generation) if generation is not None else None
+        G, legacy = (snapshot, snapshot.legacy) if snapshot is not None else _load_query_graph(gp)
+        if legacy:
+            print(
+                "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
+                "rebuild with `graphify extract --force` to get path-qualified IDs "
+                "(fixes same-name-file collisions).",
+                file=sys.stderr,
+            )
         from graphify.rcfile import RC_FILENAME, load_graphifyrc
 
         graph_root = _graph_root_for(gp)
@@ -2292,20 +2284,33 @@ def dispatch_command(cmd: str) -> None:
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
-        # A persisted index may lack postings from the rows just loaded.
-        G._graphify_one_shot_query = not seeds and G.graph.get("_trigram_index") is None
-        _result = _query_graph_text(
-            G,
-            question,
-            mode=_mode,
-            depth=effective_depth,
-            token_budget=effective_budget,
-            context_filters=context_filters,
-            graph_path=str(gp),
-            seeds=seeds or None,
-            seed_root=graph_root,
-            demote_docs=effective_demote_docs,
-        )
+        def answer(graph):
+            # A persisted index may lack postings from the rows just loaded.
+            graph._graphify_one_shot_query = not seeds and graph.graph.get("_trigram_index") is None
+            return _query_graph_text(
+                graph,
+                question,
+                mode=_mode,
+                depth=effective_depth,
+                token_budget=effective_budget,
+                context_filters=context_filters,
+                graph_path=str(gp),
+                seeds=seeds or None,
+                seed_root=graph_root,
+                demote_docs=effective_demote_docs,
+            )
+
+        refresh_snapshot = snapshot is None
+        try:
+            _result = answer(G)
+        except SnapshotReadError:
+            generation = graph_identity(gp)
+            G, legacy = _load_query_graph(gp)
+            _result = answer(G)
+            refresh_snapshot = True
+        finally:
+            if snapshot is not None:
+                snapshot.close()
         querylog.log_query(
             kind="query",
             question=question,
@@ -2318,6 +2323,8 @@ def dispatch_command(cmd: str) -> None:
             seeds=seeds or None,
             demote_docs=effective_demote_docs,
         )
+        if refresh_snapshot and generation is not None:
+            write_snapshot(gp, generation, G, legacy)
         _touch_query_stamp(gp)
         print(_result)
         if _is_ambiguity_refusal(_result):
