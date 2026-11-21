@@ -2,6 +2,13 @@
 from __future__ import annotations
 
 from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
+from graphify.html_theme import (
+    THEME_CSS_VARS,
+    THEME_INIT_SCRIPT,
+    THEME_TOGGLE_CSS,
+    THEME_TOGGLE_HTML,
+    THEME_TOGGLE_JS,
+)
 from pathlib import Path
 import html as _html
 from graphify.analyze import _node_community_map
@@ -30,17 +37,7 @@ def _viz_node_limit() -> int:
         return MAX_NODES_FOR_VIZ
 
 def _html_styles() -> str:
-    return """<style>
-  :root {
-    --bg: #0f0f1a; --panel: #1a1a2e; --border: #2a2a4e; --input-border: #3a3a5e;
-    --text: #e0e0e0; --text-2: #aaa; --text-3: #ccc; --muted: #555; --count: #666;
-    --neighbor-border: #333; --node-label: #ffffff;
-  }
-  [data-theme="light"] {
-    --bg: #ffffff; --panel: #f8f9fa; --border: #d9dee5; --input-border: #c3cad4;
-    --text: #222222; --text-2: #666666; --text-3: #333333; --muted: #888888; --count: #777777;
-    --neighbor-border: #ccc; --node-label: #222222;
-  }
+    return "<style>\n" + THEME_CSS_VARS + """
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
   #graph { flex: 1; }
@@ -78,9 +75,8 @@ def _html_styles() -> str:
   #select-all-cb:indeterminate { background: #4E79A7; border-color: #4E79A7; }
   #select-all-cb:indeterminate::after { content: ''; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; background: #fff; border: none; transform: none; }
   #theme-wrap { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
-  #theme-wrap button { flex: 1; background: var(--bg); color: var(--text-2); border: 1px solid var(--input-border); border-radius: 4px; padding: 3px 0; font-size: 11px; cursor: pointer; }
-  #theme-wrap button:hover { color: var(--text); }
-  #theme-wrap button[aria-pressed="true"] { background: #4E79A7; border-color: #4E79A7; color: #fff; }
+  #theme-wrap button { flex: 1; padding: 3px 0; font-size: 11px; }
+""" + THEME_TOGGLE_CSS + """
 </style>"""
 
 def _hyperedge_script(hyperedges_json: str) -> str:
@@ -215,42 +211,7 @@ const network = new vis.Network(container, {{ nodes: nodesDS, edges: edgesDS }},
   edges: {{ smooth: {{ type: 'continuous', roundness: 0.2 }}, selectionWidth: 3 }},
 }});
 
-// Theme toggle (#3894): Light / Dark / System, persisted in localStorage.
-const THEME_KEY = 'graphify-theme';
-const themeMQ = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
-let themeLabelColor = '#ffffff';  // matches the per-node font color set in Python
-function themePref() {{
-  let p = null;
-  try {{ p = localStorage.getItem(THEME_KEY); }} catch (e) {{}}
-  return (p === 'light' || p === 'dark' || p === 'system') ? p : null;
-}}
-function applyTheme(pref) {{
-  const t = pref === 'light' ? 'light' : (pref === 'system' && themeMQ && themeMQ.matches) ? 'light' : 'dark';
-  const root = document.documentElement;
-  if (!root) return;
-  root.setAttribute('data-theme', t);
-  document.querySelectorAll('[data-theme-choice]').forEach(b => {{
-    b.setAttribute('aria-pressed', String(b.dataset.themeChoice === (pref || 'dark')));
-  }});
-  const labelColor = getComputedStyle(root).getPropertyValue('--node-label').trim();
-  if (labelColor && labelColor !== themeLabelColor) {{
-    themeLabelColor = labelColor;
-    nodesDS.update(nodesDS.get().map(n => ({{ id: n.id, font: Object.assign({{}}, n.font, {{ color: labelColor }}) }})));
-  }}
-}}
-document.querySelectorAll('[data-theme-choice]').forEach(b => {{
-  b.addEventListener('click', () => {{
-    const pref = b.dataset.themeChoice;
-    try {{ localStorage.setItem(THEME_KEY, pref); }} catch (e) {{}}
-    applyTheme(pref);
-  }});
-}});
-if (themeMQ) {{
-  const onSchemeChange = () => {{ if (themePref() === 'system') applyTheme('system'); }};
-  if (themeMQ.addEventListener) themeMQ.addEventListener('change', onSchemeChange);
-  else if (themeMQ.addListener) themeMQ.addListener(onSchemeChange);
-}}
-applyTheme(themePref());
+{THEME_TOGGLE_JS}
 
 network.once('stabilizationIterationsDone', () => {{
   network.setOptions({{ physics: {{ enabled: false }} }});
@@ -737,27 +698,12 @@ def to_html(
         integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
         crossorigin="anonymous"></script>
 {_html_styles()}
-<script id="graphify-theme-init">
-// Apply the saved theme before first paint (#3894). No saved choice keeps the
-// historical dark look; "system" follows prefers-color-scheme.
-(function () {{
-  var pref = null;
-  try {{ pref = localStorage.getItem('graphify-theme'); }} catch (e) {{}}
-  var t = pref === 'light' ? 'light'
-    : pref === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light'
-    : 'dark';
-  document.documentElement.setAttribute('data-theme', t);
-}})();
-</script>
+{THEME_INIT_SCRIPT}
 </head>
 <body>
 <div id="graph"></div>
 <div id="sidebar">
-  <div id="theme-wrap" role="group" aria-label="Theme">
-    <button type="button" data-theme-choice="light">Light</button>
-    <button type="button" data-theme-choice="dark">Dark</button>
-    <button type="button" data-theme-choice="system">System</button>
-  </div>
+{THEME_TOGGLE_HTML}
   <div id="search-wrap">
     <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
     <div id="search-results"></div>
