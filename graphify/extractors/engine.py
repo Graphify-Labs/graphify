@@ -4901,6 +4901,23 @@ def _csharp_deferred_call(invocation, source: bytes) -> list | None:
     return ["call", recv, _read_text(name_node, source), args]
 
 
+def _csharp_deferred_member(access, source: bytes) -> list | None:
+    """``["member", head, P]`` for ``var a = head.P`` (#5376).
+
+    ``head`` may be a value (``x.F``) or a type (``Audio.Instance``); which one
+    is decided at the call site, where the method's scoped table is complete.
+    Any other access shape returns None.
+    """
+    inner = access.child_by_field_name("expression")
+    name = access.child_by_field_name("name")
+    if (
+        inner is None or inner.type != "identifier"
+        or name is None or name.type != "identifier"
+    ):
+        return None
+    return ["member", _read_text(inner, source), _read_text(name, source)]
+
+
 def _csharp_member_chain(table, head: str, member: str, call_byte: int) -> list | None:
     """``[type of head, member]`` for a ``head.member`` receiver, else None.
 
@@ -5058,6 +5075,11 @@ def _csharp_method_receiver_types(
                                 # `var v = R.M<A>()` — typed cross-file from
                                 # M's declared return type (#4266).
                                 type_name = _csharp_deferred_call(g, source)
+                                break
+                            if g.type == "member_access_expression":
+                                # `var a = T.P` / `var a = x.F` — typed at the
+                                # call site from P's declared type (#5376).
+                                type_name = _csharp_deferred_member(g, source)
                                 break
                     bind(_read_text(name_node, source), type_name, scope, declared_elem)
         elif node.type == "foreach_statement":
@@ -12634,7 +12656,17 @@ def _extract_generic(
                             receiver_type = _csharp_scoped_receiver_type(
                                 receiver_types, member_receiver, node.start_byte
                             )
-                            if isinstance(receiver_type, list):
+                            if isinstance(receiver_type, list) and receiver_type[0] == "member":
+                                # `var a = T.P; a.X()` (#5376): the chain the
+                                # direct `T.P.X()` would get, at this offset.
+                                chain = _csharp_member_chain(
+                                    receiver_types if isinstance(receiver_types, tuple)
+                                    else None, receiver_type[1], receiver_type[2],
+                                    node.start_byte,
+                                )
+                                if chain:
+                                    rc_entry["receiver_chain"] = chain
+                            elif isinstance(receiver_type, list):
                                 # `var v = R.M<A>(); v.X()` (#4266): R is typed
                                 # here, M's return type in the cross-file pass.
                                 _, recv, method, targs = receiver_type

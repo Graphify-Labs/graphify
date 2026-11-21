@@ -7387,8 +7387,9 @@ def _resolve_csharp_member_calls(
             continue
         src_file = rc.get("source_file", "")
         caller_node = node_by_id.get(caller)
-        if not receiver:
-            # x.F.M() -> [type of x, "F"]; xs[i].M() -> [element type].
+        if chain:
+            # x.F.M() -> [type of x, "F"]; xs[i].M() -> [element type];
+            # `var a = T.P; a.M()` keeps receiver `a` (#5376).
             type_nid = _resolve_type_name_nid(chain[0], caller_node, src_file)
             for field in chain[1:]:
                 if not type_nid:
