@@ -24,6 +24,7 @@ Performance work on the extract/build/update pipeline, plus a batch of extractor
 - Fix: **python** a plain `import mod` where `mod` sits on a `sys.path.insert(...)` directory (a non-package script dir) now binds `mod.func()` to the `func` function node, matched to the unique file on that path and failing closed on ambiguity or a stdlib name; a `calls` edge is no longer aliased onto a file node (#5253, thanks @madhusudanpatnaik).
 - Fix: **serve** a query that filters on the `call` relation now keeps cross-repo `calls` edges (written as `relation=calls, context=cross_repo`), which were silently dropped by the context-only filter (#5257, thanks @LHopitalOne).
 - Fix: **build** a member's structural `method`/`contains` edge to its owner is kept over an opposite-direction member-usage edge (a method reading its class's own static property or constant), so the member no longer vanishes from the type's walk; non-usage relations (inherits/implements) keep the existing rule (#2391, thanks @livingforelvis).
+- Fix: **query** a heuristic `--context` inferred from ordinary wording (`modules`, `template`, `return`, …) is discarded when it matches no edges, or leaves the seed nodes with no remaining edges, instead of collapsing the traversal to the seeds and reading as a confident empty answer. `--context call` also keeps `calls` edges on graphs that never set a `context` attribute (#2529).
 
 The AST cache schema is bumped to 50; warm caches re-run the affected Kotlin, Java, SQL, VB.NET, C++ and Python (sys.path import) extractions.
 
@@ -142,6 +143,7 @@ The AST cache schema is bumped to 45; warm caches re-run the affected C#, Java a
 - Change: **cloud** the post-build CLI nudge is contextual. It is TTY-only (never in CI or the agent pipeline), respects `GRAPHIFY_NO_TIPS`/`GRAPHIFY_NO_CTA`, and shows on builds 1, 5 and 20 then stays quiet for good. When a local graph reaches 25k nodes, the free plan's per-repo cut-off, the nudge switches to a scale-specific line (tagged `utm_content=scale`) that sells Graphify Pro and links to pricing with the 14-day trial, instead of the free signup: a repo that size no longer fits the free plan, so pointing it at the free plan would land straight on the limit.
 
 The AST cache schema is bumped to 44; warm caches re-run the affected C++, PHP, Java and module-level-id extractions.
+
 ## 0.9.106 (2026-11-10)
 
 - Fix: **install** `requires-python` is capped to `>=3.10,<3.15`, so `uv tool install graphifyy` (and pip) on a fresh machine no longer selects Python 3.15 — for which `tree-sitter` has no wheel — and then fails with a source build that needs a C compiler (`No such file or directory: 'cc'`). uv now picks a wheel-having interpreter (3.14) by default, with no `--python` flag and no compiler needed. The Ubuntu/Debian README line that asked for `python3.12` (absent on Debian 12 and Ubuntu 22.04) is replaced with the uv installer or a plain `python3`/pipx line (#5134).
