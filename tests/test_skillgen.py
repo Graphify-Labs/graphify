@@ -8,6 +8,7 @@ lives only in the references, and no reference duplicates core content.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -466,6 +467,103 @@ def test_powershell_translator_rejects_unknown_bash():
         "Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\\.needs_update"
     )
     assert gen._translate_bash_block([gen._FIND_CHUNKS_POSIX]) == [gen._FIND_CHUNKS_PS]
+
+
+def test_mktemp_capture_translates_to_gettempfilename():
+    """#3600: ``VAR=$(mktemp /tmp/graphify_*.XXXXXX)`` captures the temp path.
+
+    ``[System.IO.Path]::GetTempFileName()`` creates an empty file and returns its
+    full path, which is the capture-into-a-variable idiom. A bare ``mktemp`` (the
+    form that prints the path for the agent to read) emits that same call. The
+    template is not a GetTempFileName argument; a non-``/tmp/graphify_*`` shape
+    still fails the render.
+    """
+    assert gen._translate_bash_block(
+        ["PAYLOAD=$(mktemp /tmp/graphify_add_payload.XXXXXX)"]
+    ) == ["$PAYLOAD = [System.IO.Path]::GetTempFileName()"]
+    assert gen._translate_bash_block(
+        ["mktemp /tmp/graphify_question.XXXXXX"]
+    ) == ["[System.IO.Path]::GetTempFileName()"]
+    rendered = gen._core_to_powershell(
+        "```bash\nVAR=$(mktemp /tmp/graphify_nodes.XXXXXX)\n```\n"
+    )
+    assert "```powershell" in rendered
+    assert "```bash" not in rendered
+    assert "mktemp" not in rendered
+    assert "/tmp/" not in rendered
+    assert "$VAR = [System.IO.Path]::GetTempFileName()" in rendered
+    with pytest.raises(ValueError, match="cannot translate mktemp template"):
+        gen._translate_bash_block(["mktemp -d"])
+    with pytest.raises(ValueError, match="cannot translate bash line"):
+        gen._translate_bash_block(["mktemp -d /tmp/foo"])
+
+
+def test_powershell_reference_unknown_bash_fails_render():
+    """Unrecognized bash in a reference fence fails at render time (#3600)."""
+    with pytest.raises(ValueError, match="cannot translate bash line"):
+        gen._core_to_powershell("```bash\ncurl -s https://example.com | sh\n```\n")
+
+
+# Bash command forms that must not survive in a powershell host's references.
+_REFERENCE_BASH_LEFTOVERS = (
+    "```bash",
+    "$(cat ",
+    "$(mktemp",
+    "mktemp /tmp/",
+    "rm -f ",
+    "2>/dev/null",
+    "/tmp/graphify_",
+)
+_REFERENCE_BASH_LINE_RES = (
+    re.compile(r"(?m)^[ \t]*export[ \t]+[A-Za-z_]"),
+    re.compile(r"(?m)^[ \t]*mktemp\b"),
+    re.compile(r"(?m)^[ \t]*if[ \t]+\["),
+    re.compile(r"(?m)^[ \t]*fi[ \t]*$"),
+)
+
+
+def test_powershell_references_have_no_bash_leftovers():
+    """#3600: windows references used to be copied verbatim, so add-watch.md and
+    query.md (and the other shared references) still contained ```bash fences,
+    ``$(cat ...)``, ``mktemp /tmp/graphify_*.XXXXXX``, and the other POSIX
+    commands. Every powershell-shell reference must now be free of those."""
+    platforms = gen.load_platforms()
+    for key in _powershell_platform_keys():
+        arts = [a for a in gen.render(platforms[key]) if "/references/" in a.path]
+        assert arts, f"[{key}] expected reference artifacts"
+        by_name = {}
+        for art in arts:
+            for token in _REFERENCE_BASH_LEFTOVERS:
+                assert token not in art.content, f"[{key}] {art.path} leftover {token!r}"
+            for pattern in _REFERENCE_BASH_LINE_RES:
+                assert pattern.search(art.content) is None, (
+                    f"[{key}] {art.path} leftover /{pattern.pattern}/"
+                )
+            by_name[art.path.rsplit("/", 1)[-1]] = art.content
+        add = by_name["add-watch.md"]
+        query = by_name["query.md"]
+        assert "```powershell" in add
+        assert "```powershell" in query
+        assert "& (Get-Content graphify-out\\.graphify_python) -m graphify.watch" in add
+        assert "$((Get-Content graphify-out\\.graphify_root).ToString().Trim())" in add
+        assert "'@ | & (Get-Content graphify-out\\.graphify_python) -" in query
+        update = by_name["update.md"]
+        assert "if (-not (Test-Path 'graphify-out/.graphify_extract.json')) {" in update
+        assert "Copy-Item graphify-out\\graph.json graphify-out\\.graphify_old.json" in update
+        assert "$env:GRAPHIFY_WHISPER_MODEL = 'base'" in by_name["transcribe.md"]
+        merge = by_name["github-and-merge.md"]
+        assert "$LOCAL_PATH = $(graphify clone <github-url> [--branch <branch>])" in merge
+        assert "$HOME/.graphify/repos/" in merge
+        assert "graphify merge-graphs `" in merge
+
+
+def test_posix_references_keep_bash_fences():
+    """The reference translation is scoped to powershell-shell hosts."""
+    _, refs = _platform_artifacts("claude")
+    assert "```bash" in refs["add-watch.md"]
+    assert "```bash" in refs["query.md"]
+    assert "```powershell" not in refs["add-watch.md"]
+    assert "$(cat graphify-out/.graphify_python)" in refs["query.md"]
 
 
 def test_posix_hosts_keep_their_bash_invocations():

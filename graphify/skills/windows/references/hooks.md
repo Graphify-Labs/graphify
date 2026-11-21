@@ -6,7 +6,7 @@ Load this when the user asked to install the post-commit hook or wire graphify i
 
 Install a post-commit hook that auto-rebuilds the graph after every commit. No background process needed - triggers once per commit, works with any editor.
 
-```bash
+```powershell
 graphify hook install    # install
 graphify hook uninstall  # remove
 graphify hook status     # check
@@ -22,13 +22,13 @@ If a post-commit hook already exists, graphify appends to it rather than replaci
 
 Run once per project to make graphify always-on in Claude Code sessions:
 
-```bash
+```powershell
 graphify claude install
 ```
 
 This writes a `## graphify` section to the local `CLAUDE.md` that instructs Claude to check the graph before answering codebase questions and rebuild it after code changes. No manual `/graphify` needed in future sessions.
 
-```bash
+```powershell
 graphify claude uninstall  # remove the section
 ```
 
