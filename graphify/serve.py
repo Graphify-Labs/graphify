@@ -2997,8 +2997,37 @@ def _build_server(graph_path: str):
                             "default": True,
                             "description": "Rank source code above docs/config (default). Set false for a docs-first corpus so documents are not soft-demoted.",
                         },
+                        "seeds": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional explicit start nodes (node id, unique label, or file path), "
+                                "like `graphify query --seed`. Skips keyword matching; a value that "
+                                "does not resolve to exactly one node is reported, never guessed."
+                            ),
+                        },
                     },
                     "required": ["question"],
+                },
+            ),
+            types.Tool(
+                name="affected",
+                description=(
+                    "Reverse traversal: list the nodes that would be impacted by changing a node "
+                    "(callers, importers, referencing files). Like `graphify affected`."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "description": "Node id, unique label, or file path"},
+                        "depth": {"type": "integer", "default": 2, "description": "Reverse traversal depth"},
+                        "relations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional relation filter; defaults to the same set as the CLI",
+                        },
+                    },
+                    "required": ["target"],
                 },
             ),
             types.Tool(
@@ -3168,6 +3197,13 @@ def _build_server(graph_path: str):
         demote_docs = arguments.get("demote_docs", True)
         if isinstance(demote_docs, str):
             demote_docs = demote_docs.lower() not in ("false", "0", "no")
+        seeds = arguments.get("seeds")
+        if isinstance(seeds, str):
+            seeds = [seeds]
+        if seeds is not None and (
+            not isinstance(seeds, list) or not all(isinstance(s, str) and s for s in seeds)
+        ):
+            return "error: seeds must be a list of non-empty strings (node id, label or file path)"
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -3177,6 +3213,8 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            seeds=seeds or None,
+            seed_root=_graph_root(),
             demote_docs=demote_docs,
         )
         querylog.log_query(
@@ -3190,6 +3228,51 @@ def _build_server(graph_path: str):
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
         return result
+
+    def _graph_root() -> Path:
+        # Same rule as the CLI: <root>/<GRAPHIFY_OUT_NAME>/graph.json -> <root>;
+        # a graph outside that layout falls back to its own directory.
+        from graphify.paths import GRAPHIFY_OUT_NAME
+
+        gp = Path(active_graph_path).resolve()
+        return gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+
+    def _tool_affected(arguments: dict) -> str:
+        from graphify.affected import (
+            DEFAULT_AFFECTED_RELATIONS,
+            format_affected,
+            resolve_seed_outcome,
+        )
+
+        target = arguments.get("target")
+        if not isinstance(target, str) or not target.strip():
+            return "Provide a target (node id, label or file path)."
+        try:
+            depth = int(arguments.get("depth", 2))
+        except (TypeError, ValueError):
+            return "error: depth must be an integer"
+        depth = max(1, min(depth, 6))
+        relations = arguments.get("relations")
+        if isinstance(relations, str):
+            relations = [relations]
+        if relations is not None and (
+            not isinstance(relations, list) or not all(isinstance(r, str) for r in relations)
+        ):
+            return "error: relations must be a list of strings"
+        root = _graph_root()
+        seed, rivals = resolve_seed_outcome(G, target, root)
+        if seed is None:
+            if rivals:
+                return _ambiguity_message(G, target, rivals)
+            return f"No unique node match for {target}"
+        return format_affected(
+            G,
+            target,
+            relations=relations or DEFAULT_AFFECTED_RELATIONS,
+            depth=depth,
+            root=root,
+            seed=seed,
+        )
 
     def _tool_get_node(arguments: dict) -> str:
         from graphify.sections import is_section_node as _is_section_node
@@ -3421,6 +3504,7 @@ def _build_server(graph_path: str):
 
     _handlers = {
         "query_graph": _tool_query_graph,
+        "affected": _tool_affected,
         "get_node": _tool_get_node,
         "get_section": _tool_get_section,
         "get_neighbors": _tool_get_neighbors,
