@@ -1,0 +1,99 @@
+name: PR Labels
+
+# This workflow needs a write-capable token for fork pull requests. It runs in
+# the base repository's context and never checks out or executes PR code.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Apply scope and size labels
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Apply scope labels
+        uses: actions/labeler@v7
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          sync-labels: true
+
+      - name: Apply size label
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.issue.number;
+
+            // github.paginate fetches every page; listFiles returns at most 100
+            // files per request.
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number,
+              per_page: 100,
+            });
+            const totalChanges = files.reduce(
+              (total, file) => total + file.additions + file.deletions,
+              0,
+            );
+
+            let sizeLabel;
+            if (totalChanges < 10) {
+              sizeLabel = "size/XS";
+            } else if (totalChanges < 50) {
+              sizeLabel = "size/S";
+            } else if (totalChanges < 200) {
+              sizeLabel = "size/M";
+            } else if (totalChanges < 500) {
+              sizeLabel = "size/L";
+            } else {
+              sizeLabel = "size/XL";
+            }
+
+            const sizeLabels = new Set([
+              "size/XS",
+              "size/S",
+              "size/M",
+              "size/L",
+              "size/XL",
+            ]);
+            const currentLabels = await github.paginate(
+              github.rest.issues.listLabelsOnIssue,
+              { owner, repo, issue_number: pull_number, per_page: 100 },
+            );
+
+            for (const label of currentLabels) {
+              if (sizeLabels.has(label.name) && label.name !== sizeLabel) {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: pull_number,
+                  name: label.name,
+                });
+              }
+            }
+
+            if (!currentLabels.some((label) => label.name === sizeLabel)) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: pull_number,
+                labels: [sizeLabel],
+              });
+            }
+
+            core.info(
+              `PR changes ${totalChanges} lines across ${files.length} files: ${sizeLabel}`,
+            );
