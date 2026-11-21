@@ -611,3 +611,60 @@ def test_shortest_path_tool_refuses_endpoint_that_names_no_node(tmp_path):
     out = _shortest_path_text(G, {"source": _NO_SUCH_NODE, "target": "src/b.ts::format()"})
     assert "Shortest path" not in out
     assert f"No node matching source '{_NO_SUCH_NODE}' found." in out
+
+
+def _id_label_collision_graph(tmp_path):
+    """#5361: the decoy's label tokenizes to the same words as the source's id."""
+    graph_data = {
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "demo::src_alpha_prepare", "label": "prepare()",
+             "source_file": "alpha.py", "source_location": "L1"},
+            {"id": "demo::src_beta_finish", "label": "finish()",
+             "source_file": "beta.py", "source_location": "L1"},
+            {"id": "decoy", "label": "demo src alpha prepare",
+             "source_file": "notes.md", "source_location": "L1"},
+            {"id": "gamma_prepare", "label": "prepare()",
+             "source_file": "gamma.py", "source_location": "L1"},
+        ],
+        "links": [
+            {"source": "demo::src_alpha_prepare", "target": "demo::src_beta_finish",
+             "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def test_path_exact_node_id_beats_a_label_that_normalizes_to_it(monkeypatch, tmp_path, capsys):
+    """An endpoint that is a node id names that node, even when another node's
+    label tokenizes to the same words. The refusal used to advise retrying with
+    the full node id, the form that was already given (#5361)."""
+    gp = _id_label_collision_graph(tmp_path)
+    out = _run(monkeypatch, gp, "demo::src_alpha_prepare", "demo::src_beta_finish", capsys)
+    assert "Shortest path (1 hops):" in out
+    assert "prepare() --calls [EXTRACTED]--> finish()" in out
+
+
+def test_shortest_path_tool_exact_node_id_beats_a_label_that_normalizes_to_it(tmp_path):
+    """The MCP tool shares the resolver (#5361)."""
+    from graphify.serve import _shortest_path_text
+    raw = json.loads(_id_label_collision_graph(tmp_path).read_text())
+    G = json_graph.node_link_graph(raw, edges="links")
+    out = _shortest_path_text(G, {"source": "demo::src_alpha_prepare",
+                                  "target": "demo::src_beta_finish"})
+    assert "Shortest path (1 hops):" in out
+
+
+def test_path_label_shared_across_files_is_still_ambiguous(monkeypatch, tmp_path, capsys):
+    """Only an exact id skips ranking: a label two files share is still refused (#5361)."""
+    gp = _id_label_collision_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "path", "prepare()", "demo::src_beta_finish", "--graph", str(gp)])
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == EXIT_AMBIGUOUS
+    err = capsys.readouterr().err
+    assert "demo::src_alpha_prepare" in err and "gamma_prepare" in err
