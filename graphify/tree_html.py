@@ -40,6 +40,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from graphify.html_theme import (
+    THEME_CSS_VARS,
+    THEME_INIT_SCRIPT,
+    THEME_TOGGLE_CSS,
+    THEME_TOGGLE_HTML,
+    THEME_TOGGLE_JS,
+)
+
 DEFAULT_MAX_CHILDREN = 200
 
 
@@ -309,60 +317,193 @@ def build_tree(
 # ── HTML emitter (single-data-blob substitution) ──────────────────
 
 
+# Depth palette (themeable via CSS custom properties).
+#
+# Every tree node/link colour is a (fill, stroke, collapsed-fill) triple that
+# lives in a --tree-* CSS variable, so a Light/Dark switch recolours the whole
+# tree without a redraw (#5358). The light triples are the values the tree
+# shipped before theming and must not change; the dark triples keep each light
+# hue and lift its lightness so fills stay >= 2:1 and strokes >= 3:1 against the
+# dark --panel, where the light-tuned values (#333333 links, #4A4A4A root) had
+# dropped to ~1.5:1 and were effectively invisible.
+
+TREE_PHASE_ROOT = ("#4A4A4A", "#333333", "#6C757D")
+TREE_PHASE_ROOT_DARK = ("#6B6B6B", "#9E9E9E", "#C8CBD0")
+TREE_PHASE_DEFAULT = ("#BDC3C7", "#95A5A6", "#ECF0F1")
+TREE_PHASE_DEFAULT_DARK = ("#626974", "#969CA7", "#C5D0D3")
+
+# Depth-keyed palettes ("2".."6", plus "default" for deeper levels).
+TREE_LEVEL_PALETTE = {
+    "2": ("#6ab04c", "#508a38", "#a3d391"),
+    "3": ("#f0932b", "#d0730f", "#f6c07e"),
+    "4": ("#be2edd", "#a01cb3", "#e08bf2"),
+    "5": ("#00a8ff", "#007ac1", "#74d2ff"),
+    "6": ("#e55039", "#c23620", "#f09a8d"),
+    "default": ("#747d8c", "#57606f", "#a4b0be"),
+}
+TREE_LEVEL_PALETTE_DARK = {
+    "2": ("#5B9343", "#8EC577", "#C3E1B7"),
+    "3": ("#C37013", "#EEA14E", "#F6D0A2"),
+    "4": ("#9A22B4", "#D05BE1", "#E5A5F3"),
+    "5": ("#058BD1", "#42B6FA", "#9CDDFC"),
+    "6": ("#B9321D", "#E06E5C", "#F1B1A7"),
+    "default": ("#616975", "#939BA9", "#C4CBD4"),
+}
+
+# Colours for depth-1 directories, cycled by index; every top-level dir gets a
+# stable, distinguishable hue.
+TREE_DIR_PALETTE = [
+    ("#3498DB", "#2980B9", "#AED6F1"), ("#2ECC71", "#27AE60", "#A9DFBF"),
+    ("#E74C3C", "#C0392B", "#F5B7B1"), ("#9B59B6", "#8E44AD", "#D7BDE2"),
+    ("#F39C12", "#D68910", "#FAD7A0"), ("#1ABC9C", "#117864", "#A2D9CE"),
+    ("#34495E", "#1B2631", "#ABB2B9"), ("#E67E22", "#BA4A00", "#F5CBA7"),
+    ("#16A085", "#0E6655", "#A2D9CE"), ("#D35400", "#A04000", "#EDBB99"),
+    ("#7F8C8D", "#566573", "#D5DBDB"), ("#C0392B", "#7B241C", "#F5B7B1"),
+    ("#2E86C1", "#1B4F72", "#A9CCE3"), ("#28B463", "#196F3D", "#A9DFBF"),
+    ("#AF7AC5", "#6C3483", "#D2B4DE"),
+]
+TREE_DIR_PALETTE_DARK = [
+    ("#2479B2", "#63AAD9", "#AAD3EE"), ("#2BAB61", "#64D895", "#B6E2C8"),
+    ("#BB2B1C", "#D86F64", "#F1ADA7"), ("#7C4493", "#AF76C6", "#D4B9DF"),
+    ("#C7800F", "#EDB04F", "#F8D6A0"), ("#1EB89A", "#59E3C8", "#B8E0D8"),
+    ("#4E6B88", "#839EB9", "#C7CBD1"), ("#BC661A", "#FA8B42", "#F3C9A5"),
+    ("#1EB89A", "#58E4C9", "#B8E0D8"), ("#D15605", "#FA8C42", "#EEC6AA"),
+    ("#656A71", "#919FAB", "#C8CBD0"), ("#AC372B", "#D86E64", "#F1ADA7"),
+    ("#2D77AA", "#65A9D7", "#B3D1E5"), ("#2AAC61", "#64D895", "#B6E2C8"),
+    ("#7C4393", "#AF76C6", "#D4B9DF"),
+]
+
+_TREE_COLOR_KINDS = ("fill", "stroke", "collapsed")
+
+
+def tree_palette_names(dark: bool):
+    """Yield (CSS-variable base name, colour triple) for every tree colour."""
+    yield "root", (TREE_PHASE_ROOT_DARK if dark else TREE_PHASE_ROOT)
+    yield "phase-default", (
+        TREE_PHASE_DEFAULT_DARK if dark else TREE_PHASE_DEFAULT
+    )
+    dirs = TREE_DIR_PALETTE_DARK if dark else TREE_DIR_PALETTE
+    for i, triple in enumerate(dirs):
+        yield f"l1-{i}", triple
+    levels = TREE_LEVEL_PALETTE_DARK if dark else TREE_LEVEL_PALETTE
+    for level, triple in levels.items():
+        yield ("dx" if level == "default" else f"d{level}"), triple
+
+
+def tree_palette_css(dark: bool) -> str:
+    """Render the --tree-* variable block for one theme."""
+    lines = []
+    for name, triple in tree_palette_names(dark):
+        decls = " ".join(
+            f"--tree-{name}-{kind}: {value};"
+            for kind, value in zip(_TREE_COLOR_KINDS, triple)
+        )
+        lines.append("      " + decls)
+    return "\n".join(lines)
+
+
+def tree_palette_index() -> Dict[str, Any]:
+    """Describe to the client where each node/link colour lives.
+
+    Values are the full custom-property prefixes (``--tree-…``) so the client
+    only appends ``-fill``/``-stroke``/``-collapsed`` and cannot drift from the
+    names ``tree_palette_css`` emits.
+    """
+    return {
+        "root": "--tree-root",
+        "phaseDefault": "--tree-phase-default",
+        "dirs": [f"--tree-l1-{i}" for i in range(len(TREE_DIR_PALETTE))],
+        "levels": {
+            **{k: f"--tree-d{k}" for k in TREE_LEVEL_PALETTE if k != "default"},
+            "default": "--tree-dx",
+        },
+    }
+
+
 # We emit a Python f-string with literal CSS/JS braces escaped as {{ }}.
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>{title}</title>
+  {theme_init_script}
   <style>
+{theme_css_vars}
+    :root {{
+      --tree-count: #6ba6e8;
+{tree_palette_dark}
+    }}
+    [data-theme="light"] {{
+      --tree-count: #0056b3;
+{tree_palette_light}
+    }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      font-family: 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       margin: 0;
       padding: 0;
-      background: #f9f9f9;
-      color: #333;
+      background: var(--bg);
+      color: var(--text);
     }}
     h1 {{
       margin: 20px 0 0 24px;
       font-size: 2.2rem;
       font-weight: bold;
-      color: #1e3a56;
+      color: var(--text);
     }}
     .controls {{
-      margin: 20px 0 15px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 20px 24px 15px 24px;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    .action-buttons {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
     }}
     button {{
-      margin-right: 10px;
-      padding: 8px 18px;
-      background: #007bff;
-      color: #fff;
-      border: none;
-      border-radius: 5px;
-      font-size: 0.95rem;
+      padding: 6px 14px;
+      background: var(--panel);
+      color: var(--text-2);
+      border: 1px solid var(--input-border);
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: inherit;
       cursor: pointer;
-      transition: background 0.2s ease-in-out;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
     }}
     button:hover {{
-      background: #0056b3;
+      color: var(--text);
+      border-color: var(--text-2);
     }}
-    button:active {{
-      background: #004085;
+    #theme-wrap {{
+      display: inline-flex;
+      gap: 4px;
+    }}
+    #theme-wrap button {{
+      padding: 5px 12px;
+      font-size: 11px;
+    }}
+{theme_toggle_css}
+    #theme-wrap button:hover {{
+      border-color: var(--text-2);
     }}
     #tree-container {{
       width: calc(100vw - 48px); /* Adjust for body margin/padding */
       height: 85vh;
       overflow: auto;
       border-radius: 8px;
-      background: #fff;
+      background: var(--panel);
       margin-left: 24px;
       margin-right: 24px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-      border: 1px solid #ddd;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      border: 1px solid var(--border);
     }}
     svg {{
-      background: #fff;
+      background: var(--panel);
       border-radius: 8px;
       display: block; /* Important for D3 */
     }}
@@ -370,12 +511,13 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
       stroke-width: 2.5px;
     }}
     .node text {{ /* Base style for the <text> container */
-      font: 13px 'Segoe UI', sans-serif;
+      font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       paint-order: stroke fill; /* Ensures text is readable over lines */
-      stroke: #fff; /* White halo */
+      stroke: var(--panel); /* Halo matching container background */
       stroke-width: 3px; /* Halo thickness */
       stroke-linejoin: round;
       stroke-opacity: 0.85; /* Halo opacity */
+      fill: var(--text);
     }}
     .link {{
       fill: none;
@@ -387,9 +529,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <body>
   <h1>{header}</h1>
   <div class="controls">
-    <button onclick="expandAll()">Expand All</button>
-    <button onclick="collapseAll()">Collapse All</button>
-    <button onclick="resetView()">Reset View</button>
+    <div class="action-buttons">
+      <button onclick="expandAll()">Expand All</button>
+      <button onclick="collapseAll()">Collapse All</button>
+      <button onclick="resetView()">Reset View</button>
+    </div>
+    {theme_toggle_html}
   </div>
   <div id="tree-container">
     <svg id="tree-svg" width="{svg_width}" height="{svg_height}"></svg>
@@ -440,35 +585,26 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     const treeData = transformData(initialJsonData);
 
+    // Colours are --tree-* CSS variables (emitted in <style>), so a theme
+    // switch recolours nodes and links without a redraw (#5358).
+    const TREE_PALETTE = {tree_palette_index};
+    const treeColor = (name) => ({{ fill: "var(" + name + "-fill)",
+                                    stroke: "var(" + name + "-stroke)",
+                                    collapsedFill: "var(" + name + "-collapsed)" }});
     // Auto-populated phaseColors: every depth-1 child of the root gets
     // a stable colour from a bigger palette so all top-level dirs are
     // distinguishable.
-    const PALETTE = [
-      ["#3498DB","#2980B9","#AED6F1"], ["#2ECC71","#27AE60","#A9DFBF"],
-      ["#E74C3C","#C0392B","#F5B7B1"], ["#9B59B6","#8E44AD","#D7BDE2"],
-      ["#F39C12","#D68910","#FAD7A0"], ["#1ABC9C","#117864","#A2D9CE"],
-      ["#34495E","#1B2631","#ABB2B9"], ["#E67E22","#BA4A00","#F5CBA7"],
-      ["#16A085","#0E6655","#A2D9CE"], ["#D35400","#A04000","#EDBB99"],
-      ["#7F8C8D","#566573","#D5DBDB"], ["#C0392B","#7B241C","#F5B7B1"],
-      ["#2E86C1","#1B4F72","#A9CCE3"], ["#28B463","#196F3D","#A9DFBF"],
-      ["#AF7AC5","#6C3483","#D2B4DE"],
-    ];
-    const phaseColors = {{ "Root": {{ fill: "#4A4A4A", stroke: "#333333", collapsedFill: "#6C757D" }},
-                          "Default": {{ fill: "#BDC3C7", stroke: "#95A5A6", collapsedFill: "#ECF0F1" }} }};
+    const phaseColors = {{ "Root": treeColor(TREE_PALETTE.root),
+                          "Default": treeColor(TREE_PALETTE.phaseDefault) }};
     (initialJsonData.children || []).forEach((c, i) => {{
-      const pal = PALETTE[i % PALETTE.length];
-      phaseColors[c.name] = {{ fill: pal[0], stroke: pal[1], collapsedFill: pal[2] }};
+      const name = TREE_PALETTE.dirs[i % TREE_PALETTE.dirs.length];
+      phaseColors[c.name] = treeColor(name);
     }});
 
-    const levelSpecificPalettes = {{
-      0: {{ fill: "#4A4A4A", stroke: "#333333", collapsedFill: "#6C757D" }},
-      2: {{ fill: "#6ab04c", stroke: "#508a38", collapsedFill: "#a3d391" }},
-      3: {{ fill: "#f0932b", stroke: "#d0730f", collapsedFill: "#f6c07e" }},
-      4: {{ fill: "#be2edd", stroke: "#a01cb3", collapsedFill: "#e08bf2" }},
-      5: {{ fill: "#00a8ff", stroke: "#007ac1", collapsedFill: "#74d2ff" }},
-      6: {{ fill: "#e55039", stroke: "#c23620", collapsedFill: "#f09a8d" }},
-      default: {{ fill: "#747d8c", stroke: "#57606f", collapsedFill: "#a4b0be" }}
-    }};
+    const levelSpecificPalettes = {{ 0: treeColor(TREE_PALETTE.root) }};
+    Object.keys(TREE_PALETTE.levels).forEach(level => {{
+      levelSpecificPalettes[level] = treeColor(TREE_PALETTE.levels[level]);
+    }});
 
     const svgElement = d3.select("#tree-svg");
     const initialSvgWidth = +svgElement.attr("width");
@@ -548,7 +684,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             }}
             if (d._children) return palette.collapsedFill;
             if (d.children) return palette.fill;
-            return "#fff";
+            return "var(--panel)";
         }})
         .style('stroke', d => {{
             let palette;
@@ -586,8 +722,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     function wrapText(textElements, maxWidth) {{
         const textPartColors = {{
-            name: '#343a40',
-            count: '#0056b3'
+            name: 'var(--text)',
+            count: 'var(--tree-count)'
         }};
         const countRegex = /(\s\(Total Count: \d+\))$/;
 
@@ -640,6 +776,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
                     lineTokens.forEach((prevToken, idx) => {{
                         currentTspan.append("tspan")
                             .text((idx > 0 ? " " : "") + prevToken.text)
+                            .attr("class", prevToken.type)
                             .style("fill", textPartColors[prevToken.type] || textPartColors.name)
                             .style("font-weight", prevToken.type === 'count' ? "bold" : "normal");
                     }});
@@ -654,6 +791,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             lineTokens.forEach((token, idx) => {{
                 currentTspan.append("tspan")
                     .text((idx > 0 ? " " : "") + token.text)
+                    .attr("class", token.type)
                     .style("fill", textPartColors[token.type] || textPartColors.name)
                     .style("font-weight", token.type === 'count' ? "bold" : "normal");
             }});
@@ -670,6 +808,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             }}
         }});
     }}
+
+    {theme_toggle_js}
   </script>
 </body>
 </html>
@@ -694,6 +834,14 @@ def emit_html(
         svg_width=svg_width,
         svg_height=svg_height,
         data_json=data_json,
+        theme_init_script=THEME_INIT_SCRIPT,
+        theme_css_vars=THEME_CSS_VARS,
+        theme_toggle_css=THEME_TOGGLE_CSS,
+        theme_toggle_html=THEME_TOGGLE_HTML,
+        theme_toggle_js=THEME_TOGGLE_JS,
+        tree_palette_dark=tree_palette_css(dark=True),
+        tree_palette_light=tree_palette_css(dark=False),
+        tree_palette_index=json.dumps(tree_palette_index(), separators=(",", ":")),
     )
 
 
