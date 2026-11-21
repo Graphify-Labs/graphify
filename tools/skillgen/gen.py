@@ -234,8 +234,8 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
         # pointing at `graphify agents install` (which wires AGENTS.md, like amp).
         "heading_suffix": "",
         "host_display": "your agent",
-        "install_block": "graphify agents install",
-        "uninstall_block": "graphify agents uninstall  # remove the section",
+        "install_block": "graphify agents install       # or: graphify freebuff install",
+        "uninstall_block": "graphify agents uninstall     # or: graphify freebuff uninstall   # remove the section",
         "pretooluse_note": "",
     },
 }

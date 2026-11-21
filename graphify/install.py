@@ -245,10 +245,13 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".pi" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / _PLATFORM_CONFIG["pi"]["skill_dst"]
 
-    if platform_name == "agents":
+    if platform_name in ("agents", "freebuff"):
         # The generic Agent-Skills target: project ./.agents/skills, global the
         # spec's user-global ~/.agents/skills (read by `npx skills` and compliant
         # frameworks), NOT amp's ~/.config/agents/skills.
+        # Freebuff reads the same Agent-Skills directories and ships the same
+        # bundle as `agents`, so it resolves here too (guard: a test asserts the
+        # two destinations are identical).
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
@@ -875,6 +878,17 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         # (the spec's user-global location, read by `npx skills` and compliant
         # frameworks); project: ./.agents/skills. The CLI accepts `skills` as an
         # alias (see _canonical_platform). Ships its own rendered bundle.
+        "skill_file": "skill-agents.md",
+        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "agents",
+    },
+    "freebuff": {
+        # Freebuff (Codebuff runtime) discovers skills from ~/.agents/skills and
+        # ./.agents/skills (plus the .claude equivalents) and has no hook API, so
+        # it consumes the generic Agent-Skills bundle instead of a forked body.
+        # A different bundle at this path would overwrite the `agents` platform's
+        # skill and make the directory ambiguous for _refresh_stale_skills (#2800).
         "skill_file": "skill-agents.md",
         "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
@@ -2166,24 +2180,34 @@ def _amp_uninstall(project_dir: Path | None = None) -> None:
     if removed:
         print("skill removed")
     _agents_uninstall(project_dir or Path("."), platform="amp")
-def _agents_platform_install(project_dir: Path | None = None) -> None:
-    """`graphify agents install`: skill into ~/.agents/skills + AGENTS.md.
+def _agents_platform_install(project_dir: Path | None = None, platform: str = "agents") -> None:
+    """`graphify agents|freebuff install`: skill into ~/.agents/skills + AGENTS.md.
 
-    The amp-twin of the generic Agent-Skills target. Mirrors _amp_install but
-    lands the skill at the spec's user-global ~/.agents/skills (set in
-    _platform_skill_destination). Wiring AGENTS.md keeps it honest with the
-    rendered hooks reference, which points at `graphify agents install`. The bare
-    `graphify install --platform agents` path stays skill-only (via install()),
-    exactly as amp's `--platform amp` does.
+    The amp-twin of the generic Agent-Skills target, shared with Freebuff (which
+    installs the same bundle at the same locations, see _PLATFORM_CONFIG). Mirrors
+    _amp_install but lands the skill at the spec's user-global ~/.agents/skills
+    (set in _platform_skill_destination). Wiring AGENTS.md keeps it honest with
+    the rendered hooks reference, which points at `graphify <platform> install`.
+    The bare `graphify install --platform agents|freebuff` path stays skill-only
+    (via install()), exactly as amp's `--platform amp` does.
     """
-    _copy_skill_file("agents")
-    _agents_install(project_dir or Path("."), "agents")
-def _agents_platform_uninstall(project_dir: Path | None = None) -> None:
-    """`graphify agents uninstall`: remove the skill and the AGENTS.md section."""
-    removed = _remove_skill_file("agents")
+    _copy_skill_file(platform)
+    _agents_install(project_dir or Path("."), platform)
+def _freebuff_install(project_dir: Path | None = None) -> None:
+    """`graphify freebuff install`: the shared Agent-Skills bundle + AGENTS.md.
+
+    Freebuff has no hook API, so AGENTS.md is its only always-on mechanism.
+    """
+    _agents_platform_install(project_dir, "freebuff")
+def _freebuff_uninstall(project_dir: Path | None = None) -> None:
+    """`graphify freebuff uninstall`: remove the shared skill and AGENTS.md section."""
+    _agents_platform_uninstall(project_dir, "freebuff")
+def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = "agents") -> None:
+    """`graphify agents|freebuff uninstall`: remove the skill and the AGENTS.md section."""
+    removed = _remove_skill_file(platform)
     if removed:
         print("skill removed")
-    _agents_uninstall(project_dir or Path("."), platform="agents")
+    _agents_uninstall(project_dir or Path("."), platform=platform)
 def _project_install(platform_name: str, project_dir: Path | None = None, strict: bool = False) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
@@ -2222,9 +2246,9 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "freebuff"):
         # Skill-only project install: drop SKILL.md (+ references) at the scope
-        # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
+        # root. `agents`/`freebuff` -> ./.agents/skills/graphify/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
     else:
@@ -2254,7 +2278,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "freebuff"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
@@ -2770,6 +2794,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "cursor",
     "devin",
     "droid",
+    "freebuff",
     "gemini",
     "hermes",
     "install",
@@ -3042,6 +3067,21 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _agents_platform_uninstall(Path("."))
         else:
             print(f"Usage: graphify {cmd} [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "freebuff":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("freebuff", Path("."))
+            else:
+                _freebuff_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("freebuff", Path("."))
+            else:
+                _freebuff_uninstall(Path("."))
+        else:
+            print("Usage: graphify freebuff [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

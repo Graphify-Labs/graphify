@@ -23,11 +23,11 @@ If a post-commit hook already exists, graphify appends to it rather than replaci
 Run once per project to make graphify always-on in your agent sessions:
 
 ```bash
-graphify agents install
+graphify agents install       # or: graphify freebuff install
 ```
 
 This writes a `## graphify` section to the local `AGENTS.md` that instructs your agent to check the graph before answering codebase questions and rebuild it after code changes. No manual `/graphify` needed in future sessions.
 
 ```bash
-graphify agents uninstall  # remove the section
+graphify agents uninstall     # or: graphify freebuff uninstall   # remove the section
 ```

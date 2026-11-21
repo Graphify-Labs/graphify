@@ -49,6 +49,8 @@ from graphify.install import (  # noqa: E402,F401
     _cursor_uninstall,
     _devin_rules_install,
     _devin_rules_uninstall,
+    _freebuff_install,
+    _freebuff_uninstall,
     _gemini_hook,
     _install_claude_hook,
     _install_codebuddy_hook,
@@ -280,9 +282,15 @@ def _refresh_stale_skills() -> None:
     warning still fires for them:
 
     * a stamp NEWER than the package - installing would downgrade it (#1568);
-    * a directory written by more than one installer (gemini + agents on
-      Windows, copilot + ``graphify vscode install``) - the stamp does not
-      record which variant is there, and guessing would swap it.
+    * a directory written by installers that ship DIFFERENT bytes (copilot +
+      ``graphify vscode install``) - the stamp does not record which variant is
+      there, and guessing would swap it.
+
+    A directory written by several installers that all resolve to the same
+    packaged bundle (``agents`` + ``freebuff``, which share the Agent-Skills
+    skill and references) is NOT ambiguous, because refreshing writes identical
+    bytes whichever name does it; that one is refreshed, using the sorted-first
+    platform name as a stable representative.
 
     Directories are grouped by their resolved path, so two platforms sharing
     one directory through a symlink count as shared too.
@@ -320,9 +328,12 @@ def _refresh_stale_skills() -> None:
             real = skill_dst
         writers.setdefault(real, []).append((name, skill_dst))
     for entries in writers.values():
-        if len(entries) != 1 or entries[0][0] == "vscode":
-            continue
-        name, skill_dst = entries[0]
+        if any(name == "vscode" for name, _dst in entries):
+            continue  # vscode's skill is its own installer's, never _copy_skill_file's
+        if len({_skill_bundle(name) for name, _dst in entries}) != 1:
+            continue  # different packaged bytes at one path: leave it to the warning
+        # Sorted-first name keeps the pick stable however the candidate list moves.
+        name, skill_dst = sorted(entries, key=lambda entry: entry[0])[0]
         if _stale_stamp(skill_dst) is None:
             continue
         # Without waiting: when another process holds the directory (a refresh,
@@ -355,6 +366,22 @@ def _stale_stamp(skill_dst: Path) -> str | None:
 def _skill_platforms() -> list[str]:
     """Every platform with a user-scope skill directory, gemini included."""
     return list(dict.fromkeys([*_PLATFORM_CONFIG, "gemini"]))
+
+
+def _skill_bundle(name: str) -> tuple[str, str | None]:
+    """The packaged bytes a platform installs: its skill file + references bundle.
+
+    Equal keys mean ``_copy_skill_file`` writes identical content, so several
+    platforms sharing one directory under the same key are safe to refresh with
+    any one of them. ``vscode`` installs through its own installer and is never
+    refreshed here, so it gets a key that can only match itself.
+    """
+    if name == "vscode":
+        return (name, None)
+    if name == "gemini":
+        return ("skill.md", "claude")
+    cfg = _PLATFORM_CONFIG[name]
+    return (cfg["skill_file"], cfg.get("skill_refs"))
 
 
 def _refresh_one_skill(name: str, skill_dst: Path, installed: str) -> None:
@@ -1057,6 +1084,10 @@ def _run_cli() -> None:
         print("  aider uninstall         remove graphify section from AGENTS.md")
         print("  amp install             copy graphify skill + write AGENTS.md section (Amp)")
         print("  amp uninstall           remove graphify skill + AGENTS.md section (Amp)")
+        print(
+            "  freebuff install        copy graphify skill to ~/.agents/skills + write AGENTS.md section (Freebuff)"
+        )
+        print("  freebuff uninstall      remove graphify skill + AGENTS.md section (Freebuff)")
         print(
             "  copilot install         copy graphify skill to ~/.copilot/skills (GitHub Copilot CLI)"
         )

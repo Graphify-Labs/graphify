@@ -1056,7 +1056,13 @@ def test_agents_renders_its_own_agents_md_hooks_wording():
     assert "## For native AGENTS.md integration (Trae)" not in hooks
     assert "make graphify always-on in your agent sessions" in hooks
     assert "graphify agents install" in hooks
-    assert "graphify agents uninstall  # remove the section" in hooks
+    # Freebuff installs the same bundle, so the agents wording names it as the
+    # alternative command (the pattern trae uses for trae-cn).
+    assert "graphify agents install       # or: graphify freebuff install" in hooks
+    assert (
+        "graphify agents uninstall     # or: graphify freebuff uninstall"
+        "   # remove the section"
+    ) in hooks
     # No amp/trae/claude wording leaks into the agents render.
     assert "graphify amp install" not in hooks
     assert "graphify trae" not in hooks

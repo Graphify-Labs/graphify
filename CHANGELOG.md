@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Feature: **install** Freebuff (freebuff.com, the Codebuff runtime) is now a first-class platform: `graphify install --platform freebuff` copies the skill globally to `~/.agents/skills/graphify/` (or `./.agents/skills/graphify/` with `--project`), and `graphify freebuff install` also writes the `## graphify` section to `AGENTS.md`. Freebuff has no hook API, so the AGENTS.md rules are its only always-on mechanism. It consumes the same rendered Agent-Skills bundle as `--platform agents` rather than a forked body, so the two names write byte-identical files; the stale-skill refresh now refreshes a directory written by platforms that resolve to the same bundle (identical bytes), while a directory written by installers with different bundles is still left for the version warning. The parallel-extraction instructions are now host-neutral about the subagent tool (`Task`, `Agent`, or Freebuff's `spawn_agents`) and gain a sequential fallback for hosts with no spawnable file-writing agent.
+
 ## 0.9.120 (2026-11-25)
 
 A batch of resolution, serve, export, clustering and performance fixes across nine community pull requests. The Python function-local-import change alters node/edge output, so the AST cache schema bumps (55 to 56) and Python re-extracts on the first build after upgrading; the other fixes need no rebuild.
