@@ -272,7 +272,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Kimi Code | `graphify install --platform kimi` |
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
-| Freebuff | `graphify install --platform freebuff` |
+| Freebuff | `graphify install --platform freebuff` (or `graphify freebuff install` to also wire `AGENTS.md`) |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` for the native guard |
 | Cursor | `graphify cursor install` |
@@ -280,7 +280,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Google Antigravity | `graphify antigravity install` |
 | Google Antigravity (Windows) | `graphify antigravity install` (auto-detected on Windows) |
 
-Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. Freebuff dispatches parallel extraction through its `spawn_agents` tool and has no hook API, so AGENTS.md is its always-on mechanism. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
+Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. Freebuff dispatches parallel extraction through its `spawn_agents` tool and has no hook API, so AGENTS.md is its always-on mechanism. The Freebuff **desktop** app does not load local skill directories (its `/` menu lists cloud skills only, and the cloud `graphify` skill it offers is too large to install), so for the desktop run `graphify freebuff install` in the repo root, keep `graphify` on your `PATH`, and enable the AGENTS.md option in the composer settings. Typing `/graphify` then still works through that AGENTS.md rule, even though the `/` menu does not autocomplete it. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
 
 `--platform agents` (alias `--platform skills`) targets the generic cross-framework [Agent-Skills](https://github.com/anthropics/skills) locations: the spec's user-global `~/.agents/skills/` (read by `npx skills` and spec-compliant frameworks) for a global install, and `./.agents/skills/` for a project (`--project`) install. The bare `graphify install` stays single-platform (Claude Code) by design: use the named `agents` platform when you want the skill discoverable by any framework that reads `.agents/skills`.
 
