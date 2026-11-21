@@ -116,8 +116,30 @@ def test_ambiguous_type_name_gives_no_edge(tmp_path):
         "        public static Audio Instance { get; private set; }\n"
         "        public void Click() { }\n    }\n}\n"
     )
-    calls, r = _calls(tmp_path, {
-        "First.cs": first, "Other.cs": other_ns, "Menu.cs": _menu("Audio.Instance.Click();"),
-    })
+    # Both namespaces are imported, so both `Audio` classes are visible and the
+    # bare name is genuinely ambiguous: no edge, never a guess.
+    both = "using First;\nusing Other;\n" + _menu("Audio.Instance.Click();")
+    calls, r = _calls(tmp_path, {"First.cs": first, "Other.cs": other_ns, "Menu.cs": both})
     run = _find(r, ".Run()", "menu")
     assert not {t for s, t in calls if s == run}
+
+
+def test_ambiguous_name_resolves_once_only_one_namespace_is_visible(tmp_path):
+    # Control for the test above: with a single `using`, the same call binds to
+    # that namespace's `Audio`, so the ambiguous case really is the ambiguity.
+    other_ns = (
+        "namespace Other\n{\n    public class Audio\n    {\n"
+        "        public static Audio Instance { get; private set; }\n"
+        "        public void Click() { }\n    }\n}\n"
+    )
+    first = (
+        "namespace First\n{\n    public class Audio\n    {\n"
+        "        public static Audio Instance { get; private set; }\n"
+        "        public void Click() { }\n    }\n}\n"
+    )
+    only_first = "using First;\n" + _menu("Audio.Instance.Click();")
+    calls, r = _calls(tmp_path, {"First.cs": first, "Other.cs": other_ns, "Menu.cs": only_first})
+    run = _find(r, ".Run()", "menu")
+    targets = {t for s, t in calls if s == run}
+    assert len(targets) == 1
+    assert "first" in next(iter(targets)).lower()
