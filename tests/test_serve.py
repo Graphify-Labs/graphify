@@ -800,10 +800,15 @@ def test_edge_matches_context_falls_back_to_relation():
 
 
 def test_edge_matches_context_explicit_context_blocks_relation_fallback():
-    # A Dart bloc event edge is a ``calls`` edge with its own context; a
-    # ``call`` filter must not pull it in through the relation fallback.
-    assert _edge_matches_context({"context": "bloc_event", "relation": "calls"}, {"call"}) is False
+    # A ``calls`` edge is a call whatever context it carries (#5257), including
+    # a Dart ``bloc_event`` tag. The generic relation fallback still does not
+    # pull an unrelated relation in through that context, and a heritage edge
+    # tagged ``type`` is kept by an ``inherits`` filter.
+    assert _edge_matches_context({"context": "bloc_event", "relation": "calls"}, {"call"}) is True
     assert _edge_matches_context({"context": "bloc_event", "relation": "calls"}, {"bloc_event"}) is True
+    assert _edge_matches_context({"context": "bloc_event", "relation": "imports"}, {"import"}) is False
+    assert _edge_matches_context({"context": "cross_repo", "relation": "same_type_as"}, {"call"}) is False
+    assert _edge_matches_context({"context": "type", "relation": "inherits"}, {"inherits"}) is True
 
 
 def test_filter_graph_by_context_matches_relation_when_context_absent():
@@ -2449,3 +2454,44 @@ def test_query_graph_text_inheritance_filter_walks_the_hierarchy():
     assert "Context: inherits (explicit)" in text
     assert "2 nodes found" in text
     assert "helper" not in text
+
+
+def _make_two_repo_graph() -> nx.Graph:
+    """What `merge-graphs` writes for two repos: a local call, a member call it
+    resolved across the repo boundary, and a contract type both repos declare."""
+    G = nx.Graph()
+    nodes = {
+        "web::checkout": ("Checkout", "web", "web/checkout.py"),
+        "web::cart": ("Cart", "web", "web/cart.py"),
+        "web::order": ("Order", "web", "web/order.py"),
+        "pay::charge": ("charge", "pay", "pay/charge.py"),
+        "pay::order": ("Order", "pay", "pay/order.py"),
+    }
+    for nid, (label, repo, source_file) in nodes.items():
+        G.add_node(nid, label=label, repo=repo, source_file=source_file, source_location="L1", community=0)
+    G.add_edge("web::checkout", "web::cart", relation="calls", confidence="EXTRACTED", context="call")
+    G.add_edge(
+        "web::checkout", "pay::charge",
+        relation="calls", confidence="INFERRED", confidence_score=0.85, context="cross_repo",
+    )
+    G.add_edge(
+        "web::order", "pay::order",
+        relation="same_type_as", confidence="INFERRED", confidence_score=0.85, context="cross_repo",
+    )
+    return G
+
+
+def test_call_filter_keeps_calls_resolved_across_repos():
+    filtered = _filter_graph_by_context(_make_two_repo_graph(), ["call"])
+    assert set(filtered.edges()) == {("web::checkout", "web::cart"), ("web::checkout", "pay::charge")}
+
+
+def test_cross_repo_filter_still_matches_by_context():
+    filtered = _filter_graph_by_context(_make_two_repo_graph(), ["cross_repo"])
+    assert set(filtered.edges()) == {("web::checkout", "pay::charge"), ("web::order", "pay::order")}
+
+
+def test_who_calls_question_reaches_a_caller_in_another_repo():
+    text = _query_graph_text(_make_two_repo_graph(), "who calls charge", mode="bfs", depth=1, token_budget=2000)
+    assert "Context: call (heuristic)" in text
+    assert "Checkout" in text

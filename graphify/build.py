@@ -240,15 +240,21 @@ def _dedup_shrink_allowance(saved_ids: set, new_ids: set, dedup_remap: dict[str,
 # exception is _STRUCTURAL_MEMBER_RELATIONS.
 _GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
 # Membership of a type or file. On an undirected graph these share a node pair
-# with a `calls` edge in the opposite direction when a member calls or constructs
-# its owner (`static Report Fault() { return new Report(); }`). Last-write kept
-# `calls` whenever the member id sorted after the owner id, so the membership
-# edge never reached graph.json and the member disappeared from type walks
-# (member lookup, explain, call resolution into the type). The membership edge
-# wins; the call is what this collapse drops. Directed graphs keep both, because
-# the two directions are different arcs. Same-direction `contains`/`method` vs
-# `calls` is not ranked here.
+# with a usage edge in the opposite direction when a member uses its owner: it
+# calls or constructs it (`static Report Fault() { return new Report(); }`), or
+# reads its static property or constant (`return Counter::$limit;`, #2391, #2791).
+# Last-write kept the usage edge whenever the member id sorted after the owner
+# id, so the membership edge never reached graph.json and the member disappeared
+# from type walks (member lookup, explain, call resolution into the type). The
+# membership edge wins; the usage edge is what this collapse drops. Only the
+# usage relations below lose: any other relation (`inherits` for a nested
+# subclass of its owner, an unknown one) keeps the plain last-write rule.
+# Directed graphs keep both, because the two directions are different arcs.
+# Same-direction `contains`/`method` vs `calls` is not ranked here.
 _STRUCTURAL_MEMBER_RELATIONS: frozenset[str] = frozenset({"method", "contains"})
+_MEMBER_USAGE_RELATIONS: frozenset[str] = frozenset({
+    "calls", "indirect_call", "instantiates", "uses_static_prop", "references_constant",
+})
 _CONFIDENCE_RANK: dict[str, int] = {"EXTRACTED": 3, "INFERRED": 2, "AMBIGUOUS": 1}
 # The fields that say how sure the graph is of an edge and where that came from.
 # A same-relation collision keeps one edge; the loser's copy of these fields is
@@ -482,7 +488,14 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
                     e.get("source_file"),
                     (node_by_id.get(alias_target) or {}).get("source_file"),
                 ):
-                    canonical = alias_target
+                    target_attrs = node_by_id.get(alias_target) or {}
+                    target_sf = target_attrs.get("source_file", "")
+                    is_file_node = (
+                        target_attrs.get("label") == Path(target_sf).name
+                        if target_sf else False
+                    )
+                    if not (e.get("relation") in ("calls", "indirect_call") and is_file_node):
+                        canonical = alias_target
             if canonical is not None:
                 e[field] = canonical
 
@@ -2068,7 +2081,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # normalized-id and ghost-remap entries norm_to_id already carries.
     alias_to_id = _alias_index((nid, G.nodes[nid]) for nid in node_set)
 
-    def _resolve_endpoint(raw_id: str, edge_source_file: object, allow_alias: bool = True) -> str:
+    def _resolve_endpoint(raw_id: str, edge_source_file: object, relation: str = "", allow_alias: bool = True) -> str:
         norm = _normalize_id(raw_id)
         resolved = norm_to_id.get(norm)
         if resolved is not None:
@@ -2079,7 +2092,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if alias_target is not None and _alias_lang_compatible(
             edge_source_file, G.nodes[alias_target].get("source_file")
         ):
-            return alias_target
+            target_attrs = G.nodes[alias_target]
+            target_sf = target_attrs.get("source_file", "")
+            is_file_node = (
+                target_attrs.get("label") == Path(target_sf).name
+                if target_sf else False
+            )
+            if not (relation in ("calls", "indirect_call") and is_file_node):
+                return alias_target
         return raw_id
 
     # Iterate edges in a deterministic order. The graph is undirected and stores
@@ -2116,11 +2136,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
             continue
         # Remap mismatched IDs via normalization before dropping the edge.
+        _edge_rel = str(edge.get("relation", ""))
         if src not in node_set:
-            src = _resolve_endpoint(src, edge.get("source_file"))
+            src = _resolve_endpoint(src, edge.get("source_file"), _edge_rel)
         if tgt not in node_set:
             tgt = _resolve_endpoint(
-                tgt, edge.get("source_file"), allow_alias=not _is_std_angle_include(edge),
+                tgt, edge.get("source_file"), _edge_rel,
+                allow_alias=not _is_std_angle_include(edge),
             )
         if src not in node_set or tgt not in node_set:
             # An import/re-export whose target is not a declared node points at
@@ -2272,15 +2294,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 continue
             # Different relations in opposite directions are two facts that only
             # share a pair because the graph is undirected. A type's
-            # `method`/`contains` edge and its member's `calls` edge back are
-            # that case: last-write kept whichever source id sorted later, and
-            # when the call won the member vanished from every walk of the
-            # type. The membership edge wins. If the call is already stored,
-            # the membership edge falls through and replaces it below.
+            # `method`/`contains` edge and its member's usage edge back (a call,
+            # a static property or constant read) are that case: last-write kept
+            # whichever source id sorted later, and when the usage won the member
+            # vanished from every walk of the type. The membership edge wins. If
+            # the usage edge is already stored, the membership edge falls through
+            # and replaces it below.
             if (
                 reverse
                 and existing_rel in _STRUCTURAL_MEMBER_RELATIONS
-                and incoming_rel == "calls"
+                and incoming_rel in _MEMBER_USAGE_RELATIONS
             ):
                 continue
         # A pair that already carries a SPECIFIC relation must not be downgraded
@@ -2312,18 +2335,32 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     _fold_also_seen(existing_attrs, attrs)
                     continue
                 if existing_rank == incoming_rank:
-                    if existing_attrs.get("source_location") and not attrs.get("source_location"):
+                    # An AST edge keeps its pair against a semantic copy of the same
+                    # relation (#5334). Otherwise a copy with a line number won by
+                    # arrival order, the edge moved to the document, and the next
+                    # --update of that document deleted the code fact. Strict
+                    # _origin, not _is_ast_tier: inside a build the only unstamped
+                    # items are fresh semantic chunks (see the ghost-collapse note).
+                    existing_ast = existing_attrs.get("_origin") == "ast"
+                    incoming_ast = attrs.get("_origin") == "ast"
+                    if existing_ast != incoming_ast:
+                        if existing_ast:
+                            _fold_also_seen(existing_attrs, attrs)
+                            continue
+                        # The incoming AST edge replaces the semantic copy below.
+                    elif existing_attrs.get("source_location") and not attrs.get("source_location"):
                         _fold_also_seen(existing_attrs, attrs)
                         continue
-                    existing_score = existing_attrs.get("confidence_score")
-                    incoming_score = attrs.get("confidence_score")
-                    if (
-                        existing_score is not None
-                        and incoming_score is not None
-                        and existing_score > incoming_score
-                    ):
-                        _fold_also_seen(existing_attrs, attrs)
-                        continue
+                    else:
+                        existing_score = existing_attrs.get("confidence_score")
+                        incoming_score = attrs.get("confidence_score")
+                        if (
+                            existing_score is not None
+                            and incoming_score is not None
+                            and existing_score > incoming_score
+                        ):
+                            _fold_also_seen(existing_attrs, attrs)
+                            continue
                 _fold_also_seen(attrs, existing_attrs)
                 # add_edge merges into the stored dict: a field only the loser
                 # carried (its score, its line) would otherwise stay on the winner.

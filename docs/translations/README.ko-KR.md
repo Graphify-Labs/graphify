@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>에이전트의 토큰 지출을 80% 줄이세요.</b> Graphify Cloud 는 상시 작동하는 메모리로, 에이전트를 통제하고 코드 품질을 높게 유지하며 형식 검증으로 정확성을 증명합니다. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>무료로 시작, 카드 불필요 &rarr;</b></a>
+  <b>에이전트와 사람이 공유하는 코드베이스 컨텍스트.</b>
+  <br/>
+  코드베이스를 쿼리 가능한 지식 그래프로 바꾸세요. 의존성을 추적하고, 컴포넌트가 어떻게 연결되는지 이해하며, 코딩 에이전트에게 세션 간 재사용 가능한 컨텍스트를 제공합니다.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>무료로 시작, 카드 불필요 &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> 는 그 그래프를 당신의 SDLC 전체에 걸쳐 상시 작동 상태로 유지합니다.
 </p>
 
 AI 코딩 어시스턴트에서 `/graphify` 를 입력하면, 프로젝트 전체(코드, 문서, PDF, 이미지, 동영상)를 **지식 그래프**로 매핑하여 파일을 grep 하는 대신 **쿼리로 조회**할 수 있습니다.
@@ -41,18 +47,27 @@ AI 코딩 어시스턴트에서 `/graphify` 를 입력하면, 프로젝트 전�
 > **이것을 상시 작동하게 하고 싶으신가요?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 는 당신의 SDLC 전체에 걸쳐 그래프를 항상 라이브로 유지합니다: 모노레포 및 레포 간 지원, 형식 검증, SDLC 를 조감하는 코드 리뷰, 그리고 Sentry, Jira 등을 위한 커넥터를 통해 인시던트와 티켓이 코드와 같은 그래프에 놓입니다. **[무료로 시작, 카드 불필요](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify 의 인터랙티브 graph.html 이 FastAPI 코드베이스를 힘 기반으로 배치된 지식 그래프로, 검출된 커뮤니티 범례와 함께 보여준다" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify 의 인터랙티브 graph.html 이 FastAPI 코드베이스를 힘 기반으로 배치된 지식 그래프로, 검출된 서브시스템 범례와 함께 보여준다" width="900">
 </p>
 <p align="center">
-  <em>graphify 가 매핑한 FastAPI 코드베이스. 모든 노드는 하나의 개념이고, 색상은 검출된 커뮤니티이며, 전체가 graph.html 에서 클릭 가능합니다.</em>
+  <em>graphify 가 매핑한 FastAPI 코드베이스. 모든 노드는 하나의 개념이고, 색상은 검출된 서브시스템이며, 전체가 graph.html 에서 클릭 가능합니다.</em>
 </p>
 
-**시작하기**(30 seconds). Python 3.11+ 와 uv(또는 pipx)가 필요합니다.
+**시작하기**(30 seconds). Python 3.11.5–3.14 와 uv(또는 pipx)가 필요합니다.
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # Claude Code 설정(기본값)
 ```
+
+다른 어시스턴트를 사용하시나요? 명시적으로 지정하세요:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex(/graphify 가 아니라 $graphify 로 호출)
+```
+
+20+ 개 이상의 모든 어시스턴트는 [플랫폼 고르기](#install)를 참고하세요.
 
 그런 다음, AI 어시스턴트에서:
 
@@ -112,8 +127,8 @@ Shortest path (3 hops):
 
 | 기능 | 얻는 것 |
 |---|---|
-| **God nodes** | 가장 많이 연결된 개념들로, 모든 것이 무엇을 거쳐 흐르는지 보입니다 |
-| **Communities** | 그래프를 서브시스템으로 분할(Leiden)하고, LLM 없이 라벨을 붙입니다 |
+| **가장 많이 연결된 컴포넌트** | 모든 것이 거쳐 흐르는 개념 — 그래프의 허브(*god nodes* 라고도 함) |
+| **서브시스템** | 그래프를 응집된 그룹으로 분할(Leiden *communities*)하고, 각각에 LLM 없는 라벨을 붙입니다 |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` 를 tree-sitter AST 를 통해 ~40 languages 에 걸쳐 해석합니다 |
 | **Query, path, explain** | 질문하기, 두 대상 사이의 경로 추적하기, 하나의 개념 설명하기. 모두 `graph.json` 을 대상으로 합니다 |
 | **Rationale + doc refs** | `# NOTE:` / `# WHY:` 주석과 ADR/RFC 인용이 일급 노드가 되어 코드에 연결됩니다 |
@@ -122,6 +137,19 @@ Shortest path (3 hops):
 
 > [!TIP]
 > 여러 레포나 모노레포에 걸쳐 이것을 실행하고 계신가요? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 는 이를 지속적으로 수행하며 에이전트의 토큰 지출을 80% 줄입니다. 레포 간 링크, SDLC 전반의 코드 리뷰, 형식 검증, Sentry/Jira 커넥터를 제공합니다. [무료로 시작, 카드 불필요 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## 언제 Graphify 를 써야 하는가
+
+코드베이스를 그냥 훑어 읽는 것이 아니라 이해해야 할 때 그래프를 사용하세요:
+
+| 상황 | Graphify 에게 물어볼 것 |
+|---|---|
+| 낯선 프로젝트에 합류할 때 | “주요 컴포넌트가 어떻게 연결되는지 설명해줘.” |
+| 공유 컴포넌트를 변경할 때 | “그 호출자와 의존성을 추적해줘.” |
+| 버그를 조사할 때 | “이 엔드포인트와 스토리지 사이의 경로를 보여줘.” |
+| 이전 작업을 다시 볼 때 | “관련된 설계 결정과 메모를 찾아줘.” |
 
 ---
 
@@ -157,7 +185,7 @@ Shortest path (3 hops):
 
 | 요구 사항 | 최소 | 확인 | 설치 |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -219,7 +247,7 @@ graphify install --project --platform codex
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (`$graphify` 로 호출) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -317,9 +345,43 @@ Pi 에는 `PreToolUse` hook 이 없으므로, `graphify pi guard install` 은 (P
 
 ---
 
+## MCP 로 에이전트 연결하기
+
+MCP 를 지원하는 에이전트를 Graphify 그래프로 향하게 하면, 파일을 grep 하는 대신 그래프를 직접 쿼리합니다. 호스팅된 그래프(Graphify Cloud, 무료 플랜, 카드 불필요)에 연결하세요:
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+로컬에 머물고 싶으신가요? `uv tool install "graphifyy[mcp]"` 로 stdio 서버를 설치하고, 자신의 `graph.json` 을 대상으로 `graphify-mcp` 를 실행하세요. 계정은 필요 없습니다.
+
+연결되면, 에이전트는 다음 도구를 얻습니다:
+
+| 도구 | 하는 일 |
+|---|---|
+| `query_graph` | 자연어로 질문하면, 관련된 서브그래프를 돌려받습니다 |
+| `shortest_path` | 두 노드가 어떻게 연결되는지 추적합니다 |
+| `get_node` / `get_neighbors` | 노드와 그것이 맞닿는 것을 조회합니다 |
+| `get_community` / `god_nodes` | 검출된 커뮤니티와 가장 많이 연결된 허브 |
+| `get_section` | 그래프의 라벨이 붙은 영역을 읽습니다 |
+| `graph_stats` | 그래프의 규모, 언어, 엣지 분포 |
+
+서버는 PR 도구(`list_prs`, `get_pr_impact`, `triage_prs`)도 노출하므로, 에이전트가 그래프 컨텍스트로 풀 리퀘스트를 검토할 수 있습니다.
+
+---
+
 ## 보고서에 담긴 내용
 
-`GRAPH_REPORT.md` 는 폭넓은 아키텍처 검토를 위해 god nodes, 커뮤니티, 핵심 경로를 요약합니다. 그래프가 어떻게 구축되고 무엇을 담고 있는지는 **[How graphify works](https://docs.graphify.com/concepts/architecture)** 를 참고하세요.
+`GRAPH_REPORT.md` 는 폭넓은 아키텍처 검토를 위해 가장 많이 연결된 컴포넌트, 서브시스템, 핵심 경로를 요약합니다. 그래프가 어떻게 구축되고 무엇을 담고 있는지는 **[How graphify works](https://docs.graphify.com/concepts/architecture)** 를 참고하세요.
 
 ---
 
@@ -335,8 +397,8 @@ graphify 는 ~40 programming languages 를 tree-sitter AST 로 로컬에서 파�
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # 더 세분화된 서브시스템
+/graphify . --cluster-only --exclude-hubs 99     # 가장 많이 연결된 컴포넌트 순위에서 유틸리티 슈퍼허브를 억제
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -354,7 +416,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # 그래프 서브시스템을 공유하는 PR: 병합 순서 위험
 ```
 
 아래의 [전체 명령 레퍼런스](#full-command-reference)를 참고하세요.

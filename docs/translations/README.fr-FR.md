@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Réduisez de 80 % les dépenses en tokens de vos agents.</b> Graphify Cloud est une mémoire toujours active qui gouverne vos agents, maintient une haute qualité de code et prouve la justesse par vérification formelle. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Commencez gratuitement, sans carte &rarr;</b></a>
+  <b>Un contexte de base de code partagé pour les agents et les humains.</b>
+  <br/>
+  Transformez votre base de code en un graphe de connaissances interrogeable. Tracez les dépendances, comprenez comment les composants se connectent, et donnez à votre agent de codage un contexte réutilisable d'une session à l'autre.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Commencez gratuitement, sans carte &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> maintient ce graphe toujours actif sur l'ensemble de votre SDLC.
 </p>
 
 Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemble de votre projet (code, documents, PDF, images, vidéos) dans un **graphe de connaissances** que vous pouvez **interroger au lieu de faire un grep** à travers les fichiers.
@@ -41,18 +47,27 @@ Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemb
 > **Vous voulez cela en permanence ?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) maintient le graphe à jour sur l'ensemble de votre SDLC : prise en charge des monorepos et du multi-dépôt, vérification formelle et revue de code avec une vue d'ensemble de votre SDLC, plus des connecteurs pour Sentry, Jira et davantage, afin que les incidents et les tickets se trouvent dans le même graphe que votre code. **[Commencez gratuitement, sans carte](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>La base de code FastAPI cartographiée par graphify. Chaque nœud est un concept, les couleurs sont des communautés détectées, et l'ensemble est cliquable dans graph.html.</em>
+  <em>La base de code FastAPI cartographiée par graphify. Chaque nœud est un concept, les couleurs sont des sous-systèmes détectés, et l'ensemble est cliquable dans graph.html.</em>
 </p>
 
-**Pour démarrer** (30 secondes). Nécessite Python 3.11+ et uv (ou pipx) :
+**Pour démarrer** (30 secondes). Nécessite Python 3.11.5–3.14 et uv (ou pipx) :
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Vous utilisez un autre assistant ? Nommez-le explicitement :
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Voir [choisissez votre plateforme](#install) pour les 20+ assistants.
 
 Ensuite, dans votre assistant IA :
 
@@ -114,8 +129,8 @@ Ce que vous obtenez d'emblée :
 
 | Capacité | Ce que vous obtenez |
 |---|---|
-| **God nodes** | Les concepts les plus connectés, pour voir par où tout transite |
-| **Communities** | Le graphe découpé en sous-systèmes (Leiden), avec des étiquettes sans LLM |
+| **Composants les plus connectés** | Les concepts par lesquels tout transite — les hubs du graphe (aussi appelés *god nodes*) |
+| **Sous-systèmes** | Le graphe découpé en groupes cohérents (Leiden *communautés*), chacun avec une étiquette sans LLM |
 | **Liens inter-fichiers** | `calls` / `imports` / `inherits` / `mixes_in` résolus à travers ~40 langages via l'AST de tree-sitter |
 | **Query, path, explain** | Posez une question, tracez le chemin entre deux choses, ou expliquez un concept, le tout sur `graph.json` |
 | **Justification + réf. doc** | Les commentaires `# NOTE:` / `# WHY:` et les citations ADR/RFC deviennent des nœuds de première classe liés au code |
@@ -124,6 +139,19 @@ Ce que vous obtenez d'emblée :
 
 > [!TIP]
 > Vous exécutez cela sur de nombreux dépôts ou un monorepo ? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) le fait en continu et réduit de 80 % les dépenses en tokens des agents, avec des liens multi-dépôt, une revue de code à l'échelle du SDLC, la vérification formelle et des connecteurs Sentry/Jira. [Commencez gratuitement, sans carte &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## Quand recourir à Graphify
+
+Recourez au graphe lorsque vous devez comprendre une base de code, et pas seulement la parcourir :
+
+| Situation | Quoi demander à Graphify |
+|---|---|
+| Rejoindre un projet inconnu | « Expliquez comment les principaux composants sont reliés. » |
+| Modifier un composant partagé | « Tracez ses appelants et ses dépendances. » |
+| Enquêter sur un bug | « Montrez le chemin entre cet endpoint et le stockage. » |
+| Revenir sur un travail antérieur | « Trouvez les décisions de conception et les notes pertinentes. » |
 
 ---
 
@@ -159,7 +187,7 @@ Guides complets et référence disponibles sur **[docs.graphify.com](https://doc
 
 | Exigence | Minimum | Vérifier | Installer |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommandé)* | toute version | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | toute version | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +255,7 @@ par exemple `graphify claude install --project` ou `graphify codex install --pro
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (détecté automatiquement) ou `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (invoquer avec `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -325,9 +353,43 @@ Les deux encouragent les requêtes de graphe ciblées avant les recherches de so
 
 ---
 
+## Connectez votre assistant via MCP
+
+Pointez n'importe quel assistant compatible MCP vers un graphe Graphify et il interroge le graphe directement au lieu de grepper des fichiers. Connectez-vous au graphe hébergé (Graphify Cloud, plan gratuit, sans carte) :
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+Vous préférez rester en local ? Installez le serveur stdio avec `uv tool install "graphifyy[mcp]"` et exécutez `graphify-mcp` contre votre propre `graph.json` — aucun compte requis.
+
+Une fois connecté, votre assistant obtient ces outils :
+
+| Outil | Ce qu'il fait |
+|---|---|
+| `query_graph` | Posez une question en langage naturel et récupérez le sous-graphe pertinent |
+| `shortest_path` | Retracer comment deux nœuds se connectent |
+| `get_node` / `get_neighbors` | Rechercher un nœud et ce avec quoi il est en contact |
+| `get_community` / `god_nodes` | Communautés détectées et les hubs les plus connectés |
+| `get_section` | Lire une région étiquetée du graphe |
+| `graph_stats` | Taille, langages et répartition des arêtes du graphe |
+
+Le serveur expose aussi des outils de PR (`list_prs`, `get_pr_impact`, `triage_prs`) pour que votre assistant puisse examiner les pull requests avec le contexte du graphe.
+
+---
+
 ## What's in the report
 
-`GRAPH_REPORT.md` résume les god nodes, les communautés et les chemins clés pour une revue d'architecture globale. Comment le graphe est construit et ce qu'il contient : **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` résume les composants les plus connectés, les sous-systèmes et les chemins clés pour une revue d'architecture globale. Comment le graphe est construit et ce qu'il contient : **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -343,8 +405,8 @@ graphify analyse ~40 langages de programmation localement avec l'AST de tree-sit
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -362,7 +424,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Voir la [référence complète des commandes](#full-command-reference) ci-dessous.

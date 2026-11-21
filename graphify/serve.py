@@ -1175,6 +1175,15 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
 # TypeScript graph would start losing edges from its other contexts.
 _HERITAGE_RELATIONS = frozenset({"inherits", "implements", "extends"})
 
+# Relations a `call` filter matches whatever their context. A `calls` edge's
+# context says where the call was found, not whether it is one:
+# `merge-graphs` finishes a member call into another repo as a `calls` edge
+# with `context="cross_repo"` (#3152), so a filter that only read `context`
+# dropped exactly the calls that cross a repository boundary from "who calls
+# X". The shared-type links carry the same context but another relation, so
+# they stay out.
+_CONTEXT_RELATIONS: dict[str, frozenset[str]] = {"call": frozenset({"calls"})}
+
 
 # Context names that have a 1:1 edge-relation counterpart. Used when a graph
 # has `relation` but no `context` (the usual LLM-extracted shape, #2529).
@@ -1226,22 +1235,32 @@ def _resolve_context_filters(question: str, explicit_filters: list[str] | None =
 def _edge_matches_context(data: dict, filters: set[str]) -> bool:
     """True when an edge belongs in a context-filtered traversal (#2529).
 
-    Match the explicit ``context`` attribute first. When that is absent —
-    LLM-built graphs almost never set it — also match ``relation`` against the
-    filter name and the 1:1 ``call``/``calls`` (etc.) mapping so ``--context
-    call`` still keeps ``calls`` edges. Matching ``relation`` by filter name is
-    also how a heritage filter (``_HERITAGE_RELATIONS``) reaches the
-    context-less inheritance edges C#, Java and Python emit (#5178).
+    Match the explicit ``context`` attribute first. A ``call`` filter also
+    keeps every ``calls`` edge whatever context it carries (``cross_repo``
+    from ``merge-graphs`` per #5257, ``bloc_event``, or any other) via
+    ``_CONTEXT_RELATIONS``. A heritage filter likewise keeps
+    ``inherits``/``implements``/``extends`` even when the edge carries another
+    context (#5178). When ``context`` is absent (LLM-built graphs almost
+    never set it), also match ``relation`` against the filter name and the
+    1:1 ``call``/``calls`` mapping. An explicit other context still blocks
+    that generic fallback, so an ``imports`` edge tagged ``bloc_event`` stays
+    out of an ``import`` traversal.
     """
     ctx = data.get("context")
     if ctx in filters:
         return True
-    if ctx:
-        # An explicit context that names another filter wins over the relation
-        # fallback, so a ``calls`` edge tagged ``bloc_event`` stays out of a
-        # ``call`` traversal.
-        return False
     rel = data.get("relation")
+    if isinstance(rel, str) and rel and (
+        rel in (filters & _HERITAGE_RELATIONS)
+        or any(rel in _CONTEXT_RELATIONS.get(f, frozenset()) for f in filters)
+    ):
+        return True
+    if ctx:
+        # An explicit context that names another filter still blocks the
+        # generic relation fallback. It does not apply to the relations matched
+        # above: a ``calls`` edge tagged ``bloc_event`` is kept by a ``call``
+        # filter (#5257).
+        return False
     if not isinstance(rel, str) or not rel:
         return False
     if rel in filters:
