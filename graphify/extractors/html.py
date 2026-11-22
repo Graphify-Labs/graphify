@@ -42,20 +42,22 @@ _REFERENCE_ATTRS = ("href", "src")
 _DYNAMIC_MARKERS = ("{", "}", "<", ">", "$", "@", "`", "\\")
 
 
-def _literal_target(raw: str) -> str | None:
-    """The file part of a literal relative reference, else None."""
-    target = raw.strip()
-    # Drop the fragment and query: `./a.html#top` and `./a.html?x=1` name a.html.
-    target = target.split("#", 1)[0].split("?", 1)[0].strip()
+def _is_local_path(target: str) -> bool:
+    """Whether *target* (already cut at any fragment/query) is a literal relative path."""
     if not target or _is_external_link(target):
-        return None
+        return False
     if any(marker in target for marker in _DYNAMIC_MARKERS):
-        return None
+        return False
     if target.startswith("/") or os.path.isabs(target):
-        return None  # server-root-relative or absolute: a route, not this tree
+        return False  # server-root-relative or absolute: a route, not this tree
     if ":" in target.split("/", 1)[0]:
-        return None  # an unrecognised scheme such as `javascript:` or `ftp:`
-    return target
+        return False  # an unrecognised scheme such as `javascript:` or `ftp:`
+    return True
+
+
+def _path_part(raw: str) -> str:
+    """The file part of a URL reference: `./a.html#top` and `./a.html?x=1` name a.html."""
+    return raw.strip().split("#", 1)[0].split("?", 1)[0].strip()
 
 
 class _ReferenceCollector(HTMLParser):
@@ -67,7 +69,11 @@ class _ReferenceCollector(HTMLParser):
         self.has_base = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "base" and any(name == "href" for name, _ in attrs):
+        if tag == "base" and any(
+            name == "href" and _path_part(value or "") for name, value in attrs
+        ):
+            # `<base href="#top">` or `<base href="">` names this very document
+            # and moves nothing; only a base with a path relocates references.
             self.has_base = True
         line = self.getpos()[0]
         for name, value in attrs:
@@ -93,8 +99,8 @@ def extract_html(path: Path) -> dict:
         if path.stat().st_size > _HTML_MAX_BYTES:
             return result
         source = _read_source_text(path)
-    except Exception as e:  # unreadable or not UTF-8: a page node, no references
-        return {"nodes": [], "edges": [], "error": str(e)}
+    except Exception:  # unreadable: keep the page node, read no references
+        return result
 
     collector = _ReferenceCollector()
     try:
@@ -109,12 +115,15 @@ def extract_html(path: Path) -> dict:
     source_dir = path.parent
     seen: set[str] = set()
     for line, raw in collector.references:
-        target = _literal_target(raw)
-        if target is None:
+        target = _path_part(raw)
+        if not _is_local_path(target):
             continue
         target = _percent_decoded(target, source_dir)
-        if _literal_target(target) is None:
-            continue  # decoding revealed a scheme, a host or a dynamic marker
+        # A decoded `%23` / `%3F` is part of the file name, not a delimiter, so
+        # the decoded form is screened whole; only a revealed scheme, host or
+        # dynamic marker (`%2F%2Fhost`) disqualifies it.
+        if not _is_local_path(target):
+            continue
         resolved = Path(os.path.normpath(str(source_dir / target)))
         try:
             if not resolved.is_file():

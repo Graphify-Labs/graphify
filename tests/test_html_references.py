@@ -27,16 +27,24 @@ def _run(tmp_path: Path, files: dict[str, str], *, scan: str = ""):
     paths = collect_files(scan_root, root=scan_root)
     data = extract(paths, root=scan_root, cache_root=tmp_path / "cache", parallel=False)
     file_of = {n["id"]: n.get("source_file") for n in data["nodes"]}
+    # A target that is not a node stays visible (as `<dangling ...>`), so a
+    # "gives no edge" assertion also fails on a dangling reference.
     refs = sorted(
-        (file_of.get(e["source"]), file_of.get(e["target"]), e.get("source_location"))
+        (file_of[e["source"]], file_of.get(e["target"], f"<dangling {e['target']}>"),
+         e.get("source_location"))
         for e in data["edges"]
-        if e["relation"] == "references" and e["source"] in file_of and e["target"] in file_of
+        if e["relation"] == "references" and e["source"] in file_of
     )
     return refs, data
 
 
 def _targets(refs, page: str) -> list[str]:
     return [t for s, t, _ in refs if s == page]
+
+
+def _raw_edges(tmp_path: Path, name: str) -> list[dict]:
+    """What the extractor itself emits for ``tmp_path/repo/<name>``, before any pass."""
+    return html_mod.extract_html(tmp_path / "repo" / name)["edges"]
 
 
 _JS = {"scripts/app.js": "function sample() { return 1; }\n"}
@@ -97,6 +105,7 @@ def test_non_literal_or_non_local_targets_give_no_edge(tmp_path, value):
         "details.html": "<h1>d</h1>\n",
     })
     assert _targets(refs, "index.html") == []
+    assert _raw_edges(tmp_path, "index.html") == []
 
 
 def test_fragment_and_query_are_stripped(tmp_path):
@@ -138,6 +147,50 @@ def test_base_href_disables_relative_resolution(tmp_path):
         "details.html": "<h1>d</h1>\n",
     })
     assert _targets(refs, "index.html") == []
+
+
+@pytest.mark.parametrize("base", ['href="#top"', 'href=""', 'href="?x=1"', 'target="_blank"'])
+def test_a_base_that_moves_nothing_keeps_relative_references(tmp_path, base):
+    # `<base href="#top">` / `<base href="">` name this very document, and a base
+    # with no href at all changes nothing, so local links still resolve.
+    refs, _ = _run(tmp_path, {
+        "index.html": f'<base {base}>\n<a href="details.html">x</a>\n',
+        "details.html": "<h1>d</h1>\n",
+    })
+    assert refs == [("index.html", "details.html", "L2")]
+
+
+@pytest.mark.parametrize("base", ['href="/app/"', 'href="sub/"', 'href="https://cdn.example.com/"'])
+def test_a_base_with_a_path_hides_relative_references(tmp_path, base):
+    refs, _ = _run(tmp_path, {
+        "index.html": f'<base {base}>\n<a href="details.html">x</a>\n',
+        "details.html": "<h1>d</h1>\n",
+    })
+    assert refs == []
+    assert _raw_edges(tmp_path, "index.html") == []
+
+
+def test_encoded_hash_in_a_file_name_is_not_a_fragment(tmp_path):
+    # `%23` is part of the name `a#b.html`; it must not truncate the link to `a`.
+    refs, _ = _run(tmp_path, {
+        "index.html": '<a href="a%23b.html">x</a>\n<a href="%23lead.html">y</a>\n',
+        "a.html": "<p>decoy</p>\n", "a#b.html": "<p>b</p>\n", "#lead.html": "<p>l</p>\n",
+    })
+    assert sorted(_targets(refs, "index.html")) == ["#lead.html", "a#b.html"]
+
+
+def test_unreadable_page_keeps_its_node_and_reads_no_references(tmp_path, monkeypatch):
+    page = tmp_path / "repo" / "index.html"
+    page.parent.mkdir(parents=True)
+    page.write_text('<a href="details.html">x</a>', encoding="utf-8")
+
+    def boom(_path):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(html_mod, "_read_source_text", boom)
+    result = html_mod.extract_html(page)
+    assert [n["node_kind"] for n in result["nodes"]] == ["page"]
+    assert result["edges"] == []
 
 
 def test_assets_graphify_does_not_index_give_no_edge(tmp_path):
