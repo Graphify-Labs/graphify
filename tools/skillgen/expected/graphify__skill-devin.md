@@ -1090,7 +1090,8 @@ G = json_graph.node_link_graph(data, edges='links')
 
 detection = {'total_files': 0, 'total_words': 99999, 'needs_graph': True, 'warning': None,
              'files': {'code': [], 'document': [], 'paper': []}}
-tokens = {'input': 0, 'output': 0}
+from graphify.report import load_report_token_cost
+tokens = load_report_token_cost(Path('graphify-out'))
 
 communities = cluster(G)
 cohesion = score_all(G, communities)

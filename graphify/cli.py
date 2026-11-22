@@ -3396,6 +3396,15 @@ def dispatch_command(cmd: str) -> None:
         from graphify.export import backup_if_protected as _backup
         from graphify.exporters.html import _HTML_STALE_MARKER
         _backup(out)
+        # Labeling calls go into the cost.json ledger now, after the snapshot and
+        # before the #479 guard below: the tokens are spent whether or not
+        # graph.json is written, and a later `graphify update` counts them too.
+        recorded = True
+        if label_token_usage["input"] or label_token_usage["output"]:
+            print(f"[graphify {cmd}] labeling tokens: "
+                  f"{label_token_usage['input']:,} in / {label_token_usage['output']:,} out")
+            recorded = _record_extract_cost(out, label_token_usage["input"],
+                                            label_token_usage["output"], 0, command=cmd)
         html_stale_marker = out / _HTML_STALE_MARKER
 
         def _clear_html_stale_marker() -> None:
@@ -3429,13 +3438,8 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         # The report's token cost is the cost.json ledger, as `graphify update`
         # already reports it (#5154). Reporting only this run's labeling usage
-        # showed "0 input · 0 output" after a paid `extract` (#3658). Labeling
-        # calls go into the ledger first, so a later update counts them too. If
-        # the ledger can't take them, this report still adds them to what it read.
-        recorded = True
-        if label_token_usage["input"] or label_token_usage["output"]:
-            recorded = _record_extract_cost(out, label_token_usage["input"],
-                                            label_token_usage["output"], 0, command=cmd)
+        # showed "0 input · 0 output" after a paid `extract` (#3658). If the
+        # ledger couldn't take the labeling run, this report still adds it.
         from graphify.report import load_report_token_cost as _lrtc
         tokens = _lrtc(out)
         if not recorded:

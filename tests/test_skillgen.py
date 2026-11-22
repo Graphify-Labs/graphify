@@ -637,6 +637,21 @@ def test_monoliths_change_only_sanctioned_lines():
         assert UNIFIED_DESCRIPTION in rendered
 
 
+def test_monoliths_read_the_cost_ledger_in_cluster_only():
+    """#3658: the aider/devin --cluster-only script reports the cost.json totals.
+
+    The round-trip only forbids unsanctioned drift, so this asserts the fix is
+    actually applied: the hard-coded zero is gone and the ledger is read.
+    """
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        rendered = gen.render(platforms[key])[0].content
+        section = rendered[rendered.index("## For --cluster-only"):]
+        section = section[:section.index("\n## ", 1)]
+        assert "tokens = load_report_token_cost(Path('graphify-out'))" in section
+        assert "tokens = {'input': 0, 'output': 0}" not in section
+
+
 def test_monoliths_carry_the_1392_runbook_fixes():
     """The four #1392 data-loss/correctness fixes are present in both monoliths.
 
