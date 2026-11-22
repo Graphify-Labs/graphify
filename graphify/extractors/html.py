@@ -39,8 +39,10 @@ _REFERENCE_ATTRS = ("href", "src")
 
 # A value holding any of these is a template or interpolation expression, not a
 # literal path (Jinja/Django/Handlebars `{{ }}` `{% %}`, ERB/EJS/ASP `<% %>`,
-# PHP `<? ?>`, JS template `${}`, shell/Angular `$`, Razor `@`).
-_DYNAMIC_MARKERS = ("{", "}", "<", ">", "$", "@", "`", "\\")
+# PHP `<? ?>`, JS template `${}`). `$` and `@` alone are not markers: a literal
+# `$schema.json` or `@types/x.d.ts` is a real name, and a Razor/Angular
+# expression that merely contains them never names an existing file.
+_DYNAMIC_MARKERS = ("{", "}", "<", ">", "`", "\\")
 
 
 def _is_local_path(target: str) -> bool:

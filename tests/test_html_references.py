@@ -111,6 +111,15 @@ def test_non_literal_or_non_local_targets_give_no_edge(tmp_path, value):
     assert _raw_edges(tmp_path, "index.html") == []
 
 
+@pytest.mark.parametrize("name", ["$schema.js", "@types.js"])
+def test_literal_dollar_or_at_file_names_are_references(tmp_path, name):
+    refs, _ = _run(tmp_path, {
+        "index.html": f'<a href="{name}">x</a>\n',
+        name: "{}\n",
+    })
+    assert refs == [("index.html", name, "L1")]
+
+
 def test_fragment_and_query_are_stripped(tmp_path):
     refs, _ = _run(tmp_path, {
         "index.html": '<a href="details.html#top">a</a>\n<a href="details.html?x=1">b</a>\n',
