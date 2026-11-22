@@ -1,17 +1,21 @@
 """Exercise cache creation, use, and recovery through graphify query."""
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
+from threading import Event
 
 import networkx as nx
 from networkx.readwrite import json_graph
 import pytest
 
 from graphify import __main__ as mainmod, paths, query_snapshot
-from graphify.cli import EXIT_AMBIGUOUS, EXIT_NOT_FOUND
+from graphify.cli import EXIT_AMBIGUOUS, EXIT_NOT_FOUND, _load_query_graph
 
 
 @pytest.fixture
@@ -56,6 +60,55 @@ def _fixture():
 
 def _deny_json(_path):
     pytest.fail("a snapshot cache hit read graph.json")
+
+
+def test_concurrent_cold_query_uses_json_while_snapshot_is_building(query_cli, monkeypatch, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    graph, legacy = _load_query_graph(path)
+    expected = run(path, "bounded retry")
+    assert expected[0] == 0
+    identity = query_snapshot.graph_identity(path)
+    assert identity is not None
+
+    started, release = Event(), Event()
+    project = query_snapshot._write_projection
+
+    def paused_projection(*args):
+        started.set()
+        assert release.wait(40), "snapshot writer was not released"
+        project(*args)
+
+    monkeypatch.setattr(query_snapshot, "_write_projection", paused_projection)
+    script = """
+import sys
+from graphify import __main__ as main
+main._check_skill_version = lambda _: None
+sys.argv = ["graphify", *sys.argv[1:]]
+main.main()
+"""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        writer = executor.submit(query_snapshot.write_snapshot, path, identity, graph, legacy)
+        try:
+            assert started.wait(15), "snapshot writer did not start"
+            result = subprocess.run(
+                [sys.executable, "-c", script, "query", "bounded retry", "--graph", str(path), "--snapshot"],
+                capture_output=True, text=True, encoding="utf-8", timeout=20,
+                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+                     "PYTHONIOENCODING": "utf-8"},
+            )
+            assert (result.returncode, result.stdout, result.stderr) == expected
+            assert not list(cache.rglob("[0-9a-f]*.sqlite3"))
+        finally:
+            release.set()
+        writer.result()
+
+    started.clear()
+    query_snapshot.write_snapshot(path, identity, graph, legacy)
+    assert not started.is_set()
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", "--snapshot") == expected
 
 
 def test_warm_snapshot_matches_normal_query_without_loading_json(query_cli, monkeypatch, tmp_path):
@@ -177,6 +230,24 @@ def test_malformed_projection_metadata_recovers_through_json(query_cli, monkeypa
     assert run(path, "bounded retry", *args, "--snapshot") == expected
     monkeypatch.setattr(paths, "read_graph_json", _deny_json)
     assert run(path, "bounded retry", *args, "--snapshot") == expected
+
+
+def test_deeply_nested_snapshot_payload_recovers_through_json(query_cli, monkeypatch, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, "bounded retry")
+    assert expected[0] == 0
+    assert run(path, "bounded retry", "--snapshot") == expected
+
+    (index,) = cache.rglob("*.sqlite3")
+    payload = "[" * 20_000 + "0" + "]" * 20_000
+    with closing(sqlite3.connect(index)) as db, db:
+        db.execute("UPDATE nodes SET payload = ? WHERE id = ?", (payload, "driver"))
+
+    assert run(path, "bounded retry", "--snapshot") == expected
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", "--snapshot") == expected
 
 
 def test_case_variant_normalized_label_keeps_json_scoring(query_cli, tmp_path):

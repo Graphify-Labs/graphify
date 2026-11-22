@@ -2330,7 +2330,7 @@ def dispatch_command(cmd: str) -> None:
             demote_docs=effective_demote_docs,
         )
         if refresh_snapshot and generation is not None:
-            write_snapshot(gp, generation, G, legacy)
+            write_snapshot(gp, generation, G, legacy, repair=snapshot is not None)
         _touch_query_stamp(gp)
         print(_result)
         if _is_ambiguity_refusal(_result):

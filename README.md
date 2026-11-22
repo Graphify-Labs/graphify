@@ -442,8 +442,9 @@ Add `--snapshot` for repeated CLI queries on a large graph.
 graphify query "who calls load_graph" --snapshot
 ```
 
-The first query builds a local SQLite cache for that graph generation. Later
-queries with the flag reuse it until `graph.json` changes. The cache lives
+The first query builds a local SQLite cache for that graph generation.
+Concurrent queries use JSON while the cache is building. Later queries with
+the flag reuse it until `graph.json` changes. The cache lives
 under `$XDG_CACHE_HOME/graphify/query-snapshots` (default `~/.cache`) or under
 `%LOCALAPPDATA%\graphify\query-snapshots` on Windows. It is disposable and can
 take more disk space than `graph.json`. Snapshots support undirected simple

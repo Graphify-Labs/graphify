@@ -126,7 +126,7 @@ def open_snapshot(graph_path: Path, identity: _GraphIdentity | None) -> QuerySna
     return None
 
 
-def write_snapshot(graph_path: Path, identity: _GraphIdentity, graph, legacy: bool) -> None:
+def write_snapshot(graph_path: Path, identity: _GraphIdentity, graph, legacy: bool, *, repair: bool = False) -> None:
     """Build a generation in private storage and publish the completed file atomically."""
     if (
         sqlite3 is None or array("I").itemsize != 4
@@ -136,11 +136,21 @@ def write_snapshot(graph_path: Path, identity: _GraphIdentity, graph, legacy: bo
     ):
         return
     temporary = None
+    lock = None
     try:
         target = _cache_file(graph_path, identity)
         if graph_identity(graph_path) != identity:
             return
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # A separate SQLite transaction serializes builders and releases its
+        # lock even if the writer exits. Contenders already have a JSON answer.
+        lock = sqlite3.connect(target.parent / ".build-lock", timeout=0)
+        lock.execute("BEGIN IMMEDIATE")
+        if not repair:
+            existing = open_snapshot(graph_path, identity)
+            if existing is not None:
+                existing.close()
+                return
         fd, name = tempfile.mkstemp(prefix=".building-", suffix=".sqlite3", dir=target.parent)
         temporary = Path(name)
         os.close(fd)
@@ -170,6 +180,8 @@ def write_snapshot(graph_path: Path, identity: _GraphIdentity, graph, legacy: bo
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+        if lock is not None:
+            lock.close()
 
 
 def _write_projection(db, graph, legacy: bool, identity: _GraphIdentity) -> None:
@@ -309,7 +321,7 @@ class QuerySnapshot:
     def _decode(payload) -> dict:
         try:
             data = json.loads(payload)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, RecursionError) as exc:
             raise SnapshotReadError from exc
         if not isinstance(data, dict):
             raise SnapshotReadError
