@@ -5070,6 +5070,7 @@ def _rewire_unique_stub_nodes(
                 return [
                     node for node in nodes
                     if str(node.get("source_file", "")).endswith(".rs")
+                    and _module_file_for_name(node.get("source_file"), module)
                     and node.get("label") == Path(str(node.get("source_file", ""))).name
                     and _source_path(node.get("source_file")) in expected
                 ]
@@ -5086,6 +5087,12 @@ def _rewire_unique_stub_nodes(
         if not path.is_absolute() and scan_root is not None:
             path = scan_root / path
         return path.resolve()
+
+    def _module_file_for_name(source_file: object, module: str) -> bool:
+        path = Path(str(source_file or ""))
+        if path.name == "mod.rs":
+            return path.parent.name == module
+        return path.stem == module
 
     # `use path::module::{self}` imports the module itself. Its basename is not
     # a Rust declaration label (the file node is labelled `module.rs`), so the
@@ -5121,7 +5128,7 @@ def _rewire_unique_stub_nodes(
         candidates = [
             node for node in nodes
             if str(node.get("source_file", "")).endswith(".rs")
-            and Path(str(node.get("source_file", ""))).stem == module
+            and _module_file_for_name(node.get("source_file"), module)
             and node.get("label") == Path(str(node.get("source_file", ""))).name
             and crate_of(str(node.get("source_file", ""))) == target_crate
         ]
