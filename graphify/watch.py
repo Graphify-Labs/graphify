@@ -628,6 +628,8 @@ class _StoredSourcePaths:
         self.existing_source_root = project_root
         self._identity_cache: dict[str, str | None] = {}
         self._in_watch_root_cache: dict[str, bool] = {}
+        self._absolute_identity_cache: dict[tuple[str, Path], str | None] = {}
+        self._rebased_cache: dict[str, str | None] = {}
         relative_marker_prefix: str | None = None
 
         root_marker = out / ".graphify_root"
@@ -718,6 +720,19 @@ class _StoredSourcePaths:
         return posixpath.normpath(normalized) if normalized else normalized
 
     def absolute_identity(self, source_file: str | None, root: Path) -> str | None:
+        # An incremental update asks this for every stored node and edge while
+        # building the resolve context, so cache it per file and root like
+        # identity() below.
+        if not isinstance(source_file, str):
+            return self._absolute_identity_uncached(source_file, root)
+        key = (source_file, root)
+        try:
+            return self._absolute_identity_cache[key]
+        except KeyError:
+            identity = self._absolute_identity_cache[key] = self._absolute_identity_uncached(source_file, root)
+            return identity
+
+    def _absolute_identity_uncached(self, source_file: str | None, root: Path) -> str | None:
         normalized = self._normalize_source(source_file)
         if not normalized:
             return normalized
@@ -759,19 +774,31 @@ class _StoredSourcePaths:
         return self.identity(item.get("source_file")) in identities
 
     def rebase_preserved(self, item: dict) -> None:
-        identity = self.identity(item.get("source_file"))
+        # Called once for every preserved node, edge and hyperedge. The new
+        # source_file depends only on the old one, so work it out once per file.
+        source_file = item.get("source_file")
+        if not isinstance(source_file, str):
+            rebased = self._rebased_uncached(source_file)
+        else:
+            try:
+                rebased = self._rebased_cache[source_file]
+            except KeyError:
+                rebased = self._rebased_cache[source_file] = self._rebased_uncached(source_file)
+        if rebased is not None:
+            item["source_file"] = rebased
+
+    def _rebased_uncached(self, source_file: str | None) -> str | None:
+        """The source_file a preserved item is stored with, or None to leave it as is."""
+        identity = self.identity(source_file)
         if not identity:
-            return
+            return None
         identity_path = Path(identity)
         if not _is_relative_to(identity_path, self.watch_root):
-            normalized = self.normalize(item.get("source_file"))
-            if normalized:
-                item["source_file"] = normalized
-            return
+            return self.normalize(source_file) or None
         try:
-            item["source_file"] = identity_path.relative_to(self.project_root).as_posix()
+            return identity_path.relative_to(self.project_root).as_posix()
         except ValueError:
-            item["source_file"] = identity
+            return identity
 
 
 # A source_file that is a URL/virtual scheme (gdoc://, s3://, http://, ...) rather
@@ -2595,6 +2622,8 @@ def _rebuild_code(
                             f"[graphify watch] Incremental: none of the {scanned} scanned "
                             "files differ from the last build."
                         )
+                        if not excluded_rows:
+                            return True
 
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
@@ -2718,6 +2747,7 @@ def _rebuild_code(
             # an incremental rebuild, or their semantic nodes would be wiped.
             semantic_doc_set = {Path(os.path.abspath(p)) for p in semantic_doc_files}
             wanted: list[Path] = []
+            ignore_rules_changed = False
             change_root = Path.cwd().resolve()
             for raw in changed_paths:
                 candidates = _changed_path_candidates(
@@ -2725,6 +2755,12 @@ def _rebuild_code(
                     change_root=change_root,
                     watch_root=watch_root,
                 )
+                if any(
+                    cand.name in {".graphifyignore", ".gitignore"}
+                    and _is_relative_to(cand, watch_root)
+                    for cand in candidates
+                ):
+                    ignore_rules_changed = True
                 tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
                 if tracked is not None:
                     if tracked not in wanted and tracked not in semantic_doc_set:
@@ -2762,8 +2798,13 @@ def _rebuild_code(
                     _add_deleted_source(deleted_in_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
-            if not wanted and not deleted_paths:
-                print("[graphify watch] No tracked code files in change set - skipping rebuild.")
+            # Ignore changes can introduce sources absent from the prior graph.
+            # Cached extraction still avoids reparsing unchanged ASTs.
+            if ignore_rules_changed:
+                wanted = [p for p in code_files if p not in semantic_doc_files]
+            # With an existing graph, an empty batch can still have stale sources
+            # (for example a destination-only rename to an unsupported suffix).
+            if not wanted and not deleted_paths and not existing_graph.exists():
                 return True
             extract_targets = wanted
         else:

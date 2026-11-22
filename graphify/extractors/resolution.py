@@ -3016,7 +3016,7 @@ def _python_imported_names(node, source: bytes) -> list[tuple[str, str]]:
             continue
         if child.type == "dotted_name":
             name = _read_text(child, source)
-            names.append((name, name.split(".")[-1]))
+            names.append((name, name.split(".")[0 if node.type == "import_statement" else -1]))
         elif child.type == "aliased_import":
             name_node = child.child_by_field_name("name")
             alias_node = child.child_by_field_name("alias")
@@ -3380,11 +3380,18 @@ def _collect_python_symbol_resolution_facts(
     root: Path,
     facts: _SymbolResolutionFacts,
     ambiguous_python_modules: set[str] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     ambiguous_python_modules = ambiguous_python_modules or set()
     py_paths = [path for path in paths if effective_suffix(path) == ".py"]
     if not py_paths:
         return
+
+    calls_by_file: dict[Path, list[dict]] = {}
+    for call in raw_calls or []:
+        source_file = call.get("source_file")
+        if source_file and not call.get("is_member_call") and not call.get("indirect"):
+            calls_by_file.setdefault(_resolve_cached(source_file), []).append(call)
 
     # One parse per file, dropped before the next (the same reason as the JS facts above).
     for path in py_paths:
@@ -3392,8 +3399,19 @@ def _collect_python_symbol_resolution_facts(
         if parsed is None:
             continue
         source, root_node = parsed
+        imported_names: dict[str, tuple[str, str, str | None]] = {}
+        local_import_scopes: dict[str, list[tuple[int, int]]] = {}
 
         for node in _walk_python_tree(root_node):
+            if node.type in ("import_statement", "import_from_statement"):
+                scope = node.parent
+                while scope is not None and scope.type not in (
+                    "module", "function_definition", "class_definition", "lambda",
+                ):
+                    scope = scope.parent
+                if scope is not None and scope.type == "function_definition":
+                    for _, local in _python_imported_names(node, source):
+                        local_import_scopes.setdefault(local, []).append((scope.start_byte, scope.end_byte))
             if node.type != "import_from_statement":
                 continue
             module = _python_import_from_module(node, source)
@@ -3403,6 +3421,12 @@ def _collect_python_symbol_resolution_facts(
             if level == 0 and _make_id(module_name) in ambiguous_python_modules:
                 continue
             target_path = _resolve_python_module_path(module_name, path, root, level)
+            if node.parent is not None and node.parent.type == "module":
+                for imported, local in _python_imported_names(node, source):
+                    imported_names[local] = (
+                        imported, module_name if level == 0 else "",
+                        str(target_path) if target_path is not None else None,
+                    )
             if target_path is not None:
                 # #1146: `from pkg import submod` — if the target is a package
                 # (__init__.py) and an imported name matches a submodule file on
@@ -3458,6 +3482,20 @@ def _collect_python_symbol_resolution_facts(
                         )
                     )
 
+        # Constrain direct-call fallback to the explicitly imported name and
+        # module, including imports the fact resolver could not resolve (#5229).
+        # Only unconditional top-level imports apply file-wide. For explicitly
+        # supplied files outside the scan root, failure to resolve a module does
+        # not establish that it is external; retain their existing fallback.
+        if _resolve_cached(path).is_relative_to(_resolve_cached(root)):
+            for call in calls_by_file.get(_resolve_cached(path), []):
+                if call.get("callee") in imported_names:
+                    scopes = local_import_scopes.get(call["callee"], ())
+                    site = call.get("_python_call_site")
+                    if scopes and (not site or any(start <= site[0] < end for start, end in scopes)):
+                        continue  # A nearer import shadows the module binding.
+                    call["_python_import_binding"] = imported_names[call["callee"]]
+
         for source_id, body in _python_top_level_function_bodies(path, root_node, source):
             for node in _walk_python_tree(body):
                 imported_name = _python_call_identifier(node, source)
@@ -3488,6 +3526,7 @@ def _augment_symbol_resolution_edges(
     _collect_python_symbol_resolution_facts(
         paths, root, facts,
         ambiguous_python_modules=ambiguous_python_modules,
+        raw_calls=raw_calls,
     )
     if resolution_context_nodes:
         _apply_symbol_resolution_facts(
@@ -4191,6 +4230,9 @@ def _merge_decl_def_classes(
         if src == tgt:
             continue
         k = (src, tgt, e.get("relation"), e.get("context"))
+        if e.get("relation") == "calls":
+            # A repeat call site is not a merge twin; keep it for the build's `also_seen`.
+            k += (e.get("source_file"), e.get("source_location"))
         if k in seen_keys:
             continue
         seen_keys.add(k)

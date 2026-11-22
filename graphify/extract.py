@@ -28,6 +28,7 @@ from .resolver_registry import (
 from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .go_dispatch import resolve_go_interface_dispatch
+from .kotlin_dispatch import resolve_kotlin_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_class_resolution import resolve_pascal_base_classes
 from .dfm_resolution import resolve_dfm_handlers
@@ -707,6 +708,124 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
             repointed = aliases[tgt]
             if repointed != e.get("source"):
                 e["target"] = repointed
+
+
+def _repoint_python_sys_path_imports(per_file, all_nodes, all_edges, root) -> None:
+    """Repoint Python plain-import edges targeting modules in directories dynamically
+    added to sys.path via sys.path.insert / sys.path.append (#5253).
+
+    When a script in a subdirectory (e.g. `src/skills/s/scripts/c.py`) adds another
+    non-package directory to sys.path (`sys.path.insert(0, '../../bin')`), a subsequent
+    plain import (`import b`) resolves at runtime to `src/bin/b.py`. Repointing the
+    import edge here to the canonical file node ID ensures downstream member calls
+    (`b.f()`) bind to the function node (`b.f`) in `_resolve_python_member_calls`,
+    preventing callers from collapsing onto the file node itself.
+    """
+    if not per_file or not any(r and r.get("_python_sys_path_entries") for r in per_file):
+        return
+
+    node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
+    file_node_by_path: dict[Path, str] = {}
+    for n in all_nodes:
+        if not isinstance(n, dict):
+            continue
+        sf = n.get("source_file") or ""
+        if not sf or effective_suffix(sf).lower() not in (".py", ".pyi"):
+            continue
+        nid = n.get("id")
+        if not isinstance(nid, str):
+            continue
+        lbl = str(n.get("label", ""))
+        rel_name = Path(sf).name
+        if lbl != rel_name:
+            continue
+        try:
+            p = Path(sf)
+            if not p.is_absolute():
+                p = (root / p).resolve()
+            else:
+                p = p.resolve()
+            file_node_by_path[p] = nid
+        except (ValueError, OSError):
+            continue
+
+    try:
+        root_path = Path(root).resolve()
+    except OSError:
+        root_path = Path(root)
+
+    for r in per_file:
+        if not r or not r.get("_python_sys_path_entries"):
+            continue
+        sf = ""
+        for n in r.get("nodes", []):
+            if n.get("source_file"):
+                sf = str(n["source_file"])
+                break
+        if not sf:
+            continue
+        try:
+            sf_p = Path(sf)
+            if not sf_p.is_absolute():
+                sf_p = (root_path / sf_p).resolve()
+            else:
+                sf_p = sf_p.resolve()
+        except OSError:
+            continue
+
+        file_dir = sf_p.parent
+        target_dirs: list[Path] = []
+        for entry in r["_python_sys_path_entries"]:
+            curr = file_dir
+            while True:
+                try:
+                    cand_dir = (curr / entry).resolve()
+                    if cand_dir.is_dir() and cand_dir not in target_dirs:
+                        target_dirs.append(cand_dir)
+                except OSError:
+                    pass
+                if curr == root_path or curr == curr.parent:
+                    break
+                curr = curr.parent
+            try:
+                cand_dir = (root_path / entry).resolve()
+                if cand_dir.is_dir() and cand_dir not in target_dirs:
+                    target_dirs.append(cand_dir)
+            except OSError:
+                pass
+
+        if not target_dirs:
+            continue
+
+        for e in all_edges:
+            if not (
+                isinstance(e, dict)
+                and e.get("relation") in ("imports", "imports_from")
+                and str(e.get("source_file", "")) == sf
+            ):
+                continue
+            tgt = e.get("target")
+            if tgt in node_ids:
+                continue
+            if not isinstance(tgt, str):
+                continue
+            if tgt in _PYTHON_STDLIB_MODULE_NAMES:
+                continue
+
+            hits = set()
+            for td in target_dirs:
+                py_cand = td / f"{tgt}.py"
+                pyi_cand = td / f"{tgt}.pyi"
+                pkg_cand = td / tgt / "__init__.py"
+                hit_nid = (
+                    file_node_by_path.get(py_cand)
+                    or file_node_by_path.get(pyi_cand)
+                    or file_node_by_path.get(pkg_cand)
+                )
+                if hit_nid is not None and hit_nid != e.get("source"):
+                    hits.add(hit_nid)
+            if len(hits) == 1:
+                e["target"] = next(iter(hits))
 
 
 
@@ -1899,6 +2018,36 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
         root = tree.root_node
     except Exception:
         return
+
+    # Extract dynamic sys.path modifications (#5253): sys.path.insert / sys.path.append
+    sys_path_entries: list[str] = []
+    for stmt in root.children:
+        if stmt.type != "expression_statement":
+            continue
+        for child in stmt.children:
+            if child.type == "call":
+                fn = child.child_by_field_name("function")
+                if fn and fn.type == "attribute":
+                    attr = fn.child_by_field_name("attribute")
+                    obj = fn.child_by_field_name("object")
+                    if attr and obj and obj.type == "attribute":
+                        sub_attr = obj.child_by_field_name("attribute")
+                        sub_obj = obj.child_by_field_name("object")
+                        if (
+                            source[sub_obj.start_byte:sub_obj.end_byte] == b"sys"
+                            and source[sub_attr.start_byte:sub_attr.end_byte] == b"path"
+                            and source[attr.start_byte:attr.end_byte] in (b"insert", b"append")
+                        ):
+                            args = child.child_by_field_name("arguments")
+                            if args:
+                                for a in args.children:
+                                    if a.type in ("string", "concatenated_string"):
+                                        val = source[a.start_byte:a.end_byte].decode("utf-8", errors="replace")
+                                        val = val.strip("\"'")
+                                        if val:
+                                            sys_path_entries.append(val)
+    if sys_path_entries:
+        result["_python_sys_path_entries"] = sys_path_entries
 
     stem = _file_stem(path)
     str_path = str(path)
@@ -4469,7 +4618,8 @@ def extract_php(path: Path) -> dict:
         source = _php_blank_unparsed_casts(_read_source_bytes(path))
     except Exception:
         source = None  # let _extract_generic read the file and report errors
-    result = _extract_generic(path, _PHP_CONFIG, source_override=source)
+    # Every call site, not one per pair: the build folds repeats into `also_seen`.
+    result = _extract_generic(path, _PHP_CONFIG, source_override=source, preserve_call_sites=True)
     try:
         src = _read_source_text(path, warn=False)
         masked, had_script = _php_mask_to_script_blocks(src)
@@ -4860,6 +5010,8 @@ def _rewire_unique_stub_nodes(
             elif _is_top_level_function_definition(node):
                 func_by_label.setdefault(key, []).append(node)
             continue
+        if node.get("_cpp_std"):
+            continue  # the standard library's own type: never a project symbol (#5219)
         stubs.append(node)
 
     # Language families referencing each stub, for the function-merge guard (#1781):
@@ -7260,6 +7412,17 @@ def _resolve_csharp_member_calls(
                 continue
             type_nid = bases[0]
             type_qualified = True
+        elif rc.get("receiver_var_chain"):
+            # `var a = T.P; a.M()` (#5376): `a` has the declared type of P.
+            var_chain = rc["receiver_var_chain"]
+            type_nid = _resolve_type_name_nid(var_chain[0], caller_node, src_file)
+            for field in var_chain[1:]:
+                if not type_nid:
+                    break
+                type_nid = _field_type_nid(type_nid, field)
+            if not type_nid:
+                continue
+            type_qualified = False
         elif receiver[:1].isupper():
             # Type.M() — the type is named explicitly. A field/property/local of
             # that name in scope shadows the type (`IStore Store => ...;
@@ -7723,9 +7886,13 @@ def _resolve_php_member_calls(
     receiver and marks it a member call; this resolver binds it to the class's
     actual method node, mirroring ``_resolve_java_member_calls``.
 
-    ``self::``/``static::`` resolve to the enclosing class (exact — the keyword
-    names it as unambiguously as a literal class name would). ``parent::``
-    resolves through a single `inherits` edge from the enclosing class. A
+    ``self::``/``static::`` and ``$this->`` resolve to the enclosing class (exact
+    — the keyword names it as unambiguously as a literal class name would).
+    ``parent::`` resolves through a single `inherits` edge from the enclosing
+    class. Whatever the scope, the method is looked up the `inherits` chain
+    level by level: the nearest class that provides it wins (its own method,
+    else one from a trait it uses), and a tie on that level binds nothing. Each call site gets its own edge, so a repeat call
+    keeps its line (the build folds it into `also_seen`). A
     ``$var::method()`` dynamic scope is left unresolved — PHP has no
     declared-type table for it to resolve against, and guessing would risk the
     same over-connection the #543/#1219 guard exists to prevent. Every other
@@ -7766,9 +7933,12 @@ def _resolve_php_member_calls(
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
     inherits_bases: dict[str, list[str]] = {}
+    used_traits: dict[str, list[str]] = {}
     for edge in all_edges:
         if edge.get("relation") == "inherits":
             inherits_bases.setdefault(edge["source"], []).append(edge["target"])
+        elif edge.get("relation") == "mixes_in":
+            used_traits.setdefault(edge["source"], []).append(edge["target"])
 
     type_table_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
@@ -7776,12 +7946,46 @@ def _resolve_php_member_calls(
         if tt and tt.get("path"):
             type_table_by_file[str(tt["path"])] = tt.get("table", {})
 
-    existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+    def provided_by(type_nid: str, name: str) -> set[str]:
+        # PHP precedence: the class's own method, then its traits' (nearest
+        # `use` first, through traits that use traits), then the parent's.
+        level, seen = [type_nid], {type_nid}
+        while level:
+            found: set[str] = set()
+            for nid in level:
+                found |= method_index.get((nid, name), set())
+            if found:
+                return found
+            traits = [t for nid in level for t in used_traits.get(nid, []) if t not in seen]
+            seen.update(traits)
+            level = list(dict.fromkeys(traits))
+        return set()
+
+    def declared_from(type_nid: str, name: str) -> str | None:
+        # The nearest class up the `inherits` chain that provides NAME wins; two
+        # on that nearest level tie and bind nothing, as in Java.
+        level, seen = [type_nid], {type_nid}
+        while level:
+            found: set[str] = set()
+            for nid in level:
+                found |= provided_by(nid, name)
+            if found:
+                return next(iter(found)) if len(found) == 1 else None
+            bases = [base for nid in level for base in inherits_bases.get(nid, []) if base not in seen]
+            seen.update(bases)
+            level = list(dict.fromkeys(bases))
+        return None
+
+    # One edge per call site, not per pair: the build folds a repeated pair into
+    # `also_seen`, so a second call to the same method keeps its line.
+    existing_sites = {(edge.get("source"), edge.get("target"), edge.get("source_location"))
+                      for edge in all_edges}
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
             if not raw_call.get("is_member_call"):
                 continue
-            if not str(raw_call.get("source_file", "")).endswith(".php"):
+            # A remapped extension (`.graphifyrc` `language.inc=php`) is PHP too.
+            if _lang_family(raw_call.get("source_file")) != "php":
                 continue
             receiver = raw_call.get("receiver")
             callee = raw_call.get("callee")
@@ -7800,6 +8004,11 @@ def _resolve_php_member_calls(
                 if len(bases) != 1:
                     continue
                 type_nid = bases[0]
+            elif receiver_lower == "this" and not raw_call.get("php_scoped"):
+                # `$this->m()`: the enclosing class, exact like `self::`.
+                type_nid = enclosing_type.get(caller)
+                if not type_nid:
+                    continue
             elif not raw_call.get("php_scoped") and not receiver.startswith("$"):
                 # Instance receiver (`$g->m()`, `$this->prop->m()`): the type comes
                 # from the annotation table, never the call site, so this rung is
@@ -7834,13 +8043,11 @@ def _resolve_php_member_calls(
                 # resolve against; leave unresolved rather than guess.
                 continue
 
-            method_nids = method_index.get((type_nid, key(callee)), set())
-            if len(method_nids) != 1:
+            method_nid = declared_from(type_nid, key(callee))
+            site = (caller, method_nid, raw_call.get("source_location"))
+            if method_nid is None or method_nid == caller or site in existing_sites:
                 continue
-            method_nid = next(iter(method_nids))
-            if method_nid == caller or (caller, method_nid) in existing_pairs:
-                continue
-            existing_pairs.add((caller, method_nid))
+            existing_sites.add(site)
             all_edges.append({
                 "source": caller,
                 "target": method_nid,
@@ -9741,7 +9948,8 @@ def _resolve_kotlin_member_calls(
         rc
         for result in per_file
         for rc in result.get("raw_calls", [])
-        if rc.get("lang") == "kotlin" and rc.get("kotlin_object_receiver")
+        if rc.get("lang") == "kotlin"
+        and (rc.get("kotlin_object_receiver") or rc.get("kotlin_receiver_type"))
         and rc.get("callee") and rc.get("caller_nid")
     ]
     if not raw:
@@ -9784,7 +9992,7 @@ def _resolve_kotlin_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in raw:
-        receiver = rc["kotlin_object_receiver"]
+        receiver = rc.get("kotlin_object_receiver") or rc["kotlin_receiver_type"]
         callee = rc["callee"]
         caller = rc["caller_nid"]
         type_nids = types_by_name.get(receiver, [])
@@ -10065,6 +10273,12 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "go_interface_dispatch", frozenset({".go"}), resolve_go_interface_dispatch
+    )
+)
+# Kotlin member-level interface dispatch: the C#/Swift pass for Kotlin interfaces.
+register_language_resolver(
+    LanguageResolver(
+        "kotlin_interface_dispatch", frozenset({".kt", ".kts"}), resolve_kotlin_interface_dispatch
     )
 )
 # Markdown code-span mentions (`Widget`, `mod.py::Widget::render`) become
@@ -12778,6 +12992,7 @@ def extract(
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _repoint_python_sibling_imports(paths, all_nodes, all_edges, root)
+    _repoint_python_sys_path_imports(per_file, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     # Salt colliding ids apart BEFORE the C# partial merge. The merge rewires the
     # edges of every half onto the canonical half's id; if that id collides with
@@ -13193,6 +13408,13 @@ def extract(
         callee = rc.get("callee", "")
         if not callee:
             continue
+        python_import_files: set[Path] | None = None
+        if binding := rc.get("_python_import_binding"):
+            callee, module_name, target_file = binding
+            python_import_files = (
+                {Path(target_file).resolve()} if target_file is not None
+                else {Path(p) for p in python_module_alias_files.get(_make_id(module_name), ())}
+            )
         if callee in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         # Skip member-call callees: obj.log() → "log" has no import evidence
@@ -13281,6 +13503,11 @@ def extract(
         candidates = global_label_to_nids.get(callee, [])
         if not candidates and _lang_is_case_insensitive(rc.get("source_file")):
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
+        if python_import_files is not None:
+            candidates = [
+                candidate for candidate in candidates
+                if _js_source_path(nid_to_source_file.get(candidate, ""), root) in python_import_files
+            ]
         if rc.get("language") == "go":
             candidates = [candidate for candidate in candidates if candidate not in _method_nids]
         if not candidates:
