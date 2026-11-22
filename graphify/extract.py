@@ -4957,7 +4957,12 @@ def _rewire_unique_stub_nodes(
             and _source_path(node.get("source_file")) in expected
         ]
 
+    declared_modules_by_file: dict[Path, set[str]] = {}
+
     def _declared_external_modules(source_path: Path) -> set[str]:
+        source_path = source_path.resolve()
+        if source_path in declared_modules_by_file:
+            return declared_modules_by_file[source_path]
         try:
             import tree_sitter_rust as tsrust
             from tree_sitter import Language, Parser
@@ -4965,14 +4970,16 @@ def _rewire_unique_stub_nodes(
             source = source_path.read_bytes()
             tree = Parser(Language(tsrust.language())).parse(source)
         except Exception:
-            return set()
-        return {
+            declared_modules_by_file[source_path] = set()
+            return declared_modules_by_file[source_path]
+        declared_modules_by_file[source_path] = {
             _read_text(name, source)
             for child in tree.root_node.named_children
             if child.type == "mod_item"
             and child.child_by_field_name("body") is None
             and (name := child.child_by_field_name("name")) is not None
         }
+        return declared_modules_by_file[source_path]
 
     def _module_nodes_from(base: Path, modules: list[str]) -> list[dict]:
         """Follow a full Rust module path through `name.rs`/`name/mod.rs` files."""
