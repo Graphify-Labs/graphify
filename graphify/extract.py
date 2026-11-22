@@ -5036,6 +5036,57 @@ def _rewire_unique_stub_nodes(
         if sf.endswith(".rs") and (crate := crate_of(sf)):
             workspace_crates.add(crate)
 
+    def unmanifested_module_nodes(origin: str, module: str) -> list[dict]:
+        """Resolve a no-Cargo self import only through its containing crate's lib.rs."""
+        source = Path(origin)
+        if not source.is_absolute() and scan_root is not None:
+            source = scan_root / source
+        directory = source.parent
+        while True:
+            lib_path = directory / "lib.rs"
+            if lib_path.is_file():
+                try:
+                    import tree_sitter_rust as tsrust
+                    from tree_sitter import Language, Parser
+
+                    parser = Parser(Language(tsrust.language()))
+                    lib_source = lib_path.read_bytes()
+                    tree = parser.parse(lib_source)
+                except Exception:
+                    return []
+                declared = any(
+                    child.type == "mod_item"
+                    and child.child_by_field_name("body") is None
+                    and (name := child.child_by_field_name("name")) is not None
+                    and _read_text(name, lib_source) == module
+                    for child in tree.root_node.named_children
+                )
+                if not declared:
+                    return []
+                expected = {
+                    (directory / f"{module}.rs").resolve(),
+                    (directory / module / "mod.rs").resolve(),
+                }
+                return [
+                    node for node in nodes
+                    if str(node.get("source_file", "")).endswith(".rs")
+                    and node.get("label") == Path(str(node.get("source_file", ""))).name
+                    and _source_path(node.get("source_file")) in expected
+                ]
+            if scan_root is not None and directory.resolve() == scan_root:
+                break
+            parent = directory.parent
+            if parent == directory:
+                break
+            directory = parent
+        return []
+
+    def _source_path(source_file: object) -> Path:
+        path = Path(str(source_file or ""))
+        if not path.is_absolute() and scan_root is not None:
+            path = scan_root / path
+        return path.resolve()
+
     # `use path::module::{self}` imports the module itself. Its basename is not
     # a Rust declaration label (the file node is labelled `module.rs`), so the
     # ordinary name-stub rewire cannot reach it. Resolve only a unique matching
@@ -5058,10 +5109,12 @@ def _rewire_unique_stub_nodes(
         elif normalized_root in workspace_crates:
             target_crate = normalized_root
         elif own is None:
-            # Without Cargo metadata there is no reliable crate-name mapping.
-            # A unique module file among unmanifested Rust sources is the only
-            # evidence available; ambiguity and no match stay unresolved.
-            target_crate = None
+            # Without Cargo metadata, require the importer to sit under a lib.rs
+            # that declares this module; never choose a same-named file elsewhere.
+            candidates = unmanifested_module_nodes(origin, module)
+            if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
+                edge["target"] = candidates[0]["id"]
+            continue
         else:
             continue  # an external crate path must not bind to a local module
 
