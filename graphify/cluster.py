@@ -1,5 +1,6 @@
 """Community detection on NetworkX graphs. Uses Leiden (graspologic) if available, falls back to Louvain (networkx). Splits oversized communities. Returns cohesion scores."""
 from __future__ import annotations
+import collections.abc
 import contextlib
 import hashlib
 import inspect
@@ -120,7 +121,39 @@ def _suppress_output():
     return contextlib.redirect_stdout(io.StringIO())
 
 
-def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None:
+def _sorted_native_edges(G: nx.Graph) -> list[tuple[str, str, float]] | None:
+    # A simple graph has one edge per unordered pair. The stable graph inserts
+    # nodes and edges in lexical order, so its edge iterator emits precisely
+    # these canonical pairs in the same order, including self-loops.
+    edges: list[tuple[str, str, float]] = []
+    for u, v, attrs in G.edges(data=True):
+        # Preserve the stable graph's argument validation and any custom
+        # conversions by leaving unusual attributes on the existing path.
+        if type(attrs) is not dict:
+            return None
+        weight = attrs.get("weight", 1.0)
+        if type(weight) not in (float, int, str, bool):
+            return None
+        if (
+            "self" in attrs
+            or "u_of_edge" in attrs
+            or "v_of_edge" in attrs
+            or any(type(key) is not str for key in attrs)
+        ):
+            return None
+        if v < u:
+            u, v = v, u
+        edges.append((u, v, float(weight)))
+    edges.sort()
+    return edges
+
+
+def _native_leiden(
+    G: nx.Graph,
+    resolution: float,
+    *,
+    stable_graph: collections.abc.Callable[[], nx.Graph] | None = None,
+) -> dict[str, int] | None:
     """Call graspologic_native.leiden() directly, bypassing graspologic's own
     package import.
 
@@ -135,41 +168,55 @@ def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None
 
     Returns None (the caller falls through to the graspologic.partition.leiden
     path, then to the networkx Louvain fallback) if graspologic_native isn't
-    installed, or if `stable` isn't the plain undirected, non-multigraph
-    input leiden actually supports — the same shape check
+    installed, or if the graph used for Leiden isn't undirected and simple,
+    the input Leiden actually supports — the same shape check
     graspologic.partition.leiden itself makes before calling the same native
-    function.
+    function. If provided, `stable_graph` supplies the canonically ordered
+    graph only when the direct edge preparation cannot be used.
     """
     try:
         import graspologic_native as gn
     except ImportError:
         return None
 
-    if stable.is_directed() or stable.is_multigraph():
-        return None
-
-    # graspologic_native identifies nodes by their string form; two DISTINCT
-    # node objects that happen to stringify the same way would silently merge
-    # under it (this is exactly what graspologic.partition.leiden's own
-    # _IdentityMapper guards against). Graphify's own node IDs are already
-    # unique strings by construction — extractors/resolution.py's
-    # _disambiguate_colliding_node_ids salts any two distinct nodes that would
-    # otherwise share a string id before the graph is ever built — so this is
-    # a defensive check on an assumption that should never actually trip, not
-    # an expected path. One pass over the nodes, cheaper than an
-    # _IdentityMapper-style dict-store-per-edge-endpoint.
+    edges = None
+    if stable_graph is not None and type(G) is nx.Graph and all(type(node) is str for node in G):
+        try:
+            edges = _sorted_native_edges(G)
+        except (ValueError, OverflowError):
+            pass  # Retry with the stable graph's original conversion and validation order.
     id_to_node: dict[str, object] = {}
-    for node in stable.nodes():
-        key = str(node)
-        existing = id_to_node.get(key)
-        if existing is not None and existing != node:
-            return None  # let graspologic.partition.leiden's own check handle/raise on this
-        id_to_node[key] = node
+    if edges is not None:
+        nodes = sorted(G)
+        id_to_node = {node: node for node in nodes}
+    else:
+        if stable_graph is not None:
+            G = stable_graph()
+        if G.is_directed() or G.is_multigraph():
+            return None
 
-    edges = [
-        (str(u), str(v), float(attrs.get("weight", 1.0)))
-        for u, v, attrs in stable.edges(data=True)
-    ]
+        # graspologic_native identifies nodes by their string form; two DISTINCT
+        # node objects that happen to stringify the same way would silently merge
+        # under it (this is exactly what graspologic.partition.leiden's own
+        # _IdentityMapper guards against). Graphify's own node IDs are already
+        # unique strings by construction — extractors/resolution.py's
+        # _disambiguate_colliding_node_ids salts any two distinct nodes that would
+        # otherwise share a string id before the graph is ever built — so this is
+        # a defensive check on an assumption that should never actually trip, not
+        # an expected path. One pass over the nodes, cheaper than an
+        # _IdentityMapper-style dict-store-per-edge-endpoint.
+        nodes = G.nodes()
+        for node in nodes:
+            key = str(node)
+            existing = id_to_node.get(key)
+            if existing is not None and existing != node:
+                return None  # let graspologic.partition.leiden's own check handle/raise on this
+            id_to_node[key] = node
+
+        edges = [
+            (str(u), str(v), float(attrs.get("weight", 1.0)))
+            for u, v, attrs in G.edges(data=True)
+        ]
 
     try:
         old_stderr = sys.stderr
@@ -196,26 +243,14 @@ def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None
         for node_id, community in native_partitions.items()
     }
     next_community = max(partition.values(), default=-1) + 1
-    for node in stable.nodes():
+    for node in nodes:
         if node not in partition:
             partition[node] = next_community
             next_community += 1
     return partition
 
 
-def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
-    """Run community detection. Returns {node_id: community_id}.
-
-    Tries Leiden (graspologic_native directly, then graspologic) first — best
-    quality. Falls back to Louvain (built into networkx) if neither is
-    installed.
-
-    resolution > 1.0 → more, smaller communities.
-    resolution < 1.0 → fewer, larger communities.
-
-    Output from graspologic is suppressed to prevent ANSI escape codes
-    from corrupting terminal scroll buffers on Windows PowerShell 5.1.
-    """
+def _stable_partition_graph(G: nx.Graph) -> nx.Graph:
     stable = nx.Graph()
     stable.add_nodes_from(sorted(G.nodes(), key=str))
     # Canonicalise the endpoint pair before sorting. On an undirected graph the
@@ -245,12 +280,35 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     )
     for src, tgt, attrs in edge_rows:
         stable.add_edge(src, tgt, **attrs)
-    del edge_rows  # `stable` holds the edges now
+    return stable
 
-    native_result = _native_leiden(stable, resolution)
+
+def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
+    """Run community detection. Returns {node_id: community_id}.
+
+    Tries Leiden (graspologic_native directly, then graspologic) first — best
+    quality. Falls back to Louvain (built into networkx) if neither is
+    installed.
+
+    resolution > 1.0 → more, smaller communities.
+    resolution < 1.0 → fewer, larger communities.
+
+    Output from graspologic is suppressed to prevent ANSI escape codes
+    from corrupting terminal scroll buffers on Windows PowerShell 5.1.
+    """
+    stable = None
+
+    def get_stable_graph() -> nx.Graph:
+        nonlocal stable
+        if stable is None:
+            stable = _stable_partition_graph(G)
+        return stable
+
+    native_result = _native_leiden(G, resolution, stable_graph=get_stable_graph)
     if native_result is not None:
         return native_result
 
+    stable = get_stable_graph()
     try:
         from graspologic.partition import leiden
         lsig = inspect.signature(leiden).parameters
