@@ -4932,6 +4932,45 @@ def _rewire_unique_stub_nodes(
         if sf.endswith(".rs") and (crate := crate_of(sf)):
             workspace_crates.add(crate)
 
+    # `use path::module::{self}` imports the module itself. Its basename is not
+    # a Rust declaration label (the file node is labelled `module.rs`), so the
+    # ordinary name-stub rewire cannot reach it. Resolve only a unique matching
+    # Rust module file, scoped to the named/current Cargo crate when available.
+    for edge in edges:
+        info = edge.get("_rust_use_self_module")
+        if not isinstance(info, dict):
+            continue
+        module = str(info.get("module", ""))
+        root_name = str(info.get("root", ""))
+        if not module or not root_name:
+            continue
+        origin = str(edge.get("source_file", ""))
+        own = crate_of(origin) if origin.endswith(".rs") else None
+        normalized_root = root_name.replace("-", "_")
+        if root_name in ("crate", "self", "super"):
+            target_crate = own
+        elif own is not None and normalized_root == own:
+            target_crate = own
+        elif normalized_root in workspace_crates:
+            target_crate = normalized_root
+        elif own is None:
+            # Without Cargo metadata there is no reliable crate-name mapping.
+            # A unique module file among unmanifested Rust sources is the only
+            # evidence available; ambiguity and no match stay unresolved.
+            target_crate = None
+        else:
+            continue  # an external crate path must not bind to a local module
+
+        candidates = [
+            node for node in nodes
+            if str(node.get("source_file", "")).endswith(".rs")
+            and Path(str(node.get("source_file", ""))).stem == module
+            and node.get("label") == Path(str(node.get("source_file", ""))).name
+            and crate_of(str(node.get("source_file", ""))) == target_crate
+        ]
+        if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
+            edge["target"] = candidates[0]["id"]
+
     # A crate can re-export another crate's item (`pub use core::Thing;`), so an
     # import that names the re-exporting crate reaches the defining one (#4699).
     # Keyed by (re-exporting crate, imported label) -> crates it re-exports from.
@@ -13901,6 +13940,7 @@ def extract(
         e.pop("_rust_use_binding", None)
         e.pop("_rust_use_name", None)
         e.pop("_rust_pub_use", None)
+        e.pop("_rust_use_self_module", None)
     for n in all_nodes:
         n.pop("_rust_use_roots", None)
 
