@@ -38,3 +38,42 @@ def test_heading_still_resolves_with_warm_index():
     G = _graph()
     _get_trigram_index(G)
     assert resolve_section_query(G, "Intro") == ("readme_intro", "")
+
+
+def _retry_view(monkeypatch, G):
+    from graphify import serve
+
+    calls = []
+    original = serve._resolve_single_node
+
+    def spy(graph, query):
+        calls.append((graph, query))
+        return original(graph, query)
+
+    monkeypatch.setattr(serve, "_resolve_single_node", spy)
+    resolve_section_query(G, "deploy")
+    assert len(calls) == 2
+    return calls[1][0]
+
+
+def test_retry_uses_isolated_section_view(monkeypatch):
+    G = _graph()
+    G.graph["_logical_directed"] = False
+    _get_trigram_index(G)
+    full_index = G.graph["_trigram_index"]
+
+    view = _retry_view(monkeypatch, G)
+
+    assert set(view.nodes) == {"readme_intro"}
+    assert view.graph is not G.graph
+    assert view.graph["_logical_directed"] is False
+    assert view.graph.get("_trigram_index") is not full_index
+
+
+def test_retry_drops_unknown_future_cache(monkeypatch):
+    G = _graph()
+    G.graph["_some_new_cache"] = {"full_graph_only": True}
+
+    view = _retry_view(monkeypatch, G)
+
+    assert "_some_new_cache" not in view.graph
