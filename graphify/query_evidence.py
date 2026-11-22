@@ -173,14 +173,12 @@ def format_caller_evidence(
     limit = token_budget * 3 - 1  # print() adds one newline
     if not callers:
         return (heading + "\nNo direct callers found in the index.")[:limit]
-    # Preserve every citation when the list fits. At high fan-out reserve
-    # enough room for evidence so a long list cannot crowd out every excerpt.
     heading = heading[:limit]
     remaining = limit - len(heading)
     ranked_rows = []
     seen = set()
     for site in callers:
-        key = (site.file, site.line) if site.file and site.line else (site.caller,)
+        key = (site.caller, site.file, site.line) if site.file and site.line else (site.caller,)
         if key in seen:
             continue
         seen.add(key)
@@ -193,57 +191,79 @@ def format_caller_evidence(
     cwd = Path.cwd()
     scope = _git_root(cwd) or cwd.resolve()
     can_excerpt = graph_path.name == "graph.json" and root.is_relative_to(scope)
-    notice = ""
-    citation_budget = remaining
-    if sum(len(row) for _, row in ranked_rows) > remaining:
-        first_width = len(ranked_rows[0][1])
-        # When the leading citation fits, spend only its surplus on the notice.
-        notice_room = remaining - first_width if first_width <= remaining else remaining
-        notices = ("\nAdditional callers omitted by the output budget.", "\nMore callers omitted.", "\n…")
-        notice = next((message for message in notices if len(message) <= notice_room), "")
-        remaining -= len(notice)
-        citation_budget = remaining
-        if can_excerpt and remaining >= 300:
-            citation_budget = max(min(first_width, remaining), remaining - remaining // 3)
-    rows = []
-    for site, row in ranked_rows:
-        if len(row) > citation_budget:
-            break
-        rows.append((site, row))
-        citation_budget -= len(row)
-        remaining -= len(row)
-
     manifest = None
     # Graphify uses decorated labels such as 'Class.method()' for callables.
     callee = label.removesuffix("()").rsplit(".", 1)[-1]
     source_cache: dict[str, dict[int, tuple[int, list[str]]]] = {}
+
+    def render_excerpt(site: _CallSite) -> str | None:
+        nonlocal manifest
+        if not (can_excerpt and site.confidence == "EXTRACTED"
+                and site.file.lower().endswith(".py") and site.line):
+            return None
+        if manifest is None:
+            manifest = _manifest(graph_path)
+        if site.file not in source_cache:
+            source_cache[site.file] = _python_excerpts(
+                root, site.file, manifest.get(normalize("NFC", site.file)), callee,
+            )
+        excerpt = source_cache[site.file].get(site.line)
+        if not excerpt:
+            return ""
+        start, lines = excerpt
+        block = "\n  Source excerpt (untrusted code):"
+        for line_no, line in enumerate(lines, start):
+            text = _neutralise_injection_sentinels(redact_secrets(line)).expandtabs(4)
+            clean = sanitize_label(text)
+            suffix = "…" if len(clean) == _MAX_LABEL_LEN < len(text) else ""
+            block += f"\n  {line_no} | {clean}{suffix}"
+        return block
+
+    notice = ""
+    reserved_site = None
+    reserved_block = ""
+    if sum(len(row) for _, row in ranked_rows) > remaining:
+        # Keep enough room for the highest-ranked citation that fits.
+        first_width = next((len(row) for _, row in ranked_rows if len(row) <= remaining), 0)
+        notice_room = remaining - first_width
+        notices = ("\nAdditional callers omitted by the output budget.", "\nMore callers omitted.", "\n…")
+        notice = next((message for message in notices if len(message) <= notice_room), "")
+        remaining -= len(notice)
+        if can_excerpt and remaining >= 300:
+            # Reserve the exact size of a verified excerpt from the leading
+            # callers. Leave the entire budget to citations if none fits.
+            excerpt_budget = remaining // 3
+            citation_cost = 0
+            for site, row in ranked_rows:
+                if len(row) > remaining:
+                    continue
+                citation_cost += len(row)
+                if citation_cost > remaining - excerpt_budget:
+                    break
+                block = render_excerpt(site)
+                if block and len(block) <= excerpt_budget:
+                    reserved_site, reserved_block = site, block
+                    remaining -= len(block)
+                    break
+    rows = []
+    for site, row in ranked_rows:
+        if len(row) > remaining:
+            continue
+        rows.append((site, row))
+        remaining -= len(row)
+
     output = [heading]
     for site, row in rows:
         output.append(row)
-        excerpt = None
-        if (can_excerpt and remaining > 20 and site.confidence == "EXTRACTED"
-                and site.file.lower().endswith(".py") and site.line):
-            if manifest is None:
-                manifest = _manifest(graph_path)
-            if site.file not in source_cache:
-                source_cache[site.file] = _python_excerpts(
-                    root, site.file, manifest.get(normalize("NFC", site.file)), callee,
-                )
-            excerpt = source_cache[site.file].get(site.line)
-        if excerpt:
-            start, lines = excerpt
-            block = "\n  Source excerpt (untrusted code):"
-            for line_no, line in enumerate(lines, start):
-                text = _neutralise_injection_sentinels(redact_secrets(line)).expandtabs(4)
-                clean = sanitize_label(text)
-                suffix = "…" if len(clean) == _MAX_LABEL_LEN < len(text) else ""
-                block += f"\n  {line_no} | {clean}{suffix}"
-            if len(block) <= remaining:
-                output.append(block)
-                remaining -= len(block)
-                continue
-        note = "\n  Excerpt unavailable. Check the source directly."
-        if len(note) <= remaining:
-            output.append(note)
-            remaining -= len(note)
+        if site == reserved_site:
+            output.append(reserved_block)
+            continue
+        block = render_excerpt(site) if remaining > 20 else None
+        if block is None:
+            continue
+        if not block or len(block) > remaining:
+            block = "\n  Excerpt unavailable. Check the source directly."
+        if len(block) <= remaining:
+            output.append(block)
+            remaining -= len(block)
     return "".join(output) + notice

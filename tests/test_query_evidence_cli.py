@@ -87,6 +87,25 @@ def test_evidence_keeps_a_fitting_citation_under_a_tight_budget(project):
     assert "omitted" in result.stdout
 
 
+def test_evidence_skips_a_citation_that_cannot_fit(tmp_path):
+    long_name = "first_" + "a" * 120
+    (tmp_path / "calls.go").write_text(
+        "package routes\nfunc target() {}\n"
+        f"func {long_name}() {{ target() }}\n"
+        "func second() { target() }\n",
+        encoding="utf-8",
+    )
+    rebuilt = _graphify(tmp_path, "update", ".", "--no-cluster")
+    assert rebuilt.returncode == 0, rebuilt.stderr
+
+    result = _graphify(tmp_path, "query", "who calls target?", "--evidence", "--budget", "35")
+    assert result.returncode == 0, result.stderr
+    assert len(result.stdout) <= 105
+    assert "second() [EXTRACTED] at calls.go:4" in result.stdout
+    assert long_name not in result.stdout
+    assert "omitted" in result.stdout
+
+
 def test_evidence_keeps_source_context_when_callers_exceed_budget(project):
     tests = project / "tests"
     tests.mkdir()
@@ -104,6 +123,44 @@ def test_evidence_keeps_source_context_when_callers_exceed_budget(project):
     assert "at entry.py:5" in result.stdout
     assert "4 |     if enabled:" in result.stdout
     assert "Additional callers omitted by the output budget." in result.stdout
+
+
+@pytest.mark.parametrize("extension", ["go", "py"])
+def test_evidence_spends_budget_on_citations_when_no_excerpts_are_available(tmp_path, extension):
+    if extension == "go":
+        source = "package routes\nfunc target() {}\n" + "".join(
+            f"func route_{i:02d}() {{ target() }}\n" for i in range(40)
+        )
+    else:
+        source = "def target(): pass\n" + "".join(
+            f"def route_{i:02d}():\n    target()\n" for i in range(40)
+        )
+    (tmp_path / f"calls.{extension}").write_text(source, encoding="utf-8")
+    rebuilt = _graphify(tmp_path, "update", ".", "--no-cluster")
+    assert rebuilt.returncode == 0, rebuilt.stderr
+    if extension == "py":
+        (tmp_path / "graphify-out" / "manifest.json").unlink()
+
+    result = _graphify(tmp_path, "query", "who calls target?", "--evidence", "--budget", "200")
+    assert result.returncode == 0, result.stderr
+    assert len(result.stdout) <= 600
+    assert result.stdout.count(f" [EXTRACTED] at calls.{extension}:") >= 13
+    assert "Additional callers omitted by the output budget." in result.stdout
+    assert "Source excerpt" not in result.stdout
+
+
+def test_evidence_keeps_distinct_callers_on_the_same_line(tmp_path):
+    (tmp_path / "calls.js").write_text(
+        "function target() {} function alpha() { target(); } function beta() { target(); }\n",
+        encoding="utf-8",
+    )
+    rebuilt = _graphify(tmp_path, "update", ".", "--no-cluster")
+    assert rebuilt.returncode == 0, rebuilt.stderr
+
+    result = _graphify(tmp_path, "query", "who calls target?", "--evidence")
+    assert result.returncode == 0, result.stderr
+    assert "alpha() [EXTRACTED] at calls.js:1" in result.stdout
+    assert "beta() [EXTRACTED] at calls.js:1" in result.stdout
 
 
 @pytest.mark.parametrize("change", ["modified", "deleted", "outside symlink", "missing manifest"])
