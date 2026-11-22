@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import unquote
 from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, classify_file
 from graphify.extractors.base import _file_stem, _make_id, _read_source_text
+from graphify.extractors.bash import _resolve_safe
 from graphify.security import sanitize_metadata
 
 
@@ -724,15 +725,16 @@ def extract_markdown(path: Path) -> dict:
         if not text.startswith(("./", "../")):
             bases.append(real_root)
         for base in bases:
-            # Realpaths on both sides, so a symlinked scan root (/var ->
-            # /private/var) still relates the target to the document.
-            target = os.path.realpath(os.path.join(base, text))
+            # The corpus chose this path: refuse a UNC or out-of-tree target
+            # before anything stats or resolves it (GHSA-g6c9-j4vm-mwq4). Bases
+            # are realpaths, so a symlinked scan root (/var -> /private/var)
+            # still relates the target to the document.
+            target = _resolve_safe(Path(base) / text, Path(real_root))
             try:
-                if not os.path.isfile(target):
+                if target is None or not target.is_file():
                     continue
-                Path(target).relative_to(real_root)
-                rel = os.path.relpath(target, real_source_dir)
-            except (OSError, ValueError):  # outside the scan root, or another drive
+                rel = os.path.relpath(str(target), real_source_dir)
+            except (OSError, ValueError):  # another drive
                 continue
             add_link(rel.replace("\\", "/"), line, owner=file_nid)
             return

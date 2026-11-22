@@ -1337,3 +1337,38 @@ def test_scan_root_on_another_drive_does_not_abort_the_document(tmp_path, monkey
     cited = [rc for rc in r["raw_calls"] if rc.get("path") == "src/app.ts"]
     assert cited and "root_path" not in cited[0]
     assert [rc["callee"] for rc in r["raw_calls"] if rc.get("path") is None] == ["token"]
+
+
+def test_unc_and_out_of_tree_spans_are_never_stat_ed(tmp_path, monkeypatch):
+    """A span naming a UNC or out-of-tree path is refused before any stat (#5224, GHSA-g6c9-j4vm-mwq4).
+
+    On Windows, stat-ing a corpus-chosen `//host/share` path authenticates to that
+    host over SMB; an escaping `../` path leaks whether a host file exists.
+    """
+    import graphify.extractors.markdown as md
+    from graphify.extractors.base import set_active_scan_root
+
+    corpus = tmp_path / "corpus"
+    (corpus / "docs").mkdir(parents=True)
+    (tmp_path / "outside.md").write_text("# Outside\n")  # exists, but outside the corpus
+    doc = corpus / "docs" / "guide.md"
+    doc.write_text("# Guide\n\nSee `//evil-host/share/notes.md` and `../../outside.md`.\n")
+
+    probed = []
+    for name in ("stat", "lstat"):
+        real = getattr(os, name)
+
+        def spy(path, *args, _real=real, **kwargs):
+            if "evil-host" in str(path) or "outside.md" in str(path):
+                probed.append(str(path))
+            return _real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, name, spy)
+    previous = set_active_scan_root(corpus)
+    try:
+        r = md.extract_markdown(doc)
+    finally:
+        set_active_scan_root(previous)
+
+    assert probed == []
+    assert all(e["relation"] == "contains" for e in r["edges"])
