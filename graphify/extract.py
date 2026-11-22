@@ -5085,24 +5085,46 @@ def _rewire_unique_stub_nodes(
         }
         return declared_modules_by_file[source_path]
 
-    def _module_nodes_from(base: Path, modules: list[str]) -> list[dict]:
+    def _module_nodes_from(
+        base: Path, modules: list[str], parent_file: Path | None,
+    ) -> list[dict]:
         """Follow a full Rust module path through `name.rs`/`name/mod.rs` files."""
         if not modules:
             return [
                 node for node in nodes
-                if _source_path(node.get("source_file")) == base.resolve()
-                and node.get("label") == base.name
+                if parent_file is not None
+                and _source_path(node.get("source_file")) == parent_file.resolve()
+                and node.get("label") == parent_file.name
             ]
+        if parent_file is None:
+            return []
         current_base = base
         found: list[dict] = []
         for index, module in enumerate(modules):
+            if module not in _declared_external_modules(parent_file):
+                return []
             found = _module_file_nodes(current_base, module)
             if len(found) != 1:
                 return []
             if index < len(modules) - 1:
-                path = _source_path(found[0].get("source_file"))
-                current_base = path.parent if path.name == "mod.rs" else path.parent / path.stem
+                parent_file = _source_path(found[0].get("source_file"))
+                current_base = (
+                    parent_file.parent if parent_file.name == "mod.rs"
+                    else parent_file.parent / parent_file.stem
+                )
         return found
+
+    def _super_parent_file(origin: str, crate_lib: Path | None) -> Path | None:
+        source = _source_path(origin)
+        if crate_lib is None or source == crate_lib:
+            return None
+        if source.parent == crate_lib.parent:
+            return crate_lib
+        containing_module = source.parent.name
+        parents = _module_file_nodes(source.parent.parent, containing_module)
+        if len(parents) == 1:
+            return _source_path(parents[0].get("source_file"))
+        return None
 
     def _lib_file_for_crate(crate: str, origin: str) -> Path | None:
         libs = [
@@ -5141,10 +5163,12 @@ def _rewire_unique_stub_nodes(
         current_file = lib_path
         current_base = lib_path.parent
         if root_name == "super":
-            if source.name in ("lib.rs", "main.rs"):
+            current_file = _super_parent_file(origin, lib_path)
+            if current_file is None:
                 return []
             current_base = source.parent.parent if source.name == "mod.rs" else source.parent
         elif root_name == "self":
+            current_file = source
             current_base = (
                 source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
                 else source.parent / source.stem
@@ -5165,24 +5189,26 @@ def _rewire_unique_stub_nodes(
             node for node in nodes if _source_path(node.get("source_file")) == lib_path
         ]
 
-    # `use path::module::{self}` imports the module itself. Its basename is not
-    # a Rust declaration label (the file node is labelled `module.rs`), so the
-    # ordinary name-stub rewire cannot reach it. Resolve only a unique matching
-    # Rust module file, scoped to the named/current Cargo crate when available.
+    # A module import's final segment is not a Rust declaration label (the file
+    # node is labelled `module.rs`), so symbol-name rewiring cannot reach it.
+    # Resolve module-only paths for plain imports and grouped bindings through
+    # the same declaration-aware file lookup.
     for edge in edges:
-        info = edge.get("_rust_use_self_module")
+        info = edge.get("_rust_use_module_path")
         if not isinstance(info, dict):
             continue
-        module = str(info.get("module", ""))
         root_name = str(info.get("root", ""))
-        if not module or not root_name:
+        segments = info.get("segments")
+        if (
+            not root_name or info.get("absolute")
+            or not isinstance(segments, list)
+            or not segments
+            or not all(isinstance(item, str) for item in segments)
+        ):
             continue
         origin = str(edge.get("source_file", ""))
         own = crate_of(origin) if origin.endswith(".rs") else None
         normalized_root = root_name.replace("-", "_")
-        segments = info.get("segments")
-        if not isinstance(segments, list) or not all(isinstance(item, str) for item in segments):
-            segments = [root_name, *info.get("modules", [module])]
         modules = list(segments[1:])
         local_root = False
         if root_name in ("crate", "self", "super"):
@@ -5211,17 +5237,21 @@ def _rewire_unique_stub_nodes(
 
         if root_name == "super":
             source = _source_path(origin)
-            if source.name in ("lib.rs", "main.rs"):
+            crate_lib = _lib_file_for_crate(str(target_crate), origin)
+            parent_file = _super_parent_file(origin, crate_lib)
+            if parent_file is None:
                 continue
             base = source.parent.parent if source.name == "mod.rs" else source.parent
         elif root_name == "self":
             source = _source_path(origin)
+            parent_file = source
             base = (
                 source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
                 else source.parent / source.stem
             )
         elif local_root:
             source = _source_path(origin)
+            parent_file = source
             base = (
                 source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
                 else source.parent / source.stem
@@ -5230,8 +5260,9 @@ def _rewire_unique_stub_nodes(
             lib_file = _lib_file_for_crate(str(target_crate), origin)
             if lib_file is None:
                 continue
+            parent_file = lib_file
             base = lib_file.parent
-        candidates = _module_nodes_from(base, modules)
+        candidates = _module_nodes_from(base, modules, parent_file)
         if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
             edge["target"] = candidates[0]["id"]
 
@@ -14334,7 +14365,7 @@ def extract(
         e.pop("_rust_use_binding", None)
         e.pop("_rust_use_name", None)
         e.pop("_rust_pub_use", None)
-        e.pop("_rust_use_self_module", None)
+        e.pop("_rust_use_module_path", None)
     for n in all_nodes:
         n.pop("_rust_use_roots", None)
 
