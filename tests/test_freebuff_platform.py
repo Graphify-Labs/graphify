@@ -204,6 +204,37 @@ def test_freebuff_subcommand_install_is_idempotent(tmp_path):
     assert body.count("## graphify") == 1, "AGENTS.md gained a duplicate graphify section"
 
 
+def test_freebuff_project_install_appends_to_an_existing_agents_md(tmp_path):
+    """`freebuff install --project` wires AGENTS.md like the user-scope command.
+
+    Existing project instructions must survive: the section is appended (or
+    replaced in place), never written over the whole file.
+    """
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    home.mkdir()
+    proj.mkdir()
+    agents_md = proj / "AGENTS.md"
+    agents_md.write_text("# My Project\n\nKeep these rules.\n", encoding="utf-8")
+
+    _run(proj, ["freebuff", "install", "--project"], home)
+
+    body = agents_md.read_text(encoding="utf-8")
+    assert body.startswith("# My Project\n\nKeep these rules.\n"), body[:80]
+    assert body.count("## graphify") == 1
+    assert (proj / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+
+    _run(proj, ["freebuff", "install", "--project"], home)
+    assert agents_md.read_text(encoding="utf-8").count("## graphify") == 1, "duplicate section"
+
+    _run(proj, ["freebuff", "uninstall", "--project"], home)
+
+    after = agents_md.read_text(encoding="utf-8")
+    assert "## graphify" not in after
+    assert "# My Project\n\nKeep these rules.\n" in after
+    assert not (proj / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+
+
 def test_freebuff_project_install_writes_dot_agents(tmp_path):
     home = tmp_path / "home"
     proj = tmp_path / "proj"
@@ -214,6 +245,7 @@ def test_freebuff_project_install_writes_dot_agents(tmp_path):
 
     project_skill = proj / ".agents" / "skills" / "graphify" / "SKILL.md"
     assert project_skill.exists()
+    assert not (proj / "AGENTS.md").exists(), "--platform freebuff stays skill-only (parity with agents)"
     assert (project_skill.parent / "references" / "extraction-spec.md").exists()
     assert not (home / ".agents" / "skills").exists(), "project install must not touch user scope"
 

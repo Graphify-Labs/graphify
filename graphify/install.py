@@ -2299,6 +2299,25 @@ def _freebuff_install(project_dir: Path | None = None) -> None:
 def _freebuff_uninstall(project_dir: Path | None = None) -> None:
     """`graphify freebuff uninstall`: remove the shared skill and AGENTS.md section."""
     _agents_platform_uninstall(project_dir, "freebuff")
+def _freebuff_project_install(project_dir: Path | None = None) -> None:
+    """`graphify freebuff install --project`: project skill + AGENTS.md section.
+
+    `graphify install --project --platform freebuff` stays skill-only (parity
+    with `--platform agents`), but the Freebuff subcommand wires the project
+    AGENTS.md as well: Freebuff has no hook API, so that section is the only
+    always-on mechanism it has.
+    """
+    project_dir = project_dir or Path(".")
+    skill_dst = _copy_skill_file("freebuff", project=True, project_dir=project_dir)
+    _agents_install(project_dir, "freebuff", project=True)
+    _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"])
+def _freebuff_project_uninstall(project_dir: Path | None = None) -> None:
+    """`graphify freebuff uninstall --project`: remove the project skill and section."""
+    project_dir = project_dir or Path(".")
+    removed = _remove_skill_file("freebuff", project=True, project_dir=project_dir)
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir, platform="freebuff")
 def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = "agents") -> None:
     """`graphify agents|freebuff uninstall`: remove the skill and the AGENTS.md section."""
     removed = _remove_skill_file(platform)
@@ -3169,12 +3188,12 @@ def dispatch_install_cli(cmd: str) -> bool:
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
             if "--project" in sys.argv[3:]:
-                _project_install("freebuff", Path("."))
+                _freebuff_project_install(Path("."))
             else:
                 _freebuff_install(Path("."))
         elif subcmd == "uninstall":
             if "--project" in sys.argv[3:]:
-                _project_uninstall("freebuff", Path("."))
+                _freebuff_project_uninstall(Path("."))
             else:
                 _freebuff_uninstall(Path("."))
         else:
