@@ -4790,7 +4790,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".rb": "ruby", ".rake": "ruby",
     ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
     ".php5": "php", ".php7": "php", ".phps": "php",
-    ".cs": "dotnet", ".vb": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
+    ".cs": "dotnet", ".vala": "dotnet", ".vb": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
     ".lua": "lua", ".luau": "lua",
     ".zig": "zig",
     ".ex": "elixir", ".exs": "elixir",
@@ -11338,6 +11338,8 @@ _DISPATCH: dict[str, Any] = {
     ".metal": extract_cpp,
     ".rb": extract_ruby, ".rake": extract_ruby,
     ".cs": extract_csharp,
+    # Vala is C#-like; the C# grammar recovers classes, methods and imports. Signals, delegates and owned/nullable types are not modelled.
+    ".vala": extract_csharp,
     ".cbl": extract_cobol,
     ".cob": extract_cobol,
     ".cobol": extract_cobol,

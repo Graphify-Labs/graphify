@@ -569,7 +569,7 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c",
     ".cxx": "c", ".hh": "c", ".hxx": "c",
     ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
-    ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
+    ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".vala": "cs", ".swift": "swift", ".lua": "lua",
     # Everything else extract._LANG_FAMILY_BY_EXT knows (#5247): an extension
     # missing here resolves to no family, so the guard silently never fires
     # (e.g. a Python `from app import db` binding to a Dart `lib/app.dart`).
