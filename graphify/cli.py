@@ -2132,7 +2132,11 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
-        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--no-doc-demotion] [--context C] [--seed X] [--budget N] [--depth N] [--graph path]"
+        _query_usage = (
+            'Usage: graphify query "<question>" [--dfs] [--no-doc-demotion] [--context C]'
+            ' [--seed X] [--budget N] [--depth N] [--graph path]\n'
+            '       graphify query "who calls <symbol>?" --evidence [--seed X] [--budget N] [--graph path]'
+        )
         if len(sys.argv) < 3:
             print(_query_usage, file=sys.stderr)
             sys.exit(1)
@@ -2158,13 +2162,17 @@ def dispatch_command(cmd: str) -> None:
             demote_docs_flag = True
         budget: int | None = None
         depth: int | None = None
+        evidence = False
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         seeds: list[str] = []
         args = sys.argv[3:]
         i = 0
         while i < len(args):
-            if args[i] in ("--no-doc-demotion", "--no-demote-docs"):
+            if args[i] == "--evidence":
+                evidence = True
+                i += 1
+            elif args[i] in ("--no-doc-demotion", "--no-demote-docs"):
                 demote_docs_flag = False
                 i += 1
             elif args[i] in ("--demote-docs", "--doc-demotion"):
@@ -2222,6 +2230,24 @@ def dispatch_command(cmd: str) -> None:
                 i += 2
             else:
                 i += 1
+        evidence_target = None
+        if evidence:
+            from graphify.query_evidence import caller_target
+
+            evidence_target = caller_target(question)
+            if evidence_target is None:
+                print('error: --evidence expects "who calls <symbol>?"', file=sys.stderr)
+                sys.exit(1)
+            if len(seeds) > 1 or use_dfs or depth not in (None, 1) or any(
+                context != "call" for context in context_filters
+            ):
+                print("error: --evidence uses one symbol and one hop of call edges", file=sys.stderr)
+                sys.exit(1)
+            if budget is not None and budget <= 0:
+                print("error: --evidence requires a positive --budget", file=sys.stderr)
+                sys.exit(1)
+            if seeds:
+                evidence_target = seeds[0]
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -2238,7 +2264,14 @@ def dispatch_command(cmd: str) -> None:
             _raw = read_graph_json(gp)
             if "links" not in _raw and "edges" in _raw:
                 _raw = dict(_raw, links=_raw["edges"])
-            # `query` deliberately keeps the graph undirected (unlike `path` /
+            if evidence:
+                # Keep reciprocal and parallel calls before selecting inbound edges.
+                from graphify.build import has_parallel_links
+
+                _raw["directed"] = True
+                if not _raw.get("multigraph") and has_parallel_links(_raw.get("links", [])):
+                    _raw["multigraph"] = True
+            # Standard queries keep the graph undirected (unlike `path` /
             # `explain`, which force directed=True): BFS/DFS here must explore
             # both callers and callees of the seed node to build useful
             # context, and forcing a DiGraph would make G.neighbors() return
@@ -2282,6 +2315,20 @@ def dispatch_command(cmd: str) -> None:
             print(f"warning: ignoring project settings in {graph_root / RC_FILENAME}: {exc}", file=sys.stderr)
             project_settings = {}
         effective_budget = budget if budget is not None else project_settings.get("query_budget", 2000)
+        if evidence_target is not None:
+            from graphify.query_evidence import format_caller_evidence, resolve_caller_target
+
+            target, refusal = resolve_caller_target(G, evidence_target)
+            if target is None:
+                if refusal:
+                    print(refusal, file=sys.stderr)
+                    sys.exit(EXIT_AMBIGUOUS)
+                print(f"No unique node match for {sanitize_label(evidence_target)}", file=sys.stderr)
+                sys.exit(EXIT_NOT_FOUND)
+            result = format_caller_evidence(G, target, graph_root, gp, effective_budget)
+            _touch_query_stamp(gp)
+            print(result)
+            return
         effective_depth = depth if depth is not None else project_settings.get("query_depth", 2)
         effective_demote_docs = (
             demote_docs_flag

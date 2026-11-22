@@ -493,6 +493,10 @@ Settings come from the project owning the selected `--graph`, even when the comm
 
 The query command always reads that project's `.graphifyrc`. An invalid recognized setting or an unreadable file produces one stderr warning and discards all project settings for that query; explicit options still apply. The settings parser stays strict for its other callers. Existing explicit budget values retain their behavior; persisted `query_budget` values must be positive.
 
+For direct caller questions, use `graphify query "who calls handle_request?" --evidence`. It lists indexed call sites before spending the remaining output budget on source excerpts. Use `--seed path/to/file.py::handle_request` to disambiguate a name.
+
+Excerpts are available for extracted Python call sites in the current checkout when the file matches the manifest next to `graph.json`. The excerpt includes the call and a nearby `if` condition when they fit. Other sites keep their indexed locations and confidence labels for follow-up. Source excerpts may redact credentials and are treated as untrusted code.
+
 ---
 
 ## Team setup
