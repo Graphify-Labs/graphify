@@ -86,12 +86,17 @@ class _ReferenceCollector(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.references: list[tuple[int, str]] = []
         self.has_base = False
+        self._base_decided = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "base" and any(
-            name == "href" and _base_moves_references(value or "") for name, value in attrs
-        ):
-            self.has_base = True
+        if tag == "base" and not self._base_decided:
+            # Only the first `<base>` that has an href is the document base;
+            # later ones are ignored by browsers, so they must be here too.
+            for name, value in attrs:
+                if name == "href":
+                    self._base_decided = True
+                    self.has_base = _base_moves_references(value or "")
+                    break
         line = self.getpos()[0]
         for name, value in attrs:
             if name in _REFERENCE_ATTRS and value:

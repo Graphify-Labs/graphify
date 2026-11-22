@@ -180,6 +180,22 @@ def test_a_base_with_a_path_hides_relative_references(tmp_path, base):
     assert _raw_edges(tmp_path, "index.html") == []
 
 
+@pytest.mark.parametrize(("bases", "keeps"), [
+    # Only the first <base> that has an href is the document base.
+    ('<base href="./"><base href="/app/">', True),
+    ('<base href="/app/"><base href="./">', False),
+    ('<base target="_blank"><base href="/app/">', False),
+    ('<base target="_blank"><base href="./">', True),
+    ('<base href="#top"><base href="sub/">', True),
+])
+def test_only_the_first_base_with_an_href_counts(tmp_path, bases, keeps):
+    refs, _ = _run(tmp_path, {
+        "index.html": f'{bases}\n<a href="details.html">x</a>\n',
+        "details.html": "<h1>d</h1>\n",
+    })
+    assert refs == ([("index.html", "details.html", "L2")] if keeps else [])
+
+
 def test_encoded_hash_in_a_file_name_is_not_a_fragment(tmp_path):
     # `%23` is part of the name `a#b.html`; it must not truncate the link to `a`.
     refs, _ = _run(tmp_path, {
