@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 from collections import Counter
 from pathlib import Path
 
@@ -25,10 +26,10 @@ _LLM_ENV_KEYS = (
 )
 
 
-def _extract(cwd: Path) -> None:
+def _extract(cwd: Path, *flags: str) -> None:
     env = {k: v for k, v in os.environ.items() if k not in _LLM_ENV_KEYS}
     env["PYTHONHASHSEED"] = "0"
-    r = subprocess.run([sys.executable, "-m", "graphify", "extract", ".", "--code-only"],
+    r = subprocess.run([sys.executable, "-m", "graphify", "extract", ".", "--code-only", *flags],
                        cwd=cwd, capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
 
@@ -44,7 +45,7 @@ def _corpus(root: Path) -> Path:
 def _shape(root: Path) -> tuple[set, Counter]:
     g = json.loads((root / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
     return ({n["id"] for n in g["nodes"]},
-            Counter((e["source"], e["target"], e["relation"]) for e in g["links"]))
+            Counter((e["source"], e["target"], e["relation"]) for e in g.get("links", g.get("edges", []))))
 
 
 def _cold(warm: Path, tmp_path: Path) -> tuple[set, Counter]:
@@ -85,3 +86,71 @@ def test_a_deleted_scanned_file_is_still_pruned(tmp_path: Path) -> None:
     nodes, edges = _shape(warm)
     assert not {"a", "a_foo"} & nodes
     assert edges[("dyn", "left_pad", "dynamic_import")] == 1
+
+
+@pytest.mark.parametrize("removal", ["deleted", "import dropped"])
+def test_a_removed_referrer_takes_the_placeholder_with_it(tmp_path: Path, removal: str) -> None:
+    warm = _corpus(tmp_path / "warm")
+    _extract(warm)
+    if removal == "deleted":
+        (warm / "dyn.ts").unlink()
+    else:
+        (warm / "dyn.ts").write_text("export async function load() { return 1; }\n")
+    _extract(warm)
+    nodes, edges = _shape(warm)
+    assert "left_pad" not in nodes
+    assert (nodes, edges) == _cold(warm, tmp_path)
+
+
+def test_a_missing_manifest_keeps_the_placeholder(tmp_path: Path) -> None:
+    warm = _corpus(tmp_path / "warm")
+    _extract(warm)
+    (warm / "graphify-out" / "manifest.json").unlink()
+    (warm / "a.ts").write_text("export function foo() { return 2 }\n")
+    _extract(warm)
+    nodes, edges = _shape(warm)
+    assert edges[("dyn", "left_pad", "dynamic_import")] == 1
+    assert (nodes, edges) == _cold(warm, tmp_path)
+
+
+def test_no_cluster_keeps_the_placeholder(tmp_path: Path) -> None:
+    warm = _corpus(tmp_path / "warm")
+    _extract(warm, "--no-cluster")
+    (warm / "a.ts").write_text("export function foo() { return 2 }\n")
+    _extract(warm, "--no-cluster")
+    nodes, edges = _shape(warm)
+    assert edges[("dyn", "left_pad", "dynamic_import")] == 1
+
+
+def test_nfd_file_names_match_the_nfc_manifest(tmp_path: Path) -> None:
+    # macOS hands out NFD names; manifest keys are NFC, graph sources keep the
+    # spelling the scan saw. The placeholder must survive an edit of another file.
+    warm = tmp_path / "warm"
+    warm.mkdir()
+    referrer = unicodedata.normalize("NFD", "\u00e9.ts")
+    other = unicodedata.normalize("NFD", "\u00e0.ts")
+    (warm / referrer).write_text("export async function load() { return await import('left-pad'); }\n")
+    (warm / other).write_text("export function foo() { return 1 }\n")
+    _extract(warm)
+    (warm / other).write_text("export function foo() { return 2 }\n")
+    _extract(warm)
+    nodes, _ = _shape(warm)
+    assert "left_pad" in nodes
+
+
+def test_a_non_string_source_file_in_graph_json_does_not_crash(tmp_path: Path) -> None:
+    # graph.json is persisted state that can be corrupt; the helper skips
+    # non-string sources the way _stale_graph_sources does instead of raising.
+    from graphify.cli import _placeholder_stale_sources
+
+    warm = _corpus(tmp_path / "warm")
+    _extract(warm)
+    graph_path = warm / "graphify-out" / "graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph["nodes"].append({"id": "bogus", "label": "bogus", "source_file": []})
+    graph["links"].append({"source": "dyn", "target": "left_pad", "relation": "calls", "source_file": {}})
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    keep = _placeholder_stale_sources(
+        graph_path, warm / "graphify-out" / "manifest.json", warm, ["left-pad"], set(), [warm / "a.ts"],
+    )
+    assert keep == {"left-pad"}

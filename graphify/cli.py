@@ -611,20 +611,20 @@ def _placeholder_stale_sources(
 ) -> set[str]:
     """Stale graph sources that are placeholders a full build keeps, not deleted files.
 
-    The `graphify extract` twin of watch._referenced_unscanned_identities (#4161).
     An unresolved dynamic import (``import('left-pad')``) mints a node whose
-    source_file is the specifier. That path is never scanned, so
-    _stale_graph_sources reads it as deleted and the prune dropped the node and
-    the referrer's dynamic_import edge, while a full build keeps both.
+    source_file is the specifier. _stale_graph_sources reads that unscanned path
+    as deleted, so the prune dropped the node and the referrer's edge to it.
+    The rules are those of watch._referenced_unscanned_identities (#4161):
 
-    A path that produced nodes with a location, or edges, was extracted itself
-    and is pruned as before. Any other stale path is kept when this run's AST
-    pass emitted it again. It is also kept when it was never scanned (not in
-    manifest.json, the deletion evidence, #1795) and an edge from a file that is
-    neither stale nor re-extracted points at its nodes: nothing re-emits it then.
-    Without a readable manifest that lists a current source, only the first rule
-    applies.
+    - a path that produced located nodes or any edge was a real file: pruned;
+    - otherwise it stays when this run's AST pass emitted it again;
+    - or when manifest.json (the deletion evidence, #1795) never listed it and
+      an edge from a file that is neither stale nor re-extracted points at it.
+
+    The last rule needs a manifest that lists a current source. Paths compare
+    root-relative and NFC-normalized (#2210).
     """
+    from graphify.paths import nfc
     if not stale_sources:
         return set()
     try:
@@ -634,46 +634,43 @@ def _placeholder_stale_sources(
         return set()
     if not isinstance(graph, dict):
         return set()
-
-    def rel(value: object) -> str:
-        p = Path(str(value))
-        try:
-            return (p if p.is_absolute() else root / p).resolve().relative_to(root).as_posix()
-        except (OSError, RuntimeError, ValueError):
-            return str(value)
-
-    stale = set(stale_sources)
-    nodes = [n for n in graph.get("nodes", []) if isinstance(n, dict)]
-    edges = [e for e in graph.get("links", graph.get("edges", [])) if isinstance(e, dict)]
-    owner: dict[str, str] = {}
-    produced: set[str] = set()
-    for node in nodes:
-        source_file = node.get("source_file")
-        if source_file in stale and node.get("id"):
-            owner[node["id"]] = source_file
-            if node.get("source_location"):
-                produced.add(source_file)
-    produced |= {e["source_file"] for e in edges if e.get("source_file") in stale}
-    emitted = {rel(s) for s in emitted_sources if s}
-    keep = {s for s in stale if rel(s) in emitted}
-
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         manifest = None
+
+    def rel(value: str) -> str:
+        p = Path(value)
+        try:
+            value = (p if p.is_absolute() else root / p).resolve().relative_to(root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return nfc(value)
+
+    def source(record: object) -> str:
+        # Persisted state can be corrupt: skip what _stale_graph_sources skips.
+        value = record.get("source_file") if isinstance(record, dict) else None
+        return value if isinstance(value, str) else ""
+
+    stale = set(stale_sources)
+    nodes = [n for n in graph.get("nodes") or [] if source(n)]
+    edges = [e for e in graph.get("links", graph.get("edges")) or [] if source(e)]
+    owner = {n["id"]: source(n) for n in nodes if source(n) in stale and isinstance(n.get("id"), str)}
+    produced = {source(n) for n in nodes if source(n) in stale and n.get("source_location")}
+    produced |= {source(e) for e in edges if source(e) in stale}
+    emitted = {rel(s) for s in emitted_sources if isinstance(s, str) and s}
+    keep = {s for s in stale if rel(s) in emitted}
+
     scanned = {rel(k) for k in manifest} if isinstance(manifest, dict) else set()
-    live = {rel(n["source_file"]) for n in nodes if n.get("source_file") and n["source_file"] not in stale}
-    if scanned & live:
-        candidates = {s for s in stale if rel(s) not in scanned}
-        rebuilt_rel = {rel(p) for p in rebuilt}
+    if scanned & {rel(source(n)) for n in nodes if source(n) not in stale}:
+        rebuilt_rel = {rel(str(p)) for p in rebuilt}
         for edge in edges:
-            edge_source = edge.get("source_file")
-            if not edge_source or edge_source in stale or rel(edge_source) in rebuilt_rel:
+            if source(edge) in stale or rel(source(edge)) in rebuilt_rel:
                 continue
             for endpoint in (edge.get("source"), edge.get("target")):
-                endpoint_source = owner.get(str(endpoint))
-                if endpoint_source in candidates:
-                    keep.add(endpoint_source)
+                placeholder = owner.get(str(endpoint))
+                if placeholder and rel(placeholder) not in scanned:
+                    keep.add(placeholder)
     return keep - produced
 
 
