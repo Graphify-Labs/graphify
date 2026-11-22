@@ -108,9 +108,11 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _DECLDEF_HEADER_SUFFIXES,
     _DECLDEF_IMPL_SUFFIXES,
     _EXPORT_CONDITION_PRIORITY,
+    _HTML_SCRIPT_TAG_RE,
     _JS_INDEX_FILES,
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
+    _NON_JS_SCRIPT_TYPE_RE,
     _PACKAGE_IMPORTS_CACHE,
     _SCAN_ROOT_NAMESPACE_CACHE,
     _TSCONFIG_ALIAS_CACHE,
@@ -189,6 +191,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_workspace_import,
     _source_key,
     _strip_jsonc,
+    _svelte_mask_non_script,
     _ts_collect_type_refs,
     _ts_heritage_clause_entries,
     _ts_walk_class_members,
@@ -2933,47 +2936,6 @@ def _emit_rescued_import(
     result.setdefault("nodes", []).append(stub)
     result.setdefault("edges", []).append(edge)
     existing_ids.add(node_id)
-
-
-_HTML_SCRIPT_TAG_RE = re.compile(
-    r"<script\b((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>([\s\S]*?)</script\s*>",
-    re.IGNORECASE,
-)
-_NON_JS_SCRIPT_TYPE_RE = re.compile(
-    r"""\btype\s*=\s*["']?(?!module\b|text/javascript\b|application/javascript\b)""",
-    re.IGNORECASE,
-)
-
-
-def _svelte_mask_non_script(src: str) -> tuple[str, str | None]:
-    """Blank everything in a ``.svelte`` file except JS ``<script>`` bodies.
-
-    Every character outside those bodies becomes a space (``\\r``/``\\n`` are
-    kept), so AST locations match the original file. Scripts with a non-JS
-    ``type`` (``application/ld+json`` and the like) are blanked too: their
-    bodies are not statements and would only add parse errors. Returns
-    ``(masked_source, lang)``; ``lang`` is the first JS block's declared
-    ``lang``. Mirrors :func:`_astro_mask_non_script`.
-    """
-    chars = [c if c in "\r\n" else " " for c in src]
-    lang: str | None = None
-    for m in _HTML_SCRIPT_TAG_RE.finditer(src):
-        if _NON_JS_SCRIPT_TYPE_RE.search(m.group(1)):
-            continue
-        start, end = m.start(2), m.end(2)
-        chars[start:end] = src[start:end]
-        # Terminate the region in place of the closing `</script`, so two scripts
-        # on one line don't run together. U+2028 is a JS line terminator, so it
-        # ends a trailing `//` comment that would otherwise swallow the next
-        # block; the `;` after it then ends the statement (inside the comment it
-        # would be inert). U+2028 is not a newline, so line numbers hold, and its
-        # 3 UTF-8 bytes replace 3 ASCII ones, so byte offsets do too.
-        chars[end:end + 4] = ["\u2028", ";", "", ""]
-        if lang is None:
-            lang_m = _SCRIPT_LANG_RE.search(m.group(1))
-            if lang_m:
-                lang = lang_m.group(1).lower()
-    return "".join(chars), lang
 
 
 def extract_svelte(path: Path) -> dict:
