@@ -173,9 +173,7 @@ def format_section(section: Section, label: str) -> str:
     return "\n".join([header, *(f"Note: {n}" for n in notes), "", section.text])
 
 
-_DERIVED_CACHE_KEYS = frozenset(
-    {"_trigram_index", "_idf_cache", "_traversal_view", "_path_search_graphs"}
-)
+_SECTION_VIEW_GRAPH_KEYS = frozenset({"_logical_directed"})
 
 
 def resolve_section_query(G, query: str) -> "tuple[str | None, str]":
@@ -193,8 +191,12 @@ def resolve_section_query(G, query: str) -> "tuple[str | None, str]":
     sections = G.subgraph([n for n, d in G.nodes(data=True) if is_section_node(d)])
     # A subgraph view shares G.graph, so it would reuse the full graph's search
     # caches (ids of nodes not in the view) or store its own over the full
-    # graph's. Give the view its own dict without the derived caches (#5385).
-    sections.graph = {k: v for k, v in G.graph.items() if k not in _DERIVED_CACHE_KEYS}
+    # graph's. Keep public graph metadata and the logical direction flag, but
+    # discard other private state so future caches cannot leak into this view.
+    sections.graph = {
+        k: v for k, v in G.graph.items()
+        if not k.startswith("_") or k in _SECTION_VIEW_GRAPH_KEYS
+    }
     sec_nid, _ = _resolve_single_node(sections, query)
     if sec_nid is not None:
         return sec_nid, ""
