@@ -100,8 +100,11 @@ def test_page_node_is_emitted_even_without_references(tmp_path):
     "..\\pages\\details.html",
 ])
 def test_non_literal_or_non_local_targets_give_no_edge(tmp_path, value):
+    # A value that itself holds a double quote (the Razor case) needs a
+    # single-quoted attribute, or the markup is malformed and nothing is tested.
+    quote = "'" if '"' in value else '"'
     refs, _ = _run(tmp_path, {
-        "index.html": f'<a href="{value}">x</a>\n',
+        "index.html": f"<a href={quote}{value}{quote}>x</a>\n",
         "details.html": "<h1>d</h1>\n",
     })
     assert _targets(refs, "index.html") == []
@@ -149,10 +152,14 @@ def test_base_href_disables_relative_resolution(tmp_path):
     assert _targets(refs, "index.html") == []
 
 
-@pytest.mark.parametrize("base", ['href="#top"', 'href=""', 'href="?x=1"', 'target="_blank"'])
+@pytest.mark.parametrize("base", [
+    'href="#top"', 'href=""', 'href="?x=1"', 'target="_blank"',
+    'href="./"', 'href="."', 'href="index.html"', 'href="./index.html"', 'href="./#top"',
+])
 def test_a_base_that_moves_nothing_keeps_relative_references(tmp_path, base):
-    # `<base href="#top">` / `<base href="">` name this very document, and a base
-    # with no href at all changes nothing, so local links still resolve.
+    # A base naming this very document (`#top`, empty), a spot in this same folder
+    # (`./`, `.`, `index.html`), or with no href at all, changes nothing, so local
+    # links still resolve.
     refs, _ = _run(tmp_path, {
         "index.html": f'<base {base}>\n<a href="details.html">x</a>\n',
         "details.html": "<h1>d</h1>\n",
@@ -160,7 +167,10 @@ def test_a_base_that_moves_nothing_keeps_relative_references(tmp_path, base):
     assert refs == [("index.html", "details.html", "L2")]
 
 
-@pytest.mark.parametrize("base", ['href="/app/"', 'href="sub/"', 'href="https://cdn.example.com/"'])
+@pytest.mark.parametrize("base", [
+    'href="/app/"', 'href="sub/"', 'href="https://cdn.example.com/"',
+    'href="../"', 'href="./sub/"', 'href="sub/index.html"', 'href="{{ base }}"',
+])
 def test_a_base_with_a_path_hides_relative_references(tmp_path, base):
     refs, _ = _run(tmp_path, {
         "index.html": f'<base {base}>\n<a href="details.html">x</a>\n',
@@ -268,3 +278,13 @@ def test_extraction_is_deterministic(tmp_path):
     first, _ = _run(tmp_path / "one", files)
     second, _ = _run(tmp_path / "two", files)
     assert first == second
+
+    # The extractor's own edge order is the order the references are written in
+    # (not sorted), and identical across runs: `_run` sorts, so check it raw.
+    def order(base: Path) -> list[tuple[str, str]]:
+        edges = html_mod.extract_html(base / "repo" / "index.html")["edges"]
+        return [(Path(e["target_file"]).name, e["source_location"]) for e in edges]
+
+    expected = [("b.html", "L1"), ("a.html", "L1"), ("x.js", "L1")]
+    assert order(tmp_path / "one") == expected
+    assert order(tmp_path / "two") == expected

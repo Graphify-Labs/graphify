@@ -23,6 +23,7 @@ Only the page node and these edges are produced; classification stays
 from __future__ import annotations
 
 import os
+import posixpath
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -60,6 +61,24 @@ def _path_part(raw: str) -> str:
     return raw.strip().split("#", 1)[0].split("?", 1)[0].strip()
 
 
+def _base_moves_references(value: str) -> bool:
+    """Whether ``<base href=value>`` changes where relative references resolve.
+
+    A base resolves relative links against its own directory, so one that names
+    this very document (`#top`, empty, `?x=1`) or a spot in this same folder
+    (`./`, `.`, `index.html`, `./index.html`) moves nothing. Anything else
+    (a subfolder, `../`, a root-relative or absolute URL, a dynamic value) does,
+    and is treated as moving them: reading no reference is the safe side.
+    """
+    target = _path_part(value)
+    if not target:
+        return False
+    if not _is_local_path(target):
+        return True
+    directory = target if target.endswith("/") or target == "." else target.rpartition("/")[0]
+    return posixpath.normpath(directory or ".") != "."
+
+
 class _ReferenceCollector(HTMLParser):
     """Collect ``(line, raw value)`` for every start tag's href/src, in order."""
 
@@ -70,10 +89,8 @@ class _ReferenceCollector(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "base" and any(
-            name == "href" and _path_part(value or "") for name, value in attrs
+            name == "href" and _base_moves_references(value or "") for name, value in attrs
         ):
-            # `<base href="#top">` or `<base href="">` names this very document
-            # and moves nothing; only a base with a path relocates references.
             self.has_base = True
         line = self.getpos()[0]
         for name, value in attrs:
