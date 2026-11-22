@@ -2384,11 +2384,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                             _fold_also_seen(existing_attrs, attrs)
                             continue
                 _fold_also_seen(attrs, existing_attrs)
-                # add_edge merges into the stored dict: a field only the loser
-                # carried (its score, its line) would otherwise stay on the winner.
-                for _key in (*_EVIDENCE_KEYS, "also_seen"):
-                    if _key not in attrs:
-                        existing_attrs.pop(_key, None)
+            # add_edge merges into the stored dict: a field only the loser
+            # carried (its score, its line, its also_seen) would otherwise stay
+            # on the winner. That holds when a different relation replaces the
+            # stored edge too: its also_seen records another relation's sites.
+            for _key in (*_EVIDENCE_KEYS, "also_seen"):
+                if _key not in attrs:
+                    existing_attrs.pop(_key, None)
         G.add_edge(src, tgt, **attrs)
     if dropped_schema_edges:
         print(
