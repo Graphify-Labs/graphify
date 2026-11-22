@@ -217,3 +217,22 @@ def test_ts_barrel_reexport_edge_is_a_fixed_point_of_the_build(tmp_path):
         link.pop("_tgt", None)
     again = build_from_json({"nodes": data["nodes"], "edges": data["links"], "hyperedges": []}, root=tmp_path)
     assert edge_data(G, *pair).get("also_seen") == edge_data(again, *pair).get("also_seen")
+
+
+def test_different_relation_replacing_an_edge_does_not_inherit_its_score_or_location():
+    """The winner keeps only its own evidence: a score or line it lacks is not
+    taken from the replaced edge of another relation."""
+    ext = {
+        "nodes": [_module("a", "a.py"), _module("b", "b.py")],
+        "edges": [
+            {"source": "a", "target": "b", "relation": "imports_from", "confidence": "EXTRACTED",
+             "confidence_score": 0.4, "source_file": "a.py", "source_location": "L7"},
+            {"source": "a", "target": "b", "relation": "re_exports", "confidence": "EXTRACTED",
+             "source_file": "a.py"},
+        ],
+        "hyperedges": [],
+    }
+    d = edge_data(build_from_json(ext), "a", "b")
+    assert d["relation"] == "re_exports"
+    assert "confidence_score" not in d
+    assert "source_location" not in d
