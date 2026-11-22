@@ -5082,6 +5082,11 @@ def _rewire_unique_stub_nodes(
         modules = list(segments[1:])
         local_root = False
         if root_name in ("crate", "self", "super"):
+            if own is None:
+                candidates = _unmanifested_module_nodes(origin, modules, root_name)
+                if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
+                    edge["target"] = candidates[0]["id"]
+                continue
             target_crate = own
         elif own is not None and normalized_root == own:
             target_crate = own
