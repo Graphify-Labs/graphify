@@ -2335,6 +2335,33 @@ def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
     return "rendered"
 
 
+def _keep_unchanged_clustered_graph(
+    graph_tmp: Path,
+    existing_graph_data: dict,
+    report_path: Path,
+    report: str,
+    *,
+    same_graph: bool,
+) -> bool:
+    """Keep a matching graph if the report already matches or can be restored."""
+    report_missing = not report_path.exists()
+    if not report_missing:
+        old_report = report_path.read_text(encoding="utf-8")
+        if _report_for_compare(old_report) != _report_for_compare(report):
+            return False
+    if not same_graph:
+        return False
+
+    graph_tmp.unlink(missing_ok=True)
+    if report_missing:
+        write_text_atomic(report_path, report)
+        print(f"[graphify watch] GRAPH_REPORT.md restored in {report_path.parent}")
+        _reconcile_graph_html(report_path.parent, existing_graph_data)
+    else:
+        print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
+    return True
+
+
 def _rebuild_code(
     watch_path: Path,
     *,
@@ -2556,9 +2583,12 @@ def _rebuild_code(
             code_only=_code_only,
         )
 
+        report_path = out / "GRAPH_REPORT.md"
+        report_missing = not no_cluster and not report_path.exists()
         if changed_paths is None and not force:
             if (
-                _inputs_unchanged(detected, out / "manifest.json", watch_root)
+                not report_missing
+                and _inputs_unchanged(detected, out / "manifest.json", watch_root)
                 and _build_state_matches(out, _build_state_now)
             ):
                 print(
@@ -2622,7 +2652,7 @@ def _rebuild_code(
                             f"[graphify watch] Incremental: none of the {scanned} scanned "
                             "files differ from the last build."
                         )
-                        if not excluded_rows:
+                        if not excluded_rows and not report_missing:
                             return True
 
         # #2495: hand reconcile the same ignore decisions the detect() call
@@ -3270,7 +3300,8 @@ def _rebuild_code(
                 )
             except Exception:
                 same_topology = False
-            if same_topology:
+            # A missing report still needs the clustered report generator.
+            if same_topology and not report_missing:
                 try:
                     from graphify.detect import save_manifest
                     # Full-scan save: prune excluded-but-alive rows (#1908);
@@ -3423,7 +3454,6 @@ def _rebuild_code(
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
                           _lrtc(out), report_root, suggested_questions=questions,
                           built_at_commit=commit, learning=_llfr(out / "graph.json"))
-        report_path = out / "GRAPH_REPORT.md"
         # Split back into the tracked (curated) file and the pending
         # (hub-fallback) sidecar (#3334) -- report/graph.json generation above
         # already used the full, merged `labels` so a fallback-named community
@@ -3438,7 +3468,6 @@ def _rebuild_code(
             return False
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
         same_graph = False
-        same_report = False
         if existing_graph.exists():
             try:
                 check_graph_file_size_cap(existing_graph)
@@ -3464,14 +3493,10 @@ def _rebuild_code(
             except Exception:
                 same_graph = False
         same_graph = same_graph and not legacy_layout
-        if report_path.exists():
-            old_report = report_path.read_text(encoding="utf-8")
-            same_report = _report_for_compare(old_report) == _report_for_compare(report)
-        no_change = same_graph and same_report
-        if no_change:
-            graph_tmp.unlink(missing_ok=True)
-            print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
-        else:
+        keep_graph = _keep_unchanged_clustered_graph(
+            graph_tmp, existing_graph_data, report_path, report, same_graph=same_graph,
+        )
+        if not keep_graph:
             if not _check_shrink(
                 force, existing_graph_data, candidate_graph_data,
                 tmp=graph_tmp,
@@ -3548,14 +3573,14 @@ def _rebuild_code(
         # before graph.json advanced, so a failed or interrupted atomic render
         # remains retryable from the unchanged-topology fast path.
         html_written = False
-        if not no_change:
+        if not keep_graph:
             html_action = _reconcile_graph_html(out, candidate_graph_data)
             html_written = html_action == "rendered"
 
         # Regenerate callflow HTML if the user previously generated one —
         # opt-in by existence so users who never ran callflow-html aren't affected.
         callflow_files = list(out.glob("*-callflow.html"))
-        if callflow_files and not no_change:
+        if callflow_files and not keep_graph:
             try:
                 from graphify.callflow_html import write_callflow_html
                 for cf in callflow_files:
@@ -3569,7 +3594,7 @@ def _rebuild_code(
             except Exception as cf_err:
                 print(f"[graphify watch] callflow HTML update skipped: {cf_err}")
 
-        if not no_change:
+        if not keep_graph:
             print(f"[graphify watch] Rebuilt: {G.number_of_nodes()} nodes, "
                   f"{G.number_of_edges()} edges, {len(communities)} communities")
             products = "graph.json" + (", graph.html" if html_written else "") + " and GRAPH_REPORT.md"
