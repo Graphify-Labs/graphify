@@ -304,7 +304,7 @@ class QuerySnapshot:
         self._adjacency_cache = {}
         self._idf = {}
         self.nodes = _Nodes(self)
-        self.graph = {"_learning_overlay": metadata["learning_overlay"]} if signatures is None else {}
+        self.graph = {"_learning_overlay": metadata["learning_overlay"]}
         self.legacy = metadata["legacy"]
 
     def close(self) -> None:

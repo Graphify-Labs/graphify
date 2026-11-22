@@ -1449,6 +1449,8 @@ def _filter_graph_by_context(
         return data.get("relation") in relations
 
     H = G.__class__()
+    if "_learning_overlay" in G.graph:
+        H.graph["_learning_overlay"] = G.graph["_learning_overlay"]
     H.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for u, v, key, data in G.edges(keys=True, data=True):

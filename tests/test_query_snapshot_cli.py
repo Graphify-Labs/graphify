@@ -134,6 +134,26 @@ def test_warm_snapshot_matches_normal_query_without_loading_json(query_cli, monk
     assert [run(path, question, *args, "--snapshot") for question, args in cases] == expected
 
 
+def test_context_filtered_query_keeps_learning_annotations(query_cli, monkeypatch, tmp_path):
+    run, _ = query_cli
+    path = tmp_path / "graph.json"
+    graph = _fixture()
+    graph.graph["_learning_overlay"] = {
+        "driver": {"status": "preferred", "stale": False},
+        "one": {"status": "contested", "stale": True},
+    }
+    _write(path, graph)
+
+    args = ("--seed", "driver", "--context", "call")
+    expected = run(path, "bounded retry", *args)
+    assert expected[0] == 0
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+    assert "learning=preferred]" in expected[1]
+    assert "learning=contested:stale]" in expected[1]
+
+
 def test_snapshot_rebuilds_when_unicode_data_changes(query_cli, monkeypatch, tmp_path):
     run, cache = query_cli
     path = tmp_path / "graph.json"
