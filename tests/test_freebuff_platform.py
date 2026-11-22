@@ -89,6 +89,43 @@ def test_shared_destination_installs_identical_bytes(tmp_path, project):
     assert any(part.endswith("extraction-spec.md") for part in trees[0])
 
 
+def test_project_install_names_the_platform_it_replaces(tmp_path, capsys):
+    """`./.agents/skills` is also antigravity's project destination, with a
+    different bundle, so a Freebuff install there replaces its skill."""
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    home.mkdir()
+    proj.mkdir()
+
+    _run(proj, ["install", "--project", "--platform", "antigravity"], home)
+    installed = proj / ".agents" / "skills" / "graphify" / "SKILL.md"
+    claude_bundle = installed.read_bytes()
+    capsys.readouterr()
+
+    _run(proj, ["install", "--project", "--platform", "freebuff"], home)
+
+    out = capsys.readouterr().out
+    assert "replacing" in out
+    assert "the `antigravity` skill" in out
+    assert installed.read_bytes() != claude_bundle
+
+
+def test_shared_bundle_install_does_not_warn_about_replacing(tmp_path, capsys):
+    """agents and freebuff ship identical bytes, so swapping them is not a
+    replacement of anything."""
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    home.mkdir()
+    proj.mkdir()
+
+    _run(proj, ["install", "--project", "--platform", "agents"], home)
+    capsys.readouterr()
+
+    _run(proj, ["install", "--project", "--platform", "freebuff"], home)
+
+    assert "replacing" not in capsys.readouterr().out
+
+
 def test_freebuff_installs_the_agents_bundle():
     """The platform entry resolves to the generic Agent-Skills bundle verbatim."""
     cfg = installmod._PLATFORM_CONFIG["freebuff"]
@@ -234,7 +271,8 @@ def test_uninstall_reports_the_shared_agents_install(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "shared path" in out
-    assert "agents" in out
+    # `.agents/skills` itself contains "agents", so match the notice's wording.
+    assert "is also the `agents` install target" in out
 
 
 def test_project_uninstall_reports_the_shared_agents_install(tmp_path, capsys):
@@ -250,4 +288,4 @@ def test_project_uninstall_reports_the_shared_agents_install(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "shared path" in out
-    assert "agents" in out
+    assert "is also the `agents` install target" in out

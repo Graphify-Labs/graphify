@@ -387,11 +387,17 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         # while the edits were gone (#3144). Keep one .bak beside it and say so.
         # Every upgrade differs too - the .bak is overwritten each install, so it
         # always holds exactly the previous copy.
+        existing: bytes | None = None
         try:
-            if skill_dst.exists() and skill_dst.read_bytes() != skill_src.read_bytes():
+            if skill_dst.exists():
+                existing = skill_dst.read_bytes()
+            if existing is not None and existing != skill_src.read_bytes():
                 backup = skill_dst.with_suffix(skill_dst.suffix + ".bak")
                 shutil.copy2(skill_dst, backup)
                 print(f"  previous copy    ->  {backup} (differed from the packaged skill)")
+                _report_replaced_platform(
+                    platform_name, skill_dst, existing, project=project, project_dir=project_dir
+                )
         except OSError:
             pass  # a failed backup must not block the install
         # SKILL.md last (crash-safety), via an atomic temp + rename.
@@ -419,8 +425,48 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         _write_version_stamp(skill_dst, __version__)
         print(f"  skill installed  ->  {skill_dst}")
     return skill_dst
+def _report_replaced_platform(
+    platform_name: str,
+    skill_dst: Path,
+    existing: bytes,
+    *,
+    project: bool,
+    project_dir: Path | None,
+) -> None:
+    """Say which platform's skill an install is about to overwrite.
+
+    Several platforms share one destination but ship different bundles (``amp``,
+    ``antigravity`` and ``agents`` all write ``./.agents/skills/graphify``), so an
+    install there can replace another host's skill. Name it instead of leaving
+    only the generic "previous copy" line.
+    """
+    try:
+        replaced = [
+            other
+            for other in _platforms_sharing_skill_path(
+                platform_name,
+                skill_dst,
+                project=project,
+                project_dir=project_dir,
+                same_bundle_only=False,
+            )
+            if (Path(__file__).parent / _PLATFORM_CONFIG[other]["skill_file"]).read_bytes() == existing
+        ]
+    except OSError:
+        return
+    if not replaced:
+        return
+    names = ", ".join(f"`{name}`" for name in replaced)
+    print(f"  replacing        ->  the {names} skill at {skill_dst.parent} (shared directory)")
+
+
 def _platforms_sharing_skill_path(
-    platform_name: str, skill_dst: Path, *, project: bool, project_dir: Path | None
+    platform_name: str,
+    skill_dst: Path,
+    *,
+    project: bool,
+    project_dir: Path | None,
+    same_bundle_only: bool = True,
 ) -> list[str]:
     """Other platforms whose skill destination resolves to ``skill_dst``.
 
@@ -437,7 +483,7 @@ def _platforms_sharing_skill_path(
         if other == platform_name:
             continue
         cfg = _PLATFORM_CONFIG[other]
-        if (cfg.get("skill_file"), cfg.get("skill_refs")) != own_bundle:
+        if same_bundle_only and (cfg.get("skill_file"), cfg.get("skill_refs")) != own_bundle:
             # A different bundle at the same path is the ambiguous case the
             # stale-skill refresh refuses to touch; it is not the pair we mean.
             continue
