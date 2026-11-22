@@ -137,6 +137,68 @@ def test_find_transcript_by_session_id_and_prefix(env):
     assert find_transcript(session="../1111-aaaa") is None
 
 
+def test_find_transcript_ambiguous_prefix_raises_instead_of_picking_newest(env):
+    project, config = env
+    sdir = _session_dir(project, config)
+    older = _write(sdir / "abcd-1111.jsonl", [_user("a")])
+    newer = _write(sdir / "abcd-2222.jsonl", [_user("b")])
+    exact = _write(sdir / "abcd.jsonl", [_user("c")])
+    os.utime(older, (1_000, 1_000))
+    os.utime(exact, (1_500, 1_500))
+    os.utime(newer, (2_000, 2_000))
+    with pytest.raises(handoff.AmbiguousSession) as info:
+        find_transcript(session="abcd-")
+    assert info.value.candidates == ["abcd-1111", "abcd-2222"]
+    # An exact id wins even though it is also a prefix of the others.
+    assert find_transcript(session="abcd") == exact
+    assert find_transcript(session="abcd.jsonl") == exact
+    # A prefix long enough to be unique still resolves.
+    assert find_transcript(session="abcd-1") == older
+    assert find_transcript(session="abcd-2") == newer
+
+
+def test_find_transcript_prefix_scopes_and_duplicate_session_ids(env):
+    project, config = env
+    here = _write(_session_dir(project, config) / "feed-1111.jsonl", [_user("a")])
+    _write(config / "projects" / "-other" / "feed-2222.jsonl", [_user("b")])
+    # The cwd's project is looked up first: unique there.
+    assert find_transcript(session="feed") == here
+    # Outside it, two different sessions share the prefix.
+    _write(config / "projects" / "-other" / "cafe-1111.jsonl", [_user("c")])
+    _write(config / "projects" / "-third" / "cafe-2222.jsonl", [_user("d")])
+    with pytest.raises(handoff.AmbiguousSession) as info:
+        find_transcript(session="cafe")
+    assert info.value.candidates == ["cafe-1111", "cafe-2222"]
+    # The same session id under two projects is one session, not two.
+    one = _write(config / "projects" / "-other" / "dead-1111.jsonl", [_user("e")])
+    two = _write(config / "projects" / "-third" / "dead-1111.jsonl", [_user("f")])
+    os.utime(one, (1_000, 1_000))
+    os.utime(two, (2_000, 2_000))
+    assert find_transcript(session="dead") == two
+
+
+def test_main_ambiguous_session_lists_ids_and_writes_nothing(env, tmp_path, capsys):
+    project, config = env
+    sdir = _session_dir(project, config)
+    _write(sdir / "abcd-1111.jsonl", [_user("PROMPT ONE")])
+    _write(sdir / "abcd-2222.jsonl", [_user("PROMPT TWO")])
+    dest = tmp_path / "notes" / "H.md"
+    capsys.readouterr()
+    assert main(["--session", "abcd", "--out", str(dest)]) == 1
+    assert main(["--session", "abcd", "--stdout"]) == 1
+    assert main(["--session", "abcd"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "ambiguous" in captured.err
+    assert "abcd-1111" in captured.err and "abcd-2222" in captured.err
+    # Session ids only: no paths, no transcript content.
+    assert str(config) not in captured.err and ".jsonl" not in captured.err and "PROMPT" not in captured.err
+    assert not dest.exists() and not dest.parent.exists()
+    assert not (project / "graphify-out").exists()
+    assert main(["--session", "abcd-2", "--out", str(dest)]) == 0
+    assert "PROMPT TWO" in dest.read_text(encoding="utf-8")
+
+
 def test_find_transcript_explicit_path(env, tmp_path):
     path = _write(tmp_path / "elsewhere" / "t.jsonl", [_user("a")])
     assert find_transcript(transcript=path) == path

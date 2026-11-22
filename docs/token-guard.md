@@ -43,11 +43,19 @@ graphify token-guard uninstall
 | `bash-cap` | PostToolUse, Bash | Output above 20,000 characters is cut to its head and tail. The full output is saved to a file and the path is stated in the cut. |
 | `budget` | UserPromptSubmit | When the context first passes 200k tokens, and at every further 100k, states the size and that `/compact` or a fresh session would shrink it. |
 | `reread` | PreToolUse, Read | A second read of a file that is unchanged and already in context is declined once. Asking again is allowed. |
+| `read-done` | PostToolUse, Read | Records the range a Read returned, for `reread`. PostToolUse runs only after the tool succeeded, so a Read that failed or was blocked is never counted as in context. |
 | `reset` | SessionStart, compact | Compaction drops file contents from context, so the read records are cleared. |
 | `daily` | SessionStart, startup | Once a day, shows what the guard kept out of context the day before. |
 
 Every hook fails open: on any error it prints nothing and the tool call
 proceeds unchanged.
+
+`reread` declines only what `read-done` recorded. Settings written by an
+earlier version have no `read-done` entry: nothing is recorded there, so
+nothing is declined, until `graphify token-guard install` is run again (it
+replaces its own entries and adds the missing one). `uninstall` removes only
+commands of the form `<graphify> token-guard <hook>`; a command of your own
+that merely contains those words is left as it is.
 
 ### What it saved
 
@@ -85,6 +93,10 @@ graphify handoff            # most recent session for this directory
 graphify handoff --stdout
 graphify handoff --session <id>
 ```
+
+`--session` takes a full session id or a prefix of one. A prefix that matches
+more than one session is an error: the matching ids are listed and nothing is
+written.
 
 The note contains your prompts (truncated, with secrets masked), file paths,
 edit counts and a git summary. It contains no tool output and no file bodies.

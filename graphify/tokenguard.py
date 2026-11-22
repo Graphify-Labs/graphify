@@ -1,12 +1,16 @@
 """Claude Code hooks that keep the context window small (``graphify token-guard``).
 
 Every request re-sends the whole conversation, so anything that enters context
-is paid for again on each later request. Four hooks cut the largest sources:
+is paid for again on each later request. These hooks cut the largest sources:
 
 ``reread``    PreToolUse, matcher ``Read``. A Read of a file this agent already
               read, unchanged on disk, over a range an earlier read covers, is
               denied once with a note that the content is already in context.
               Re-issuing the same Read is then allowed.
+``read-done`` PostToolUse, matcher ``Read``. Records the range a Read returned.
+              PostToolUse fires only after the tool succeeded, so a Read that
+              failed or was blocked is never taken to be in context. Without
+              this entry nothing is recorded and ``reread`` denies nothing.
 ``reset``     SessionStart, matcher ``compact``. Compaction drops file contents
               from context, so the session's read records are cleared.
 ``budget``    UserPromptSubmit. When the context size recorded in the transcript
@@ -41,7 +45,12 @@ import json
 import os
 import sys
 
-_HOOK_SUBCOMMANDS = ("reread", "reset", "budget", "bash-cap", "daily")
+_HOOK_SUBCOMMANDS = ("reread", "read-done", "reset", "budget", "bash-cap", "daily")
+# A hook payload carries the tool's whole output (bash-cap: many MB is
+# legitimate). Past this size the payload is not parsed and the hook does nothing.
+_STDIN_MAX_BYTES = 64 << 20
+# settings.json is a few KB. A larger file is refused like an unparseable one.
+_SETTINGS_MAX_BYTES = 4 << 20
 # Extensions the Read tool does not return as plain text lines (images, PDFs,
 # notebooks): offset/limit coverage says nothing about what was shown.
 _NON_TEXT_EXTS = frozenset({
@@ -113,7 +122,10 @@ def _session_key(payload: dict, *, with_agent: bool = True) -> str:
 
 def _read_stdin_payload() -> "dict | None":
     try:
-        data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
+        raw = sys.stdin.buffer.read(_STDIN_MAX_BYTES + 1)
+        if len(raw) > _STDIN_MAX_BYTES:
+            return None
+        data = json.loads(raw.decode("utf-8", "replace"))
     except Exception:
         return None
     return data if isinstance(data, dict) else None
@@ -373,79 +385,84 @@ def _range_chars(path: str, start: int, end: int, size: int) -> int:
         return size
 
 
-def _hook_reread(payload: dict) -> None:
+def _read_request(payload: dict) -> "tuple | None":
+    """``(session key, real path, stat, start, end)`` for a Read of a text
+    file whose range can be judged, else None. A missing file raises (the
+    caller fails open and Read reports it)."""
     if payload.get("tool_name") not in (None, "Read"):
-        return
+        return None
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
-        return
+        return None
     file_path = tool_input.get("file_path")
     if not isinstance(file_path, str) or not file_path:
-        return
+        return None
     if tool_input.get("pages") is not None:
-        return
+        return None
     if os.path.splitext(file_path)[1].lower() in _NON_TEXT_EXTS:
-        return
+        return None
     key = _session_key(payload)
     if not key:
-        return
+        return None
     cwd = payload.get("cwd")
     if not os.path.isabs(file_path) and isinstance(cwd, str) and cwd:
         file_path = os.path.join(cwd, file_path)
     real = os.path.realpath(file_path)
-    st = os.stat(real)  # missing file: raises, fails open, Read reports it
+    st = os.stat(real)
     import stat as _stat
     if not _stat.S_ISREG(st.st_mode):
-        return
+        return None
     wanted = _requested_range(tool_input, st.st_size)
     if wanted is None:
-        return
-    start, end = wanted
+        return None
+    return key, real, st, wanted[0], wanted[1]
 
+
+def _read_record(key: str, real: str, st: os.stat_result) -> "tuple[str, str, list[list[int]], bool, int]":
+    """``(session dir, record path, ranges, denied, saved)`` of what is on
+    record for this version of *real*; empty when the file changed since."""
     import hashlib
     session_dir = os.path.join(_state_dir(), "reads", key)
     record_path = os.path.join(
         session_dir, hashlib.sha256(real.encode("utf-8", "surrogatepass")).hexdigest()[:32] + ".json")
     rec = _load_json(record_path)
-    same_version = (
-        rec.get("path") == real
-        and rec.get("mtime_ns") == st.st_mtime_ns
-        and rec.get("size") == st.st_size
-    )
-    ranges = _merge_ranges(rec.get("ranges") or []) if same_version and isinstance(rec.get("ranges"), list) else []
-    denied = bool(rec.get("denied")) if same_version else False
+    if not (rec.get("path") == real and rec.get("mtime_ns") == st.st_mtime_ns
+            and rec.get("size") == st.st_size):
+        return session_dir, record_path, [], False, 0
+    ranges = _merge_ranges(rec["ranges"]) if isinstance(rec.get("ranges"), list) else []
     # Characters the denial kept out of context that have not come back since.
-    saved = rec.get("saved") if same_version else 0
+    saved = rec.get("saved")
     if not isinstance(saved, int) or isinstance(saved, bool) or saved < 0:
         saved = 0
+    return session_dir, record_path, ranges, bool(rec.get("denied")), saved
 
-    covered = same_version and _covered(ranges, start, end)
-    deny = covered and not denied
-    returned = 0
-    if deny:
-        denied = True
-        saved = _range_chars(real, start, end, st.st_size)
-    else:
-        if covered and saved:
-            # The denied content is being read after all: the saving is undone,
-            # up to the size of what this read brings back.
-            returned = min(saved, _range_chars(real, start, end, st.st_size))
-            saved = 0
-        ranges = _merge_ranges(ranges + [[start, end]])
-    if _make_dir(session_dir):
-        _prune()
-    # The record is written before the denial is printed: if it cannot be
-    # written this raises, nothing is printed, and the Read goes ahead. A
-    # denial that was not recorded could repeat.
-    _write_atomic(record_path, json.dumps({
+
+def _write_read_record(path: str, real: str, st: os.stat_result,
+                       ranges: "list[list[int]]", denied: bool, saved: int) -> None:
+    _write_atomic(path, json.dumps({
         "path": real, "mtime_ns": st.st_mtime_ns, "size": st.st_size,
         "ranges": ranges, "denied": denied, "saved": saved,
     }))
-    if not deny:
-        if returned:
-            _ledger_append("reread-retry", -returned, key)
+
+
+def _hook_reread(payload: dict) -> None:
+    """Decide only. Coverage comes from ``read-done`` records, written after a
+    Read succeeded; this hook runs before the tool and cannot know whether the
+    Read it lets through will return anything."""
+    request = _read_request(payload)
+    if request is None:
         return
+    key, real, st, start, end = request
+    _, record_path, ranges, denied, _ = _read_record(key, real, st)
+    if denied or not _covered(ranges, start, end):
+        return
+    saved = _range_chars(real, start, end, st.st_size)
+    # The record is written before the denial is printed: if it cannot be
+    # written this raises, nothing is printed, and the Read goes ahead. A
+    # denial that was not recorded could repeat.
+    _write_read_record(record_path, real, st, ranges, True, saved)
     _ledger_append("reread", saved, key)
+    tool_input = payload["tool_input"]
     span = "the whole file" if tool_input.get("offset") is None and tool_input.get("limit") is None \
         else f"lines {start}-{end - 1}"
     reason = (
@@ -460,6 +477,36 @@ def _hook_reread(payload: dict) -> None:
         "permissionDecision": "deny",
         "permissionDecisionReason": reason,
     }})
+
+
+# --------------------------------------------------------------------------- #
+# read-done (PostToolUse, matcher Read)
+# --------------------------------------------------------------------------- #
+def _hook_read_done(payload: dict) -> None:
+    """Record the range of a Read that returned text."""
+    if payload.get("hook_event_name", "PostToolUse") != "PostToolUse":
+        return
+    # The Read tool's structured output for text. A failed call carries the
+    # error text as a string; images, PDFs and notebooks have another type.
+    response = payload.get("tool_response")
+    if not isinstance(response, dict) or response.get("type") != "text":
+        return
+    request = _read_request(payload)
+    if request is None:
+        return
+    key, real, st, start, end = request
+    session_dir, record_path, ranges, denied, saved = _read_record(key, real, st)
+    returned = 0
+    if saved and _covered(ranges, start, end):
+        # The denied content was read after all: the saving is undone, up to
+        # the size of what this read brought back.
+        returned = min(saved, _range_chars(real, start, end, st.st_size))
+        saved = 0
+    if _make_dir(session_dir):
+        _prune()
+    _write_read_record(record_path, real, st, _merge_ranges(ranges + [[start, end]]), denied, saved)
+    if returned:
+        _ledger_append("reread-retry", -returned, key)
 
 
 # --------------------------------------------------------------------------- #
@@ -827,22 +874,38 @@ def _hook_entries(project: bool = False) -> "dict[str, list[dict]]":
 
     return {
         "PreToolUse": [group("reread", "Read")],
-        "PostToolUse": [group("bash-cap", "Bash")],
+        "PostToolUse": [group("bash-cap", "Bash"), group("read-done", "Read")],
         "UserPromptSubmit": [group("budget", None)],
         "SessionStart": [group("reset", "compact"), group("daily", "startup")],
     }
 
 
 def _own_subcommand(entry: object) -> "str | None":
-    """The token-guard subcommand a ``hooks[]`` element runs, else None."""
+    """The token-guard subcommand a ``hooks[]`` element runs, else None.
+
+    Ours only when the whole command is ``<graphify> token-guard <sub>``, the
+    form ``install`` writes: the program is ``graphify`` or ``graphify.exe``,
+    bare or as the last component of a path (quoted or not, either slash, any
+    case). A command that merely contains the words, or passes them to another
+    program (``my-wrapper token-guard reread``), is someone else's.
+    """
     if not isinstance(entry, dict) or entry.get("type") != "command":
         return None
     command = entry.get("command")
     if not isinstance(command, str):
         return None
     import re
-    m = re.search(r"(?<![\w-])token-guard\s+(reread|reset|budget|bash-cap|daily)(?![\w-])", command)
-    return m.group(1) if m else None
+    m = re.fullmatch(
+        r"""\s*(?:"([^"]+)"|'([^']+)'|([^\s"']+))\s+token-guard\s+(%s)\s*"""
+        % "|".join(re.escape(sub) for sub in _HOOK_SUBCOMMANDS),
+        command,
+    )
+    if m is None:
+        return None
+    exe = m.group(1) or m.group(2) or m.group(3)
+    if re.split(r"[\\/]", exe)[-1].lower() not in ("graphify", "graphify.exe"):
+        return None
+    return m.group(4)
 
 
 def _strip_own(groups: list) -> list:
@@ -880,10 +943,16 @@ def _read_settings(path: str) -> "tuple[dict, str | None]":
     if not os.path.exists(path):
         return {}, None
     try:
-        with open(path, "r", encoding="utf-8-sig", newline="") as fh:
-            raw = fh.read()
+        with open(path, "rb") as fh:
+            data = fh.read(_SETTINGS_MAX_BYTES + 1)
+    except OSError as exc:
+        raise _SettingsError(f"refusing to modify {path}: not readable ({exc})") from exc
+    if len(data) > _SETTINGS_MAX_BYTES:
+        raise _SettingsError(f"refusing to modify {path}: larger than {_SETTINGS_MAX_BYTES} bytes")
+    try:
+        raw = data.decode("utf-8-sig")
         settings = json.loads(raw) if raw.strip() else {}
-    except (OSError, ValueError) as exc:
+    except ValueError as exc:
         raise _SettingsError(f"refusing to modify {path}: not readable as JSON ({exc})") from exc
     if not isinstance(settings, dict):
         raise _SettingsError(f"refusing to modify {path}: top level is not a JSON object")
@@ -974,11 +1043,12 @@ def _cmd_install(project: bool, remove: bool = False) -> int:
         print(f"[graphify] token-guard: {'hooks removed from' if changed else 'no hooks installed in'} {path}")
     else:
         print(f"[graphify] token-guard: {'hooks installed in' if changed else 'hooks already up to date in'} {path}")
-        print("  reread    PreToolUse/Read        one notice when an unchanged file is read again")
-        print("  bash-cap  PostToolUse/Bash       output above GRAPHIFY_BASH_CAP chars cut to head+tail, full copy saved")
-        print("  budget    UserPromptSubmit       notice when context crosses GRAPHIFY_CONTEXT_BUDGET")
-        print("  reset     SessionStart/compact   clears read records after compaction")
-        print("  daily     SessionStart/startup   once a day, shows what was kept out of context (GRAPHIFY_TOKEN_GUARD_DAILY=0: off)")
+        print("  reread     PreToolUse/Read        one notice when an unchanged file is read again")
+        print("  read-done  PostToolUse/Read       records what a successful Read returned, for reread")
+        print("  bash-cap   PostToolUse/Bash       output above GRAPHIFY_BASH_CAP chars cut to head+tail, full copy saved")
+        print("  budget     UserPromptSubmit       notice when context crosses GRAPHIFY_CONTEXT_BUDGET")
+        print("  reset      SessionStart/compact   clears read records after compaction")
+        print("  daily      SessionStart/startup   once a day, shows what was kept out of context (GRAPHIFY_TOKEN_GUARD_DAILY=0: off)")
         print("  Takes effect in new Claude Code sessions. GRAPHIFY_TOKEN_GUARD=0 turns the hooks off.")
         print("  graphify token-guard savings shows the per-day ledger.")
     return 0
@@ -994,7 +1064,7 @@ def _cmd_status(project: bool) -> int:
     found = _installed_subcommands(settings)
     print(f"settings: {path}")
     for sub in _HOOK_SUBCOMMANDS:
-        print(f"  {sub:<9} {'installed: ' + found[sub] if sub in found else 'not installed'}")
+        print(f"  {sub:<10} {'installed: ' + found[sub] if sub in found else 'not installed'}")
     print(f"state dir: {_state_dir()}")
     print(f"GRAPHIFY_TOKEN_GUARD={'on' if _enabled() else 'off'}"
           f"  GRAPHIFY_TOKEN_GUARD_DAILY={'on' if _env_on('GRAPHIFY_TOKEN_GUARD_DAILY') else 'off'}"
@@ -1016,6 +1086,7 @@ _USAGE = """usage: graphify token-guard <subcommand>
 
 Hook subcommands (read Claude Code hook JSON on stdin):
   reread      PreToolUse, matcher Read
+  read-done   PostToolUse, matcher Read
   bash-cap    PostToolUse, matcher Bash
   budget      UserPromptSubmit
   reset       SessionStart, matcher compact
@@ -1024,6 +1095,7 @@ Hook subcommands (read Claude Code hook JSON on stdin):
 
 _HOOKS = {
     "reread": _hook_reread,
+    "read-done": _hook_read_done,
     "reset": _hook_reset,
     "budget": _hook_budget,
     "bash-cap": _hook_bash_cap,

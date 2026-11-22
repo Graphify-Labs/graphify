@@ -148,6 +148,18 @@ def _newest(paths: list[Path]) -> Path | None:
     return max(paths, key=lambda p: (_mtime(p), p.name)) if paths else None
 
 
+class AmbiguousSession(LookupError):
+    """A ``--session`` prefix that matches more than one session.
+
+    ``candidates`` holds the matching session ids, sorted.
+    """
+
+    def __init__(self, prefix: str, candidates: list[str]) -> None:
+        super().__init__(f"session prefix {prefix!r} matches {len(candidates)} sessions")
+        self.prefix = prefix
+        self.candidates = candidates
+
+
 def find_transcript(
     cwd: str | Path | None = None,
     session: str | None = None,
@@ -158,6 +170,9 @@ def find_transcript(
     Precedence: an explicit *transcript* path, then *session* (a session id or
     unique prefix, looked up under the cwd's project first and every project
     after), then the most recently modified transcript for *cwd*.
+
+    An exact session id always wins. A prefix shared by several different
+    sessions raises :class:`AmbiguousSession` instead of choosing one.
     """
     if transcript:
         path = Path(transcript).expanduser()
@@ -168,23 +183,31 @@ def find_transcript(
         name = session[:-6] if session.endswith(".jsonl") else session
         if not name or "/" in name or "\\" in name or name.startswith("."):
             return None
-        search = list(dirs)
+        others: list[Path] = []
         try:
-            search += sorted(
+            others = sorted(
                 p for p in (claude_config_dir() / "projects").iterdir()
                 if p.is_dir() and p not in dirs
             )
         except OSError:
             pass
-        for directory in search:
+        for directory in (*dirs, *others):
             exact = directory / f"{name}.jsonl"
             if exact.is_file():
                 return exact
-        for directory in search:
-            try:
-                matches = [p for p in directory.glob("*.jsonl") if p.name.startswith(name)]
-            except OSError:
-                continue
+        # Prefix: the cwd's project is one scope, every other project the next.
+        # Within a scope the prefix has to name a single session id (the same id
+        # may exist under more than one directory).
+        for scope in (dirs, others):
+            matches: list[Path] = []
+            for directory in scope:
+                try:
+                    matches += [p for p in directory.glob("*.jsonl") if p.name.startswith(name)]
+                except OSError:
+                    continue
+            ids = sorted({p.stem for p in matches})
+            if len(ids) > 1:
+                raise AmbiguousSession(name, ids)
             if matches:
                 return _newest(matches)
         return None
@@ -844,7 +867,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_chars < 1:
         print("error: --max-chars must be positive", file=sys.stderr)
         return 2
-    transcript = find_transcript(session=args.session, transcript=args.transcript)
+    try:
+        transcript = find_transcript(session=args.session, transcript=args.transcript)
+    except AmbiguousSession as exc:
+        print(f"error: session prefix {exc.prefix!r} is ambiguous; it matches "
+              f"{len(exc.candidates)} sessions:", file=sys.stderr)
+        for candidate in exc.candidates:
+            print(f"  {candidate}", file=sys.stderr)
+        return 1
     if transcript is None:
         if args.transcript:
             reason = f"transcript not found: {args.transcript}"

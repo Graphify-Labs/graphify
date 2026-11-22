@@ -53,6 +53,30 @@ def read_payload(path, session="s1", agent=None, **tool_input: Any):
     return p
 
 
+# What PostToolUse carries for a Read that returned text: the tool's structured
+# output. A failed call carries the error text as a string instead.
+READ_OK = {"type": "text", "file": {"filePath": "x", "content": "x", "numLines": 1,
+                                    "startLine": 1, "totalLines": 1}}
+
+
+def done_payload(path, session="s1", agent=None, response: Any = None, **tool_input: Any):
+    p = read_payload(path, session, agent, **tool_input)
+    p["hook_event_name"] = "PostToolUse"
+    p["tool_response"] = READ_OK if response is None else response
+    return p
+
+
+def do_read(payload, monkeypatch, capsys) -> "tuple[int, Any]":
+    """One Read the way Claude Code runs it: the PreToolUse hook, then, unless
+    that denied it, the tool succeeds and PostToolUse fires. Returns the
+    PreToolUse result."""
+    result = run("reread", payload, monkeypatch, capsys)
+    if result[1] is None:
+        post = {**payload, "hook_event_name": "PostToolUse", "tool_response": READ_OK}
+        assert run("read-done", post, monkeypatch, capsys) == (0, None)
+    return result
+
+
 def denied(result):
     code, out = result
     assert code == 0
@@ -76,8 +100,8 @@ def src(tmp_path):
 # reread
 # --------------------------------------------------------------------------- #
 def test_reread_denies_once_then_allows(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    code, out = run("reread", read_payload(src), monkeypatch, capsys)
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    code, out = do_read(read_payload(src), monkeypatch, capsys)
     assert denied((code, out))
     reason = out["hookSpecificOutput"]["permissionDecisionReason"]
     assert "already in context" in reason and "unchanged" in reason
@@ -85,50 +109,108 @@ def test_reread_denies_once_then_allows(src, monkeypatch, capsys):
     # Facts, not orders: this text is read by the model.
     assert "MUST" not in reason and "MANDATORY" not in reason
     # The immediate retry goes through, and so does every later read of this version.
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
 
 
-def test_reread_changed_file_is_allowed_and_rearms(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    src.write_text("changed\n", encoding="utf-8")
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    # The new version was recorded: reading it again is the repeat.
+def _reads_dir():
+    return os.path.join(os.environ["GRAPHIFY_TOKEN_GUARD_DIR"], "reads")
+
+
+def test_reread_failed_or_blocked_read_is_not_recorded(src, clock, monkeypatch, capsys):
+    """PreToolUse runs before the tool. A Read that then fails or is blocked put
+    nothing in context, so asking again is not a repeat."""
+    for _ in range(3):
+        assert run("reread", read_payload(src), monkeypatch, capsys) == (0, None)
+    assert not os.path.exists(_reads_dir()) and ledger() == []
+
+
+def test_read_done_records_only_a_successful_text_read(src, clock, monkeypatch, capsys):
+    failure = done_payload(src)
+    failure["hook_event_name"] = "PostToolUseFailure"
+    del failure["tool_response"]
+    failure["error"] = "File content exceeds maximum allowed tokens"
+    not_recorded = [
+        done_payload(src, response="Error: file could not be read"),  # failed call: error text
+        done_payload(src, response={"type": "image", "file": {"base64": "x"}}),
+        done_payload(src, response=["x"]),
+        failure,
+    ]
+    for payload in not_recorded:
+        assert run("read-done", payload, monkeypatch, capsys) == (0, None)
+        assert run("reread", read_payload(src), monkeypatch, capsys) == (0, None)
+    assert not os.path.exists(_reads_dir())
+    assert run("read-done", done_payload(src), monkeypatch, capsys) == (0, None)
     assert denied(run("reread", read_payload(src), monkeypatch, capsys))
 
 
+def test_read_done_ignores_other_tools_and_missing_session(src, monkeypatch, capsys):
+    other = done_payload(src)
+    other["tool_name"] = "Grep"
+    no_session = done_payload(src)
+    del no_session["session_id"]
+    for payload in (other, no_session, done_payload(src.parent / "nope.py")):
+        assert run("read-done", payload, monkeypatch, capsys) == (0, None)
+    assert not os.path.exists(_reads_dir())
+    monkeypatch.setenv("GRAPHIFY_TOKEN_GUARD", "0")
+    assert run("read-done", done_payload(src), monkeypatch, capsys) == (0, None)
+    assert not os.path.exists(_reads_dir())
+
+
+def test_reread_retry_that_fails_keeps_the_saving(src, clock, monkeypatch, capsys):
+    """The saving is given back when the denied content actually returns, not
+    when the retry is merely attempted."""
+    size = len(src.read_text(encoding="utf-8"))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src), monkeypatch, capsys))
+    # The retry is let through but the Read fails: nothing came back.
+    assert run("reread", read_payload(src), monkeypatch, capsys) == (0, None)
+    assert [(e["kind"], e["chars"]) for e in ledger()] == [("reread", size)]
+    # The next attempt succeeds: still not denied a second time, and now undone.
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    assert [(e["kind"], e["chars"]) for e in ledger()] == [("reread", size), ("reread-retry", -size)]
+
+
+def test_reread_changed_file_is_allowed_and_rearms(src, monkeypatch, capsys):
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    src.write_text("changed\n", encoding="utf-8")
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    # The new version was recorded: reading it again is the repeat.
+    assert denied(do_read(read_payload(src), monkeypatch, capsys))
+
+
 def test_reread_same_size_new_mtime_is_allowed(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
     st = src.stat()
     os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
 
 
 def test_reread_range_coverage(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src, offset=10, limit=50), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, offset=10, limit=50), monkeypatch, capsys))
     # Not covered: extends past the earlier range, or lies outside it.
-    assert not denied(run("reread", read_payload(src, offset=40, limit=50), monkeypatch, capsys))
-    assert not denied(run("reread", read_payload(src, offset=200, limit=10), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, offset=40, limit=50), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, offset=200, limit=10), monkeypatch, capsys))
     # 10-59 and 40-89 merged: 20-79 is inside.
-    code, out = run("reread", read_payload(src, offset=20, limit=60), monkeypatch, capsys)
+    code, out = do_read(read_payload(src, offset=20, limit=60), monkeypatch, capsys)
     assert denied((code, out))
     assert "lines 20-79" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_reread_whole_file_read_covers_ranges(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    assert denied(run("reread", read_payload(src, offset=120, limit=30), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src, offset=120, limit=30), monkeypatch, capsys))
 
 
 def test_reread_range_does_not_cover_whole_file(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src, offset=1, limit=100), monkeypatch, capsys))
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, offset=1, limit=100), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
 
 
 def test_reread_denied_read_is_not_recorded(src, monkeypatch, capsys):
     """A denied request adds no coverage; only allowed reads are recorded."""
-    assert not denied(run("reread", read_payload(src, offset=1, limit=10), monkeypatch, capsys))
-    assert denied(run("reread", read_payload(src, offset=1, limit=10), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, offset=1, limit=10), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src, offset=1, limit=10), monkeypatch, capsys))
     rec_dir = os.path.join(os.environ["GRAPHIFY_TOKEN_GUARD_DIR"], "reads", "s1")
     (rec_file,) = os.listdir(rec_dir)
     rec = json.loads(open(os.path.join(rec_dir, rec_file), encoding="utf-8").read())
@@ -136,13 +218,13 @@ def test_reread_denied_read_is_not_recorded(src, monkeypatch, capsys):
 
 
 def test_reread_per_agent_and_per_session(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
     # A subagent has its own context: its first read is not a repeat.
-    assert not denied(run("reread", read_payload(src, agent="agent-a"), monkeypatch, capsys))
-    assert not denied(run("reread", read_payload(src, agent="agent-b"), monkeypatch, capsys))
-    assert not denied(run("reread", read_payload(src, session="s2"), monkeypatch, capsys))
-    assert denied(run("reread", read_payload(src, agent="agent-a"), monkeypatch, capsys))
-    assert denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, agent="agent-a"), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, agent="agent-b"), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, session="s2"), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src, agent="agent-a"), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src), monkeypatch, capsys))
 
 
 @pytest.mark.parametrize("name", ["shot.PNG", "doc.pdf", "nb.ipynb", "pic.jpeg"])
@@ -150,21 +232,21 @@ def test_reread_never_denies_non_text(tmp_path, name, monkeypatch, capsys):
     f = tmp_path / name
     f.write_bytes(b"x" * 100)
     for _ in range(3):
-        assert not denied(run("reread", read_payload(f), monkeypatch, capsys))
+        assert not denied(do_read(read_payload(f), monkeypatch, capsys))
 
 
 def test_reread_never_denies_without_session(src, monkeypatch, capsys):
     p = read_payload(src)
     del p["session_id"]
     for _ in range(3):
-        assert not denied(run("reread", p, monkeypatch, capsys))
+        assert not denied(do_read(p, monkeypatch, capsys))
     assert not os.path.exists(os.path.join(os.environ["GRAPHIFY_TOKEN_GUARD_DIR"], "reads"))
 
 
 def test_reread_disabled_by_env(src, monkeypatch, capsys):
     monkeypatch.setenv("GRAPHIFY_TOKEN_GUARD", "0")
     for _ in range(3):
-        assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+        assert not denied(do_read(read_payload(src), monkeypatch, capsys))
 
 
 def test_reread_large_unlimited_read_is_not_judged(tmp_path, monkeypatch, capsys):
@@ -172,33 +254,33 @@ def test_reread_large_unlimited_read_is_not_judged(tmp_path, monkeypatch, capsys
     big = tmp_path / "big.log"
     big.write_text("x" * 99 + "\n" * 1 + ("y" * 99 + "\n") * 2000, encoding="utf-8")
     for _ in range(3):
-        assert not denied(run("reread", read_payload(big), monkeypatch, capsys))
-    assert not denied(run("reread", read_payload(big, offset=1, limit=100), monkeypatch, capsys))
-    assert denied(run("reread", read_payload(big, offset=1, limit=100), monkeypatch, capsys))
+        assert not denied(do_read(read_payload(big), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(big, offset=1, limit=100), monkeypatch, capsys))
+    assert denied(do_read(read_payload(big, offset=1, limit=100), monkeypatch, capsys))
 
 
 def test_reread_missing_file_and_other_tools(tmp_path, src, monkeypatch, capsys):
-    assert run("reread", read_payload(tmp_path / "nope.py"), monkeypatch, capsys) == (0, None)
+    assert do_read(read_payload(tmp_path / "nope.py"), monkeypatch, capsys) == (0, None)
     other = read_payload(src)
     other["tool_name"] = "Grep"
     for _ in range(2):
-        assert run("reread", other, monkeypatch, capsys) == (0, None)
+        assert do_read(other, monkeypatch, capsys) == (0, None)
 
 
 def test_reread_symlink_and_relative_path_resolve_to_same_file(src, tmp_path, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
     rel = read_payload(src)
     rel["tool_input"]["file_path"] = "mod.py"
-    assert denied(run("reread", rel, monkeypatch, capsys))
+    assert denied(do_read(rel, monkeypatch, capsys))
 
 
 def test_reread_corrupt_state_fails_open(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
     rec_dir = os.path.join(os.environ["GRAPHIFY_TOKEN_GUARD_DIR"], "reads", "s1")
     (rec_file,) = os.listdir(rec_dir)
     with open(os.path.join(rec_dir, rec_file), "w", encoding="utf-8") as fh:
         fh.write("{not json")
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
 
 
 def test_reread_unwritable_state_never_denies(src, tmp_path, monkeypatch, capsys):
@@ -206,10 +288,10 @@ def test_reread_unwritable_state_never_denies(src, tmp_path, monkeypatch, capsys
     blocker.write_text("a file where the state dir should be", encoding="utf-8")
     monkeypatch.setenv("GRAPHIFY_TOKEN_GUARD_DIR", str(blocker))
     for _ in range(3):
-        assert run("reread", read_payload(src), monkeypatch, capsys) == (0, None)
+        assert do_read(read_payload(src), monkeypatch, capsys) == (0, None)
 
 
-@pytest.mark.parametrize("sub", ["reread", "reset", "budget", "bash-cap", "daily"])
+@pytest.mark.parametrize("sub", ["reread", "read-done", "reset", "budget", "bash-cap", "daily"])
 @pytest.mark.parametrize("garbage", [b"", b"not json", b"[1, 2]", b"\xff\xfe\x00", b'"str"',
                                      b'{"session_id": 5, "tool_input": "x", "tool_response": 3}',
                                      b'{"session_id": "s", "tool_input": {"file_path": 7, "offset": "a"}}'])
@@ -217,12 +299,48 @@ def test_hooks_fail_open_on_garbage_stdin(sub, garbage, monkeypatch, capsys):
     assert run(sub, garbage, monkeypatch, capsys) == (0, None)
 
 
+def test_hook_stdin_read_is_bounded_and_oversize_fails_open(monkeypatch, capsys):
+    asked = []
+
+    class Bounded:
+        def __init__(self, data: bytes):
+            self._fh = io.BytesIO(data)
+
+        def read(self, n=-1):
+            asked.append(n)
+            return self._fh.read(n)
+
+    class BoundedStdin:
+        def __init__(self, data: bytes):
+            self.buffer = Bounded(data)
+
+    def hook(payload):
+        monkeypatch.setattr("sys.stdin", BoundedStdin(json.dumps(payload).encode("utf-8")))
+        capsys.readouterr()
+        code = tg.main(["bash-cap"])
+        return code, capsys.readouterr().out
+
+    monkeypatch.setattr(tg, "_STDIN_MAX_BYTES", 100_000, raising=False)
+    # Under the cap: handled as usual.
+    code, out = hook(_bash("o" * 50_000))
+    assert code == 0 and "updatedToolOutput" in out
+    # Over it: nothing is printed, so Claude Code keeps the original output.
+    assert hook(_bash("o" * 200_000, tool_use_id="toolu_big")) == (0, "")
+    assert os.listdir(os.path.join(os.environ["GRAPHIFY_TOKEN_GUARD_DIR"], "outputs", "s1")) == ["toolu_01.txt"]
+    # Never an unbounded read: at most one byte past the cap is asked for.
+    assert asked and all(0 < n <= 100_001 for n in asked)
+
+
+def test_default_stdin_cap_leaves_room_for_large_bash_payloads():
+    assert tg._STDIN_MAX_BYTES >= 32 << 20
+
+
 def test_reread_bad_offset_limit_fails_open(src, monkeypatch, capsys):
     cases: "list[dict[str, Any]]" = [
         {"offset": "abc"}, {"limit": []}, {"limit": 0}, {"limit": -5}, {"offset": True}]
     for bad in cases:
         for _ in range(2):
-            assert run("reread", read_payload(src, **bad), monkeypatch, capsys) == (0, None)
+            assert do_read(read_payload(src, **bad), monkeypatch, capsys) == (0, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -234,27 +352,27 @@ def _start(source, session="s1"):
 
 def test_reset_on_compact_clears_session_and_its_subagents(src, monkeypatch, capsys):
     for agent in (None, "agent-a"):
-        assert not denied(run("reread", read_payload(src, agent=agent), monkeypatch, capsys))
-    assert not denied(run("reread", read_payload(src, session="s2"), monkeypatch, capsys))
+        assert not denied(do_read(read_payload(src, agent=agent), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, session="s2"), monkeypatch, capsys))
     assert run("reset", _start("compact"), monkeypatch, capsys) == (0, None)
     # Content is gone from context: the next read is a first read again.
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    assert not denied(run("reread", read_payload(src, agent="agent-a"), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, agent="agent-a"), monkeypatch, capsys))
     # Another session keeps its records.
-    assert denied(run("reread", read_payload(src, session="s2"), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src, session="s2"), monkeypatch, capsys))
 
 
 @pytest.mark.parametrize("source", ["startup", "resume", "clear", "fork", None])
 def test_reset_ignores_other_sources(src, source, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
     assert run("reset", _start(source), monkeypatch, capsys) == (0, None)
-    assert denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src), monkeypatch, capsys))
 
 
 def test_reset_does_not_touch_session_with_prefix_name(src, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src, session="s1x"), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, session="s1x"), monkeypatch, capsys))
     run("reset", _start("compact", session="s1"), monkeypatch, capsys)
-    assert denied(run("reread", read_payload(src, session="s1x"), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src, session="s1x"), monkeypatch, capsys))
 
 
 # --------------------------------------------------------------------------- #
@@ -572,33 +690,33 @@ def test_ledger_bash_cap_logs_chars_omitted(clock, monkeypatch, capsys):
 
 def test_ledger_reread_deny_then_retry_nets_to_zero(src, clock, monkeypatch, capsys):
     size = len(src.read_text(encoding="utf-8"))
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
     assert ledger() == []
-    assert denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src), monkeypatch, capsys))
     assert ledger() == [{"ts": int(T0), "kind": "reread", "chars": size, "session": "s1"}]
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
     events = ledger()
     assert [(e["kind"], e["chars"]) for e in events] == [("reread", size), ("reread-retry", -size)]
     # Later reads of this version are plain reads: nothing more is logged.
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
     assert ledger() == events
 
 
 def test_ledger_reread_is_sized_by_the_requested_range(src, clock, monkeypatch, capsys):
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    assert denied(run("reread", read_payload(src, offset=1, limit=9), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src, offset=1, limit=9), monkeypatch, capsys))
     assert ledger()[0]["chars"] == len("line 1\n") * 9
     # A read outside what was read before is not a retry.
-    assert not denied(run("reread", read_payload(src, offset=5000, limit=5), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, offset=5000, limit=5), monkeypatch, capsys))
     assert len(ledger()) == 1
     # A retry that brings back less than was denied gives back only that much.
-    assert not denied(run("reread", read_payload(src, offset=1, limit=2), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, offset=1, limit=2), monkeypatch, capsys))
     assert [(e["kind"], e["chars"]) for e in ledger()] == [("reread", 63), ("reread-retry", -14)]
 
 
 def test_ledger_reread_keys_subagents_separately(src, clock, monkeypatch, capsys):
     for _ in range(2):
-        run("reread", read_payload(src, agent="agent-a"), monkeypatch, capsys)
+        do_read(read_payload(src, agent="agent-a"), monkeypatch, capsys)
     (event,) = ledger()
     assert event["session"].startswith("s1-") and "agent-a" not in event["session"]
 
@@ -614,7 +732,7 @@ def test_ledger_holds_no_content_paths_commands_or_prompts(tmp_path, clock, monk
     secret = tmp_path / "SECRETNAME.py"
     secret.write_text("SECRETBODY = 1\n" * 50, encoding="utf-8")
     for _ in range(3):
-        run("reread", read_payload(secret), monkeypatch, capsys)
+        do_read(read_payload(secret), monkeypatch, capsys)
     payload = _bash("SECRETOUT\n" * 5_000, "SECRETERR\n" * 5_000)
     payload["tool_input"]["command"] = "SECRETCMD"
     assert run("bash-cap", payload, monkeypatch, capsys)[1] is not None
@@ -636,8 +754,8 @@ def test_ledger_failure_does_not_change_the_hook_result(src, clock, monkeypatch,
     os.makedirs(root)
     with open(os.path.join(root, "savings"), "w") as fh:
         fh.write("a file where the ledger dir should be")
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    assert denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src), monkeypatch, capsys))
     assert run("bash-cap", _bash("o" * 50_000), monkeypatch, capsys)[1] is not None
 
 
@@ -820,8 +938,8 @@ def test_daily_disabled_by_env_leaves_the_day_unmarked(name, clock, monkeypatch,
 
 def test_daily_switch_does_not_turn_off_the_other_hooks(src, clock, monkeypatch, capsys):
     monkeypatch.setenv("GRAPHIFY_TOKEN_GUARD_DAILY", "0")
-    assert not denied(run("reread", read_payload(src), monkeypatch, capsys))
-    assert denied(run("reread", read_payload(src), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src), monkeypatch, capsys))
+    assert denied(do_read(read_payload(src), monkeypatch, capsys))
     assert len(ledger()) == 1
 
 
@@ -855,7 +973,7 @@ def test_old_state_is_pruned_when_a_new_session_starts(src, monkeypatch, capsys)
             fh.write("{}")
         os.utime(f, (stamp, stamp))
         made[("budget", name)] = f
-    assert not denied(run("reread", read_payload(src, session="fresh"), monkeypatch, capsys))
+    assert not denied(do_read(read_payload(src, session="fresh"), monkeypatch, capsys))
     for (sub, name), path in made.items():
         assert os.path.exists(path) == (name == "recent"), (sub, name)
     assert os.path.isdir(os.path.join(root, "reads", "fresh"))
@@ -876,8 +994,12 @@ def _load():
 EXPECTED_HOOKS = {
     "PreToolUse": [{"matcher": "Read", "hooks": [
         {"type": "command", "command": "/opt/bin/graphify token-guard reread", "timeout": 10}]}],
-    "PostToolUse": [{"matcher": "Bash", "hooks": [
-        {"type": "command", "command": "/opt/bin/graphify token-guard bash-cap", "timeout": 10}]}],
+    "PostToolUse": [
+        {"matcher": "Bash", "hooks": [
+            {"type": "command", "command": "/opt/bin/graphify token-guard bash-cap", "timeout": 10}]},
+        {"matcher": "Read", "hooks": [
+            {"type": "command", "command": "/opt/bin/graphify token-guard read-done", "timeout": 10}]},
+    ],
     "UserPromptSubmit": [{"hooks": [
         {"type": "command", "command": "/opt/bin/graphify token-guard budget", "timeout": 10}]}],
     "SessionStart": [
@@ -1051,13 +1173,13 @@ def test_default_settings_path_is_under_home_without_config_dir(monkeypatch):
 def test_status_reports_installed_and_missing(capsys):
     assert tg.main(["status"]) == 0
     out = capsys.readouterr().out
-    assert out.count("not installed") == 5 and not os.path.exists(_settings_file())
+    assert out.count("not installed") == 6 and not os.path.exists(_settings_file())
     tg.main(["install"])
     capsys.readouterr()
     assert tg.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "not installed" not in out
-    for sub in ("reread", "reset", "budget", "bash-cap", "daily"):
+    for sub in ("reread", "read-done", "reset", "budget", "bash-cap", "daily"):
         assert f"/opt/bin/graphify token-guard {sub}" in out
 
 
@@ -1073,6 +1195,140 @@ def test_install_upgrades_an_older_four_entry_install(capsys):
     assert _load() == {"hooks": EXPECTED_HOOKS}
     assert tg.main(["uninstall"]) == 0
     assert _load() == {}
+
+
+def test_install_upgrades_a_five_entry_install_without_read_done(src, capsys, monkeypatch):
+    """Settings written before `read-done` existed: nothing is recorded, so
+    nothing is denied; re-running install adds the entry once."""
+    old = {"hooks": {**EXPECTED_HOOKS, "PostToolUse": EXPECTED_HOOKS["PostToolUse"][:1]}}
+    _write_user_settings(json.dumps(old, indent=2) + "\n")
+    capsys.readouterr()
+    assert tg.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("not installed") == 1 and "read-done" in out
+    # Only the hooks that install has: PreToolUse fires, PostToolUse/Read does not.
+    for _ in range(3):
+        assert run("reread", read_payload(src), monkeypatch, capsys) == (0, None)
+    assert tg.main(["install"]) == 0
+    assert "hooks installed in" in capsys.readouterr().out
+    assert _load() == {"hooks": EXPECTED_HOOKS}
+    first = open(_settings_file(), encoding="utf-8").read()
+    assert tg.main(["install"]) == 0
+    assert "already up to date" in capsys.readouterr().out
+    assert open(_settings_file(), encoding="utf-8").read() == first
+    assert tg.main(["uninstall"]) == 0
+    assert _load() == {}
+
+
+# Commands that are not token-guard's, although each contains its words.
+FOREIGN_COMMANDS = [
+    "my-wrapper token-guard reread",
+    "my-wrapper graphify token-guard reread",
+    "echo graphify token-guard reread is installed",
+    "/opt/bin/graphify-notes token-guard reread",
+    "python /tools/graphify/run.py token-guard budget",
+    "/opt/bin/graphify token-guard reread && notify-send done",
+    '"/opt/my tools/wrapper" token-guard bash-cap',
+    "notgraphify token-guard daily",
+    "/opt/bin/graphify token-guard",
+    "/opt/bin/graphify token-guard savings",
+    "/opt/bin/graphify hook-guard token-guard reset",
+]
+
+
+@pytest.mark.parametrize("command", FOREIGN_COMMANDS)
+def test_foreign_commands_are_not_recognised(command):
+    assert tg._own_subcommand({"type": "command", "command": command}) is None
+
+
+def test_install_and_uninstall_leave_foreign_token_guard_commands_alone(capsys):
+    def entries():
+        return [{"type": "command", "command": c} for c in FOREIGN_COMMANDS]
+
+    foreign = {"model": "opus", "hooks": {
+        "PreToolUse": [{"matcher": "Read", "hooks": entries()}],
+        "PostToolUse": [{"matcher": "Bash|Read", "hooks": entries()}],
+        "UserPromptSubmit": [{"hooks": entries()}],
+        "SessionStart": [{"matcher": "startup", "hooks": entries()}, {"hooks": entries()[:1]}],
+    }}
+    before = json.dumps(foreign, indent=2, ensure_ascii=False) + "\n"
+    _write_user_settings(before)
+    assert tg.main(["install"]) == 0
+    hooks = _load()["hooks"]
+    for event, groups in foreign["hooks"].items():
+        assert hooks[event] == groups + EXPECTED_HOOKS[event]
+    capsys.readouterr()
+    assert tg.main(["status"]) == 0
+    assert "not installed" not in capsys.readouterr().out
+    assert tg.main(["install"]) == 0
+    assert "already up to date" in capsys.readouterr().out
+    assert tg.main(["uninstall"]) == 0
+    assert open(_settings_file(), encoding="utf-8").read() == before
+    # With only foreign commands present, nothing counts as installed.
+    assert tg.main(["status"]) == 0
+    assert capsys.readouterr().out.count("not installed") == 6
+    assert tg.main(["uninstall"]) == 0
+    assert open(_settings_file(), encoding="utf-8").read() == before
+
+
+@pytest.mark.parametrize("command, sub", [
+    ("/opt/bin/graphify token-guard reread", "reread"),
+    ("graphify token-guard daily", "daily"),
+    ("graphify.exe token-guard budget", "budget"),
+    ('"/opt/my tools/graphify" token-guard read-done', "read-done"),
+    ("'/opt/my tools/graphify' token-guard reset", "reset"),
+    ('"C:/Program Files/g/graphify.exe" token-guard budget', "budget"),
+    ("C:/tools/graphify.EXE token-guard bash-cap", "bash-cap"),
+    ("C:\\tools\\graphify.exe token-guard reset", "reset"),
+    ('"C:\\Program Files\\g\\Graphify.exe" token-guard reread', "reread"),
+    ("  /opt/bin/graphify  token-guard   reread  ", "reread"),
+])
+def test_own_commands_are_recognised_in_every_form(command, sub):
+    assert tg._own_subcommand({"type": "command", "command": command}) == sub
+    assert tg._strip_own([{"matcher": "x", "hooks": [{"type": "command", "command": command}]}]) == []
+
+
+@pytest.mark.parametrize("exe, project", [
+    ("/opt/bin/graphify", False),
+    ("/Users/a b/venv/bin/graphify", False),
+    ("C:/Program Files/py/Scripts/graphify.EXE", False),
+    ("graphify", True),
+])
+def test_every_entry_install_writes_is_recognised_and_removed(exe, project, tmp_path, monkeypatch):
+    monkeypatch.setattr("graphify.install._resolve_graphify_exe", lambda project=False: exe)
+    monkeypatch.chdir(tmp_path)
+    found = []
+    for groups in tg._hook_entries(project=project).values():
+        for group in groups:
+            for entry in group["hooks"]:
+                found.append(tg._own_subcommand(entry))
+        assert tg._strip_own(groups) == []
+    assert sorted(found) == sorted(tg._HOOK_SUBCOMMANDS)
+    args = ["--project"] if project else []
+    assert tg.main(["install", *args]) == 0
+    assert tg.main(["uninstall", *args]) == 0
+    path = tmp_path / ".claude" / "settings.json" if project else _settings_file()
+    assert json.loads(open(path, encoding="utf-8").read()) == {}
+
+
+def test_settings_file_above_the_size_cap_is_refused_untouched(capsys, monkeypatch):
+    monkeypatch.setattr(tg, "_SETTINGS_MAX_BYTES", 2_000, raising=False)
+    big = json.dumps({"model": "opus", "notes": "x" * 5_000}, indent=2) + "\n"
+    _write_user_settings(big)
+    for sub in ("install", "uninstall", "status"):
+        assert tg.main([sub]) == 1
+    err = capsys.readouterr().err
+    assert "refusing to modify" in err and "2000 bytes" in err
+    assert open(_settings_file(), encoding="utf-8").read() == big
+    assert os.listdir(os.environ["CLAUDE_CONFIG_DIR"]) == ["settings.json"]
+    # At the cap it is read as usual.
+    monkeypatch.setattr(tg, "_SETTINGS_MAX_BYTES", len(big.encode("utf-8")))
+    assert tg.main(["install"]) == 0
+    assert _load()["hooks"] == EXPECTED_HOOKS
+
+
+def test_default_settings_cap_is_a_few_megabytes():
+    assert (1 << 20) <= tg._SETTINGS_MAX_BYTES <= (16 << 20)
 
 
 def test_uninstall_removes_daily_and_keeps_other_startup_hooks():
