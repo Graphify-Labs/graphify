@@ -699,11 +699,13 @@ class _QueryScores(NamedTuple):
     term_order: tuple[str, ...] = ()
 
 
-# Query seeding prefers source code over tests and docs. A test named after a bug
-# repeats the question's words in its own name (``UsernameValidatorsTests``), so it
-# wins the exact-label tier and takes the seed slots the source it tests should
-# get. Only `query` applies this weight; `path`, `explain` and `_score_nodes`
-# callers score exactly as before.
+# Query seeding prefers source code over tests, docs and images. A test named
+# after a bug repeats the question's words in its own name
+# (``UsernameValidatorsTests``), so it wins the exact-label tier and takes the
+# seed slots the source it tests should get; an image's own rich caption label
+# (e.g. a golden-test render whose summary mentions the same terms as the
+# question) does the same thing (#445). Only `query` applies this weight;
+# `path`, `explain` and `_score_nodes` callers score exactly as before.
 _QUERY_DEMOTE_WEIGHT = 0.3
 _QUERY_TEST_WORDS = frozenset({"test", "tests", "testing", "testcase", "unittest"})
 _QUERY_DOC_WORDS = frozenset({"doc", "docs", "documentation", "readme"})
@@ -712,9 +714,9 @@ _QUERY_DOC_DIRS = frozenset({"doc", "docs", "example", "examples"})
 
 
 def _query_path_weight(terms: list[str], demote_docs: bool = True):
-    """Score multiplier per node for `query`: tests, docs, config files and nodes
-    without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the question itself
-    asks about tests (or docs); everything else counts 1.0."""
+    """Score multiplier per node for `query`: tests, docs, images, config files
+    and nodes without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the
+    question itself asks about tests (or docs); everything else counts 1.0."""
     words = {tok for t in terms for tok in _search_tokens(t)}
     keep_tests = bool(words & _QUERY_TEST_WORDS)
     keep_docs = (not demote_docs) or bool(words & _QUERY_DOC_WORDS)
@@ -726,7 +728,7 @@ def _query_path_weight(terms: list[str], demote_docs: bool = True):
             return _QUERY_DEMOTE_WEIGHT
         if not keep_docs and (
             not path
-            or data.get("file_type") in ("document", "paper")
+            or data.get("file_type") in ("document", "paper", "image")
             or parts[-1].endswith(_QUERY_DOC_SUFFIXES)
             or any(p in _QUERY_DOC_DIRS for p in parts[:-1])
         ):

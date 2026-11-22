@@ -28,6 +28,10 @@ def _graph():
     G.add_node("doc", label="validate_username", source_file="docs/auth.md", source_location="L1")
     G.add_node("cfg", label="username", source_file="pkg/settings.yml", source_location="L1")
     G.add_node("ext", label="username")  # external symbol: no source file
+    G.add_node(
+        "img", label="validate_username()",
+        source_file="fixtures/username_field.png", source_location="L1", file_type="image",
+    )
     G.add_edge("tst", "src", relation="calls", confidence="EXTRACTED")
     return G
 
@@ -108,6 +112,30 @@ def test_docs_config_and_sourceless_nodes_are_weighted_down():
     assert weight(G.nodes["src"]) == 1.0
     # a question that names the docs keeps doc nodes at full weight
     assert _query_path_weight(_query_terms("username docs"))(G.nodes["doc"]) == 1.0
+
+
+def test_image_caption_nodes_are_weighted_down():
+    # #445: an image's own rich caption label can repeat the question's words
+    # (a golden-test render whose summary names the same terms), winning the
+    # seed slot a precise code node should get.
+    G = _graph()
+    terms = _query_terms("validate_username allows a trailing newline")
+    plain = dict((nid, sc) for sc, nid in _score_query(G, terms, collect_per_term_seeds=False).ranked)
+    assert plain["img"] > 0  # the label match alone scores the image node competitively
+    weight = _query_path_weight(_query_terms("username validation"))
+    assert weight(G.nodes["img"]) == _QUERY_DEMOTE_WEIGHT
+    assert weight(G.nodes["src"]) == 1.0
+    weighted = _score_query(G, terms, collect_per_term_seeds=True, path_weight=_query_path_weight(terms))
+    order = [nid for _, nid in weighted.ranked]
+    assert order.index("src") < order.index("img")
+
+
+def test_disabling_doc_demotion_also_preserves_full_weight_for_images():
+    # Image demotion rides the same demote_docs toggle as doc/paper (#5084's
+    # per-corpus escape hatch), not a separate flag.
+    G = _graph()
+    weight_nodemote = _query_path_weight(_query_terms("username validation"), demote_docs=False)
+    assert weight_nodemote(G.nodes["img"]) == 1.0
 
 
 def test_pytest_style_testing_dir_and_conftest_count_as_tests():
