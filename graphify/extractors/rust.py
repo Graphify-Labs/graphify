@@ -945,7 +945,9 @@ def extract_rust(path: Path) -> dict:
                             parts = [part for part in import_path.split("::") if part]
                             if parts:
                                 edges[-1]["_rust_use_self_module"] = {
-                                    "module": parts[-1], "root": parts[0],
+                                    "module": parts[-1], "modules": parts[1:],
+                                    "segments": parts,
+                                    "root": parts[0],
                                 }
                         edges[-1]["_rust_use_binding"] = True  # not call evidence: v8 had no such edge
             return

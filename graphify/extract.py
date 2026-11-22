@@ -5036,52 +5036,6 @@ def _rewire_unique_stub_nodes(
         if sf.endswith(".rs") and (crate := crate_of(sf)):
             workspace_crates.add(crate)
 
-    def unmanifested_module_nodes(origin: str, module: str) -> list[dict]:
-        """Resolve a no-Cargo self import only through its containing crate's lib.rs."""
-        source = Path(origin)
-        if not source.is_absolute() and scan_root is not None:
-            source = scan_root / source
-        directory = source.parent
-        while True:
-            lib_path = directory / "lib.rs"
-            if lib_path.is_file():
-                try:
-                    import tree_sitter_rust as tsrust
-                    from tree_sitter import Language, Parser
-
-                    parser = Parser(Language(tsrust.language()))
-                    lib_source = lib_path.read_bytes()
-                    tree = parser.parse(lib_source)
-                except Exception:
-                    return []
-                declared = any(
-                    child.type == "mod_item"
-                    and child.child_by_field_name("body") is None
-                    and (name := child.child_by_field_name("name")) is not None
-                    and _read_text(name, lib_source) == module
-                    for child in tree.root_node.named_children
-                )
-                if not declared:
-                    return []
-                expected = {
-                    (directory / f"{module}.rs").resolve(),
-                    (directory / module / "mod.rs").resolve(),
-                }
-                return [
-                    node for node in nodes
-                    if str(node.get("source_file", "")).endswith(".rs")
-                    and _module_file_for_name(node.get("source_file"), module)
-                    and node.get("label") == Path(str(node.get("source_file", ""))).name
-                    and _source_path(node.get("source_file")) in expected
-                ]
-            if scan_root is not None and directory.resolve() == scan_root:
-                break
-            parent = directory.parent
-            if parent == directory:
-                break
-            directory = parent
-        return []
-
     def _source_path(source_file: object) -> Path:
         path = Path(str(source_file or ""))
         if not path.is_absolute() and scan_root is not None:
@@ -5093,6 +5047,116 @@ def _rewire_unique_stub_nodes(
         if path.name == "mod.rs":
             return path.parent.name == module
         return path.stem == module
+
+    def _module_file_nodes(directory: Path, module: str) -> list[dict]:
+        expected = {
+            (directory / f"{module}.rs").resolve(),
+            (directory / module / "mod.rs").resolve(),
+        }
+        return [
+            node for node in nodes
+            if str(node.get("source_file", "")).endswith(".rs")
+            and _module_file_for_name(node.get("source_file"), module)
+            and node.get("label") == Path(str(node.get("source_file", ""))).name
+            and _source_path(node.get("source_file")) in expected
+        ]
+
+    def _declared_external_modules(source_path: Path) -> set[str]:
+        try:
+            import tree_sitter_rust as tsrust
+            from tree_sitter import Language, Parser
+
+            source = source_path.read_bytes()
+            tree = Parser(Language(tsrust.language())).parse(source)
+        except Exception:
+            return set()
+        return {
+            _read_text(name, source)
+            for child in tree.root_node.named_children
+            if child.type == "mod_item"
+            and child.child_by_field_name("body") is None
+            and (name := child.child_by_field_name("name")) is not None
+        }
+
+    def _module_nodes_from(base: Path, modules: list[str]) -> list[dict]:
+        """Follow a full Rust module path through `name.rs`/`name/mod.rs` files."""
+        if not modules:
+            return [
+                node for node in nodes
+                if _source_path(node.get("source_file")) == base.resolve()
+                and node.get("label") == base.name
+            ]
+        current_base = base
+        found: list[dict] = []
+        for index, module in enumerate(modules):
+            found = _module_file_nodes(current_base, module)
+            if len(found) != 1:
+                return []
+            if index < len(modules) - 1:
+                path = _source_path(found[0].get("source_file"))
+                current_base = path.parent if path.name == "mod.rs" else path.parent / path.stem
+        return found
+
+    def _lib_file_for_crate(crate: str, origin: str) -> Path | None:
+        libs = [
+            _source_path(node.get("source_file"))
+            for node in nodes
+            if node.get("label") == "lib.rs"
+            and str(node.get("source_file", "")).endswith(".rs")
+            and crate_of(str(node.get("source_file", ""))) == crate
+        ]
+        if len(libs) == 1:
+            return libs[0]
+        own_path = _source_path(origin)
+        return own_path if own_path.name == "lib.rs" and crate_of(origin) == crate else None
+
+    def _unmanifested_module_nodes(
+        origin: str, modules: list[str], root_name: str,
+    ) -> list[dict]:
+        """Resolve only modules declared along the containing lib.rs module path."""
+        source = _source_path(origin)
+        directory = source.parent
+        lib_path: Path | None = None
+        while True:
+            candidate = directory / "lib.rs"
+            if candidate.is_file():
+                lib_path = candidate.resolve()
+                break
+            if scan_root is not None and directory.resolve() == scan_root:
+                break
+            parent = directory.parent
+            if parent == directory:
+                break
+            directory = parent
+        if lib_path is None:
+            return []
+
+        current_file = lib_path
+        current_base = lib_path.parent
+        if root_name == "super":
+            if source.name in ("lib.rs", "main.rs"):
+                return []
+            current_base = source.parent.parent if source.name == "mod.rs" else source.parent
+        elif root_name == "self":
+            current_base = (
+                source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
+                else source.parent / source.stem
+            )
+        for index, module in enumerate(modules):
+            if module not in _declared_external_modules(current_file):
+                return []
+            found = _module_file_nodes(current_base, module)
+            if len(found) != 1:
+                return []
+            if index < len(modules) - 1:
+                current_file = _source_path(found[0].get("source_file"))
+                current_base = (
+                    current_file.parent if current_file.name == "mod.rs"
+                    else current_file.parent / current_file.stem
+                )
+        return found if modules else [
+            node for node in nodes if _source_path(node.get("source_file")) == lib_path
+        ]
 
     # `use path::module::{self}` imports the module itself. Its basename is not
     # a Rust declaration label (the file node is labelled `module.rs`), so the
@@ -5109,6 +5173,11 @@ def _rewire_unique_stub_nodes(
         origin = str(edge.get("source_file", ""))
         own = crate_of(origin) if origin.endswith(".rs") else None
         normalized_root = root_name.replace("-", "_")
+        segments = info.get("segments")
+        if not isinstance(segments, list) or not all(isinstance(item, str) for item in segments):
+            segments = [root_name, *info.get("modules", [module])]
+        modules = list(segments[1:])
+        local_root = False
         if root_name in ("crate", "self", "super"):
             target_crate = own
         elif own is not None and normalized_root == own:
@@ -5116,22 +5185,41 @@ def _rewire_unique_stub_nodes(
         elif normalized_root in workspace_crates:
             target_crate = normalized_root
         elif own is None:
-            # Without Cargo metadata, require the importer to sit under a lib.rs
-            # that declares this module; never choose a same-named file elsewhere.
-            candidates = unmanifested_module_nodes(origin, module)
+            candidates = _unmanifested_module_nodes(origin, modules, root_name)
             if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
                 edge["target"] = candidates[0]["id"]
             continue
+        elif root_name in _declared_external_modules(_source_path(origin)):
+            # A leading segment declared beside this use is a local module path.
+            target_crate = own
+            modules = list(segments)
+            local_root = True
         else:
             continue  # an external crate path must not bind to a local module
 
-        candidates = [
-            node for node in nodes
-            if str(node.get("source_file", "")).endswith(".rs")
-            and _module_file_for_name(node.get("source_file"), module)
-            and node.get("label") == Path(str(node.get("source_file", ""))).name
-            and crate_of(str(node.get("source_file", ""))) == target_crate
-        ]
+        if root_name == "super":
+            source = _source_path(origin)
+            if source.name in ("lib.rs", "main.rs"):
+                continue
+            base = source.parent.parent if source.name == "mod.rs" else source.parent
+        elif root_name == "self":
+            source = _source_path(origin)
+            base = (
+                source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
+                else source.parent / source.stem
+            )
+        elif local_root:
+            source = _source_path(origin)
+            base = (
+                source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
+                else source.parent / source.stem
+            )
+        else:
+            lib_file = _lib_file_for_crate(str(target_crate), origin)
+            if lib_file is None:
+                continue
+            base = lib_file.parent
+        candidates = _module_nodes_from(base, modules)
         if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
             edge["target"] = candidates[0]["id"]
 
