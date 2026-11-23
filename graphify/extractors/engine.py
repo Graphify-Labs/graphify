@@ -3022,6 +3022,87 @@ def _python_collect_assignment_targets(node, source: bytes, out: set[str]) -> No
         for c in node.children:
             _python_collect_assignment_targets(c, source, out)
 
+
+def _python_import_bound_names(node, source: bytes) -> list[str]:
+    """Local names an `import_statement`/`import_from_statement` node binds.
+
+    A plain `import x` binds `x`; `import x as y` binds `y`; `from m import
+    x` binds `x`; `from m import x as y` binds `y`. `from m import *` binds
+    no name graphify can see without resolving the imported module, so the
+    wildcard contributes nothing here, same convention as the receiver
+    shadow checker's own `import_names` this mirrors.
+    """
+    names: list[str] = []
+    past_import = False
+    for item in node.children:
+        if item.type == "import":
+            past_import = True
+            continue
+        if not past_import:
+            continue
+        if item.type == "aliased_import":
+            alias = item.child_by_field_name("alias")
+            if alias is not None:
+                names.append(_read_text(alias, source))
+        elif item.type == "dotted_name":
+            names.append(_read_text(item, source).split(".")[0])
+    return names
+
+
+def _python_local_import_names(func_def_node, source: bytes) -> set[str]:
+    """Names a Python function body's OWN `import`/`from ... import` statements
+    bind, not descending into nested `function_definition`/`class_definition`/
+    `lambda` subtrees (their imports belong to a different scope).
+
+    A narrower, import-only analogue of `_python_local_bound_names`: kept
+    separate so the bare-call lexical resolution guard built on it (#5421)
+    does not also start suppressing the parameter-shadowing case, which is a
+    distinct, already-tracked issue (#5418).
+    """
+    bound: set[str] = set()
+
+    def walk(n) -> None:
+        for child in n.children:
+            t = child.type
+            if t in ("function_definition", "class_definition", "lambda"):
+                continue
+            if t in ("import_statement", "import_from_statement"):
+                bound.update(_python_import_bound_names(child, source))
+            walk(child)
+
+    body = func_def_node.child_by_field_name("body")
+    if body is not None:
+        walk(body)
+    return bound
+
+
+def _python_call_shadowed_by_local_import(node, callee_name: str, source: bytes) -> bool:
+    """Does the nearest enclosing Python function/class body bind `callee_name`
+    via its OWN `import`/`from ... import` statement?
+
+    A function-local import is only valid in its own lexical scope: `from m
+    import x` inside `caller()` binds `x` there, so a bare `x()` call in that
+    body names the imported symbol, not a same-named module-level function or
+    class elsewhere in the file (#5421). Checked against the nearest enclosing
+    function or class body only, matching Python's own scoping: a sibling
+    nested `def`'s own import is a different scope and must not shadow this
+    call. Stops at the first function/class ancestor and requires the walk to
+    have arrived through that scope's own body, not its parameters/decorators
+    or a default/annotation value (which evaluate in the scope around it): a
+    call reached that way is left unshadowed rather than walked further out,
+    a narrow gap this conservative check accepts rather than risk suppressing
+    a real edge.
+    """
+    n = node
+    while (parent := n.parent) is not None:
+        if parent.type in ("function_definition", "class_definition"):
+            body = parent.child_by_field_name("body")
+            if body is not None and n == body:
+                return callee_name in _python_local_import_names(parent, source)
+            return False
+        n = parent
+    return False
+
 # Languages whose `self`/`this` member calls bind through _self_call_target.
 _SELF_CALL_LANGUAGES = frozenset({
     "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
@@ -12456,15 +12537,24 @@ def _extract_generic(
                     if config.ts_module in (
                         "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
                     ) and not is_member_call:
-                        curr_scope = caller_nid
                         tgt_nid = None
-                        while curr_scope:
-                            if curr_scope in lexical_nids_by_scope and callee_name in lexical_nids_by_scope[curr_scope]:
-                                tgt_nid = lexical_nids_by_scope[curr_scope][callee_name]
-                                break
-                            curr_scope = scope_parents.get(curr_scope)
-                        if not tgt_nid:
-                            tgt_nid = label_to_nid.get(callee_name)
+                        # A function-local import shadows a same-named
+                        # module-level function/class for the rest of this
+                        # call's own lexical scope; neither the lexical-scope
+                        # walk below nor the file-wide label fallback may
+                        # name a target for it (#5421).
+                        if not (
+                            config.ts_module == "tree_sitter_python"
+                            and _python_call_shadowed_by_local_import(node, callee_name, source)
+                        ):
+                            curr_scope = caller_nid
+                            while curr_scope:
+                                if curr_scope in lexical_nids_by_scope and callee_name in lexical_nids_by_scope[curr_scope]:
+                                    tgt_nid = lexical_nids_by_scope[curr_scope][callee_name]
+                                    break
+                                curr_scope = scope_parents.get(curr_scope)
+                            if not tgt_nid:
+                                tgt_nid = label_to_nid.get(callee_name)
                         # A class-body call (`x = f()` beside `def f`) may still
                         # name the class's own method; a method body may not.
                         if (
@@ -12579,7 +12669,22 @@ def _extract_generic(
                         and not is_member_call
                         and callee_name in (local_bound_names.get(caller_nid, frozenset()) | extra_locals)
                     )
-                    if not is_py_local_data:
+                    # Shadowed by a function-local import, with a same-named
+                    # definition elsewhere in this very file: that same-file
+                    # twin cannot be the target, but nothing here knows the
+                    # import's own, so the call is dropped rather than risk
+                    # the global cross-file pass falling back to the twin's
+                    # label by coincidence (#5421). A callee with no same-file
+                    # twin has nothing to wrongly fall back to, so it is left
+                    # to resolve normally (including through a nearer import
+                    # that does name a real cross-file target, #5418).
+                    is_py_import_shadowed = (
+                        config.ts_module == "tree_sitter_python"
+                        and not is_member_call
+                        and callee_name in label_to_nid
+                        and _python_call_shadowed_by_local_import(node, callee_name, source)
+                    )
+                    if not is_py_local_data and not is_py_import_shadowed:
                         # Callee not in this file — save for cross-file resolution in extract()
                         rc_entry = {
                             "caller_nid": caller_nid,
