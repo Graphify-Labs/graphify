@@ -58,6 +58,7 @@ from graphify.extractors.base import (  # noqa: F401
     set_active_scan_root,
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
+from graphify.extractors.apexlang import extract_apexlang  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.cobol import extract_cobol  # noqa: F401
@@ -11427,6 +11428,7 @@ _DISPATCH: dict[str, Any] = {
     ".resource": extract_robot,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".apx": extract_apexlang,
 }
 
 

@@ -74,11 +74,49 @@ _TRIGGER_RECOVERY_RX = re.compile(
 # (the same delimited-identifier shape); the label is the bare name, with no
 # `()` suffix — a table is not callable either.
 _TABLE_RECOVERY_RX = re.compile(
-    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?TABLE\s+"
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?TABLE\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"(" + _TRIGGER_IDENT + r")",
     re.IGNORECASE,
 )
+
+# CREATE VIEW recovery for Oracle DDL (`CREATE OR REPLACE FORCE EDITIONABLE VIEW
+# "S"."V" ("C1", "C2") AS SELECT ...`). `FORCE` and `[NON]EDITIONABLE` are not in
+# tree-sitter-sql's create_view rule, so the whole statement lands in an ERROR
+# node and walk() never sees it.
+_VIEW_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?"
+    r"(?:(?:NO)?FORCE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(?:(?:NO)?FORCE\s+)?VIEW\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(" + _TRIGGER_IDENT + r")",
+    re.IGNORECASE,
+)
+_VIEW_AS_RX = re.compile(r"(?:\([^()]*\)\s*)?\bAS\b", re.IGNORECASE)
+
+# Oracle REST Data Services (ORDS) schema exports define modules and handlers via
+# PL/SQL calls inside `DECLARE ... BEGIN ... END;` blocks (`ORDS.DEFINE_MODULE`,
+# `ORDS.DEFINE_HANDLER`). Recovering handler routes and scanning their `p_source`
+# SQL/PLSQL strings links REST endpoints to the database objects they read/write.
+_ORDS_MODULE_RX = re.compile(
+    r"\bORDS\.DEFINE_MODULE\s*\(((?:'(?:''|[^'])*'|[^')])*)\)\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+_ORDS_HANDLER_RX = re.compile(
+    r"\bORDS\.DEFINE_HANDLER\s*\(((?:'(?:''|[^'])*'|[^')])*)\)\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+_ORDS_NAMED_ARG_RX = re.compile(
+    r"\b(p_module_name|p_base_path|p_pattern|p_method|p_source_type|p_source)\s*=>\s*"
+    r"('(?:''|[^'])*'|NULL)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _unquote_plsql_literal(literal: str) -> str:
+    literal = literal.strip()
+    if len(literal) >= 2 and literal[0] == "'" and literal[-1] == "'":
+        return literal[1:-1].replace("''", "'")
+    return ""
 
 # _mask_sql_comments is a linear character scanner, not a regex: the four
 # span kinds interact in ways a single pattern cannot express safely —
@@ -1148,6 +1186,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 continue
             table_nids.setdefault(
                 _norm_ident(m.group(1)), _make_id(stem, m.group(1)))
+        for m in _VIEW_RECOVERY_RX.finditer(_masked):
+            if any(s <= m.start() < e for s, e in _ident_spans):
+                continue
+            table_nids.setdefault(
+                _norm_ident(m.group(1)), _make_id(stem, m.group(1)))
 
     # Secondary bare-name aliases: a reference written without a schema
     # (`REFERENCES users`) should resolve to a schema-qualified definition
@@ -1359,5 +1402,77 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # Clean the label (brackets/quotes) for display but key the id off the
             # raw name so it matches the pre-pass registration the FK edges resolved to.
             _add_node(_make_id(stem, tbl_name), _clean_ident(tbl_name), tbl_line)
+
+        # Views the grammar dropped into an ERROR node (e.g. Oracle FORCE /
+        # EDITIONABLE VIEW). Pre-registered above in table_nids; scan the body
+        # after the optional column list + AS keyword so quoted column aliases
+        # before AS are not mistaken for table references.
+        for m in _VIEW_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            view_name = m.group(1)
+            view_nid = _make_id(stem, view_name)
+            if view_nid in seen_ids:
+                continue
+            view_line = src_text[: m.start()].count("\n") + 1
+            _add_node(view_nid, _clean_ident(view_name), view_line)
+            end = _BODY_END_RX.search(masked_src, m.end())
+            limit = end.start() if end else len(masked_src)
+            as_match = _VIEW_AS_RX.search(masked_src, m.end(), limit)
+            body_start = as_match.end() if as_match else m.end()
+            seen_refs: set[tuple[str, str]] = set()
+            for relation, tbl, pos in _routine_body_refs(masked_src[body_start:limit], plsql=True):
+                if relation != "reads_from":
+                    continue
+                tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
+                if (relation, tbl_nid) in seen_refs:
+                    continue
+                seen_refs.add((relation, tbl_nid))
+                _add_edge(view_nid, tbl_nid, relation, masked_src.count("\n", 0, body_start + pos) + 1)
+
+        # Oracle REST Data Services (ORDS) module and handler definitions inside
+        # PL/SQL anonymous blocks (`ORDS.DEFINE_MODULE`, `ORDS.DEFINE_HANDLER`).
+        # `p_source` is a single-quoted SQL/PLSQL string, so read it from
+        # src_text (masked_src blanks single-quoted literals) and scan the
+        # unquoted handler body with _scan_sql + _routine_body_refs.
+        if "ORDS." in masked_src.upper():
+            module_paths: dict[str, str] = {}
+            for m in _ORDS_MODULE_RX.finditer(src_text):
+                args = {
+                    am.group(1).lower(): _unquote_plsql_literal(am.group(2))
+                    for am in _ORDS_NAMED_ARG_RX.finditer(m.group(1))
+                }
+                mod_name = args.get("p_module_name", "")
+                if mod_name:
+                    module_paths[mod_name.upper()] = args.get("p_base_path", "")
+            for m in _ORDS_HANDLER_RX.finditer(src_text):
+                args = {
+                    am.group(1).lower(): _unquote_plsql_literal(am.group(2))
+                    for am in _ORDS_NAMED_ARG_RX.finditer(m.group(1))
+                }
+                mod_name = args.get("p_module_name", "")
+                pattern = args.get("p_pattern", "")
+                method = (args.get("p_method", "") or "GET").upper()
+                handler_sql = args.get("p_source", "")
+                if not pattern:
+                    continue
+                base_path = module_paths.get(
+                    mod_name.upper(), f"/{mod_name.lower()}/" if mod_name else "/"
+                )
+                full_route = "/" + "/".join(
+                    part for part in (base_path.strip("/"), pattern.strip("/")) if part
+                )
+                handler_line = src_text.count("\n", 0, m.start()) + 1
+                handler_nid = _make_id(stem, "ords", method, full_route)
+                _add_node(handler_nid, f"ORDS {method} {full_route}", handler_line)
+                if handler_sql:
+                    masked_handler, _ = _scan_sql(handler_sql)
+                    seen_refs = set()
+                    for relation, tbl, _pos in _routine_body_refs(masked_handler, plsql=True):
+                        tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
+                        if (relation, tbl_nid) in seen_refs:
+                            continue
+                        seen_refs.add((relation, tbl_nid))
+                        _add_edge(handler_nid, tbl_nid, relation, handler_line)
 
     return {"nodes": nodes, "edges": edges}
