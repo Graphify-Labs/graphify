@@ -1529,14 +1529,14 @@ def _apply_symbol_resolution_facts(
     local_aliases_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
     # Function-local imports bind only inside their function's lines (#5421), so they
     # are kept apart from the file-wide aliases and consulted per use.
-    scoped_aliases_by_file: dict[Path, list[tuple[int, int, str, tuple[Path, str]]]] = {}
+    scoped_aliases_by_file: dict[Path, list[tuple[int, int, int, str, tuple[Path, str]]]] = {}
     for import_fact in facts.imports:
         file_path = _resolve_cached(import_fact.file_path)
         origin = (_resolve_cached(import_fact.target_path), import_fact.imported_name)
         if import_fact.scope is not None:
             first, last = import_fact.scope
             scoped_aliases_by_file.setdefault(file_path, []).append(
-                (first, last, import_fact.local_name, origin)
+                (first, last, import_fact.line, import_fact.local_name, origin)
             )
             continue
         local_aliases_by_file.setdefault(file_path, {})[import_fact.local_name] = origin
@@ -2040,13 +2040,13 @@ def _apply_symbol_resolution_facts(
         file_path = _resolve_cached(use_fact.file_path)
         target_id = None
         scoped_origins = [
-            (first, origin)
-            for first, last, local, origin in scoped_aliases_by_file.get(file_path, ())
-            if local == use_fact.local_name and first <= use_fact.line <= last
+            (first, import_line, origin)
+            for first, last, import_line, local, origin in scoped_aliases_by_file.get(file_path, ())
+            if local == use_fact.local_name and first <= use_fact.line <= last and import_line <= use_fact.line
         ]
         if scoped_origins:
-            # The innermost enclosing function's import binds this use (#5421).
-            unresolved_origin = max(scoped_origins, key=lambda hit: hit[0])[1]
+            # The innermost enclosing function's latest import before this use binds it (#5421).
+            unresolved_origin = max(scoped_origins, key=lambda hit: (hit[0], hit[1]))[2]
         else:
             unresolved_origin = local_aliases_by_file.get(file_path, {}).get(use_fact.local_name)
         if unresolved_origin is not None:
@@ -3467,7 +3467,7 @@ def _collect_python_symbol_resolution_facts(
         local_import_scopes: dict[str, list[tuple[int, int]]] = {}
         # Function-local `from X import name` bindings: (scope start, scope end, binding),
         # where a None binding marks an ambiguous module that must not resolve (#5421).
-        local_import_bindings: dict[str, list[tuple[int, int, tuple[str, str, str | None] | None]]] = {}
+        local_import_bindings: dict[str, list[tuple[int, int, int, tuple[str, str, str | None] | None]]] = {}
 
         for node in _walk_python_tree(root_node):
             if node.type in ("import_statement", "import_from_statement"):
@@ -3501,7 +3501,7 @@ def _collect_python_symbol_resolution_facts(
                         str(local_target) if local_target is not None else None,
                     )
                     local_import_bindings.setdefault(local, []).append(
-                        (enclosing_fn.start_byte, enclosing_fn.end_byte, binding)
+                        (enclosing_fn.start_byte, enclosing_fn.end_byte, node.start_byte, binding)
                     )
             if level == 0 and _make_id(module_name) in ambiguous_python_modules:
                 continue
@@ -3562,7 +3562,8 @@ def _collect_python_symbol_resolution_facts(
                         ),
                     )
                 )
-                if path.stem == "__init__":
+                if path.stem == "__init__" and enclosing_fn is None:
+                    # A function-local import in a package __init__ is not a re-export.
                     facts.exports.append(
                         _SymbolExportFact(
                             path,
@@ -3582,13 +3583,13 @@ def _collect_python_symbol_resolution_facts(
             for call in calls_by_file.get(_resolve_cached(path), []):
                 site = call.get("_python_call_site")
                 hits = [
-                    (start, binding)
-                    for start, end, binding in local_import_bindings.get(str(call.get("callee", "")), ())
-                    if site and start <= site[0] < end
+                    (start, import_start, binding)
+                    for start, end, import_start, binding in local_import_bindings.get(str(call.get("callee", "")), ())
+                    if site and start <= site[0] < end and import_start <= site[0]
                 ]
                 if hits:
-                    # The innermost enclosing function's import binds this call (#5421).
-                    _, binding = max(hits, key=lambda hit: hit[0])
+                    # The innermost enclosing function's latest import before this call binds it (#5421).
+                    _, _, binding = max(hits, key=lambda hit: (hit[0], hit[1]))
                     if binding is None:
                         call["_ambiguous_python_import"] = True
                     else:

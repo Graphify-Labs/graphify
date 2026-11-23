@@ -188,3 +188,54 @@ def test_function_local_relative_import_does_not_leak_to_sibling_function(tmp_pa
         ("caller()", "target()", "pkg/helper.py", "EXTRACTED"),
         ("other()", "target()", "pkg/mod.py", "EXTRACTED"),
     }
+
+
+def test_nested_function_call_resolves_through_enclosing_function_import(tmp_path: Path) -> None:
+    # Review of #5428: the nested `run()` calls the name its enclosing function imported.
+    _write(tmp_path, "pkg/__init__.py", "")
+    helper = _write(tmp_path, "pkg/helper.py", "def run(): pass\n")
+    module = _write(
+        tmp_path, "pkg/mod.py",
+        "def run(): pass\n\n"
+        "def outer():\n"
+        "    from .helper import run\n"
+        "    def inner():\n"
+        "        run()\n"
+        "    return inner\n",
+    )
+
+    result = extract([module, helper], root=tmp_path, cache_root=tmp_path / "out", parallel=False)
+
+    calls = _calls(result)
+    assert ("inner()", "run()", "pkg/helper.py", "EXTRACTED") in calls
+    assert not any(target == "run()" and path == "pkg/mod.py" for _, target, path, _ in calls)
+
+
+def test_later_function_local_import_wins_over_earlier_one(tmp_path: Path) -> None:
+    # Review of #5428: when a name is imported twice in one function, a call after
+    # the second import is bound by the second import.
+    _write(tmp_path, "pkg/__init__.py", "")
+    first = _write(tmp_path, "pkg/first.py", "def run(): pass\n")
+    second = _write(tmp_path, "pkg/second.py", "def run(): pass\n")
+    module = _write(
+        tmp_path, "pkg/mod.py",
+        "def caller():\n"
+        "    from .first import run\n"
+        "    from .second import run\n"
+        "    run()\n",
+    )
+
+    result = extract([module, first, second], root=tmp_path, cache_root=tmp_path / "out", parallel=False)
+
+    assert _calls(result) == {("caller()", "run()", "pkg/second.py", "EXTRACTED")}
+
+
+def test_function_local_import_is_not_a_package_reexport(tmp_path: Path) -> None:
+    # Review of #5428: an import inside a function in __init__.py must not re-export the name.
+    init = _write(tmp_path, "pkg/__init__.py", "def setup():\n    from .helper import run\n    return run\n")
+    helper = _write(tmp_path, "pkg/helper.py", "def run(): pass\n")
+    consumer = _write(tmp_path, "app.py", "from pkg import run\ndef main():\n    run()\n")
+
+    result = extract([consumer, helper, init], root=tmp_path, cache_root=tmp_path / "out", parallel=False)
+
+    assert _calls(result) == set()
