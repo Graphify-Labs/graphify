@@ -92,7 +92,7 @@ def test_model_d_pointer_path_can_seed_graph_traversal(tmp_path):
     graph = nx.Graph()
     graph.add_node(
         "file",
-        label="src/app.py",
+        label="app.py",
         source_file="src/app.py",
         source_location="L1",
         community=0,
