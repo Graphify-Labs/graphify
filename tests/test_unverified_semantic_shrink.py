@@ -253,6 +253,9 @@ def test_3203_e2e_repro_self_explained_shrink_proceeds(tmp_path, monkeypatch, ca
 
     err = capsys.readouterr().err
     assert "unverified semantic shrink detected for 'README.md' (3 -> 1 nodes)" in err
+    # The write proceeded, so a "stays armed" warning here would be stale and
+    # misleading -- the guard did not, in the end, stay armed for this write.
+    assert "shrink guard stays armed" not in err
 
     graph2 = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
     assert len(graph2["nodes"]) == 3
@@ -422,6 +425,7 @@ def test_3203_e2e_no_cluster_self_explained_shrink_proceeds(tmp_path, monkeypatc
 
     err = capsys.readouterr().err
     assert "unverified semantic shrink detected for 'README.md' (3 -> 1 nodes)" in err
+    assert "shrink guard stays armed" not in err
 
     graph2 = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
     assert len(graph2["nodes"]) == 3

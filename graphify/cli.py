@@ -606,9 +606,6 @@ def _handle_unverified_semantic_shrink(
     cached_sources = sorted(
         sf for sf in unverified_shrink if _path_key_under(sf, target) in cached_keys
     )
-    fresh_sources = sorted(
-        sf for sf in unverified_shrink if _path_key_under(sf, target) not in cached_keys
-    )
 
     marked: list[Path] = []
     try:
@@ -661,12 +658,6 @@ def _handle_unverified_semantic_shrink(
             f"{len(marked)} semantic cache entr{'y' if len(marked) == 1 else 'ies'} "
             f"partial for re-extraction on the next run: "
             f"{', '.join(str(p) for p in marked)}",
-            file=sys.stderr,
-        )
-    if fresh_sources and not cli_allow_partial:
-        print(
-            "[graphify extract] The shrink guard stays armed for this write; "
-            "pass --allow-partial to overwrite a larger existing graph anyway.",
             file=sys.stderr,
         )
     return incomplete, manifest_files, cleared_semantic
