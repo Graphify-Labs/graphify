@@ -1,7 +1,7 @@
 """Oracle APEX 26.1+ APEXlang (.apx) extractor."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
 import re
@@ -10,7 +10,7 @@ import threading
 import unicodedata
 from collections.abc import Sequence
 
-from graphify.extractors.base import _read_source_text
+from graphify.extractors.base import _read_source_text, active_scan_root
 
 
 ARCHITECTURAL_TYPES = {
@@ -52,10 +52,20 @@ NAME_RE = re.compile(r'^\s*name\s*:\s*(.*?)\s*$')
 CLOSE_COMPONENT_RE = re.compile(r'^\s*\)\s*$')
 PROPERTY_RE = re.compile(r'^\s*([A-Za-z][A-Za-z0-9]*)\s*:\s*(.*?)\s*$')
 REFERENCE_RE = re.compile(r'^\s*([A-Za-z][A-Za-z0-9]*)\s*:\s*@([^\s\]}]+)')
-PAGE_TARGET_RE = re.compile(r'\bpage\s*:\s*(\d+)\b', re.IGNORECASE)
+PAGE_TARGET_RE = re.compile(r'^\s*page\s*:\s*(\d+)\s*,?\s*$', re.IGNORECASE)
 APEX_URL_PAGE_RE = re.compile(r'f\?p=([^:\s]*):(\d+):', re.IGNORECASE)
-APPLICATION_PROPERTY_RE = re.compile(r'^\s*application\s*:\s*(\d+)\s*$', re.IGNORECASE)
-SQL_NAME_PART = r'(?:"[^"]+"|#[A-Za-z0-9_]+#|[A-Za-z][A-Za-z0-9_$#]*)'
+APPLICATION_PROPERTY_RE = re.compile(r'^\s*application\s*:\s*(\d+)\s*,?\s*$', re.IGNORECASE)
+OPEN_PROPERTY_BLOCK_RE = re.compile(r'^\s*[A-Za-z][\w-]*\s*:?\s*\{\s*$')
+CLOSE_PROPERTY_BLOCK_RE = re.compile(r'^\s*}\s*,?\s*$')
+INLINE_PROPERTY_BLOCK_RE = re.compile(r'^\s*[A-Za-z][\w-]*\s*:?\s*\{([^{}]*)}\s*,?\s*$')
+NAVIGATION_FIELD_RE = re.compile(
+    r'''"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(application|page)\s*:\s*(\d+)\b''',
+    re.IGNORECASE,
+)
+SQL_QUOTED_NAME = r'"(?:[^"]|"")+"'
+SQL_QUOTED_NAME_RE = re.compile(SQL_QUOTED_NAME)
+SQL_WORD_RE = re.compile(r'[\w$#]+')
+SQL_NAME_PART = rf'(?:{SQL_QUOTED_NAME}|#[A-Za-z0-9_]+#|[^\W\d_][\w$#]*)'
 SQL_IDENTIFIER = rf'{SQL_NAME_PART}(?:\s*\.\s*{SQL_NAME_PART})*'
 SUBSTITUTION_PART_RE = re.compile(r'#[^#]*#')
 FROM_START_RE = re.compile(r'\b(?:FROM|JOIN)\b\s+', re.IGNORECASE)
@@ -125,6 +135,13 @@ class Frame:
     line: int
     node_id: str | None
     architectural_owner: str | None
+
+
+@dataclass
+class NavigationBlock:
+    frame_depth: int
+    application: str | None = None
+    pages: list[tuple[str, str, int]] = field(default_factory=list)
 
 
 def make_id(*parts: object) -> str:
@@ -288,6 +305,22 @@ class DatabaseMirror:
         else:
             return None
         return self._resolve(schema, name, "packages")
+
+    def unresolved_id(self, label: str, relation: str) -> str:
+        """Identify an unresolved object within its Oracle mirror and schema."""
+        if self.root is None:
+            return make_id(label)
+        root = self.root.absolute()
+        scan_root = active_scan_root()
+        if scan_root is not None and root.is_relative_to(scan_root):
+            root = root.relative_to(scan_root)
+        parts = label.split(".")
+        is_package = relation == "calls"
+        qualified = len(parts) == (3 if is_package else 2)
+        schema = parts[0] if qualified else (self.schema or "")
+        identity = (root.as_posix(), schema.upper(), "package" if is_package else "table", label)
+        digest = hashlib.sha256(repr(identity).encode("utf-8")).hexdigest()[:16]
+        return f"oracle_ref_{make_id(label)}_{digest}"
 
 
 def refresh_apexlang_paths(
@@ -455,6 +488,10 @@ def _from_items(text: str):
         depth = 0
         while index < len(text):
             char = text[index]
+            quoted = SQL_QUOTED_NAME_RE.match(text, index) if char == '"' else None
+            if quoted:
+                index = quoted.end()
+                continue
             if char == '(':
                 depth += 1
             elif char == ')':
@@ -464,13 +501,13 @@ def _from_items(text: str):
             elif char == ',' and depth == 0:
                 yield text[item_start:index]
                 item_start = index + 1
-            elif depth == 0 and (char.isalpha() or char == '_'):
+            elif depth == 0 and (word := SQL_WORD_RE.match(text, index)):
                 if FROM_STOP_RE.match(text, index):
                     if index > item_start:
                         yield text[item_start:index]
                     item_start = None
                     break
-                index += re.match(r'[A-Za-z0-9_$#]*', text[index:]).end()
+                index = word.end()
                 continue
             index += 1
         if item_start is not None:
@@ -582,6 +619,7 @@ def parse_apexlang(text: str, path: Path) -> dict[str, object]:
     in_block_comment = False
     pending_property: str | None = None
     pending_application: str | None = None
+    navigation_blocks: list[NavigationBlock] = []
     fence_owner: str | None = None
     fence_start = 0
     fence_lines: list[str] = []
@@ -611,7 +649,7 @@ def parse_apexlang(text: str, path: Path) -> dict[str, object]:
         mirrored = mirror.package(label) if relation == "calls" else mirror.table(label)
         if mirrored:
             return mirrored
-        node_id = make_id(label)
+        node_id = mirror.unresolved_id(label, relation)
         if node_id not in node_by_id:
             node = _node(node_id, label, "", None, origin_file=source_path)
             node["source_location"] = ""
@@ -637,6 +675,13 @@ def parse_apexlang(text: str, path: Path) -> dict[str, object]:
         if key not in edge_keys:
             edge_keys.add(key)
             edges.append(candidate)
+
+    def add_page_link(owner: str, app: str | None, page: str, line: int) -> None:
+        target_app = _navigation_application(app, app_id)
+        if target_app is not None:
+            target = make_id("apex", "app", target_app, "page", page)
+            if target != owner:
+                add_edge(owner, target, "navigates_to", line)
 
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         if in_fence:
@@ -740,8 +785,22 @@ def parse_apexlang(text: str, path: Path) -> dict[str, object]:
         if CLOSE_COMPONENT_RE.match(line):
             if not frames:
                 raise ApexlangParseError(f"unexpected component close at {source_path}:L{line_number}")
+            while navigation_blocks and navigation_blocks[-1].frame_depth == len(frames):
+                navigation_blocks.pop()
             frames.pop()
             pending_property = None
+            pending_application = None
+            continue
+
+        if OPEN_PROPERTY_BLOCK_RE.match(line):
+            navigation_blocks.append(NavigationBlock(len(frames)))
+            pending_application = None
+            continue
+        if CLOSE_PROPERTY_BLOCK_RE.match(line):
+            if navigation_blocks and navigation_blocks[-1].frame_depth == len(frames):
+                block = navigation_blocks.pop()
+                for owner, page, target_line in block.pages:
+                    add_page_link(owner, block.application, page, target_line)
             pending_application = None
             continue
 
@@ -777,23 +836,35 @@ def parse_apexlang(text: str, path: Path) -> dict[str, object]:
                 add_edge(owner, target, "references_component", line_number)
 
         application_match = APPLICATION_PROPERTY_RE.match(line)
+        page_match = PAGE_TARGET_RE.match(line)
+        block = (
+            navigation_blocks[-1]
+            if navigation_blocks and navigation_blocks[-1].frame_depth == len(frames)
+            else None
+        )
         if application_match:
-            pending_application = application_match.group(1)
-
-        for page_match in PAGE_TARGET_RE.finditer(line):
-            target_app = _navigation_application(pending_application, app_id)
-            if target_app is None:
-                continue
-            target = make_id("apex", "app", target_app, "page", page_match.group(1))
-            if target != owner:
-                add_edge(owner, target, "navigates_to", line_number)
+            if block is None:
+                pending_application = application_match.group(1)
+            else:
+                block.application = application_match.group(1)
+        else:
+            if page_match:
+                page = page_match.group(1)
+                if block is None:
+                    add_page_link(owner, pending_application, page, line_number)
+                else:
+                    block.pages.append((owner, page, line_number))
+            pending_application = None
+        if inline_block := INLINE_PROPERTY_BLOCK_RE.match(line):
+            fields = {
+                match.group(1).casefold(): match.group(2)
+                for match in NAVIGATION_FIELD_RE.finditer(inline_block.group(1))
+                if match.group(1)
+            }
+            if "page" in fields:
+                add_page_link(owner, fields.get("application"), fields["page"], line_number)
         for page_match in APEX_URL_PAGE_RE.finditer(line):
-            target_app = _navigation_application(page_match.group(1), app_id)
-            if target_app is None:
-                continue
-            target = make_id("apex", "app", target_app, "page", page_match.group(2))
-            if target != owner:
-                add_edge(owner, target, "navigates_to", line_number)
+            add_page_link(owner, page_match.group(1), page_match.group(2), line_number)
 
         property_match = PROPERTY_RE.match(line)
         if property_match:

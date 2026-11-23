@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from graphify.build import build
 from graphify.detect import FileType, classify_file
 from graphify.extract import extract
 from graphify.extractors.apexlang import extract_apexlang
@@ -85,8 +88,12 @@ def test_extract_apexlang_components_and_edges(tmp_path: Path):
     assert (da_id, "references_component", "apex_app_130_lov_worker_status_lov") in edges
 
     # SQL / PLSQL edges (CTEs must be excluded from all nodes and edges)
-    assert (region_id, "reads_from", "hr_workers") in edges
-    assert (region_id, "reads_from", "hr_departments") in edges
+    dependencies = {
+        (source, relation, labels[target])
+        for source, relation, target in edges if relation in {"reads_from", "writes_to", "calls"}
+    }
+    assert (region_id, "reads_from", "HR_WORKERS") in dependencies
+    assert (region_id, "reads_from", "HR_DEPARTMENTS") in dependencies
     assert not any(
         "active_scope" in str(n.get("id", "")).casefold()
         or "active_scope" in str(n.get("label", "")).casefold()
@@ -97,9 +104,9 @@ def test_extract_apexlang_components_and_edges(tmp_path: Path):
         for source, _, target in edges
         for endpoint in (source, target)
     )
-    assert (region_id, "calls", "hr_dispatch_pkg_active_status") in edges
-    assert (process_id, "writes_to", "hr_worker_assignments") in edges
-    assert (process_id, "calls", "hr_dispatch_pkg_assign_worker") in edges
+    assert (region_id, "calls", "HR_DISPATCH_PKG.ACTIVE_STATUS") in dependencies
+    assert (process_id, "writes_to", "HR_WORKER_ASSIGNMENTS") in dependencies
+    assert (process_id, "calls", "HR_DISPATCH_PKG.ASSIGN_WORKER") in dependencies
 
 
 def test_extract_apexlang_app_properties_and_malformed_input(tmp_path: Path):
@@ -121,8 +128,13 @@ def test_extract_apexlang_app_properties_and_malformed_input(tmp_path: Path):
     result = extract_apexlang(app_file)
     assert "error" not in result
     edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
-    assert ("apex_app_130_authentication_custom_auth", "calls", "hr_auth_pkg_authenticate") in edges
-    assert ("apex_app_130_region_summary", "reads_from", "hr_emp_summary") in edges
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    dependencies = {
+        (source, relation, labels[target])
+        for source, relation, target in edges if relation in {"reads_from", "calls"}
+    }
+    assert ("apex_app_130_authentication_custom_auth", "calls", "HR_AUTH_PKG.AUTHENTICATE") in dependencies
+    assert ("apex_app_130_region_summary", "reads_from", "HR_EMP_SUMMARY") in dependencies
 
     bad_file = tmp_path / "broken.apx"
     bad_file.write_text('page 1 (\n  name: "Broken"\n', encoding="utf-8")
@@ -217,13 +229,14 @@ def test_cached_apexlang_extraction_refreshes_when_only_database_mirror_changes(
         return {e["target"] for e in result["edges"]
                 if e["source"] == region_id and e["relation"] == "reads_from"}
 
-    assert "hr_workers" in reads()
+    unresolved = reads()
+    assert any(target.startswith("oracle_ref_hr_workers_") for target in unresolved)
     table = tmp_path / "database/HR/tables/HR_WORKERS.sql"
     table.parent.mkdir(parents=True)
     table.write_text('CREATE TABLE "HR"."HR_WORKERS" (ID NUMBER);\n', encoding="utf-8")
     assert "database_hr_tables_hr_workers_hr_hr_workers" in reads()
     table.unlink()
-    assert "hr_workers" in reads()
+    assert reads() == unresolved
 
 
 def test_oracle_mirror_rewire_preserves_unresolved_schema_and_plain_sql_binding(tmp_path):
@@ -318,3 +331,70 @@ def test_graph_update_rebinds_unchanged_apexlang_after_mirror_add_and_remove(tmp
     assert worker_targets() == {"database/HR/tables/HR_WORKERS.sql"}
     table.unlink()
     assert worker_targets() == {""}
+
+
+def test_unresolved_references_are_shared_only_within_their_mirror_and_schema(tmp_path):
+    paths = []
+    for project, schema, app_id in (
+        ("one", "HR", 130), ("one", "HR", 131), ("one", "FIN", 230), ("two", "HR", 330),
+    ):
+        path = tmp_path / project / f"apps/{schema}/{app_id}/pages/page.apx"
+        path.parent.mkdir(parents=True)
+        path.write_text("page 10 (\n  region Staff (\n    tableName: STAFF\n  )\n)\n")
+        paths.append(path)
+    result = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    graph = build([result], root=tmp_path)
+    targets = {
+        e["source"]: e["target"] for e in result["edges"] if e["relation"] == "reads_from"
+    }
+    assert set(targets) == {
+        f"apex_app_{app_id}_page_10_region_staff" for app_id in (130, 131, 230, 330)
+    }
+    assert targets["apex_app_130_page_10_region_staff"] == targets["apex_app_131_page_10_region_staff"]
+    assert len(set(targets.values())) == 3
+    assert all(graph.nodes[target]["label"] == "STAFF" for target in targets.values())
+
+
+def test_unicode_from_clause_consumes_quoted_identifiers_and_bare_names():
+    command = """
+from graphify.extractors.apexlang import _sql_dependencies
+reads, writes, calls = _sql_dependencies(
+    'SELECT * FROM "Équipe, FROM (detail)" e, موظف WHERE e.id = 1'
+)
+assert reads == {"ÉQUIPE, FROM (DETAIL)", "موظف"}, reads
+assert writes == calls == set()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", command], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_navigation_application_is_scoped_to_its_property_block(tmp_path):
+    app = tmp_path / "apps/HR/130/pages/page.apx"
+    app.parent.mkdir(parents=True)
+    app.write_text("""\
+page 10 (
+  dynamicAction Navigate (
+    link {
+      target: {
+        page: 20
+        application: 900
+      }
+      fallback: {
+        page: 21
+      }
+    }
+    name: "Documentation says page: 99"
+    target: { page: 23 application: 902 clearCache: "text page: 98" }
+    link: "f?p=901:22:"
+  )
+)
+""")
+    result = extract_apexlang(app)
+    targets = {e["target"] for e in result["edges"] if e["relation"] == "navigates_to"}
+    assert targets == {
+        "apex_app_900_page_20", "apex_app_130_page_21",
+        "apex_app_901_page_22", "apex_app_902_page_23",
+    }
