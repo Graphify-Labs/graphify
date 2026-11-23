@@ -689,16 +689,18 @@ def to_html(
     # canonicalizes endpoint order, which would otherwise flip the arrow
     # for `calls` and `rationale_for` in the rendered graph (#563).
     vis_edges = []
+    file_view = G.graph.get("granularity") == "file"
     for u, v, data in G.edges(data=True):
         confidence = data.get("confidence", "EXTRACTED")
         relation = data.get("relation", "")
+        label = f"{relation} ({data['weight']})" if file_view and data.get("weight", 1) > 1 else relation
         true_src = data.get("_src", u)
         true_tgt = data.get("_tgt", v)
         vis_edges.append({
             "from": true_src,
             "to": true_tgt,
-            "label": relation,
-            "title": sanitize_label(f"{relation} [{confidence}]"),
+            "label": label,
+            "title": sanitize_label(f"{label} [{confidence}]"),
             "dashes": confidence != "EXTRACTED",
             "width": 2 if confidence == "EXTRACTED" else 1,
             "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},

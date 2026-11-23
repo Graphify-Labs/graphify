@@ -4404,7 +4404,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] [--no-dedup] "
+                "[--no-gitignore] [--code-only] [--file-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] "
                 "[--allow-dedup-shrink] [--timing]",
@@ -4444,6 +4444,7 @@ def dispatch_command(cmd: str) -> None:
         google_workspace = False
         global_merge = False
         code_only = False
+        file_only = False
         no_gitignore = False
         global_repo_tag: str | None = None
         # Performance/tuning knobs (issue #792). None means "use library default".
@@ -4513,6 +4514,8 @@ def dispatch_command(cmd: str) -> None:
                 no_dedup = True; i += 1
             elif a == "--code-only":
                 code_only = True; i += 1
+            elif a == "--file-only":
+                file_only = True; i += 1
             elif a == "--google-workspace":
                 google_workspace = True; i += 1
             elif a == "--no-gitignore":
@@ -4571,6 +4574,11 @@ def dispatch_command(cmd: str) -> None:
             print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
             sys.exit(1)
 
+        if file_only and (global_merge or cli_postgres_dsn is not None):
+            print("error: --file-only requires a file corpus and cannot use --global or --postgres",
+                  file=sys.stderr)
+            sys.exit(2)
+
         if no_dedup and dedup_llm:
             # --dedup-llm is pass 3 of the dedup pipeline, so with dedup off it
             # would be a silent no-op that still demands an API key.
@@ -4605,6 +4613,9 @@ def dispatch_command(cmd: str) -> None:
         # the skill.md pipeline.
         out_root = (out_dir.resolve() if out_dir else target)
         graphify_out = out_root / _GRAPHIFY_OUT
+        if file_only:
+            # A projection cannot serve as the baseline for a symbol rebuild.
+            graphify_out /= "file-only"
         graphify_out.mkdir(parents=True, exist_ok=True)
         # Persist corpus-shaping options so later update/watch/hook rebuilds
         # use the same file set as the initial extraction (#1886).
@@ -4647,7 +4658,7 @@ def dispatch_command(cmd: str) -> None:
         # and genuinely-deleted sources against the current corpus, so doc/
         # paper/image nodes survive a --code-only rebuild instead of being
         # dropped with the rest of the committed graph.
-        incremental_mode = existing_graph_path.exists() if has_path else False
+        incremental_mode = has_path and not file_only and existing_graph_path.exists()
         # --force: full scan, not the manifest-gated incremental diff — a warm
         # unchanged tree would otherwise dispatch zero files (#1894).
         incremental_mode = incremental_mode and not force
@@ -4660,8 +4671,10 @@ def dispatch_command(cmd: str) -> None:
         # would run _detect_incremental and drop unchanged code files from the AST
         # pass; instead we keep incremental_mode = False so all code files are
         # scanned, while merge_existing_graph below ensures build_merge still runs.
-        merge_existing_graph = incremental_mode or (code_only and existing_graph_path.exists())
-        if force and code_only and existing_graph_path.exists():
+        merge_existing_graph = incremental_mode or (
+            not file_only and code_only and existing_graph_path.exists()
+        )
+        if force and code_only and merge_existing_graph:
             print(
                 "[graphify extract] --force --code-only: full AST re-scan, "
                 "existing semantic layer preserved (no semantic pass this run)"
@@ -4780,7 +4793,7 @@ def dispatch_command(cmd: str) -> None:
             excluded_files = []
             graph_stale_sources = []
             unchanged_total = 0
-            if existing_graph_path.exists():
+            if not file_only and existing_graph_path.exists():
                 _seen_files = {f for _fl in files_by_type.values() for f in _fl}
                 _seen_files.update(detection.get("unclassified", []))
                 graph_stale_sources = _stale_graph_sources(
@@ -5654,7 +5667,7 @@ def dispatch_command(cmd: str) -> None:
                 print(f"error: could not invalidate file manifest: {exc}", file=sys.stderr)
                 sys.exit(1)
 
-        if no_cluster:
+        if no_cluster and not file_only:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
             # Dedupe nodes (by id) and parallel edges so the raw output matches the
@@ -5922,7 +5935,13 @@ def dispatch_command(cmd: str) -> None:
                 print(f"[graphify extract] {exc}", file=sys.stderr)
                 sys.exit(1)
         else:
-            G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
+            G = _build(
+                [merged], directed=file_only, dedup=not no_dedup,
+                dedup_llm_backend=dedup_backend, root=target,
+            )
+        if file_only:
+            from graphify.analyze import file_level_graph
+            G = file_level_graph(G)
         stages.mark("build")
         # G holds its own copy of every node and edge now. Drop the raw
         # extraction lists so cluster/analyze/export can reuse that memory.
@@ -5938,8 +5957,12 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
 
-        communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs,
-                                cache_dir=graphify_out)
+        if no_cluster:
+            communities = {0: list(G)}
+        else:
+            communities = _cluster(G, resolution=cli_resolution,
+                                    exclude_hubs_percentile=cli_exclude_hubs,
+                                    cache_dir=graphify_out)
         stages.mark("cluster")
         cohesion = _score_all(G, communities)
         try:
@@ -6080,6 +6103,12 @@ def dispatch_command(cmd: str) -> None:
             f"{len(communities)} communities"
         )
         print(f"[graphify extract] wrote {analysis_path}")
+        if file_only:
+            from graphify.exporters.html import _viz_node_limit, to_html
+
+            html_path = graphify_out / "graph.html"
+            if to_html(G, communities, str(html_path), node_limit=_viz_node_limit()):
+                print(f"[graphify extract] wrote {html_path}")
         if incremental_mode:
             _excl_note = f", {len(excluded_files)} excluded" if excluded_files else ""
             print(
@@ -6104,11 +6133,12 @@ def dispatch_command(cmd: str) -> None:
         # extract intentionally stops at graph.json + analysis; the report and
         # community labels are produced by `cluster-only` (or an agent's Step 5).
         # Point standalone users at it so communities get named (#1097).
-        print(
-            "[graphify extract] next: run "
-            f"`graphify cluster-only {graphify_out.parent}` "
-            "to generate GRAPH_REPORT.md and name communities"
-        )
+        if not file_only:
+            print(
+                "[graphify extract] next: run "
+                f"`graphify cluster-only {graphify_out.parent}` "
+                "to generate GRAPH_REPORT.md and name communities"
+            )
         _print_cloud_cta(graphify_out, G.number_of_nodes())
         stages.total()
 
