@@ -16,6 +16,8 @@ from pathlib import Path
 
 
 
+import pytest
+
 from graphify.extract import extract
 
 
@@ -406,3 +408,59 @@ def test_cobol_sibling_programs_with_end_program_are_unaffected(tmp_path):
     assert ("TWO", "TWO-PARA") in contains
     assert ("ONE", "TWO-PARA") not in contains
     assert ("TWO", "ONE-PARA") not in contains
+
+
+@pytest.mark.parametrize("statement", [
+    "SORT WORK-FILE ON ASCENDING KEY WS-KEY USING IN-FILE GIVING OUT-FILE.",
+    "SEARCH WS-ROW AT END MOVE 1 TO WS-FLAG.",
+    "NEXT SENTENCE.",
+    "INSPECT WS-TEXT TALLYING WS-COUNT FOR ALL 'X'.",
+    "STOP RUN.",
+    "EXEC SQL COMMIT END-EXEC.",
+    "EXEC SQL\n               COMMIT\n           END-EXEC.",
+])
+def test_cobol_procedure_copybook_is_known_by_any_statement(tmp_path, statement):
+    """The statement that shows a headerless copybook to be procedure code can
+    be any verb. With a short list of verbs, a copybook whose only statement
+    was a SORT or a SEARCH stayed data and lost its paragraph."""
+    copybook = tmp_path / "ROUTINE.cpy"
+    copybook.write_text(
+        "       ONLY-PARA.\n"
+        f"           {statement}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([copybook], cache_root=tmp_path)
+
+    kinds = {node["label"]: node["metadata"]["kind"] for node in result["nodes"]}
+    assert kinds == {"ROUTINE.cpy": "file", "ONLY-PARA": "paragraph"}
+
+
+@pytest.mark.parametrize("line", [
+    # A name that begins with a verb is not a statement.
+    "               OPEN-FILES.",
+    # A declaration, which the DATA DIVISION has as well.
+    "           EXEC SQL INCLUDE SQLCA END-EXEC.",
+    "           EXEC SQL\n               INCLUDE SQLCA\n           END-EXEC.",
+])
+def test_cobol_data_copybook_with_a_statement_lookalike_stays_data(tmp_path, line):
+    """After a lone `SPACES.` line, a data copybook was read as procedure code
+    when a later line looked like a statement, and lost its data items."""
+    copybook = tmp_path / "RECORD.cpy"
+    copybook.write_text(
+        "       01  WS-RECORD.\n"
+        "           05  WS-FILL             PIC X(10) VALUE\n"
+        "               SPACES.\n"
+        "           05  WS-NAME             PIC X(10) VALUE\n"
+        f"{line}\n"
+        "       01  WS-STATUS               PIC XX.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([copybook], cache_root=tmp_path)
+
+    kinds = {node["label"]: node["metadata"]["kind"] for node in result["nodes"]}
+    assert kinds == {
+        "RECORD.cpy": "file", "WS-RECORD": "data_item", "WS-FILL": "data_item",
+        "WS-NAME": "data_item", "WS-STATUS": "data_item",
+    }
