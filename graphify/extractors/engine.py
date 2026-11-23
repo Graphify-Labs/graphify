@@ -5,7 +5,9 @@ import hashlib
 import importlib
 import json
 import re
+import sys
 import threading
+from collections import deque
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -7974,6 +7976,359 @@ def _build_parser(ts_module: str, ts_language_fn: str):
         return None, str(e)
 
 
+# ---------------------------------------------------------------------------
+# C/C++ call-graph reachability (return / goto / case / static infinite loops)
+# ---------------------------------------------------------------------------
+# walk_calls used to visit every call_expression in a function body. Unconditional
+# `return;` (common CubeMX USER CODE early exit) left dead tails that still became
+# calls edges. Stopping fall-through after return fixes that, but labels reachable
+# via goto / switch case must resume extraction. Static `while(1)` / `for(;;)`
+# without a `break` out of that loop also cuts sibling fall-through; `return` /
+# `goto` inside do not restore it (goto reopens label targets separately).
+#
+# Warnings for skipped unreachable calls default ON. There is no CLI/UI for this;
+# callers may flip the module flag via set_c_cpp_unreachable_warnings().
+
+_C_CPP_WARN_UNREACHABLE: bool = True
+
+_C_BLOCK_TYPES = frozenset({
+    "compound_statement",
+    "preproc_if",
+    "preproc_ifdef",
+    "preproc_elif",
+    "preproc_else",
+})
+
+_C_SKIP_SIBLINGS = frozenset({"{", "}", "comment"})
+
+
+def set_c_cpp_unreachable_warnings(enabled: bool = True) -> None:
+    """Enable/disable stderr warnings for C/C++ fall-through-unreachable calls.
+
+    Default is enabled. Reserved knobs only — no CLI or .graphifyrc UI in this change.
+    """
+    global _C_CPP_WARN_UNREACHABLE
+    _C_CPP_WARN_UNREACHABLE = bool(enabled)
+
+
+def get_c_cpp_unreachable_warnings() -> bool:
+    """Return whether C/C++ unreachable-call stderr warnings are enabled."""
+    return _C_CPP_WARN_UNREACHABLE
+
+
+def _c_label_name(node) -> str | None:
+    if node.type != "labeled_statement":
+        return None
+    for child in node.children:
+        if child.type == "statement_identifier":
+            raw = child.text
+            if raw is None:
+                return None
+            return raw.decode("utf-8", errors="replace")
+    return None
+
+
+def _c_collect_goto_targets(node, out: set[str] | None = None) -> set[str]:
+    if out is None:
+        out = set()
+    if node.type == "goto_statement":
+        for child in node.children:
+            if child.type == "statement_identifier":
+                raw = child.text
+                if raw is not None:
+                    out.add(raw.decode("utf-8", errors="replace"))
+                break
+    for child in node.children:
+        _c_collect_goto_targets(child, out)
+    return out
+
+
+def _c_find_labeled_statement(node, name: str):
+    if node.type == "labeled_statement" and _c_label_name(node) == name:
+        return node
+    for child in node.children:
+        found = _c_find_labeled_statement(child, name)
+        if found is not None:
+            return found
+    return None
+
+
+def _c_node_contains(haystack, needle) -> bool:
+    if _c_same_node(haystack, needle):
+        return True
+    for child in haystack.children:
+        if _c_node_contains(child, needle):
+            return True
+    return False
+
+
+def _c_count_call_expressions(node) -> int:
+    n = 1 if node.type == "call_expression" else 0
+    for child in node.children:
+        n += _c_count_call_expressions(child)
+    return n
+
+
+def _c_is_constant_true_condition(node, *, allow_true_keyword: bool = False) -> bool:
+    """True when a while/for condition is a literal always-true form.
+
+    Number literals (``1``, ``1u``, …) always count. The boolean keyword
+    ``true`` is only trusted for C++: tree-sitter-c also emits a ``true`` node
+    for a C identifier/macro spelling (including ``TRUE`` and ``stdbool.h``'s
+    ``true`` before preprocessing), so treating it as infinite would hide
+    fall-through calls after a loop controlled by an ordinary variable. C
+    infinite loops are therefore detected via ``while (1)`` / ``for (;;)``
+    (and other numeric always-true forms), not via ``while (true)``.
+    """
+    if node is None:
+        return False
+    # C: parenthesized_expression; C++ while: condition_clause wrapping the expr.
+    if node.type in ("parenthesized_expression", "condition_clause") and node.named_child_count >= 1:
+        return _c_is_constant_true_condition(
+            node.named_children[0], allow_true_keyword=allow_true_keyword
+        )
+    if node.type == "number_literal":
+        raw = (node.text or b"").decode("utf-8", errors="replace").strip().lower()
+        return raw in {"1", "0x1", "1u", "1ul", "1ull", "1l", "1ll"}
+    if allow_true_keyword and node.type == "true":
+        return True
+    return False
+
+
+def _c_same_node(a, b) -> bool:
+    """tree-sitter may re-wrap Node on each .children access; compare spans."""
+    if a is b:
+        return True
+    if a is None or b is None:
+        return False
+    return (
+        a.start_byte == b.start_byte
+        and a.end_byte == b.end_byte
+        and a.type == b.type
+    )
+
+
+def _c_node_key(node) -> tuple[int, int, str]:
+    return (node.start_byte, node.end_byte, node.type)
+
+
+def _c_body_has_break_leaving_loop(node) -> bool:
+    """True if a ``break`` targets this loop (not a nested loop/switch).
+
+    ``return`` / ``goto`` do not restore fall-through to the next sibling after a
+    static infinite loop: return leaves the function, goto is handled by label
+    reachability. Only ``break`` makes the code after the loop fall-through-reachable.
+    """
+    if node.type == "break_statement":
+        return True
+    # Breaks inside nested loops/switches target those constructs, not this loop.
+    if node.type in (
+        "while_statement",
+        "for_statement",
+        "do_statement",
+        "switch_statement",
+    ):
+        return False
+    if node.type in (
+        "function_definition",
+        "function_declarator",
+        "abstract_function_declarator",
+    ):
+        return False
+    for child in node.children:
+        if _c_body_has_break_leaving_loop(child):
+            return True
+    return False
+
+
+def _c_is_static_infinite_loop(node, *, allow_true_keyword: bool = False) -> bool:
+    """``while(1)`` / ``for(;;)`` with no ``break`` out — cuts sibling fall-through.
+
+    The loop body is still walked for calls; ``goto`` targets after the loop are
+    activated separately. A ``break`` means after-loop siblings stay reachable.
+    C++ may also treat ``while (true)`` as infinite; C does not (see
+    ``_c_is_constant_true_condition``).
+    """
+    if node.type == "while_statement":
+        cond = node.child_by_field_name("condition")
+        body = node.child_by_field_name("body")
+        if not _c_is_constant_true_condition(cond, allow_true_keyword=allow_true_keyword):
+            return False
+        return body is None or not _c_body_has_break_leaving_loop(body)
+    if node.type == "for_statement":
+        cond = node.child_by_field_name("condition")
+        body = node.child_by_field_name("body")
+        # for(;;) has no condition field; for(;1;) is constant true.
+        if cond is not None and not _c_is_constant_true_condition(
+            cond, allow_true_keyword=allow_true_keyword
+        ):
+            return False
+        if cond is None or _c_is_constant_true_condition(
+            cond, allow_true_keyword=allow_true_keyword
+        ):
+            return body is None or not _c_body_has_break_leaving_loop(body)
+    return False
+
+
+def _c_is_sibling_terminal(node, *, allow_true_keyword: bool = False) -> bool:
+    """Direct sibling ends fall-through to the next sibling in this block."""
+    if node.type == "return_statement":
+        return True
+    if node.type == "goto_statement":
+        return True
+    if _c_is_static_infinite_loop(node, allow_true_keyword=allow_true_keyword):
+        return True
+    return False
+
+
+def _c_warn_unreachable_calls(path_hint: str, node, skipped_nodes) -> None:
+    if not _C_CPP_WARN_UNREACHABLE:
+        return
+    total = 0
+    first_line = None
+    for skipped in skipped_nodes:
+        n = _c_count_call_expressions(skipped)
+        if n and first_line is None:
+            first_line = skipped.start_point[0] + 1
+        total += n
+    if total <= 0:
+        return
+    loc = f"{path_hint}:{first_line}" if first_line is not None else path_hint
+    print(
+        f"[graphify] WARNING: {loc}: skipped {total} call expression(s) in "
+        f"fall-through-unreachable C/C++ code after return or a static infinite "
+        f"loop. AST modeling does not follow assembler jumps; such code may still "
+        f"run if entered that way. "
+        f"(toggle: graphify.extractors.engine.set_c_cpp_unreachable_warnings)",
+        file=sys.stderr,
+    )
+
+
+def _c_block_seed_indices(node, children: list) -> list[int]:
+    parent = getattr(node, "parent", None)
+    if parent is not None and parent.type == "switch_statement":
+        cases = [i for i, ch in enumerate(children) if ch.type == "case_statement"]
+        if cases:
+            return cases
+    if not children:
+        return []
+    return [0]
+
+
+def _c_cpp_walk_reachable_children(
+    node,
+    walk_fn,
+    caller_nid: str,
+    receiver_types,
+    extra_locals: frozenset[str],
+    *,
+    path_hint: str,
+    activated_labels: set[tuple[int, int, str]],
+    seed_override: list[int] | None = None,
+    allow_true_keyword: bool = False,
+) -> None:
+    """Walk only fall-through / goto / case-reachable siblings in a C/C++ block."""
+    children = list(node.children)
+    n = len(children)
+    if n == 0:
+        return
+
+    label_to_index: dict[str, int] = {}
+    for i, ch in enumerate(children):
+        if ch.type == "labeled_statement":
+            name = _c_label_name(ch)
+            if name:
+                label_to_index[name] = i
+
+    seeds = list(seed_override) if seed_override is not None else _c_block_seed_indices(node, children)
+    reachable: set[int] = set()
+    q: deque[int] = deque(seeds)
+
+    while q:
+        i = q.popleft()
+        if i < 0 or i >= n or i in reachable:
+            continue
+        ch = children[i]
+        reachable.add(i)
+        if ch.type in _C_SKIP_SIBLINGS:
+            q.append(i + 1)
+            continue
+
+        for tgt in _c_collect_goto_targets(ch):
+            if tgt in label_to_index:
+                q.append(label_to_index[tgt])
+
+        if _c_is_sibling_terminal(ch, allow_true_keyword=allow_true_keyword):
+            continue
+        if i + 1 < n:
+            q.append(i + 1)
+
+    nested_activated: list = []
+    goto_targets: set[str] = set()
+    for i in reachable:
+        _c_collect_goto_targets(children[i], goto_targets)
+    for tgt in goto_targets:
+        if tgt in label_to_index:
+            continue
+        lab = _c_find_labeled_statement(node, tgt)
+        if lab is None or _c_node_key(lab) in activated_labels:
+            continue
+        if any(_c_node_contains(children[i], lab) for i in reachable):
+            continue
+        nested_activated.append(lab)
+
+    skipped = [
+        children[i]
+        for i in range(n)
+        if i not in reachable and children[i].type not in _C_SKIP_SIBLINGS
+    ]
+    warn_skipped = [
+        s for s in skipped
+        if not any(_c_node_contains(s, lab) for lab in nested_activated)
+    ]
+    # Only warn on the outer fall-through cut, not when re-entering via seed_override
+    # for a nested label (avoids duplicate noise).
+    if seed_override is None:
+        _c_warn_unreachable_calls(path_hint, node, warn_skipped)
+
+    for i in sorted(reachable):
+        ch = children[i]
+        if ch.type in _C_SKIP_SIBLINGS:
+            continue
+        if ch.type == "labeled_statement":
+            activated_labels.add(_c_node_key(ch))
+        walk_fn(ch, caller_nid, receiver_types, extra_locals)
+
+    for lab in nested_activated:
+        key = _c_node_key(lab)
+        if key in activated_labels:
+            continue
+        parent = lab.parent
+        if parent is not None and parent.type in _C_BLOCK_TYPES:
+            kids = list(parent.children)
+            try:
+                start_i = next(i for i, c in enumerate(kids) if _c_same_node(c, lab))
+            except StopIteration:
+                activated_labels.add(key)
+                walk_fn(lab, caller_nid, receiver_types, extra_locals)
+                continue
+            activated_labels.add(key)
+            _c_cpp_walk_reachable_children(
+                parent,
+                walk_fn,
+                caller_nid,
+                receiver_types,
+                extra_locals,
+                path_hint=path_hint,
+                activated_labels=activated_labels,
+                seed_override=[start_i],
+                allow_true_keyword=allow_true_keyword,
+            )
+        else:
+            activated_labels.add(key)
+            walk_fn(lab, caller_nid, receiver_types, extra_locals)
+
+
 def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None,
     scan_root: Path | None = None,
@@ -11580,6 +11935,9 @@ def _extract_generic(
         "function_declaration", "generator_function_declaration",
         "generator_function")
 
+    # C/C++ goto/label activation across nested blocks (shared for one file extract).
+    _c_activated_labels: set[tuple[int, int, str]] = set()
+
     def walk_calls(
         node,
         caller_nid: str,
@@ -13007,8 +13365,29 @@ def _extract_generic(
                 if loop_locals:
                     extra_locals = extra_locals | frozenset(loop_locals)
 
-        for child in node.children:
-            walk_calls(child, caller_nid, receiver_types, extra_locals)
+        # C/C++: stop fall-through after unconditional return / static infinite
+        # loops; resume at goto labels and switch case/default entries. See
+        # _c_cpp_walk_reachable_children. Conditional returns stay inside if
+        # bodies so outer siblings remain reachable.
+        if (
+            config.ts_module in ("tree_sitter_c", "tree_sitter_cpp")
+            and node.type in _C_BLOCK_TYPES
+        ):
+            _c_cpp_walk_reachable_children(
+                node,
+                walk_calls,
+                caller_nid,
+                receiver_types,
+                extra_locals,
+                path_hint=str_path,
+                activated_labels=_c_activated_labels,
+                # C++ `true` is a real keyword; C `true`/`TRUE` may be a variable
+                # or stdbool macro spelling that tree-sitter still tags as `true`.
+                allow_true_keyword=config.ts_module == "tree_sitter_cpp",
+            )
+        else:
+            for child in node.children:
+                walk_calls(child, caller_nid, receiver_types, extra_locals)
 
     # Python: type `self.X` per class from the bindings in its methods so
     # `self.X.m()` can resolve corpus-side (#2860). Conflicting or untypable
