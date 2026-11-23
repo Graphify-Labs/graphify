@@ -21,12 +21,12 @@ _COPY = re.compile(
     rf"\bCOPY\s+(?:'([^']+)'|\"([^\"]+)\"|({_NAME}(?:\.[A-Z0-9-]+)?))",
     re.IGNORECASE,
 )
-# `GO TO A` and `GO TO A B C DEPENDING ON X`: the procedure names that follow,
-# separated by spaces or commas. The list is cut at the first word that is not
-# a target (see _GO_TO_STOP).
-_GO_TO = re.compile(
-    rf"\bGO\s+TO\s+({_NAME}(?:[\s,]+{_NAME})*)", re.IGNORECASE
-)
+# `GO TO A` and `GO TO A B C DEPENDING ON X`. _GO_TO finds the statement,
+# _GO_TO_WORDS the words that follow it, separated by spaces or commas. Which of
+# those are targets is decided by _go_to_targets: the words of whatever
+# statement comes next on the line match as well.
+_GO_TO = re.compile(r"\bGO\s+TO\s+", re.IGNORECASE)
+_GO_TO_WORDS = re.compile(rf"{_NAME}(?:[\s,]+{_NAME})*", re.IGNORECASE)
 _CALL = re.compile(r"\bCALL\s+(['\"])([A-Z0-9-]+)\1", re.IGNORECASE)
 _END_PROGRAM = re.compile(r"\bEND\s+PROGRAM\b", re.IGNORECASE)
 _DATA_ITEM = re.compile(
@@ -42,10 +42,31 @@ _NOT_PARAGRAPHS = frozenset({
 _PERFORM_MODIFIERS = frozenset({
     "UNTIL", "VARYING", "TIMES", "WITH", "TEST", "FOREVER",
 })
-# Words that end the target list of a GO TO. After DEPENDING comes a data name.
-# After OF/IN comes the section that qualifies the paragraph before it: the
-# paragraph is still a target, the section is not.
-_GO_TO_STOP = frozenset({"DEPENDING", "OF", "IN"})
+# In `A OF SEC` and `A IN SEC` the section only qualifies paragraph A: A is the
+# target, the section is not.
+_GO_TO_QUALIFIERS = frozenset({"OF", "IN"})
+
+
+def _go_to_targets(words: list[str]) -> list[str]:
+    """The procedure names a GO TO jumps to, from the words that follow it.
+
+    A plain `GO TO A` has exactly one target, so only the first word counts:
+    the rest of the line belongs to the next statement (`... GO TO A ELSE SET
+    B TO TRUE`). Only `GO TO A B C DEPENDING ON X` has several, and there the
+    list runs up to DEPENDING, with the section of a qualified name left out.
+    """
+    if "DEPENDING" not in words:
+        return words[:1]
+    targets: list[str] = []
+    skip = False
+    for word in words[:words.index("DEPENDING")]:
+        if skip:
+            skip = False
+        elif word in _GO_TO_QUALIFIERS:
+            skip = True
+        else:
+            targets.append(word)
+    return targets
 
 
 def _code_lines(source: str) -> list[tuple[int, str]]:
@@ -307,10 +328,14 @@ def extract_cobol(path: Path) -> dict:
         # paragraph that is only ever reached by a jump has no inbound edge at
         # all and looks like dead code, and a walk along the control flow stops
         # at every jump. `GO TO A B C DEPENDING ON X` can reach each of A, B, C.
-        for match in _GO_TO.finditer(masked):
-            for name in re.split(r"[\s,]+", match.group(1)):
-                if name in _GO_TO_STOP:
-                    break
+        jumps = list(_GO_TO.finditer(masked))
+        for index, match in enumerate(jumps):
+            # Up to the next GO TO on the line, which has targets of its own.
+            end = jumps[index + 1].start() if index + 1 < len(jumps) else len(masked)
+            words = _GO_TO_WORDS.match(masked, match.end(), end)
+            if words is None:
+                continue
+            for name in _go_to_targets(re.split(r"[\s,]+", words.group())):
                 pending_go_tos.append((current_scope, current_program, name, line))
 
         for match in _CALL.finditer(upper):

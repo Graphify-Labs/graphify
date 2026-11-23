@@ -235,6 +235,8 @@ def test_cobol_go_to_depending_on_links_every_listed_target_only(tmp_path):
         "           GO TO A-PARA, B-PARA C-PARA DEPENDING ON CHOICE.\n"
         "       OTHER-PARA.\n"
         "           GO TO A-PARA OF LAST-SEC.\n"
+        "       QUALIFIED-PARA.\n"
+        "           GO TO B-PARA OF LAST-SEC, C-PARA DEPENDING ON CHOICE.\n"
         "       A-PARA.\n"
         "           DISPLAY 'A'.\n"
         "       B-PARA.\n"
@@ -242,7 +244,7 @@ def test_cobol_go_to_depending_on_links_every_listed_target_only(tmp_path):
         "       C-PARA.\n"
         "           DISPLAY 'C'.\n"
         "       CHOICE.\n"
-        "           DISPLAY 'a paragraph that shares its name with the data item'.\n"
+        "           DISPLAY 'shares its name with the data item'.\n"
         "       LAST-SEC SECTION.\n"
         "       LAST-PARA.\n"
         "           STOP RUN.\n",
@@ -256,6 +258,37 @@ def test_cobol_go_to_depending_on_links_every_listed_target_only(tmp_path):
         ("MAIN-PARA", "B-PARA"),
         ("MAIN-PARA", "C-PARA"),
         ("OTHER-PARA", "A-PARA"),
+        ("QUALIFIED-PARA", "B-PARA"),
+        ("QUALIFIED-PARA", "C-PARA"),
+    }
+
+
+def test_cobol_go_to_without_depending_has_one_target(tmp_path):
+    """A plain `GO TO A` jumps to A alone. The words after it belong to the
+    next statement, and one of them can be the name of a paragraph: every word
+    up to the end of the line was read as a target."""
+    source = tmp_path / "single.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. SINGLE.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           IF WS-A = 1 GO TO ERR-PARA ELSE SET CHOICE TO TRUE.\n"
+        "           IF WS-A = 2 GO TO ERR-PARA ELSE GO TO LAST-PARA.\n"
+        "       ERR-PARA.\n"
+        "           STOP RUN.\n"
+        "       CHOICE.\n"
+        "           DISPLAY 'shares its name with the data item'.\n"
+        "       LAST-PARA.\n"
+        "           STOP RUN.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert _go_to_edges(result) == {
+        ("MAIN-PARA", "ERR-PARA"),
+        ("MAIN-PARA", "LAST-PARA"),
     }
 
 
