@@ -486,18 +486,36 @@ def test_cobol_perform_of_a_name_two_copybooks_define_is_left_unlinked(tmp_path)
     the PERFORM means cannot be told, so no edge is guessed."""
     program = tmp_path / "twice.cbl"
     program.write_text(_program(
-        "TWICE", "MAIN-PARA.", "    PERFORM SAME-NAME.", "COPY FIRST.", "COPY SECOND.",
+        "TWICE", "MAIN-PARA.", "    PERFORM SAME-NAME.", "    PERFORM ONLY-FIRST.",
+        "COPY FIRST.", "COPY SECOND.",
     ), encoding="utf-8")
     for name in ("FIRST", "SECOND"):
         (tmp_path / f"{name}.cpy").write_text(_copybook(
             "SAME-NAME.", f"    DISPLAY '{name}'.",
+            f"ONLY-{name}.", f"    DISPLAY 'only {name}'.",
         ), encoding="utf-8")
 
     result = extract(
         [program, tmp_path / "FIRST.cpy", tmp_path / "SECOND.cpy"], cache_root=tmp_path
     )
 
-    assert _copybook_performs(result) == set()
+    # The name only one copybook defines is linked, so the resolver did run.
+    assert _copybook_performs(result) == {("twice.cbl:MAIN-PARA", "FIRST.cpy:ONLY-FIRST")}
+
+
+def test_cobol_perform_resolves_for_upper_case_file_extensions(tmp_path):
+    """Source delivered as `PROG.CBL` with `BOOK.CPY`: with no lower-case COBOL
+    extension in the corpus the resolver was never started."""
+    program = tmp_path / "BILLING.CBL"
+    program.write_text(_program(
+        "BILLING", "MAIN-PARA.", "    PERFORM ERR-CHECK.", "    STOP RUN.", "COPY 'ERRORS.CPY'.",
+    ), encoding="utf-8")
+    copybook = tmp_path / "ERRORS.CPY"
+    copybook.write_text(_copybook("ERR-CHECK.", "    DISPLAY 'check'."), encoding="utf-8")
+
+    result = extract([program, copybook], cache_root=tmp_path)
+
+    assert _copybook_performs(result) == {("BILLING.CBL:MAIN-PARA", "ERRORS.CPY:ERR-CHECK")}
 
 
 def test_cobol_nested_program_restores_enclosing_scope_after_end_program(tmp_path):
