@@ -19,6 +19,9 @@ from mcp import types  # noqa: E402
 
 from graphify import serve as serve_mod  # noqa: E402
 
+# Every test here asserts wall-clock latency; flaky under xdist CPU contention.
+pytestmark = pytest.mark.serial
+
 DELAY = 0.8
 GRAPH = {"directed": True, "nodes": [{"id": "a", "label": "A", "community": 0}], "edges": []}
 
