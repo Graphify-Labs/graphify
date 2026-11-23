@@ -347,6 +347,158 @@ def test_cobol_data_copybook_is_still_read_as_data(tmp_path):
     }
 
 
+def _program(name: str, *body: str) -> str:
+    return "".join(
+        f"       {line}\n"
+        for line in ("IDENTIFICATION DIVISION.", f"PROGRAM-ID. {name}.", "PROCEDURE DIVISION.", *body)
+    )
+
+
+def _copybook(*body: str) -> str:
+    return "".join(f"       {line}\n" for line in body)
+
+
+def _copybook_performs(result: dict) -> set[tuple[str, str]]:
+    """(caller, target) of every cross-file PERFORM edge, each end as `file:LABEL`."""
+    names = {
+        node["id"]: f"{Path(node['source_file']).name}:{node['label']}"
+        for node in result["nodes"]
+        if node.get("source_file")
+    }
+    return {
+        (names[edge["source"]], names[edge["target"]])
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and edge.get("context") == "copybook_perform"
+    }
+
+
+def test_cobol_perform_resolves_between_a_program_and_its_copybook(tmp_path):
+    """A copybook is pasted into the program that copies it, so a PERFORM can
+    name a paragraph in the other file, in either direction. Each file was
+    resolved on its own, so both PERFORMs were dropped."""
+    program = tmp_path / "billing.cbl"
+    program.write_text(_program(
+        "BILLING",
+        "MAIN-PARA.",
+        "    PERFORM ERR-CHECK.",
+        "    STOP RUN.",
+        "CLEANUP.",
+        "    DISPLAY 'cleanup'.",
+        "COPY ERRORS.",
+    ), encoding="utf-8")
+    copybook = tmp_path / "ERRORS.cpy"
+    copybook.write_text(_copybook(
+        "ERR-CHECK.",
+        "    PERFORM CLEANUP.",
+    ), encoding="utf-8")
+
+    result = extract([program, copybook], cache_root=tmp_path)
+
+    assert _copybook_performs(result) == {
+        ("billing.cbl:MAIN-PARA", "ERRORS.cpy:ERR-CHECK"),
+        ("ERRORS.cpy:ERR-CHECK", "billing.cbl:CLEANUP"),
+    }
+    # The second run reads both files from the AST cache; the unresolved
+    # PERFORMs must come back with them.
+    cached = extract([program, copybook], cache_root=tmp_path)
+    assert _copybook_performs(cached) == _copybook_performs(result)
+
+
+def test_cobol_perform_is_not_matched_by_name_across_programs(tmp_path):
+    """A paragraph name is visible only inside its own program. A program that
+    does not copy the copybook gets no edge to its paragraph, nor to a
+    same-named paragraph of another program."""
+    copier = tmp_path / "copier.cbl"
+    copier.write_text(_program(
+        "COPIER", "MAIN-PARA.", "    PERFORM ERR-CHECK.", "COPY ERRORS.",
+    ), encoding="utf-8")
+    stranger = tmp_path / "stranger.cbl"
+    stranger.write_text(_program(
+        "STRANGER", "MAIN-PARA.", "    PERFORM ERR-CHECK.", "    PERFORM ONLY-HERE.",
+    ), encoding="utf-8")
+    other = tmp_path / "other.cbl"
+    other.write_text(_program(
+        "OTHER", "ONLY-HERE.", "    DISPLAY 'in another program'.",
+    ), encoding="utf-8")
+    copybook = tmp_path / "ERRORS.cpy"
+    copybook.write_text(_copybook("ERR-CHECK.", "    DISPLAY 'error'."), encoding="utf-8")
+
+    result = extract([copier, stranger, other, copybook], cache_root=tmp_path)
+
+    assert _copybook_performs(result) == {
+        ("copier.cbl:MAIN-PARA", "ERRORS.cpy:ERR-CHECK"),
+    }
+    names = {node["id"]: node["label"] for node in result["nodes"]}
+    stranger_calls = {
+        names.get(edge["target"])
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and edge["source_file"].endswith("stranger.cbl")
+    }
+    assert stranger_calls == set()
+
+
+def test_cobol_shared_copybook_performs_into_each_program_that_copies_it(tmp_path):
+    """A copybook two programs copy is part of both, so its PERFORM of a
+    paragraph each program defines gets an edge into each."""
+    for name in ("ALPHA", "BETA"):
+        (tmp_path / f"{name.lower()}.cbl").write_text(_program(
+            name, "MAIN-PARA.", "    PERFORM SHARED-STEP.", "CLEANUP.", "    EXIT.", "COPY SHARED.",
+        ), encoding="utf-8")
+    copybook = tmp_path / "SHARED.cpy"
+    copybook.write_text(_copybook("SHARED-STEP.", "    PERFORM CLEANUP."), encoding="utf-8")
+
+    result = extract(
+        [tmp_path / "alpha.cbl", tmp_path / "beta.cbl", copybook], cache_root=tmp_path
+    )
+
+    assert _copybook_performs(result) == {
+        ("alpha.cbl:MAIN-PARA", "SHARED.cpy:SHARED-STEP"),
+        ("beta.cbl:MAIN-PARA", "SHARED.cpy:SHARED-STEP"),
+        ("SHARED.cpy:SHARED-STEP", "alpha.cbl:CLEANUP"),
+        ("SHARED.cpy:SHARED-STEP", "beta.cbl:CLEANUP"),
+    }
+
+
+def test_cobol_perform_reaches_a_copybook_copied_by_a_copybook(tmp_path):
+    program = tmp_path / "nested.cbl"
+    program.write_text(_program(
+        "NESTED", "MAIN-PARA.", "    PERFORM INNER-STEP.", "COPY OUTER.",
+    ), encoding="utf-8")
+    (tmp_path / "OUTER.cpy").write_text(_copybook(
+        "OUTER-STEP.", "    PERFORM INNER-STEP.", "COPY INNER.",
+    ), encoding="utf-8")
+    (tmp_path / "INNER.cpy").write_text(_copybook(
+        "INNER-STEP.", "    DISPLAY 'inner'.",
+    ), encoding="utf-8")
+
+    result = extract(
+        [program, tmp_path / "OUTER.cpy", tmp_path / "INNER.cpy"], cache_root=tmp_path
+    )
+
+    assert _copybook_performs(result) == {
+        ("nested.cbl:MAIN-PARA", "INNER.cpy:INNER-STEP"),
+        ("OUTER.cpy:OUTER-STEP", "INNER.cpy:INNER-STEP"),
+    }
+
+
+def test_cobol_perform_of_a_name_two_copybooks_define_is_left_unlinked(tmp_path):
+    """Two copybooks of one program with a paragraph of the same name: which one
+    the PERFORM means cannot be told, so no edge is guessed."""
+    program = tmp_path / "twice.cbl"
+    program.write_text(_program(
+        "TWICE", "MAIN-PARA.", "    PERFORM SAME-NAME.", "COPY FIRST.", "COPY SECOND.",
+    ), encoding="utf-8")
+    for name in ("FIRST", "SECOND"):
+        (tmp_path / f"{name}.cpy").write_text(_copybook(
+            "SAME-NAME.", f"    DISPLAY '{name}'.",
+        ), encoding="utf-8")
+
+    result = extract(
+        [program, tmp_path / "FIRST.cpy", tmp_path / "SECOND.cpy"], cache_root=tmp_path
+    )
+
+    assert _copybook_performs(result) == set()
+
 
 def test_cobol_nested_program_restores_enclosing_scope_after_end_program(tmp_path):
     """A contained (nested) program's own PROGRAM-ID switches the active

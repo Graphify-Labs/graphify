@@ -433,6 +433,18 @@ def extract_cobol(path: Path) -> dict:
         target_id = paragraphs.get((program_id, name.casefold()))
         if target_id is not None:
             add_edge(caller_id, target_id, "calls", line)
+        else:
+            # Not a paragraph of this file. It may be one of a copybook the
+            # program copies, or of the program that copies this copybook:
+            # resolve_cobol_copybook_performs decides once every file is read.
+            raw_calls.append({
+                "caller_nid": caller_id,
+                "callee": name,
+                "language": "cobol",
+                "cobol_perform": True,
+                "source_file": source_file,
+                "source_location": f"L{line}",
+            })
 
     # After the PERFORMs, so that a paragraph that both performs and jumps to
     # the same target keeps its plain PERFORM edge (one edge per pair).
@@ -447,3 +459,103 @@ def extract_cobol(path: Path) -> dict:
         and (edge["target"] in seen_ids or edge["relation"] == "imports_from")
     ]
     return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
+
+
+def resolve_cobol_copybook_performs(
+    per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]
+) -> None:
+    """Link a PERFORM to a paragraph in another file of the same program.
+
+    The compiler pastes every copybook into the program that copies it, so one
+    program is spread over several files: a program can perform a paragraph of
+    a copybook, a copybook a paragraph of the program, and one copybook a
+    paragraph of another. The extractor reads a file at a time and leaves each
+    PERFORM it cannot resolve there in ``raw_calls`` (``cobol_perform``).
+
+    A program's files are the program itself and every copybook reached from
+    it through ``imports_from`` edges, copybooks that copy copybooks included.
+    A PERFORM is linked only to a paragraph of those files, and only when
+    exactly one of them has a paragraph of that name. A copybook that several
+    programs copy is part of each, so a PERFORM in it can get one edge per
+    program. Nothing is matched by name across programs.
+    """
+    cobol: dict[str, str] = {}
+    for node in all_nodes:
+        metadata = node.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("language") == "cobol" and node.get("id"):
+            cobol[node["id"]] = str(metadata.get("kind", ""))
+
+    # A paragraph belongs to the program or, in a copybook, to the file that
+    # contains it. A program's copybooks hang off the program node, a
+    # copybook's own off its file node.
+    owner: dict[str, str] = {}
+    copied: dict[str, set[str]] = {}
+    existing: set[tuple[str, str]] = set()
+    for edge in all_edges:
+        source, target, relation = edge.get("source"), edge.get("target"), edge.get("relation")
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        if relation == "calls":
+            existing.add((source, target))
+        elif source not in cobol:
+            continue
+        elif relation == "contains" and cobol.get(target) in ("paragraph", "section"):
+            owner[target] = source
+        elif relation == "imports_from" and cobol.get(target) == "file":
+            copied.setdefault(source, set()).add(target)
+
+    labels = {node["id"]: str(node.get("label", "")).upper() for node in all_nodes if node.get("id") in owner}
+    paragraphs: dict[str, dict[str, list[str]]] = {}
+    for paragraph_id, scope in owner.items():
+        paragraphs.setdefault(scope, {}).setdefault(labels[paragraph_id], []).append(paragraph_id)
+
+    def files_of(root: str) -> set[str]:
+        """The program (or copybook) and every copybook reached from it."""
+        seen = {root}
+        stack = [root]
+        while stack:
+            for copybook in copied.get(stack.pop(), ()):
+                if copybook not in seen:
+                    seen.add(copybook)
+                    stack.append(copybook)
+        return seen
+
+    programs = {nid: files_of(nid) for nid in sorted(cobol) if cobol[nid] == "program"}
+
+    for result in per_file:
+        for call in result.get("raw_calls", []):
+            if not call.get("cobol_perform"):
+                continue
+            caller = call.get("caller_nid")
+            name = str(call.get("callee", "")).upper()
+            if not isinstance(caller, str) or not name:
+                continue
+            scope = owner.get(caller, caller)
+            units = [files for files in programs.values() if scope in files]
+            if not units and cobol.get(scope) == "file":
+                # A copybook no program in the corpus copies still has its own copybooks.
+                units = [files_of(scope)]
+            for files in units:
+                candidates = sorted(
+                    paragraph_id
+                    for other in files
+                    if other != scope
+                    for paragraph_id in paragraphs.get(other, {}).get(name, ())
+                )
+                if len(candidates) != 1 or candidates[0] == caller:
+                    continue
+                pair = (caller, candidates[0])
+                if pair in existing:
+                    continue
+                existing.add(pair)
+                all_edges.append({
+                    "source": caller,
+                    "target": candidates[0],
+                    "relation": "calls",
+                    "context": "copybook_perform",
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
+                    "source_file": call.get("source_file", ""),
+                    "source_location": call.get("source_location"),
+                    "weight": 1.0,
+                })

@@ -60,7 +60,7 @@ from graphify.extractors.base import (  # noqa: F401
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
-from graphify.extractors.cobol import extract_cobol  # noqa: F401
+from graphify.extractors.cobol import extract_cobol, resolve_cobol_copybook_performs  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
     _is_cs_file,
@@ -10235,6 +10235,13 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver(
+        "cobol_copybook_performs",
+        frozenset({".cbl", ".cob", ".cobol", ".cpy"}),
+        resolve_cobol_copybook_performs,
+    )
+)
+register_language_resolver(
+    LanguageResolver(
         "solidity_type_references", frozenset({".sol"}), resolve_solidity_type_references
     )
 )
@@ -13552,6 +13559,12 @@ def extract(
         # bases; resolve_solidity_inherited_calls binds those. A corpus-wide
         # name match would link `_transfer()` to any contract's `_transfer`.
         if rc.get("solidity_call"):
+            continue
+        # A COBOL paragraph name is visible only inside its own program: the
+        # program's file and the copybooks it copies.
+        # resolve_cobol_copybook_performs binds those. A corpus-wide name match
+        # would link `PERFORM INIT` to any program's INIT paragraph.
+        if rc.get("cobol_perform"):
             continue
         # A Go predeclared function is never a cross-file call: the extractor
         # already drops bare `append(s, x)` (extractors/go.py), so this is the
