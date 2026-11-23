@@ -1,10 +1,14 @@
 """Tests for Oracle APEX 26.1+ APEXlang (.apx) detection and extraction."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
+import pytest
+
 from graphify.detect import FileType, classify_file
+from graphify.extract import extract
 from graphify.extractors.apexlang import extract_apexlang
 
 
@@ -87,6 +91,11 @@ def test_extract_apexlang_components_and_edges(tmp_path: Path):
         "active_scope" in str(n.get("id", "")).casefold()
         or "active_scope" in str(n.get("label", "")).casefold()
         for n in result["nodes"]
+    )
+    assert all(
+        "active_scope" not in endpoint.casefold()
+        for source, _, target in edges
+        for endpoint in (source, target)
     )
     assert (region_id, "calls", "hr_dispatch_pkg_active_status") in edges
     assert (process_id, "writes_to", "hr_worker_assignments") in edges
@@ -186,7 +195,126 @@ def test_database_mirror_auto_refreshes_on_add_and_edit(tmp_path: Path):
     assert (region_id, "reads_from", "database_archive_tables_emp_v2_archive_emp_v2") in second_edges
 
     # Adding a direct table HR_WORKERS in HR takes precedence on the next extraction.
-    (tables_dir / "HR_WORKERS.sql").write_text('CREATE TABLE "HR"."HR_WORKERS" (ID NUMBER);\n', encoding="utf-8")
+    added_table = tables_dir / "HR_WORKERS.sql"
+    added_table.write_text('CREATE TABLE "HR"."HR_WORKERS" (ID NUMBER);\n', encoding="utf-8")
 
     third_edges = {(e["source"], e["relation"], e["target"]) for e in extract_apexlang(apx_file)["edges"]}
     assert (region_id, "reads_from", "database_hr_tables_hr_workers_hr_hr_workers") in third_edges
+
+    added_table.unlink()
+    fourth_edges = {(e["source"], e["relation"], e["target"]) for e in extract_apexlang(apx_file)["edges"]}
+    assert (region_id, "reads_from", "database_archive_tables_emp_v2_archive_emp_v2") in fourth_edges
+
+
+def test_cached_apexlang_extraction_refreshes_when_only_database_mirror_changes(tmp_path):
+    app = tmp_path / "apps/HR/130/pages/page.apx"
+    app.parent.mkdir(parents=True)
+    app.write_text(SAMPLE_PAGE_APX, encoding="utf-8")
+    region_id = "apex_app_130_page_10_region_active_workers"
+
+    def reads():
+        result = extract([app], root=tmp_path, cache_root=tmp_path, parallel=False)
+        return {e["target"] for e in result["edges"]
+                if e["source"] == region_id and e["relation"] == "reads_from"}
+
+    assert "hr_workers" in reads()
+    table = tmp_path / "database/HR/tables/HR_WORKERS.sql"
+    table.parent.mkdir(parents=True)
+    table.write_text('CREATE TABLE "HR"."HR_WORKERS" (ID NUMBER);\n', encoding="utf-8")
+    assert "database_hr_tables_hr_workers_hr_hr_workers" in reads()
+    table.unlink()
+    assert "hr_workers" in reads()
+
+
+def test_oracle_mirror_rewire_preserves_unresolved_schema_and_plain_sql_binding(tmp_path):
+    pytest.importorskip("tree_sitter_sql")
+    sources = {
+        "apps/LOCAL/130/pages/page.apx": """\
+page 10 (
+  region Staff (
+    sqlQuery: ```sql
+      SELECT * FROM STAFF
+    ```
+  )
+)
+""",
+        "database/LOCAL/ords/schema.sql": """\
+BEGIN
+  ORDS.DEFINE_HANDLER(p_pattern => 'unknown', p_source => 'SELECT * FROM STAFF');
+  ORDS.DEFINE_HANDLER(p_pattern => 'local', p_source => 'SELECT * FROM LOCAL_DATA');
+  ORDS.DEFINE_HANDLER(p_pattern => 'explicit', p_source => 'SELECT * FROM OTHER.NAMED');
+END;
+/
+""",
+        "database/LOCAL/tables/LOCAL_DATA.sql": "CREATE TABLE LOCAL_DATA (ID NUMBER);",
+        "database/OTHER/tables/STAFF.sql": "CREATE TABLE STAFF (ID NUMBER);",
+        "database/OTHER/tables/NAMED.sql": "CREATE TABLE OTHER.NAMED (ID NUMBER);",
+        "plain/table.sql": "CREATE TABLE EXAMPLE (ID NUMBER);",
+        "plain/view.sql": "CREATE VIEW V_EXAMPLE AS SELECT * FROM EXAMPLE;",
+    }
+    paths = [tmp_path / name for name in sources]
+    for path, sql in zip(paths, sources.values()):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(sql, encoding="utf-8")
+    result = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    reads = {
+        (nodes[e["source"]]["label"], nodes[e["target"]]["source_file"])
+        for e in result["edges"]
+        if e["relation"] == "reads_from"
+    }
+    assert reads == {
+        ("Region: Staff", ""),
+        ("ORDS GET /unknown", ""),
+        ("ORDS GET /local", "database/LOCAL/tables/LOCAL_DATA.sql"),
+        ("ORDS GET /explicit", "database/OTHER/tables/NAMED.sql"),
+        ("V_EXAMPLE", "plain/table.sql"),
+    }
+
+
+def test_incremental_refresh_only_requeues_apexlang_from_affected_mirrors(tmp_path):
+    from graphify.extractors.apexlang import refresh_apexlang_paths
+
+    page = tmp_path / "first/apps/HR/130/pages/page.apx"
+    other_page = tmp_path / "second/apps/HR/131/pages/page.apx"
+    standalone = tmp_path / "standalone.apx"
+    mirror = tmp_path / "first/database/HR/tables/WORKERS.sql"
+    synonym = Path("first/database/HR/synonyms/WORKERS.sql")
+    plain_sql = tmp_path / "plain.sql"
+    corpus = [page, other_page, standalone, mirror, plain_sql]
+
+    assert refresh_apexlang_paths([mirror], corpus, root=tmp_path) == [mirror, page]
+    assert refresh_apexlang_paths([], corpus, [synonym], root=tmp_path) == [page]
+    assert refresh_apexlang_paths([page, mirror], corpus, root=tmp_path) == [page, mirror]
+    assert refresh_apexlang_paths([plain_sql], corpus, root=tmp_path) == [plain_sql]
+
+
+def test_graph_update_rebinds_unchanged_apexlang_after_mirror_add_and_remove(tmp_path, monkeypatch):
+    pytest.importorskip("tree_sitter_sql")
+    from graphify.watch import _rebuild_code
+
+    monkeypatch.chdir(tmp_path)
+    app = tmp_path / "apps/HR/130/pages/page.apx"
+    app.parent.mkdir(parents=True)
+    app.write_text(SAMPLE_PAGE_APX, encoding="utf-8")
+    table = tmp_path / "database/HR/tables/HR_WORKERS.sql"
+    table.parent.mkdir(parents=True)
+    graph_path = tmp_path / "graphify-out/graph.json"
+
+    def worker_targets():
+        assert _rebuild_code(tmp_path, incremental=True, no_cluster=True)
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        return {
+            nodes[edge["target"]]["source_file"]
+            for edge in graph["links"]
+            if edge["relation"] == "reads_from"
+            and edge["source"] == "apex_app_130_page_10_region_active_workers"
+            and "hr_workers" in edge["target"]
+        }
+
+    assert worker_targets() == {""}
+    table.write_text('CREATE TABLE "HR"."HR_WORKERS" (ID NUMBER);\n', encoding="utf-8")
+    assert worker_targets() == {"database/HR/tables/HR_WORKERS.sql"}
+    table.unlink()
+    assert worker_targets() == {""}

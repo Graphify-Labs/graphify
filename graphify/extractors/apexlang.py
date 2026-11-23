@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import unicodedata
+from collections.abc import Sequence
 
 from graphify.extractors.base import _read_source_text
 
@@ -143,6 +144,7 @@ class DatabaseMirror:
 
     TABLE_FOLDERS = ("tables", "views")
     INDEXED_FOLDERS = (*TABLE_FOLDERS, "packages", "synonyms")
+    OBJECT_FOLDERS = (*INDEXED_FOLDERS, "functions", "procedures", "triggers", "types", "ords")
     SYNONYM_TARGET_RE = re.compile(
         r'\bFOR\s+(?:"?([A-Za-z0-9_$#]+)"?\s*\.\s*)?"?([A-Za-z0-9_$#]+)"?\s*;',
         re.IGNORECASE,
@@ -185,6 +187,15 @@ class DatabaseMirror:
         parts = source.parts
         for index in range(len(parts) - 3, -1, -1):
             if parts[index] == "apps" and parts[index + 2].isdigit():
+                return cls(Path(*parts[:index]) if index else Path(), parts[index + 1])
+        return cls()
+
+    @classmethod
+    def for_database_file(cls, source: Path) -> DatabaseMirror:
+        """Locate the Oracle mirror from a SQL file in a schema's object folder."""
+        parts = source.parts
+        for index in range(len(parts) - 4, -1, -1):
+            if parts[index] == "database" and parts[index + 2] in cls.OBJECT_FOLDERS:
                 return cls(Path(*parts[:index]) if index else Path(), parts[index + 1])
         return cls()
 
@@ -277,6 +288,27 @@ class DatabaseMirror:
         else:
             return None
         return self._resolve(schema, name, "packages")
+
+
+def refresh_apexlang_paths(
+    changed: list[Path], corpus: Sequence[Path], removed: Sequence[Path] = (), *, root: Path,
+) -> list[Path]:
+    """Re-extract APEXlang files that depend on an edited or removed mirror."""
+    changed_mirrors = {
+        mirror.root
+        for path in (*changed, *removed)
+        if path.suffix.lower() == ".sql" and path.parent.name in DatabaseMirror.INDEXED_FOLDERS
+        for mirror in (DatabaseMirror.for_database_file(root / path),)
+        if mirror.root is not None
+    }
+    if not changed_mirrors:
+        return changed
+    dependent = (
+        path for path in corpus
+        if path.suffix.lower() == ".apx"
+        and DatabaseMirror.for_application_file(root / path).root in changed_mirrors
+    )
+    return list(dict.fromkeys([*changed, *dependent]))
 
 
 def _clean_identifier(value: str | None, fallback: str) -> str:

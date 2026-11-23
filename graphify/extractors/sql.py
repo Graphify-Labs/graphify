@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
@@ -93,211 +94,103 @@ _VIEW_RECOVERY_RX = re.compile(
 )
 _VIEW_AS_RX = re.compile(r'(?<!")\bAS\b(?!")', re.IGNORECASE)
 
-# Oracle REST Data Services (ORDS) schema exports define modules and handlers via
-# `ORDS.DEFINE_MODULE` / `ORDS.DEFINE_HANDLER`. Parsing the balanced call body
-# preserves `p_source` across concatenation (`||`, `CHR(10)`) and Oracle `q'...'`
-# alternative quotes while ignoring commented-out or string-embedded calls.
-_ORDS_CALL_RX = re.compile(
-    r"\bORDS\s*\.\s*(DEFINE_MODULE|DEFINE_HANDLER)\s*\(",
-    re.IGNORECASE,
+# ORDS export scripts use PL/SQL literals, including multiline and national
+# alternative quotes. Keep this mask separate from the generic SQL recovery
+# scanner, whose line-scoped literal handling is deliberate.
+_ORDS_LITERAL = (
+    r"(?<![\w$#])N?Q'(?:\[.*?\]'|\{.*?\}'|\(.*?\)'|<.*?>'"
+    r"|(?P<delimiter>[^\s'\[{(<]).*?(?-i:(?P=delimiter))')"
+    r"|(?:(?<![\w$#])N)?'(?:''|[^'])*'"
 )
-_ORDS_CLOSERS = {"[": "]", "{": "}", "<": ">", "(": ")"}
+_ORDS_LEXICAL_RX = re.compile(
+    rf"(?P<comment>--[^\n]*|/\*.*?(?:\*/|\Z))|(?P<literal>{_ORDS_LITERAL})"
+    r'|(?P<identifier>"(?:[^"]|"")*")',
+    re.IGNORECASE | re.DOTALL,
+)
+_ORDS_WORD_RX = re.compile(r"(?<![\w$#])ORDS(?![\w$#])", re.IGNORECASE)
+_ORDS_CALL_RX = re.compile(
+    r"(?<![\w$#])ORDS\s*\.\s*(DEFINE_MODULE|DEFINE_HANDLER)\s*\(", re.IGNORECASE
+)
+_ORDS_ARG_BOUNDARY_RX = re.compile(r"[(),]")
+_ORDS_ARG_NAME_RX = re.compile(r"\s*([A-Za-z_][\w$#]*)\s*=>\s*")
+_ORDS_STATIC_PART_RX = re.compile(
+    rf"\s*(?:(?P<literal>{_ORDS_LITERAL})|CHR\s*\(\s*(?P<ascii>[0-9]{{1,3}})\s*\))\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+_ORDS_CONCAT_RX = re.compile(r"\|\|")
+_ORDS_NULL_RX = re.compile(r"\s*NULL\s*", re.IGNORECASE)
+_ORDS_STATEMENT_END_RX = re.compile(r"\s*;")
 
 
-def _skip_plsql_q_literal(text: str, pos: int) -> tuple[int, str] | None:
-    """If text[pos:] starts a PL/SQL q'<delim>...<close>' literal, return (end_pos, inner)."""
-    if (
-        pos + 3 >= len(text)
-        or text[pos] not in ("q", "Q")
-        or text[pos + 1] != "'"
-        or (pos > 0 and (text[pos - 1].isalnum() or text[pos - 1] == "_"))
-    ):
-        return None
-    delim = text[pos + 2]
-    if delim.isspace():
-        return None
-    close_seq = _ORDS_CLOSERS.get(delim, delim) + "'"
-    end = text.find(close_seq, pos + 3)
-    if end == -1:
-        return None
-    return end + 2, text[pos + 3 : end]
+def _mask_ords_sql(text: str, *, literals: bool = False, identifiers: bool = False) -> str:
+    """Blank PL/SQL comments and selected quoted tokens without moving offsets."""
+    parts = []
+    start = 0
+    for match in _ORDS_LEXICAL_RX.finditer(text):
+        kind = match.lastgroup
+        if kind == "comment" or (literals and kind == "literal") or (
+            identifiers and kind == "identifier"
+        ):
+            parts.append(text[start:match.start()])
+            parts.append("".join("\n" if ch == "\n" else " " for ch in match.group()))
+            start = match.end()
+    parts.append(text[start:])
+    return "".join(parts)
 
 
-def _skip_plsql_single_literal(text: str, pos: int) -> tuple[int, str]:
-    """Read a standard '...' PL/SQL string literal (with '' escapes) starting at pos."""
-    n = len(text)
-    i = pos + 1
-    chunks: list[str] = []
-    while i < n:
-        ch = text[i]
-        if ch == "'":
-            if i + 1 < n and text[i + 1] == "'":
-                chunks.append("'")
-                i += 2
-                continue
-            return i + 1, "".join(chunks)
-        chunks.append(ch)
-        i += 1
-    return n, "".join(chunks)
-
-
-def _scan_balanced_call_end(text: str, open_paren: int) -> int | None:
-    """Return the index of the ')' balancing text[open_paren] == '('."""
-    i, n, depth = open_paren + 1, len(text), 1
-    while i < n:
-        q_lit = _skip_plsql_q_literal(text, i)
-        if q_lit is not None:
-            i = q_lit[0]
-            continue
-        ch = text[i]
-        if ch == "'":
-            i, _ = _skip_plsql_single_literal(text, i)
-        elif ch == '"':
-            i += 1
-            while i < n:
-                if text[i] == '"':
-                    i += 1
-                    if i < n and text[i] == '"':
-                        i += 1
-                        continue
-                    break
-                i += 1
-        elif ch == "-" and i + 1 < n and text[i + 1] == "-":
-            eol = text.find("\n", i + 2)
-            i = n if eol == -1 else eol + 1
-        elif ch == "/" and i + 1 < n and text[i + 1] == "*":
-            end = text.find("*/", i + 2)
-            i = n if end == -1 else end + 2
-        elif ch == "(":
-            depth += 1
-            i += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-            i += 1
+def _ords_static_value(text: str, start: int, end: int) -> str | None:
+    """Decode literal concatenation and ASCII CHR calls in generated ORDS exports."""
+    if _ORDS_NULL_RX.fullmatch(text, start, end):
+        return ""
+    pieces: list[str] = []
+    while match := _ORDS_STATIC_PART_RX.match(text, start, end):
+        literal = match.group("literal")
+        if literal is not None:
+            prefix, _, body = literal.partition("'")
+            if prefix.upper().endswith("Q"):
+                pieces.append(body[1:-2])
+            else:
+                pieces.append(body[:-1].replace("''", "'"))
         else:
-            i += 1
+            code = int(match.group("ascii"))
+            if code > 127:
+                return None
+            pieces.append(chr(code))
+        if match.end() == end:
+            return "".join(pieces)
+        concat = _ORDS_CONCAT_RX.match(text, match.end(), end)
+        if concat is None:
+            break
+        start = concat.end()
     return None
 
 
-def _split_top_level_commas(body: str) -> list[str]:
-    """Split a balanced call body at commas outside strings, comments, and parens."""
-    parts: list[str] = []
-    i, n, depth, start = 0, len(body), 0, 0
-    while i < n:
-        q_lit = _skip_plsql_q_literal(body, i)
-        if q_lit is not None:
-            i = q_lit[0]
-            continue
-        ch = body[i]
-        if ch == "'":
-            i, _ = _skip_plsql_single_literal(body, i)
-        elif ch == '"':
-            i += 1
-            while i < n:
-                if body[i] == '"':
-                    i += 1
-                    if i < n and body[i] == '"':
-                        i += 1
-                        continue
+def _iter_ords_calls(src_text: str) -> Iterator[tuple[str, int, dict[str, str | None]]]:
+    """Yield module and handler calls, marking nonliteral named arguments as unknown."""
+    args_text = _mask_ords_sql(src_text)
+    structure = _mask_ords_sql(args_text, literals=True, identifiers=True)
+    for call in _ORDS_CALL_RX.finditer(structure):
+        args: dict[str, str | None] = {}
+        depth = 0
+        start = call.end()
+        for boundary in _ORDS_ARG_BOUNDARY_RX.finditer(structure, start):
+            token = boundary.group()
+            if token == "(":
+                depth += 1
+            elif token == ")" and depth:
+                depth -= 1
+            elif depth == 0:
+                arg = _ORDS_ARG_NAME_RX.match(args_text, start, boundary.start())
+                if arg is not None:
+                    args[arg.group(1).lower()] = _ords_static_value(
+                        args_text, arg.end(), boundary.start(),
+                    )
+                if token == ")":
+                    if _ORDS_STATEMENT_END_RX.match(structure, boundary.end()):
+                        yield call.group(1).upper(), src_text.count("\n", 0, call.start()) + 1, args
                     break
-                i += 1
-        elif ch == "-" and i + 1 < n and body[i + 1] == "-":
-            eol = body.find("\n", i + 2)
-            i = n if eol == -1 else eol + 1
-        elif ch == "/" and i + 1 < n and body[i + 1] == "*":
-            end = body.find("*/", i + 2)
-            i = n if end == -1 else end + 2
-        elif ch == "(":
-            depth += 1
-            i += 1
-        elif ch == ")":
-            depth = max(0, depth - 1)
-            i += 1
-        elif ch == "," and depth == 0:
-            parts.append(body[start:i])
-            i += 1
-            start = i
-        else:
-            i += 1
-    parts.append(body[start:])
-    return parts
+                start = boundary.end()
 
-
-def _extract_ords_arg_value(expr: str) -> str:
-    """Decode single/concatenated PL/SQL string literals inside an ORDS named argument."""
-    pieces: list[str] = []
-    gap_chars: list[str] = []
-    i, n = 0, len(expr)
-    while i < n:
-        q_lit = _skip_plsql_q_literal(expr, i)
-        if q_lit is not None:
-            end_i, val = q_lit
-            if pieces:
-                gap = "".join(gap_chars).replace("|", "").strip()
-                if gap:
-                    pieces.append("\n")
-            pieces.append(val)
-            gap_chars.clear()
-            i = end_i
-            continue
-        ch = expr[i]
-        if ch == "'":
-            end_i, val = _skip_plsql_single_literal(expr, i)
-            if pieces:
-                gap = "".join(gap_chars).replace("|", "").strip()
-                if gap:
-                    pieces.append("\n")
-            pieces.append(val)
-            gap_chars.clear()
-            i = end_i
-        elif ch == "-" and i + 1 < n and expr[i + 1] == "-":
-            eol = expr.find("\n", i + 2)
-            i = n if eol == -1 else eol + 1
-        elif ch == "/" and i + 1 < n and expr[i + 1] == "*":
-            end = expr.find("*/", i + 2)
-            i = n if end == -1 else end + 2
-        else:
-            gap_chars.append(ch)
-            i += 1
-    return "".join(pieces)
-
-
-_ORDS_PARAM_HEAD_RX = re.compile(
-    r"^\s*(?:--[^\n]*\n\s*|/\*.*?\*/\s*)*([A-Za-z_][\w$]*)\s*=>\s*(.*)$",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _parse_ords_named_args(body: str) -> dict[str, str]:
-    """Parse `param => value` arguments from an ORDS PL/SQL call body."""
-    args: dict[str, str] = {}
-    for chunk in _split_top_level_commas(body):
-        m = _ORDS_PARAM_HEAD_RX.match(chunk)
-        if not m:
-            continue
-        args[m.group(1).lower()] = _extract_ords_arg_value(m.group(2))
-    return args
-
-
-def _iter_ords_calls(
-    src_text: str, masked_src: str, ident_spans: list[tuple[int, int]]
-) -> list[tuple[str, int, dict[str, str]]]:
-    """Yield (call_name, 1based_line, parsed_args) for unmasked ORDS.DEFINE_* calls."""
-    calls: list[tuple[str, int, dict[str, str]]] = []
-    for m in _ORDS_CALL_RX.finditer(src_text):
-        if any(s <= m.start() < e for s, e in ident_spans):
-            continue
-        if not _ORDS_CALL_RX.match(masked_src, m.start()):
-            continue
-        close_paren = _scan_balanced_call_end(src_text, m.end() - 1)
-        if close_paren is None:
-            continue
-        line = src_text.count("\n", 0, m.start()) + 1
-        args = _parse_ords_named_args(src_text[m.end() : close_paren])
-        calls.append((m.group(1).upper(), line, args))
-    return calls
 
 # _mask_sql_comments is a linear character scanner, not a regex: the four
 # span kinds interact in ways a single pattern cannot express safely —
@@ -1617,41 +1510,42 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # Oracle REST Data Services (ORDS) module and handler definitions (`ORDS.DEFINE_MODULE`,
     # `ORDS.DEFINE_HANDLER`). Runs outside `if root.has_error:` because ORDS blocks
     # can also appear in scripts that parse cleanly.
-    if "ORDS." in src_text.upper():
-        ords_masked, ords_ident_spans = _scan_sql(src_text)
-        if "ORDS." in ords_masked.upper():
-            ords_calls = _iter_ords_calls(src_text, ords_masked, ords_ident_spans)
-            module_paths: dict[str, str] = {}
-            for call_name, _line, args in ords_calls:
-                if call_name == "DEFINE_MODULE":
-                    mod_name = args.get("p_module_name", "")
-                    if mod_name:
-                        module_paths[mod_name.upper()] = args.get("p_base_path", "")
-            for call_name, handler_line, args in ords_calls:
-                if call_name != "DEFINE_HANDLER":
-                    continue
+    if _ORDS_WORD_RX.search(src_text):
+        ords_calls = list(_iter_ords_calls(src_text))
+        module_paths: dict[str, str | None] = {}
+        for call_name, _line, args in ords_calls:
+            if call_name == "DEFINE_MODULE":
                 mod_name = args.get("p_module_name", "")
-                pattern = args.get("p_pattern", "")
-                method = (args.get("p_method", "") or "GET").upper()
-                handler_sql = args.get("p_source", "")
-                if not pattern:
-                    continue
-                base_path = module_paths.get(
-                    mod_name.upper(), f"/{mod_name.lower()}/" if mod_name else "/"
-                )
-                full_route = "/" + "/".join(
-                    part for part in (base_path.strip("/"), pattern.strip("/")) if part
-                )
-                handler_nid = _make_id(stem, "ords", method, full_route)
-                _add_node(handler_nid, f"ORDS {method} {full_route}", handler_line)
-                if handler_sql:
-                    masked_handler, _ = _scan_sql(handler_sql)
-                    seen_refs: set[tuple[str, str]] = set()
-                    for relation, tbl, _pos in _routine_body_refs(masked_handler, plsql=True):
-                        tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
-                        if (relation, tbl_nid) in seen_refs:
-                            continue
-                        seen_refs.add((relation, tbl_nid))
-                        _add_edge(handler_nid, tbl_nid, relation, handler_line)
+                if mod_name:
+                    module_paths[mod_name.upper()] = args.get("p_base_path", "")
+        for call_name, handler_line, args in ords_calls:
+            if call_name != "DEFINE_HANDLER":
+                continue
+            mod_name = args.get("p_module_name", "")
+            pattern = args.get("p_pattern", "")
+            method = args.get("p_method", "")
+            handler_sql = args.get("p_source", "")
+            if not pattern or mod_name is None or method is None:
+                continue
+            base_path = module_paths.get(
+                mod_name.upper(), f"/{mod_name.lower()}/" if mod_name else "/"
+            )
+            if base_path is None:
+                continue
+            method = (method or "GET").upper()
+            full_route = "/" + "/".join(
+                part for part in (base_path.strip("/"), pattern.strip("/")) if part
+            )
+            handler_nid = _make_id(stem, "ords", method, full_route)
+            _add_node(handler_nid, f"ORDS {method} {full_route}", handler_line)
+            if handler_sql:
+                masked_handler = _mask_ords_sql(handler_sql, literals=True)
+                seen_refs: set[tuple[str, str]] = set()
+                for relation, tbl, _pos in _routine_body_refs(masked_handler, plsql=True):
+                    tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
+                    if (relation, tbl_nid) in seen_refs:
+                        continue
+                    seen_refs.add((relation, tbl_nid))
+                    _add_edge(handler_nid, tbl_nid, relation, handler_line)
 
     return {"nodes": nodes, "edges": edges}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -165,18 +166,82 @@ def test_ords_extracted_even_when_tree_has_no_error(tmp_path, monkeypatch):
     """ORDS extraction must not depend on tree-sitter-sql raising an ERROR node."""
     import tree_sitter
 
-    class _CleanRoot:
-        type = "program"
-        has_error = False
-        children: list = []
+    parsed_sources = []
 
-    class _CleanTree:
-        root_node = _CleanRoot()
+    class CleanParser:
+        def __init__(self, language):
+            pass
 
-    monkeypatch.setattr(tree_sitter.Parser, "parse", lambda self, _src: _CleanTree())
+        def parse(self, source):
+            parsed_sources.append(source)
+            return SimpleNamespace(
+                root_node=SimpleNamespace(type="program", has_error=False, children=[])
+            )
+
+    monkeypatch.setattr(tree_sitter, "Parser", CleanParser)
 
     labels, edges = _graph(tmp_path, "clean_ords.sql", ORDS_EXPORT)
 
+    assert len(parsed_sources) == 1 and b"ORDS.DEFINE_HANDLER" in parsed_sources[0]
     assert "ORDS POST /hr-public/employees/transfer" in labels
     assert ("ORDS POST /hr-public/employees/transfer", "reads_from", "hr.employees") in edges
     assert ("ORDS POST /hr-public/employees/transfer", "writes_to", "hr.transfer_audit") in edges
+
+
+def test_ords_masks_multiline_literals_and_accepts_comments_between_tokens(tmp_path):
+    ddl = """\
+DECLARE
+  q_doc VARCHAR2(400) := q'{Example 'with quotes'
+    ORDS.DEFINE_HANDLER(p_pattern => 'ghost-q', p_source => 'SELECT * FROM GHOST');
+  }';
+  doc VARCHAR2(400) := 'Example
+    ORDS.DEFINE_HANDLER(p_pattern => ''ghost-standard'', p_source => ''SELECT * FROM GHOST'');
+  ';
+BEGIN
+  ORDS /* separator */ . DEFINE_MODULE(p_module_name => 'hr', p_base_path => '/api/');
+  ORDS. /* separator */ DEFINE_HANDLER(
+      p_module_name => 'hr',
+      p_pattern /* separator */ => 'staff',
+      p_source => q'[SELECT * FROM STAFF]');
+END;
+/
+"""
+    labels, edges = _graph(tmp_path, "ords.sql", ddl)
+    assert [label for label in labels if label.startswith("ORDS ")] == ["ORDS GET /api/staff"]
+    assert ("ORDS GET /api/staff", "reads_from", "STAFF") in edges
+
+
+@pytest.mark.parametrize("prefix", ["q", "nq", "NQ"])
+@pytest.mark.parametrize(("opener", "closer"), [("[", "]"), ("{", "}"), ("!", "!")])
+def test_ords_alternative_literals_keep_inner_parentheses(tmp_path, prefix, opener, closer):
+    source = f"{prefix}'{opener}SELECT ')' AS VAL FROM STAFF{closer}'"
+    ddl = f"""\
+BEGIN
+  ORDS.DEFINE_HANDLER(p_pattern => 'staff', p_source => {source});
+END;
+/
+"""
+    labels, edges = _graph(tmp_path, "ords.sql", ddl)
+    assert "ORDS GET /staff" in labels
+    assert ("ORDS GET /staff", "reads_from", "STAFF") in edges
+
+
+def test_ords_source_decodes_static_pieces_without_guessing_dynamic_values(tmp_path):
+    ddl = """\
+BEGIN
+  ORDS.DEFINE_HANDLER(p_pattern => 'static',
+      p_source => CHR(10) || N'SELECT ' || CHR(42) || ' FROM STAFF');
+  ORDS.DEFINE_HANDLER(p_pattern => 'dynamic',
+      p_source => get_source('SELECT * FROM GHOST'));
+  ORDS.DEFINE_HANDLER(p_pattern => 'unknown-method', p_method => get_method(),
+      p_source => 'SELECT * FROM GHOST');
+END;
+/
+"""
+    labels, edges = _graph(tmp_path, "ords.sql", ddl)
+    assert {label for label in labels if label.startswith("ORDS ")} == {
+        "ORDS GET /static", "ORDS GET /dynamic",
+    }
+    assert [edge for edge in edges if edge[1] == "reads_from"] == [
+        ("ORDS GET /static", "reads_from", "STAFF"),
+    ]

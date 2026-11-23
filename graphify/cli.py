@@ -5033,11 +5033,12 @@ def dispatch_command(cmd: str) -> None:
             _extraction_incomplete = True
 
         if incremental_mode:
+            from graphify.extractors.apexlang import refresh_apexlang_paths
             from graphify.extractors.terraform import refresh_terraform_paths
-            code_files = refresh_terraform_paths(
-                code_files, [Path(p) for p in files_by_type.get("code", [])],
-                [Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
-            )
+            code_corpus = [Path(p) for p in files_by_type.get("code", [])]
+            invalidated_code = [Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]]
+            code_files = refresh_terraform_paths(code_files, code_corpus, invalidated_code)
+            code_files = refresh_apexlang_paths(code_files, code_corpus, invalidated_code, root=target)
 
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
