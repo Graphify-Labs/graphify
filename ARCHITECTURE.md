@@ -80,6 +80,10 @@ C calls through struct function-pointer fields stay unresolved unless evidence
 identifies the target. A bare name match is insufficient for field callees.
 AST cache schema 53 retires older call facts.
 
+Go resolves a selector against its visible lexical binding before considering
+a same-named import. An unknown local receiver does not resolve as a package.
+AST cache schema 54 retires older call facts.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
