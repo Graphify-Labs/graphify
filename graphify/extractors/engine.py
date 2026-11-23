@@ -16,7 +16,7 @@ from graphify.extractors.base import (
 )
 from graphify.ids import DeclIdRegistry, normalize_id
 from graphify.extractors.models import LanguageConfig
-from graphify.extractors.python_scope import _python_param_names
+from graphify.extractors.python_scope import _python_param_names, _python_param_shadow_checker
 from graphify.extractors.resolution import _resolve_js_import_target
 from graphify.security import sanitize_metadata
 from pathlib import Path
@@ -7998,6 +7998,10 @@ def _extract_generic(
         _python_receiver_shadow_checker(root, source)
         if config.ts_module == "tree_sitter_python" else None
     )
+    python_param_shadowed = (
+        _python_param_shadow_checker(source)
+        if config.ts_module == "tree_sitter_python" else None
+    )
     python_module_instances = (
         _python_module_instance_types(root, source)
         if config.ts_module == "tree_sitter_python" else {}
@@ -12307,8 +12311,18 @@ def _extract_generic(
             # A known PHP $this receiver resolves against its owning class's methods.
             _builtin_member_call = is_member_call and callee_name in _LANGUAGE_BUILTIN_GLOBALS
             php_builtin_self_call = config.ts_module == "tree_sitter_php" and self_receiver == "this"
+            # A bare Python call through a parameter, own or captured, has an
+            # unknown target: neither the same-file nor the cross-file lookup
+            # may name one (#5418).
+            _python_param_call = (
+                python_param_shadowed is not None
+                and not is_member_call
+                and bool(callee_name)
+                and python_param_shadowed(node, callee_name)
+            )
             if (
                 callee_name
+                and not _python_param_call
                 and (callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call)
                 and not (
                     config.ts_module == "tree_sitter_python"
