@@ -31,6 +31,7 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `validate.py` | `validate_extraction(data)`, `assert_valid(data)` | extraction dict → **list of schema error strings** (`validate_extraction` returns them; `assert_valid` raises) |
 | `serve.py` | `serve(graph_path)`, `serve_http(graph_path, *, host, port, ...)` | graph file path → MCP stdio server / HTTP server |
 | `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
+| `git_cochange.py` | `mine_cochange(repo_root, ...)`, `refresh_cochange(root, out_dir)`, `cochange_partners(data, seed_file)` | git history → `graphify-out/cochange.json` (files that change in the same commits; last 3 years or 10,000 commits counted back from HEAD's date, renames followed, commits over 30 files skipped, ≤ 50 partners per file with support ≥ 2, limited to tracked files `graphify update` would scan). Written at the end of `graphify update`; `graphify affected` lists it in its own "Changed together in git history (not code links)" section, printed before the code links. It is never added to the graph as edges |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 
 Detection counts words from text and converted documents. Supported raster images,
