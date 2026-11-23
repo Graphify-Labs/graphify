@@ -154,3 +154,37 @@ def test_function_local_import_shadows_module_alias(tmp_path: Path) -> None:
     )
 
     assert _calls(result) == {("check()", "text()", "replacement.py", "EXTRACTED")}
+
+
+def test_function_local_import_does_not_bind_same_file_definition(tmp_path: Path) -> None:
+    # #5421: the local import names an absent package, so `main()` is that package's
+    # function, not the module-level `main` defined beside it.
+    module = _write(
+        tmp_path, "example.py",
+        "def main():\n    pass\n\n"
+        "def caller():\n    from absent_external_package import main\n    main()\n",
+    )
+
+    result = extract([module], root=tmp_path, cache_root=tmp_path / "out", parallel=False)
+
+    assert _calls(result) == set()
+
+
+def test_function_local_relative_import_does_not_leak_to_sibling_function(tmp_path: Path) -> None:
+    # #5421: `caller` imports `target` from a sibling module; `other` calls the module's
+    # own `target` and must not receive an edge to the imported one.
+    _write(tmp_path, "pkg/__init__.py", "")
+    helper = _write(tmp_path, "pkg/helper.py", "def target(): pass\n")
+    module = _write(
+        tmp_path, "pkg/mod.py",
+        "def target(): pass\n\n"
+        "def caller():\n    from .helper import target\n    target()\n\n"
+        "def other():\n    target()\n",
+    )
+
+    result = extract([module, helper], root=tmp_path, cache_root=tmp_path / "out", parallel=False)
+
+    assert _calls(result) == {
+        ("caller()", "target()", "pkg/helper.py", "EXTRACTED"),
+        ("other()", "target()", "pkg/mod.py", "EXTRACTED"),
+    }

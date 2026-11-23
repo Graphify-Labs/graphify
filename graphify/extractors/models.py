@@ -69,6 +69,9 @@ class _SymbolImportFact:
     target_path: Path
     imported_name: str
     line: int
+    # Set for a Python import inside a function: the (first, last) line of that
+    # function. The name is bound only within it (#5421). None means file-wide.
+    scope: tuple[int, int] | None = None
 
 @dataclass(frozen=True)
 class _SymbolAliasFact:
