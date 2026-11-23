@@ -211,17 +211,26 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
 
     # Group neighbors by relation type
     by_relation: dict[str, list[str]] = {}
+    directed = isinstance(G, nx.DiGraph)
     connections = (
-        (target if source == nid else source, data)
+        (target if source == nid else source, source != nid, data)
         for source, target, data in _incident_edges(G, [nid])
     )
-    for neighbor, ed in sorted(connections, key=lambda item: G.degree(item[0]), reverse=True):
+    for neighbor, incoming, ed in sorted(
+        connections, key=lambda item: G.degree(item[0]), reverse=True
+    ):
         neighbor_label = G.nodes[neighbor].get("label", neighbor)
         rel = ed.get("relation", "related")
         conf = ed.get("confidence", "")
         conf_str = f" `{conf}`" if conf else ""
+        # On a directed graph an incident edge can point either way. Mark the
+        # ones where this node is the target, so a directional relation like
+        # `calls` is not read backwards: an unmarked entry is outgoing (this
+        # node -> neighbor), an `(incoming)` entry is neighbor -> this node
+        # (#5369 follow-up).
+        dir_str = " _(incoming)_" if directed and incoming else ""
         by_relation.setdefault(rel, []).append(
-            f"{_md_link(neighbor_label, resolver)}{conf_str}"
+            f"{_md_link(neighbor_label, resolver)}{conf_str}{dir_str}"
         )
 
     lines += ["## Connections by Relation", ""]

@@ -2,6 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.116 (2026-11-23)
+
+Extractor, resolution, serve and export fixes. The Objective-C change alters node ids, so the AST cache schema bumps (51 to 52) and Objective-C files re-extract on the first build after upgrading; the other fixes need no rebuild.
+
+- Fix: **sections** `get_section`'s retry no longer reuses the full graph's trigram search index. The retry ran against a networkx subgraph view whose `.graph` dict is the same object serve caches the index on, so the retry searched stale, out-of-section ids and raised `KeyError`; the retry view now gets its own graph metadata, which also removes a shared-graph index-corruption hazard for concurrent serve callers (#5385, thanks @Deepjyoti-Sarmah).
+- Fix: **update** a clustered `GRAPH_REPORT.md` that is deleted while the graph is otherwise unchanged is regenerated instead of being skipped by the no-change gate; the graph itself is left byte-identical (restored from the partition cache) so there is no needless rebuild (#5402, thanks @Max17190).
+- Fix: **extract** a Svelte import that comes through an `export *` barrel now resolves to the real defining module, matching plain `.ts`. The cross-file resolver was masking `.vue` but not `.svelte`, so the Svelte `<script>` imports were lost to a template parse error; chained barrels resolve and ambiguous re-exports fail closed. Run `graphify extract . --force` once to repair an already-cached graph (#5403, thanks @Max17190).
+- Fix: **objc** an Objective-C method whose name folds onto a sibling's id within one `@interface`/`@implementation`/`@protocol` (a leading/trailing `_` as in `-setup`/`-_setup`, or a case-only difference) gets its own salted node id instead of overwriting it; the declaration and definition of one method still share a single node (#5390, thanks @ayushcodes10).
+- Fix: **wiki** directed-graph exports now include incoming edges, so a community audit no longer under-reports confidence (an incoming AMBIGUOUS edge could be invisible while the page read "EXTRACTED 100%"). On god-node pages incoming edges are marked `(incoming)` so a relation like `calls` is not read backwards (#5369, thanks @sdivyanshu90).
+
 ## 0.9.115 (2026-11-21)
 
 A security fix for a forced-SMB-authentication issue on Windows (GHSA-g6c9-j4vm-mwq4), plus a batch of extractor, resolution and incremental-update fixes. The extractor fixes that change output share one AST cache schema bump (50 to 51), so the first build after upgrading re-extracts the affected languages.

@@ -655,3 +655,29 @@ def test_directed_wiki_preserves_incoming_and_parallel_evidence(tmp_path):
     assert "- AMBIGUOUS: 1 (25%)" in community
     assert "- INFERRED: 1 (25%)" in community
     assert "- EXTRACTED: 2 (50%)" in community
+
+
+def test_god_node_article_marks_incoming_edges_on_directed_graph():
+    """On a directed graph, an incident edge where the god node is the target is
+    marked `(incoming)` so a relation like `calls` is not read backwards (#5369)."""
+    G = nx.DiGraph()
+    for n, lbl in [("hub", "hub()"), ("callee", "callee()"), ("caller", "caller()")]:
+        G.add_node(n, label=lbl, source_file=f"{n}.py")
+    G.add_edge("hub", "callee", relation="calls", confidence="EXTRACTED")  # outgoing
+    G.add_edge("caller", "hub", relation="calls", confidence="EXTRACTED")  # incoming
+    article = _god_node_article(G, "hub", {})
+    callee_line = next(line for line in article.splitlines() if "callee()" in line)
+    caller_line = next(line for line in article.splitlines() if "caller()" in line)
+    assert "(incoming)" not in callee_line  # outgoing stays unmarked
+    assert "(incoming)" in caller_line      # incoming is marked
+
+
+def test_god_node_article_no_direction_marker_on_undirected_graph():
+    """Undirected exports have no edge direction, so no marker is added."""
+    G = nx.Graph()
+    for n, lbl in [("hub", "hub()"), ("a", "a()"), ("b", "b()")]:
+        G.add_node(n, label=lbl, source_file=f"{n}.py")
+    G.add_edge("hub", "a", relation="calls")
+    G.add_edge("b", "hub", relation="calls")
+    article = _god_node_article(G, "hub", {})
+    assert "(incoming)" not in article
