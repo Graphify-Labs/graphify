@@ -4,11 +4,7 @@
 
 <p align="center">
   <a href="https://trendshift.io/repositories/25296?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-25296" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/25296" alt="Graphify-Labs%2Fgraphify | Trendshift" width="250" height="55"/></a>
-  <a href="https://runacap.com/ross-index/q3-2026/"><img src="https://runacap.com/wp-content/uploads/2026/02/ROSS_badge_black_Q3_2026.svg" width="260" height="56" alt="ROSS Index Q3 2026, #2 fastest-growing open-source startup"/></a>
-</p>
-
-<p align="center">
-  Recognition: #2 on Runa Capital's ROSS Index Q3 2026 (top 20 fastest-growing open-source startups by GitHub star growth). Graphify-Labs/graphify: 78.2x star growth, 122.5K stars. Source: <a href="https://runacap.com/ross-index/q3-2026/">https://runacap.com/ross-index/q3-2026/</a>
+  <a href="https://runacap.com/ross-index/q3-2026/"><img src="https://runacap.com/wp-content/uploads/2026/02/ROSS_badge_black_Q3_2026.svg" width="260" height="55" alt="ROSS Index Q3 2026, #2 fastest-growing open-source startup"/></a>
 </p>
 
 <div align="center">
