@@ -3310,7 +3310,7 @@ def _build_server(graph_path: str):
             seed_root=graph_root_for(Path(active_graph_path)) if model_d_pointers else None,
         )
         if model_d_pointers:
-            result = _format_model_d_pointer_hints(model_d_pointers) + "\\n\\n" + result
+            result = _format_model_d_pointer_hints(model_d_pointers) + "\n\n" + result
         querylog.log_query(
             kind="mcp_query",
             question=question,
