@@ -292,6 +292,87 @@ def test_cobol_go_to_without_depending_has_one_target(tmp_path):
     }
 
 
+def test_cobol_perform_thru_links_the_paragraphs_inside_the_range(tmp_path):
+    """`PERFORM A THRU Z` runs every paragraph written from A to Z. Only the
+    two ends were linked, so a paragraph in the middle of the range had no
+    inbound `calls` edge."""
+    source = tmp_path / "middle.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. MIDDLE.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           PERFORM A-PARA THRU Z-PARA.\n"
+        "           PERFORM Z-PARA THRU A-PARA.\n"
+        "           PERFORM A-PARA THRU MISSING-PARA.\n"
+        "           STOP RUN.\n"
+        "       BEFORE-PARA.\n"
+        "           DISPLAY 'before'.\n"
+        "       A-PARA.\n"
+        "           DISPLAY 'A'.\n"
+        "       M-PARA.\n"
+        "           DISPLAY 'M'.\n"
+        "       N-PARA.\n"
+        "           DISPLAY 'N'.\n"
+        "       Z-PARA.\n"
+        "           DISPLAY 'Z'.\n"
+        "       AFTER-PARA.\n"
+        "           DISPLAY 'after'.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    # Z written before A is not a range, and a range whose end is not a
+    # paragraph of the program is unknown: neither adds anything.
+    assert {target for caller, target in calls if caller == "MAIN-PARA"} == {
+        "A-PARA", "M-PARA", "N-PARA", "Z-PARA",
+    }
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    in_range = {
+        labels[edge["target"]]
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and edge.get("context") == "perform_range"
+    }
+    assert in_range == {"M-PARA", "N-PARA"}
+
+
+def test_cobol_perform_thru_a_section_runs_to_the_end_of_that_section(tmp_path):
+    """A range that ends on a section runs through that section's paragraphs,
+    and stops at the next section."""
+    source = tmp_path / "sections.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. SECTIONS.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-SEC SECTION.\n"
+        "       MAIN-PARA.\n"
+        "           PERFORM FIRST-SEC THRU LAST-SEC.\n"
+        "           STOP RUN.\n"
+        "       FIRST-SEC SECTION.\n"
+        "       F-PARA.\n"
+        "           DISPLAY 'F'.\n"
+        "       LAST-SEC SECTION.\n"
+        "       L1-PARA.\n"
+        "           DISPLAY 'L1'.\n"
+        "       L2-PARA.\n"
+        "           DISPLAY 'L2'.\n"
+        "       OTHER-SEC SECTION.\n"
+        "       O-PARA.\n"
+        "           DISPLAY 'O'.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    assert {target for caller, target in calls if caller == "MAIN-PARA"} == {
+        "FIRST-SEC", "F-PARA", "LAST-SEC", "L1-PARA", "L2-PARA",
+    }
+
+
+
 def test_cobol_nested_program_restores_enclosing_scope_after_end_program(tmp_path):
     """A contained (nested) program's own PROGRAM-ID switches the active
     program with no record of what it switched from, so code physically back

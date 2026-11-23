@@ -205,6 +205,11 @@ def extract_cobol(path: Path) -> dict:
     paragraphs: dict[tuple[str, str], str] = {}
     pending_performs: list[tuple[str, str, str, int]] = []
     pending_go_tos: list[tuple[str, str, str, int]] = []
+    # Per program: its paragraphs and sections in the order they are written,
+    # each with whether it is a section. `PERFORM A THRU Z` runs everything
+    # from A to Z in that order, so the range can only be filled in from it.
+    procedure_order: dict[str, list[tuple[str, bool]]] = {}
+    pending_ranges: list[tuple[str, str, str, str, int]] = []
     # A nested (contained) program's PROGRAM-ID switches current_program with
     # no record of what it switched FROM; everything after its own END
     # PROGRAM, including code physically back in the enclosing program, kept
@@ -305,6 +310,9 @@ def extract_cobol(path: Path) -> dict:
                     callable_node=True,
                 )
                 paragraphs[key] = paragraph_id
+                procedure_order.setdefault(current_program, []).append(
+                    (paragraph_id, bool(paragraph.group(2)))
+                )
                 add_edge(current_program, paragraph_id, "contains", line)
             current_scope = paragraph_id
             continue
@@ -314,15 +322,21 @@ def extract_cobol(path: Path) -> dict:
             # `PERFORM A THRU Z` runs the range A..Z, so both endpoints are
             # performed — link both. Only the entry paragraph was captured
             # before, leaving the range-end with no inbound edge ("what performs
-            # Z?" answered nothing even though this paragraph does). Intermediate
-            # paragraphs in the range are not individually linked (that needs
-            # source ordering); the two endpoints are the reliable, common signal.
+            # Z?" answered nothing even though this paragraph does). The
+            # paragraphs between the two are linked once the whole program has
+            # been read (pending_ranges), since that needs their source order.
             for group in (match.group(1), match.group(2)):
                 if group is None:
                     continue
                 name = group.upper()
                 if name not in _PERFORM_MODIFIERS:
                     pending_performs.append((current_scope, current_program, name, line))
+            if match.group(2) is not None:
+                first, last = match.group(1).upper(), match.group(2).upper()
+                if first not in _PERFORM_MODIFIERS and last not in _PERFORM_MODIFIERS:
+                    pending_ranges.append(
+                        (current_scope, current_program, first, last, line)
+                    )
 
         # `GO TO X` transfers control to paragraph X. Without an edge for it, a
         # paragraph that is only ever reached by a jump has no inbound edge at
@@ -361,6 +375,30 @@ def extract_cobol(path: Path) -> dict:
         target_id = paragraphs.get((program_id, name.casefold()))
         if target_id is not None:
             add_edge(caller_id, target_id, "calls", line, context="go_to")
+    # `PERFORM A THRU Z` also runs every paragraph written between A and Z.
+    # Without an edge for them, "what performs M?" answered nothing for a
+    # paragraph M in the middle of a range, and M looked like dead code unless
+    # something else performed it by name. Linked only when both ends are
+    # paragraphs of this program and Z is written after A; anything else is
+    # left at the two endpoint edges above.
+    for caller_id, program_id, first, last, line in pending_ranges:
+        start_id = paragraphs.get((program_id, first.casefold()))
+        end_id = paragraphs.get((program_id, last.casefold()))
+        if start_id is None or end_id is None:
+            continue
+        order = procedure_order.get(program_id, [])
+        ids = [paragraph_id for paragraph_id, _ in order]
+        start, end = ids.index(start_id), ids.index(end_id)
+        if end <= start:
+            continue
+        # A range that ends on a section runs to the end of that section: its
+        # paragraphs follow its header, up to the next section.
+        if order[end][1]:
+            while end + 1 < len(order) and not order[end + 1][1]:
+                end += 1
+        # The end of the range already has its endpoint edge; add_edge keeps that one.
+        for paragraph_id in ids[start + 1:end + 1]:
+            add_edge(caller_id, paragraph_id, "calls", line, context="perform_range")
 
     clean_edges = [
         edge for edge in edges
