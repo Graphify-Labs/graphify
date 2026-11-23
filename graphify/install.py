@@ -2381,8 +2381,15 @@ def _freebuff_project_install(project_dir: Path | None = None) -> None:
     skill_dst = _copy_skill_file("freebuff", project=True, project_dir=project_dir)
     _agents_install(project_dir, "freebuff", project=True)
     _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"])
-def _freebuff_project_uninstall(project_dir: Path | None = None) -> None:
-    """`graphify freebuff uninstall --project`: remove the project skill and section."""
+def _freebuff_project_uninstall(
+    project_dir: Path | None = None, *, report_missing: bool = True
+) -> None:
+    """`graphify freebuff uninstall --project`: remove the project skill and section.
+
+    Also the `uninstall --project --platform freebuff` path: Freebuff's only
+    always-on mechanism is AGENTS.md, so the section goes too, whichever install
+    form wrote it.
+    """
     project_dir = project_dir or Path(".")
     removed = _remove_skill_file("freebuff", project=True, project_dir=project_dir)
     if removed:
@@ -2391,6 +2398,8 @@ def _freebuff_project_uninstall(project_dir: Path | None = None) -> None:
         _platform_skill_destination("freebuff", project=True, project_dir=project_dir).parent
     ):
         return
+    elif report_missing:
+        print("nothing to remove")
     _agents_uninstall(project_dir, platform="freebuff")
 def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = "agents") -> None:
     """`graphify agents|freebuff uninstall`: remove the skill and the AGENTS.md section."""
@@ -2447,7 +2456,9 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
     else:
         install(platform=platform_name, project=True, project_dir=project_dir)
-def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> None:
+def _project_uninstall(
+    platform_name: str, project_dir: Path | None = None, *, report_missing: bool = True
+) -> None:
     """Remove project-scoped platform skill/config files only."""
     project_dir = project_dir or Path(".")
     platform_name = _canonical_platform(platform_name)
@@ -2472,9 +2483,14 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi", "agents", "freebuff"):
+    elif platform_name == "freebuff":
+        # Freebuff writes the project AGENTS.md section, so its uninstall must
+        # remove that too (and keep it while another platform still claims the
+        # shared skill directory).
+        _freebuff_project_uninstall(project_dir, report_missing=report_missing)
+    elif platform_name in ("copilot", "pi", "kimi", "agents"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
-        if not removed:
+        if not removed and report_missing:
             print("nothing to remove")
     elif platform_name == "codebuddy":
         # project=True keeps `uninstall --project` project-scoped; previously
@@ -2487,7 +2503,11 @@ def _project_uninstall_all(project_dir: Path | None = None) -> None:
     project_dir = project_dir or Path(".")
     print("Uninstalling project-scoped graphify files...\n")
     for platform_name in _PLATFORM_CONFIG:
-        _project_uninstall(platform_name, project_dir)
+        # `agents` and `freebuff` share one directory: whichever runs second finds
+        # it gone (or keeps its claim), which is not "nothing to remove".
+        _project_uninstall(
+            platform_name, project_dir, report_missing=platform_name not in ("agents", "freebuff")
+        )
     for platform_name in ("gemini", "cursor"):
         _project_uninstall(platform_name, project_dir)
     print("\nDone.")

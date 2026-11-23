@@ -117,6 +117,58 @@ def test_project_install_names_the_platform_it_replaces(tmp_path, capsys):
     assert installed.read_bytes() != claude_bundle
 
 
+def test_platform_project_uninstall_removes_the_freebuff_section(tmp_path):
+    """`uninstall --project --platform freebuff` must remove the AGENTS.md
+    section that `freebuff install --project` wrote, not just the skill."""
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    home.mkdir()
+    proj.mkdir()
+
+    _run(proj, ["freebuff", "install", "--project"], home)
+    agents_md = proj / "AGENTS.md"
+    assert "## graphify" in agents_md.read_text(encoding="utf-8")
+
+    _run(proj, ["uninstall", "--project", "--platform", "freebuff"], home)
+
+    assert not (proj / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    body = agents_md.read_text(encoding="utf-8") if agents_md.exists() else ""
+    assert "## graphify" not in body
+
+
+def test_platform_project_uninstall_keeps_the_section_for_another_claim(tmp_path):
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    home.mkdir()
+    proj.mkdir()
+
+    _run(proj, ["install", "--project", "--platform", "agents"], home)
+    _run(proj, ["freebuff", "install", "--project"], home)
+    agents_md = proj / "AGENTS.md"
+
+    _run(proj, ["uninstall", "--project", "--platform", "freebuff"], home)
+
+    assert (proj / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert "## graphify" in agents_md.read_text(encoding="utf-8")
+
+
+def test_project_uninstall_all_is_quiet_about_the_shared_pair(tmp_path, capsys):
+    """Tearing every platform down must not add a "nothing to remove" line for
+    the second half of the shared agents/freebuff directory."""
+    def missing_lines(with_freebuff: bool) -> int:
+        home = tmp_path / ("home-b" if with_freebuff else "home-a")
+        proj = tmp_path / ("proj-b" if with_freebuff else "proj-a")
+        home.mkdir()
+        proj.mkdir()
+        if with_freebuff:
+            _run(proj, ["freebuff", "install", "--project"], home)
+        capsys.readouterr()
+        _run(proj, ["uninstall", "--project"], home)
+        return capsys.readouterr().out.count("nothing to remove")
+
+    assert missing_lines(with_freebuff=True) == missing_lines(with_freebuff=False)
+
+
 def test_shared_bundle_install_does_not_warn_about_replacing(tmp_path, capsys):
     """agents and freebuff ship identical bytes, so swapping them is not a
     replacement of anything."""
