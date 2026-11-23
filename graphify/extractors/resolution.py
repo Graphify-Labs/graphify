@@ -12,6 +12,7 @@ from graphify.extractors.base import (  # noqa: F401
     _read_source_text,
     _read_text,
 )
+from graphify.extractors.python_scope import _python_param_shadow_checker
 from graphify.ids import normalize_id
 from graphify.rcfile import effective_suffix, get_language_overrides
 import functools
@@ -3535,10 +3536,14 @@ def _collect_python_symbol_resolution_facts(
                         continue  # A nearer import shadows the module binding.
                     call["_python_import_binding"] = imported_names[call["callee"]]
 
+        param_shadowed = _python_param_shadow_checker(source)
         for source_id, body in _python_top_level_function_bodies(path, root_node, source):
             for node in _walk_python_tree(body):
                 imported_name = _python_call_identifier(node, source)
                 if imported_name is None:
+                    continue
+                # A parameter named like an import hides it (#5418).
+                if param_shadowed(node, imported_name):
                     continue
                 facts.uses.append(
                     _SymbolUseFact(
