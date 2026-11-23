@@ -72,6 +72,10 @@ when no changed file is eligible for extraction. Changes to in-scope ignore
 files also refresh the eligible AST corpus so newly included files can enter
 the graph.
 
+Go resolves a selector against its visible lexical binding before considering
+a same-named import. An unknown local receiver does not resolve as a package.
+AST cache schema 52 retires older call facts.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
