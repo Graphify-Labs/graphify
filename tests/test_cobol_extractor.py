@@ -303,11 +303,10 @@ def test_cobol_perform_thru_links_the_paragraphs_inside_the_range(tmp_path):
         "       PROCEDURE DIVISION.\n"
         "       MAIN-PARA.\n"
         "           PERFORM A-PARA THRU Z-PARA.\n"
-        "           PERFORM Z-PARA THRU A-PARA.\n"
-        "           PERFORM A-PARA THRU MISSING-PARA.\n"
         "           STOP RUN.\n"
         "       BEFORE-PARA.\n"
-        "           DISPLAY 'before'.\n"
+        "           PERFORM Z-PARA THRU A-PARA.\n"
+        "           PERFORM A-PARA THRU MISSING-PARA.\n"
         "       A-PARA.\n"
         "           DISPLAY 'A'.\n"
         "       M-PARA.\n"
@@ -324,18 +323,22 @@ def test_cobol_perform_thru_links_the_paragraphs_inside_the_range(tmp_path):
     result = extract([source], cache_root=tmp_path)
 
     calls = _edge_labels(result, "calls")
-    # Z written before A is not a range, and a range whose end is not a
-    # paragraph of the program is unknown: neither adds anything.
     assert {target for caller, target in calls if caller == "MAIN-PARA"} == {
         "A-PARA", "M-PARA", "N-PARA", "Z-PARA",
     }
+    # Z written before A is not a range, and a range whose end is not a
+    # paragraph of the program is unknown: BEFORE-PARA gets the ends it names
+    # and nothing between them.
+    assert {target for caller, target in calls if caller == "BEFORE-PARA"} == {
+        "A-PARA", "Z-PARA",
+    }
     labels = {node["id"]: node["label"] for node in result["nodes"]}
     in_range = {
-        labels[edge["target"]]
+        (labels[edge["source"]], labels[edge["target"]])
         for edge in result["edges"]
         if edge["relation"] == "calls" and edge.get("context") == "perform_range"
     }
-    assert in_range == {"M-PARA", "N-PARA"}
+    assert in_range == {("MAIN-PARA", "M-PARA"), ("MAIN-PARA", "N-PARA")}
 
 
 def test_cobol_perform_thru_a_section_runs_to_the_end_of_that_section(tmp_path):
