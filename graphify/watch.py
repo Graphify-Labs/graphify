@@ -628,6 +628,8 @@ class _StoredSourcePaths:
         self.existing_source_root = project_root
         self._identity_cache: dict[str, str | None] = {}
         self._in_watch_root_cache: dict[str, bool] = {}
+        self._absolute_identity_cache: dict[tuple[str, Path], str | None] = {}
+        self._rebased_cache: dict[str, str | None] = {}
         relative_marker_prefix: str | None = None
 
         root_marker = out / ".graphify_root"
@@ -718,6 +720,19 @@ class _StoredSourcePaths:
         return posixpath.normpath(normalized) if normalized else normalized
 
     def absolute_identity(self, source_file: str | None, root: Path) -> str | None:
+        # An incremental update asks this for every stored node and edge while
+        # building the resolve context, so cache it per file and root like
+        # identity() below.
+        if not isinstance(source_file, str):
+            return self._absolute_identity_uncached(source_file, root)
+        key = (source_file, root)
+        try:
+            return self._absolute_identity_cache[key]
+        except KeyError:
+            identity = self._absolute_identity_cache[key] = self._absolute_identity_uncached(source_file, root)
+            return identity
+
+    def _absolute_identity_uncached(self, source_file: str | None, root: Path) -> str | None:
         normalized = self._normalize_source(source_file)
         if not normalized:
             return normalized
@@ -759,19 +774,31 @@ class _StoredSourcePaths:
         return self.identity(item.get("source_file")) in identities
 
     def rebase_preserved(self, item: dict) -> None:
-        identity = self.identity(item.get("source_file"))
+        # Called once for every preserved node, edge and hyperedge. The new
+        # source_file depends only on the old one, so work it out once per file.
+        source_file = item.get("source_file")
+        if not isinstance(source_file, str):
+            rebased = self._rebased_uncached(source_file)
+        else:
+            try:
+                rebased = self._rebased_cache[source_file]
+            except KeyError:
+                rebased = self._rebased_cache[source_file] = self._rebased_uncached(source_file)
+        if rebased is not None:
+            item["source_file"] = rebased
+
+    def _rebased_uncached(self, source_file: str | None) -> str | None:
+        """The source_file a preserved item is stored with, or None to leave it as is."""
+        identity = self.identity(source_file)
         if not identity:
-            return
+            return None
         identity_path = Path(identity)
         if not _is_relative_to(identity_path, self.watch_root):
-            normalized = self.normalize(item.get("source_file"))
-            if normalized:
-                item["source_file"] = normalized
-            return
+            return self.normalize(source_file) or None
         try:
-            item["source_file"] = identity_path.relative_to(self.project_root).as_posix()
+            return identity_path.relative_to(self.project_root).as_posix()
         except ValueError:
-            item["source_file"] = identity
+            return identity
 
 
 # A source_file that is a URL/virtual scheme (gdoc://, s3://, http://, ...) rather
@@ -1693,6 +1720,99 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
     return canonical
 
 
+# Sentinel: a normalizer returns this to skip an element (matches the old
+# _canonical_topology_for_compare's ``continue`` for non-dict nodes/edges).
+_SKIP = object()
+
+
+def _topology_signature_for_compare(graph_data: dict) -> dict:
+    """Order-independent topology fingerprint, equivalent to comparing the
+    sorted canonical form of ``_canonical_topology_for_compare`` but computed in
+    a single O(N+E) pass with no global sort and no full-graph re-serialize.
+
+    For each node/edge/hyperedge we hash *exactly* the same canonical per-element
+    JSON that ``_canonical_topology_for_compare`` used as its sort key (same field
+    stripping: nodes drop community/community_name/norm_label; links & edges
+    normalise _src/_tgt -> source/target and drop confidence_score), then combine
+    the per-element digests order-independently (modular SUM, which — unlike XOR —
+    preserves multiset multiplicity so duplicate/parallel elements can't cancel).
+    Each list is replaced by a tiny {count, digest} summary; the surrounding
+    metadata (built_at_commit dropped, graph schema_version/graphify_version
+    dropped) is carried through unchanged so the overall equality verdict is
+    identical to the old sort-and-serialize compare.
+    """
+    import hashlib
+
+    _MASK = (1 << 128) - 1
+
+    def _elem_digest(item) -> int:
+        payload = json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+        return int.from_bytes(
+            hashlib.blake2b(payload.encode("utf-8"), digest_size=16).digest(),
+            "big",
+        )
+
+    def _combine(items, normalize) -> dict:
+        total = 0
+        count = 0
+        for item in items:
+            norm = normalize(item)
+            if norm is _SKIP:
+                continue
+            total = (total + _elem_digest(norm)) & _MASK
+            count += 1
+        return {"__topo_count__": count, "__topo_digest__": f"{total:032x}"}
+
+    canonical = dict(graph_data)
+    canonical.pop("built_at_commit", None)
+
+    graph_meta = canonical.get("graph")
+    if isinstance(graph_meta, dict):
+        graph_meta = dict(graph_meta)
+        graph_meta.pop("schema_version", None)
+        graph_meta.pop("graphify_version", None)
+        canonical["graph"] = graph_meta
+
+    def _norm_node(node):
+        if not isinstance(node, dict):
+            return _SKIP
+        n = dict(node)
+        n.pop("community", None)
+        n.pop("community_name", None)
+        n.pop("norm_label", None)
+        return n
+
+    nodes = canonical.get("nodes")
+    if isinstance(nodes, list):
+        canonical["nodes"] = _combine(nodes, _norm_node)
+
+    def _norm_edge(edge):
+        if not isinstance(edge, dict):
+            return _SKIP
+        e = dict(edge)
+        true_src = e.pop("_src", None)
+        true_tgt = e.pop("_tgt", None)
+        if true_src is not None and true_tgt is not None:
+            e["source"] = true_src
+            e["target"] = true_tgt
+        e.pop("confidence_score", None)
+        return e
+
+    for key in ("links", "edges"):
+        items = canonical.get(key)
+        if not isinstance(items, list):
+            continue
+        canonical[key] = _combine(items, _norm_edge)
+
+    hyperedges = canonical.get("hyperedges")
+    if isinstance(hyperedges, list):
+        # _canonical_topology_for_compare sorts hyperedges verbatim (no field
+        # stripping, no dict filtering), so hash each element as-is.
+        canonical["hyperedges"] = _combine(hyperedges, lambda h: h)
+
+    return canonical
+
+
 def _topology_from_graph(G) -> dict:
     from networkx.readwrite import json_graph
     try:
@@ -2502,6 +2622,8 @@ def _rebuild_code(
                             f"[graphify watch] Incremental: none of the {scanned} scanned "
                             "files differ from the last build."
                         )
+                        if not excluded_rows:
+                            return True
 
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
@@ -2625,6 +2747,7 @@ def _rebuild_code(
             # an incremental rebuild, or their semantic nodes would be wiped.
             semantic_doc_set = {Path(os.path.abspath(p)) for p in semantic_doc_files}
             wanted: list[Path] = []
+            ignore_rules_changed = False
             change_root = Path.cwd().resolve()
             for raw in changed_paths:
                 candidates = _changed_path_candidates(
@@ -2632,6 +2755,12 @@ def _rebuild_code(
                     change_root=change_root,
                     watch_root=watch_root,
                 )
+                if any(
+                    cand.name in {".graphifyignore", ".gitignore"}
+                    and _is_relative_to(cand, watch_root)
+                    for cand in candidates
+                ):
+                    ignore_rules_changed = True
                 tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
                 if tracked is not None:
                     if tracked not in wanted and tracked not in semantic_doc_set:
@@ -2669,8 +2798,13 @@ def _rebuild_code(
                     _add_deleted_source(deleted_in_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
-            if not wanted and not deleted_paths:
-                print("[graphify watch] No tracked code files in change set - skipping rebuild.")
+            # Ignore changes can introduce sources absent from the prior graph.
+            # Cached extraction still avoids reparsing unchanged ASTs.
+            if ignore_rules_changed:
+                wanted = [p for p in code_files if p not in semantic_doc_files]
+            # With an existing graph, an empty batch can still have stale sources
+            # (for example a destination-only rename to an unsupported suffix).
+            if not wanted and not deleted_paths and not existing_graph.exists():
                 return True
             extract_targets = wanted
         else:
@@ -3131,8 +3265,8 @@ def _rebuild_code(
         if existing_graph_data and not legacy_layout:
             try:
                 same_topology = (
-                    json.dumps(_canonical_topology_for_compare(existing_graph_data), sort_keys=True, ensure_ascii=False)
-                    == json.dumps(_canonical_topology_for_compare(candidate_topology), sort_keys=True, ensure_ascii=False)
+                    json.dumps(_topology_signature_for_compare(existing_graph_data), sort_keys=True, ensure_ascii=False, default=str)
+                    == json.dumps(_topology_signature_for_compare(candidate_topology), sort_keys=True, ensure_ascii=False, default=str)
                 )
             except Exception:
                 same_topology = False
@@ -3167,7 +3301,7 @@ def _rebuild_code(
                 _stamp_build_state()
                 return True
 
-        communities = cluster(G)
+        communities = cluster(G, cache_dir=out)
         previous_node_community = _node_community_map(existing_graph_data)
         if previous_node_community:
             communities = remap_communities_to_previous(communities, previous_node_community)

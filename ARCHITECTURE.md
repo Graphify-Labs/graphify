@@ -67,6 +67,11 @@ When an import target ID collides with a C-family header, an explicit target
 path takes priority. Unhinted native includes keep the header fallback. Other
 languages require a unique compatible file candidate before remapping.
 
+Hook rebuilds reconcile persisted sources against the current corpus even
+when no changed file is eligible for extraction. Changes to in-scope ignore
+files also refresh the eligible AST corpus so newly included files can enter
+the graph.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
@@ -120,6 +125,20 @@ Unchanged type metadata is preserved by CLI/watch incremental resolution.
 Existing persisted graphs and source-evidence artifacts with old IDs require
 a full code rebuild: `graphify extract . --code-only --force`.
 
+Unresolved Python direct calls through unconditional top-level `from ... import ...`
+statements constrain name-based fallback to the imported name and module. An
+external import does not bind to an unrelated same-named corpus symbol, and an
+alias cannot acquire a second target named after the alias. This guard runs after
+per-file cache loading, including on changed-file extractions with unchanged
+resolution context; it does not change callback or function-local import handling.
+Explicitly supplied callers outside the scan root retain their existing fallback.
+Previously emitted false edges are removed when their caller is re-extracted.
+The binding is constrained to the module the import names directly; a call through
+a plain (non-package) module that re-exports a same-named symbol from elsewhere is
+left unresolved rather than chased one hop further, so a genuinely ambiguous
+re-export is dropped instead of guessed (package `__init__` re-exports still
+resolve through the symbol-resolution pass).
+
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
 prefixed declarations share the same package identity; foreign namespaces and
@@ -162,7 +181,7 @@ pairs with the separate `definition_file` / `definition_location` site.
 Objective-C declarations and implementations in one file follow the same rule.
 Duplicate records only backfill an end location when the corresponding file and
 start location match. Build, JSON export and global graphs preserve both fields.
-AST cache schema 50 invalidates results that predate declaration ranges.
+AST cache schema 52 invalidates results that predate declaration ranges.
 
 `graphify section` and the `get_section` MCP tool return the text of a Markdown
 heading's section (`graphify/sections.py`). The section's end is found at read

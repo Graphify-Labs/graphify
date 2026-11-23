@@ -1,5 +1,8 @@
 """Graph analysis: god nodes (most connected), surprising connections (cross-community), suggested questions."""
 from __future__ import annotations
+import math
+import random
+import re
 from pathlib import Path
 import networkx as nx
 
@@ -480,6 +483,83 @@ def _cross_community_surprises(
     return deduped[:top_n]
 
 
+# networkx 3.5 changed how sampled betweenness scores are rescaled.
+_NETWORKX_RESCALES_SAMPLES_BY_SOURCE = tuple(int(p) for p in re.findall(r"\d+", nx.__version__)[:2]) >= (3, 5)
+
+
+def _betweenness_centrality(G: nx.Graph, k: int | None, seed: int) -> dict[str, float]:
+    """The scores of ``nx.betweenness_centrality(G, k=k, seed=seed)``, bit for bit.
+
+    Unweighted, normalized and without endpoints, the only form used here. networkx
+    keeps the search state in dicts keyed by node id and rebuilds the path counts and
+    predecessor lists over the whole graph for each source. This numbers the nodes
+    once, keeps the same state in lists, and resets only the entries a source reached.
+    The search order, the accumulation order and the rescale for sampled sources
+    follow networkx 3.5 and later. Older networkx rescaled sampled scores differently,
+    so there this returns networkx's own result.
+    """
+    if not _NETWORKX_RESCALES_SAMPLES_BY_SOURCE:
+        return nx.betweenness_centrality(G, k=k, seed=seed)
+    if k is not None and k <= 1:
+        # A single sampled source can't be rescaled (the per-source factor divides
+        # by k-1). Defer to networkx, which handles it. suggest_questions never
+        # passes k <= 1; this only guards direct callers of the helper.
+        return nx.betweenness_centrality(G, k=k, seed=seed)
+    nodes = list(G)
+    n = len(nodes)
+    if k == n:
+        k = None
+    index = {node: i for i, node in enumerate(nodes)}
+    neighbors = [[index[w] for w in G[v]] for v in nodes]
+    sources = range(n) if k is None else [index[v] for v in random.Random(seed).sample(nodes, k)]
+    scores = [0.0] * n
+    dist = [-1] * n
+    sigma = [0.0] * n  # number of shortest paths from the source
+    delta = [0.0] * n
+    preds: list[list[int]] = [[] for _ in range(n)]
+    for s in sources:
+        dist[s] = 0
+        sigma[s] = 1.0
+        order = [s]  # the breadth-first queue, which is also the visit order
+        i = 0
+        while i < len(order):
+            v = order[i]
+            i += 1
+            next_dist = dist[v] + 1
+            sigma_v = sigma[v]
+            for w in neighbors[v]:
+                if dist[w] < 0:
+                    dist[w] = next_dist
+                    order.append(w)
+                elif dist[w] != next_dist:
+                    continue
+                sigma[w] += sigma_v
+                preds[w].append(v)
+        for w in reversed(order):
+            coeff = (1 + delta[w]) / sigma[w]
+            for v in preds[w]:
+                delta[v] += sigma[v] * coeff
+            if w != s:
+                scores[w] += delta[w]
+        for v in order:
+            dist[v] = -1
+            sigma[v] = delta[v] = 0.0
+            preds[v] = []
+    targets = n - 1  # a path through a node cannot end at that node
+    if targets >= 2:
+        if k is None:
+            scale = 1 / (targets * (targets - 1))
+            scores = [score * scale for score in scores]
+        else:
+            # A sampled source cannot lie on a path from itself.
+            source_scale = 1 / ((k - 1) * (targets - 1)) if k > 1 else math.nan
+            other_scale = 1 / (k * (targets - 1))
+            sampled = set(sources)
+            scores = [score * (source_scale if i in sampled else other_scale)
+                      for i, score in enumerate(scores)]
+    return dict(zip(nodes, scores))
+
+
 def suggest_questions(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -520,7 +600,7 @@ def suggest_questions(
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
     if G.number_of_edges() > 0:
         k = min(100, G.number_of_nodes()) if G.number_of_nodes() > 1000 else None
-        betweenness = nx.betweenness_centrality(G, k=k, seed=42)
+        betweenness = _betweenness_centrality(G, k, seed=42)
         # Top bridge nodes that are NOT file-level hubs
         bridges = sorted(
             [(n, s) for n, s in betweenness.items()

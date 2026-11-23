@@ -1,6 +1,7 @@
 """Structural extraction for Visual Basic .NET source files."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,75 @@ def resolve_vbnet_partial_calls(
             })
 
 
+# A line whose last " opens a string that the line never closes, with no '
+# comment before it. Only such a line can start a multi-line string; the
+# check runs in C so clean files skip the Python scan below.
+_OPEN_STRING_LINE = re.compile(rb"""(?m)^(?:[^'"\r\n]|"[^"\r\n]*")*"[^"\r\n]*\r?$""")
+
+
+def _flatten_multiline_strings(source: bytes) -> bytes:
+    """Rewrite string literals that span lines so the VB grammar can parse them.
+
+    VB 14 allows a string to cross line breaks, but tree-sitter-vb-dotnet
+    0.3.0 only accepts single-line strings (CodeAnt-AI/tree-sitter-vb-dotnet#9).
+    The text after the break is then read as code, a ``'`` there starts a
+    comment, and an unclosed ``(`` left behind loses the rest of the file.
+
+    Each such literal becomes ``""`` and every line break inside it becomes
+    `` _`` plus the break, so the statement stays one logical line and every
+    later line keeps its number. Code after the closing quote is kept.
+    """
+    out = bytearray()
+    i = 0
+    n = len(source)
+    at_token_start = True
+    while i < n:
+        ch = source[i]
+        # Comment: ' or REM to the end of the line; a " there opens nothing.
+        if ch == 0x27 or (
+            at_token_start
+            and source[i:i + 3].lower() == b"rem"
+            and (i + 3 == n or source[i + 3] in b" \t:\r\n")
+        ):
+            end = source.find(b"\n", i)
+            end = n if end == -1 else end
+            out += source[i:end]
+            i = end
+            continue
+        if ch == 0x22 or (ch == 0x24 and source[i + 1:i + 2] == b'"'):
+            start = i
+            interpolated = ch == 0x24
+            j = i + (2 if interpolated else 1)
+            depth = 0
+            while j < n:
+                c = source[j]
+                if interpolated and c == 0x7B:  # {
+                    depth += 1
+                elif interpolated and c == 0x7D and depth:  # }
+                    depth -= 1
+                elif c == 0x22 and not depth:
+                    if source[j + 1:j + 2] == b'"':  # "" is an escaped quote
+                        j += 2
+                        continue
+                    break
+                j += 1
+            if j >= n:  # unterminated: leave it to the parser
+                out += source[start:]
+                break
+            literal = source[start:j + 1]
+            if b"\n" in literal:
+                out += b'""' + b" _\n" * literal.count(b"\n")
+            else:
+                out += literal
+            i = j + 1
+            at_token_start = False
+            continue
+        out.append(ch)
+        at_token_start = not (chr(ch).isalnum() or ch == 0x5F or ch >= 0x80)
+        i += 1
+    return bytes(out)
+
+
 def extract_vbnet(path: Path) -> dict:
     try:
         import tree_sitter_vb_dotnet
@@ -87,7 +157,12 @@ def extract_vbnet(path: Path) -> dict:
 
     try:
         source = _read_source_bytes(path)
-        root = Parser(Language(tree_sitter_vb_dotnet.language())).parse(source).root_node
+        parser = Parser(Language(tree_sitter_vb_dotnet.language()))
+        # Flatten multi-line strings before parsing: the grammar's error
+        # recovery on them is both lossy and slow (seconds on a large file).
+        if _OPEN_STRING_LINE.search(source):
+            source = _flatten_multiline_strings(source)
+        root = parser.parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"VB.NET grammar failed to load: {exc}"}
 

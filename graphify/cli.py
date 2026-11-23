@@ -3183,7 +3183,8 @@ def dispatch_command(cmd: str) -> None:
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         stages.mark("load")
         print("Re-clustering...")
-        communities = cluster(G, resolution=co_resolution, exclude_hubs_percentile=co_exclude_hubs)
+        communities = cluster(G, resolution=co_resolution, exclude_hubs_percentile=co_exclude_hubs,
+                               cache_dir=graph_json.parent)
         # Mirror the watch/update path (#822): map new cids to prior ones by
         # node-overlap so the existing .graphify_labels.json keeps attaching
         # to the same conceptual community after re-clustering. Without this,
@@ -5937,7 +5938,8 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
 
-        communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs)
+        communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs,
+                                cache_dir=graphify_out)
         stages.mark("cluster")
         cohesion = _score_all(G, communities)
         try:
