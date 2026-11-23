@@ -363,11 +363,11 @@ def _claimed_platforms(skill_dir: Path) -> list[str]:
     return [name for name in data if isinstance(name, str)]
 
 
-def _record_claim_list(path: Path, names: list[str]) -> None:
-    """Atomically write a claim list (best effort)."""
+def _record_claim_list(path: Path, payload: object) -> None:
+    """Atomically write a claim file (best effort)."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(json.dumps(sorted(names)) + "\n", encoding="utf-8")
+        tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         with contextlib.suppress(OSError):
@@ -519,38 +519,89 @@ def _report_replaced_platform(
     print(f"  replacing        ->  the {names} skill at {skill_dst.parent} (shared directory)")
 
 
-def _section_claimers(skill_dir: Path) -> list[str]:
-    """Platforms recorded as having written this install's AGENTS.md section."""
+def _section_claims(skill_dir: Path) -> dict[str, list[str]]:
+    """AGENTS.md paths each platform is recorded as having written.
+
+    The section claims live beside a *user-scoped* skill but the file they
+    describe is per-project, so the claim records the path it belongs to. An
+    empty path is a legacy claim from the first version of this file, which
+    recorded names only; it is treated as claiming every AGENTS.md.
+    """
     try:
         data = json.loads((skill_dir / _SECTION_CLAIM_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
-    if not isinstance(data, list):
-        return []
-    return [name for name in data if isinstance(name, str)]
+        return {}
+    if isinstance(data, list):
+        return {name: [""] for name in data if isinstance(name, str)}
+    if not isinstance(data, dict):
+        return {}
+    claims: dict[str, list[str]] = {}
+    for name, paths in data.items():
+        if not isinstance(name, str):
+            continue
+        if isinstance(paths, str):
+            claims[name] = [paths]
+        elif isinstance(paths, list):
+            claims[name] = [path for path in paths if isinstance(path, str)]
+    return claims
 
 
-def _record_section_claim(skill_dst: Path, platform_name: str) -> None:
-    """Record ``platform_name`` as a writer of the AGENTS.md section (best effort)."""
-    names = sorted({*_section_claimers(skill_dst.parent), platform_name})
-    _record_claim_list(skill_dst.parent / _SECTION_CLAIM_FILE, names)
-
-
-def _release_section_claim(skill_dir: Path, platform_name: str) -> list[str]:
-    """Drop ``platform_name`` from the section claim and return the names left."""
-    remaining = [name for name in _section_claimers(skill_dir) if name != platform_name]
-    path = skill_dir / _SECTION_CLAIM_FILE
-    tmp = path.with_suffix(path.suffix + ".tmp")
+def _section_claim_key(agents_md: Path) -> str:
+    """Identity of a project's AGENTS.md across installs and uninstalls."""
     try:
-        if remaining:
-            tmp.write_text(json.dumps(remaining) + "\n", encoding="utf-8")
-            os.replace(tmp, path)
-        else:
-            path.unlink(missing_ok=True)
+        return str(agents_md.resolve())
     except OSError:
+        return str(agents_md)
+
+
+def _section_claimers(skill_dir: Path, agents_md: Path) -> list[str]:
+    """Platforms recorded as having written the section in ``agents_md``."""
+    key = _section_claim_key(agents_md)
+    return sorted(
+        name
+        for name, paths in _section_claims(skill_dir).items()
+        if "" in paths or key in paths
+    )
+
+
+def _record_section_claim(skill_dst: Path, platform_name: str, agents_md: Path) -> None:
+    """Record ``platform_name`` as a writer of ``agents_md``'s section (best effort)."""
+    skill_dir = skill_dst.parent
+    claims = _section_claims(skill_dir)
+    paths = claims.setdefault(platform_name, [])
+    key = _section_claim_key(agents_md)
+    paths = [path for path in paths if path != ""]
+    if key not in paths:
+        paths.append(key)
+    claims[platform_name] = sorted(paths)
+    _record_claim_list(skill_dir / _SECTION_CLAIM_FILE, claims)
+
+
+def _release_section_claim(skill_dir: Path, platform_name: str, agents_md: Path) -> list[str]:
+    """Drop this project's claim for ``platform_name``; return who still claims it.
+
+    Other projects keep their own claims, so uninstalling one project never
+    leaves a section behind in it, and never removes a section another project
+    still wants.
+    """
+    claims = _section_claims(skill_dir)
+    key = _section_claim_key(agents_md)
+    own = [path for path in claims.get(platform_name, []) if path not in ("", key)]
+    if own:
+        claims[platform_name] = own
+    else:
+        claims.pop(platform_name, None)
+    path = skill_dir / _SECTION_CLAIM_FILE
+    if claims:
+        _record_claim_list(path, claims)
+    else:
         with contextlib.suppress(OSError):
-            tmp.unlink()
-    return remaining
+            path.unlink()
+    return sorted(
+        name
+        for name, paths in claims.items()
+        if "" in paths or key in paths
+    )
 
 
 def _platforms_sharing_skill_path(
@@ -2331,9 +2382,14 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     _write_settings_with_backup(hooks_path, existing)
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
+def _agents_md_target(project_dir: Path | None) -> Path:
+    """The AGENTS.md a platform subcommand reads and writes for a project."""
+    return (project_dir or Path(".")) / "AGENTS.md"
+
+
 def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
-    target = (project_dir or Path(".")) / "AGENTS.md"
+    target = _agents_md_target(project_dir)
 
     if target.exists():
         content, newline = _read_keep_newline(target)
@@ -2404,7 +2460,7 @@ def _agents_platform_install(project_dir: Path | None = None, platform: str = "a
     """
     skill_dst = _copy_skill_file(platform)
     _agents_install(project_dir or Path("."), platform)
-    _record_section_claim(skill_dst, platform)
+    _record_section_claim(skill_dst, platform, _agents_md_target(project_dir))
 def _freebuff_install(project_dir: Path | None = None) -> None:
     """`graphify freebuff install`: the shared Agent-Skills bundle + AGENTS.md.
 
@@ -2425,7 +2481,7 @@ def _freebuff_project_install(project_dir: Path | None = None) -> None:
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file("freebuff", project=True, project_dir=project_dir)
     _agents_install(project_dir, "freebuff", project=True)
-    _record_section_claim(skill_dst, "freebuff")
+    _record_section_claim(skill_dst, "freebuff", _agents_md_target(project_dir))
     _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"])
 def _freebuff_project_uninstall(
     project_dir: Path | None = None, *, report_missing: bool = True, keep_shared: bool = True
@@ -2450,7 +2506,7 @@ def _freebuff_project_uninstall(
     # another name recorded writing it too (`agents --project` is skill-only, so
     # it never does).
     skill_dir = _platform_skill_destination("freebuff", project=True, project_dir=project_dir).parent
-    if _release_section_claim(skill_dir, "freebuff"):
+    if _release_section_claim(skill_dir, "freebuff", _agents_md_target(project_dir)):
         return
     _agents_uninstall(project_dir, platform="freebuff")
 def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = "agents") -> None:
@@ -2459,8 +2515,9 @@ def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = 
     if removed:
         print("skill removed")
     skill_dir = _platform_skill_destination(platform).parent
-    if _release_section_claim(skill_dir, platform):
-        # Another name wrote the same AGENTS.md section: the rules stay wanted.
+    agents_md = _agents_md_target(project_dir)
+    if _release_section_claim(skill_dir, platform, agents_md):
+        # Another name wrote the section in this same project: the rules stay wanted.
         return
     _agents_uninstall(project_dir or Path("."), platform=platform)
 def _project_install(platform_name: str, project_dir: Path | None = None, strict: bool = False) -> None:

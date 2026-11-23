@@ -450,6 +450,48 @@ def test_agents_uninstall_keeps_the_section_freebuff_wrote(tmp_path):
     assert "## graphify" not in body
 
 
+def _agents_md_text(project: Path) -> str:
+    """AGENTS.md body, tolerating the file being removed with its last section."""
+    target = project / "AGENTS.md"
+    return target.read_text(encoding="utf-8") if target.exists() else ""
+
+
+def test_user_scope_uninstall_cleans_the_project_it_runs_in(tmp_path, capsys):
+    """The section claim is global but AGENTS.md is per project: uninstalling in
+    one project must not be held back by a claim another project recorded."""
+    home, project_a, project_b = tmp_path / "home", tmp_path / "a", tmp_path / "b"
+    for directory in (home, project_a, project_b):
+        directory.mkdir()
+
+    _run(project_a, ["freebuff", "install"], home)
+    _run(project_b, ["agents", "install"], home)
+    capsys.readouterr()
+
+    _run(project_a, ["freebuff", "uninstall"], home)
+
+    assert "## graphify" not in _agents_md_text(project_a)
+    assert "## graphify" in _agents_md_text(project_b)
+    # The skill stays: `agents` still claims the shared directory.
+    assert (home / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_uninstalling_one_project_leaves_no_section_in_it(tmp_path, capsys):
+    """A second project installed by the same name must not keep this project's
+    section alive."""
+    home, project_a, project_b = tmp_path / "home", tmp_path / "a", tmp_path / "b"
+    for directory in (home, project_a, project_b):
+        directory.mkdir()
+
+    _run(project_a, ["freebuff", "install"], home)
+    _run(project_b, ["freebuff", "install"], home)
+    capsys.readouterr()
+
+    _run(project_a, ["freebuff", "uninstall"], home)
+
+    assert "## graphify" not in _agents_md_text(project_a)
+    assert "## graphify" in _agents_md_text(project_b)
+
+
 def test_full_uninstall_removes_a_doubly_claimed_directory(tmp_path, capsys):
     """A full teardown ignores the claims it is about to drop: no "skill kept"
     line for a directory the same command goes on to delete."""
