@@ -292,6 +292,60 @@ def test_cobol_go_to_without_depending_has_one_target(tmp_path):
     }
 
 
+def test_cobol_procedure_copybook_without_division_header_has_paragraphs(tmp_path):
+    """A copybook of procedure code is pasted into the PROCEDURE DIVISION of the
+    program that copies it, so it has no such header of its own. It was read as
+    data from top to bottom: no paragraph, no PERFORM edge."""
+    copybook = tmp_path / "ERRORS.cpy"
+    copybook.write_text(
+        "      * error handling, copied into the procedure division\n"
+        "       ERR-CHECK.\n"
+        "           IF WS-STATUS NOT = '00'\n"
+        "               PERFORM ERR-REPORT\n"
+        "           END-IF.\n"
+        "       ERR-REPORT.\n"
+        "           EXEC CICS\n"
+        "               PERFORM NOT-A-PARA\n"
+        "           END-EXEC.\n"
+        "           DISPLAY 'status ' WS-STATUS.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([copybook], cache_root=tmp_path)
+
+    kinds = {node["label"]: node["metadata"]["kind"] for node in result["nodes"]}
+    assert kinds == {
+        "ERRORS.cpy": "file", "ERR-CHECK": "paragraph", "ERR-REPORT": "paragraph",
+    }
+    assert _edge_labels(result, "calls") == {("ERR-CHECK", "ERR-REPORT")}
+    assert _edge_labels(result, "contains") == {
+        ("ERRORS.cpy", "ERR-CHECK"), ("ERRORS.cpy", "ERR-REPORT"),
+    }
+
+
+def test_cobol_data_copybook_is_still_read_as_data(tmp_path):
+    """A data copybook has no statements, so a lone `NAME.` line in it (a VALUE
+    clause that runs on to the next line) is not a paragraph, and the items
+    after it are still data items."""
+    copybook = tmp_path / "RECORD.cpy"
+    copybook.write_text(
+        "       01  WS-RECORD.\n"
+        "           05  WS-FILL             PIC X(10) VALUE\n"
+        "               SPACES.\n"
+        "           05  WS-STATUS           PIC XX.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([copybook], cache_root=tmp_path)
+
+    kinds = {node["label"]: node["metadata"]["kind"] for node in result["nodes"]}
+    assert kinds == {
+        "RECORD.cpy": "file", "WS-RECORD": "data_item", "WS-FILL": "data_item",
+        "WS-STATUS": "data_item",
+    }
+
+
+
 def test_cobol_nested_program_restores_enclosing_scope_after_end_program(tmp_path):
     """A contained (nested) program's own PROGRAM-ID switches the active
     program with no record of what it switched from, so code physically back
