@@ -15,6 +15,7 @@ from graphify.extractors.base import (
 )
 from graphify.ids import DeclIdRegistry, normalize_id
 from graphify.extractors.models import LanguageConfig
+from graphify.extractors.python_scope import _python_param_names
 from graphify.extractors.resolution import _resolve_js_import_target
 from graphify.security import sanitize_metadata
 from pathlib import Path
@@ -2860,36 +2861,6 @@ def _python_collect_param_refs(params_node, source: bytes) -> list[tuple[str, st
         if child.type in ("typed_parameter", "typed_default_parameter"):
             type_node = child.child_by_field_name("type")
             _python_collect_type_refs(type_node, source, False, out)
-    return out
-
-def _python_param_names(params_node, source: bytes) -> set[str]:
-    """Plain parameter identifiers declared on a Python `parameters` node.
-
-    Covers positional/keyword params plus `*args` / `**kwargs` and typed or
-    default forms — anything that binds a local name the function body can shadow
-    a module-level definition with.
-    """
-    out: set[str] = set()
-    if params_node is None:
-        return out
-    for child in params_node.children:
-        if child.type == "identifier":
-            out.add(_read_text(child, source))
-        elif child.type in (
-            "typed_parameter",
-            "default_parameter",
-            "typed_default_parameter",
-            "list_splat_pattern",
-            "dictionary_splat_pattern",
-        ):
-            # The bound name is the first identifier child (the rest is type/default).
-            name_n = child.child_by_field_name("name")
-            if name_n is None:
-                name_n = next(
-                    (c for c in child.children if c.type == "identifier"), None
-                )
-            if name_n is not None:
-                out.add(_read_text(name_n, source))
     return out
 
 # pytest fixtures (#ISSUE). A test or fixture names a fixture as a parameter:
