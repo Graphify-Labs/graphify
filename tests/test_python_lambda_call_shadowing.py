@@ -115,7 +115,7 @@ def test_lambda_parameter_blocks_local_edges_and_corpus_candidates(tmp_path, pla
 
     paths = sorted(tmp_path.rglob("*.py"))
     for _ in range(2):  # cold extraction, then the same per-file fragments from cache
-        _check_calls(extract(paths, root=tmp_path, parallel=False))
+        _check_calls(extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False))
 
 
 @pytest.mark.parametrize("placement", ["same", "cross"])
@@ -142,3 +142,44 @@ def test_lambda_parameter_stays_shadowed_when_a_collision_is_removed_and_restore
     if collision != caller:
         caller.write_text(caller_source + "\n# Re-resolve against the restored file.\n", encoding="utf-8")
         check_rebuild([caller])
+
+
+@pytest.mark.parametrize("placement", ["same", "cross"])
+def test_lambda_shadowing_uses_python_identifier_identity(tmp_path, placement):
+    caller = tmp_path / "probe.py"
+    collision = caller if placement == "same" else tmp_path / "collision.py"
+    source = """\
+def accept(value): return value
+
+def normalized_direct():
+    return lambda ℎandler: handler()
+
+def normalized_value():
+    return lambda ℎandler: accept(handler)
+
+class _Example:
+    def private_direct(self):
+        return lambda __handler: _Example__handler()
+
+    def private_value(self):
+        return lambda _Example__handler: accept(__handler)
+
+    def genuine(self):
+        return lambda __handler__: _Example__handler__()
+"""
+    definitions = """\
+def handler(): return 1
+def _Example__handler(): return 2
+def __handler(): return 3
+def _Example__handler__(): return 4
+"""
+    caller.write_text(source + (definitions if placement == "same" else ""), encoding="utf-8")
+    if placement == "cross":
+        collision.write_text(definitions, encoding="utf-8")
+    paths = sorted(tmp_path.glob("*.py"))
+    edges = _call_edges(extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False))
+    assert edges == {
+        ("normalized_value()", "accept()", "probe.py", "calls"),
+        (".private_value()", "accept()", "probe.py", "calls"),
+        (".genuine()", "_Example__handler__()", collision.name, "calls"),
+    }

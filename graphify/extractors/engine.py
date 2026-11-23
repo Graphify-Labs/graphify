@@ -6,6 +6,7 @@ import importlib
 import json
 import re
 import threading
+from unicodedata import normalize
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -11437,19 +11438,41 @@ def _extract_generic(
             "weight": 1.0,
         })
 
-    python_lambda_params: dict[int, set[str]] = {}
+    python_lambda_bindings: dict[int, tuple[str, set[str]]] = {}
+
+    def _python_private_prefix(node) -> str:
+        # A nested class's bases and decorators still use the outer class's
+        # private names. A class supplies its own prefix inside its body.
+        while (parent := node.parent) is not None:
+            if parent.type == "class_definition" and node == parent.child_by_field_name("body"):
+                class_name = parent.child_by_field_name("name")
+                if class_name is None:
+                    return ""
+                name = normalize("NFKC", _read_text(class_name, source)).lstrip("_")
+                return f"_{name}" if name else ""
+            node = parent
+        return ""
+
+    def _python_binding_name(name: str, private_prefix: str) -> str:
+        name = normalize("NFKC", name)
+        if name.startswith("__") and not name.endswith("__"):
+            return private_prefix + name
+        return name
 
     def _python_lambda_param_shadows(node, name: str) -> bool:
-        """A lambda binds parameters in its body, while defaults use the outer scope."""
+        """Check lambda body bindings. Defaults cannot see that lambda's own parameters."""
         while (parent := node.parent) is not None:
             if parent.type in ("function_definition", "class_definition", "module"):
                 break
             if parent.type == "lambda" and node == parent.child_by_field_name("body"):
-                if parent.id not in python_lambda_params:
-                    python_lambda_params[parent.id] = _python_param_names(
-                        parent.child_by_field_name("parameters"), source
+                if parent.id not in python_lambda_bindings:
+                    prefix = _python_private_prefix(parent)
+                    parameters = _python_param_names(parent.child_by_field_name("parameters"), source)
+                    python_lambda_bindings[parent.id] = (
+                        prefix, {_python_binding_name(param, prefix) for param in parameters},
                     )
-                if name in python_lambda_params[parent.id]:
+                prefix, parameters = python_lambda_bindings[parent.id]
+                if _python_binding_name(name, prefix) in parameters:
                     return True
             node = parent
         return False

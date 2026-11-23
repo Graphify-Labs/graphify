@@ -149,8 +149,10 @@ resolve through the symbol-resolution pass).
 
 A Python lambda parameter shadows same-named callables in its body. Bare calls
 through that parameter and references to it as a callback skip both in-file
-lookup and corpus fallback. Lambda defaults resolve in the enclosing scope.
-AST cache schema 52 invalidates fragments built before this rule. For an
+lookup and corpus fallback. The binding check applies Python's Unicode
+identifier normalization and class-private name mangling. A lambda's own
+parameters do not shadow names in its default expressions.
+AST cache schema 54 invalidates fragments built before this rule. For an
 existing graph, run `graphify update . --force` to refresh unchanged callers.
 
 Maven manifest ingestion parses XML namespace declarations before normalizing
