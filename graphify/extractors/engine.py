@@ -3200,6 +3200,29 @@ def _lexical_call_target(
         cls = method_owner.get(outer, outer) if outer else None
     return label_to_nid.get(callee)
 
+def _python_function_local_import_binds(call_node, name: str, source: bytes) -> bool:
+    """True when the function enclosing ``call_node`` binds ``name`` with an import
+    statement in its own body (nested defs and classes are not descended into)."""
+    from graphify.extractors.resolution import _python_enclosing_function, _python_imported_names
+
+    # Every enclosing function is checked: a nested function sees the names its
+    # outer functions import (#5428).
+    fn = _python_enclosing_function(call_node)
+    while fn is not None:
+        body = fn.child_by_field_name("body")
+        stack = [body] if body is not None else []
+        while stack:
+            current = stack.pop()
+            if current.type in ("import_statement", "import_from_statement"):
+                if any(local == name for _, local in _python_imported_names(current, source)):
+                    return True
+                continue
+            for child in current.children:
+                if child.type not in ("function_definition", "class_definition", "lambda"):
+                    stack.append(child)
+        fn = _python_enclosing_function(fn)
+    return False
+
 def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
     """Names bound LOCALLY inside a Python function: parameters plus assignment,
     `for`, `with ... as`, and comprehension targets.
@@ -12522,6 +12545,17 @@ def _extract_generic(
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
+                # Python: a name bound by an import inside the calling function is that
+                # import, not a same-file definition of the same name (#5421). Leave it
+                # unresolved here so the import binding resolves the call instead.
+                if (
+                    tgt_nid
+                    and config.ts_module == "tree_sitter_python"
+                    and not is_member_call
+                    and callee_name
+                    and _python_function_local_import_binds(node, callee_name, source)
+                ):
+                    tgt_nid = None
                 external_stub_target = bool(tgt_nid and not nid_to_sf.get(tgt_nid))
                 if tgt_nid and not external_stub_target:
                     pair = (caller_nid, tgt_nid)
