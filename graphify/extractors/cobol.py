@@ -21,6 +21,12 @@ _COPY = re.compile(
     rf"\bCOPY\s+(?:'([^']+)'|\"([^\"]+)\"|({_NAME}(?:\.[A-Z0-9-]+)?))",
     re.IGNORECASE,
 )
+# `GO TO A` and `GO TO A B C DEPENDING ON X`: the procedure names that follow,
+# separated by spaces or commas. The list is cut at the first word that is not
+# a target (see _GO_TO_STOP).
+_GO_TO = re.compile(
+    rf"\bGO\s+TO\s+({_NAME}(?:[\s,]+{_NAME})*)", re.IGNORECASE
+)
 _CALL = re.compile(r"\bCALL\s+(['\"])([A-Z0-9-]+)\1", re.IGNORECASE)
 _END_PROGRAM = re.compile(r"\bEND\s+PROGRAM\b", re.IGNORECASE)
 _DATA_ITEM = re.compile(
@@ -36,6 +42,10 @@ _NOT_PARAGRAPHS = frozenset({
 _PERFORM_MODIFIERS = frozenset({
     "UNTIL", "VARYING", "TIMES", "WITH", "TEST", "FOREVER",
 })
+# Words that end the target list of a GO TO. After DEPENDING comes a data name.
+# After OF/IN comes the section that qualifies the paragraph before it: the
+# paragraph is still a target, the section is not.
+_GO_TO_STOP = frozenset({"DEPENDING", "OF", "IN"})
 
 
 def _code_lines(source: str) -> list[tuple[int, str]]:
@@ -143,6 +153,7 @@ def extract_cobol(path: Path) -> dict:
         line: int,
         *,
         target_file: str | None = None,
+        context: str | None = None,
     ) -> None:
         key = (source_id, target_id, relation)
         if not source_id or not target_id or source_id == target_id or key in seen_edges:
@@ -159,6 +170,8 @@ def extract_cobol(path: Path) -> dict:
         }
         if target_file:
             edge["target_file"] = target_file
+        if context:
+            edge["context"] = context
         edges.append(edge)
 
     add_node(file_id, path.name, 1, kind="file")
@@ -170,6 +183,7 @@ def extract_cobol(path: Path) -> dict:
     in_exec = False
     paragraphs: dict[tuple[str, str], str] = {}
     pending_performs: list[tuple[str, str, str, int]] = []
+    pending_go_tos: list[tuple[str, str, str, int]] = []
     # A nested (contained) program's PROGRAM-ID switches current_program with
     # no record of what it switched FROM; everything after its own END
     # PROGRAM, including code physically back in the enclosing program, kept
@@ -289,6 +303,16 @@ def extract_cobol(path: Path) -> dict:
                 if name not in _PERFORM_MODIFIERS:
                     pending_performs.append((current_scope, current_program, name, line))
 
+        # `GO TO X` transfers control to paragraph X. Without an edge for it, a
+        # paragraph that is only ever reached by a jump has no inbound edge at
+        # all and looks like dead code, and a walk along the control flow stops
+        # at every jump. `GO TO A B C DEPENDING ON X` can reach each of A, B, C.
+        for match in _GO_TO.finditer(masked):
+            for name in re.split(r"[\s,]+", match.group(1)):
+                if name in _GO_TO_STOP:
+                    break
+                pending_go_tos.append((current_scope, current_program, name, line))
+
         for match in _CALL.finditer(upper):
             if _starts_inside_string(upper, match.start()):
                 continue
@@ -305,6 +329,13 @@ def extract_cobol(path: Path) -> dict:
         target_id = paragraphs.get((program_id, name.casefold()))
         if target_id is not None:
             add_edge(caller_id, target_id, "calls", line)
+
+    # After the PERFORMs, so that a paragraph that both performs and jumps to
+    # the same target keeps its plain PERFORM edge (one edge per pair).
+    for caller_id, program_id, name, line in pending_go_tos:
+        target_id = paragraphs.get((program_id, name.casefold()))
+        if target_id is not None:
+            add_edge(caller_id, target_id, "calls", line, context="go_to")
 
     clean_edges = [
         edge for edge in edges
