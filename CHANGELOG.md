@@ -2,6 +2,15 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.117 (2026-11-23)
+
+Query, export, serve and config fixes. No extraction or AST-cache change, so no rebuild is needed after upgrading.
+
+- Fix: **query** image nodes are demoted in seed scoring alongside documents and papers, so a caption-rich image no longer out-seeds real code for a query whose terms it happens to repeat (#445, thanks @ayushcodes10).
+- Fix: **export** export filenames honor the target filesystem's `NAME_MAX` (probed via `pathconf`, not assumed to be 255), so `graphify export obsidian/wiki/canvas` no longer aborts with `ENAMETOOLONG` on filesystems that report a lower limit such as eCryptfs (143); long names are truncated with a hash suffix and internal links use the shortened names (#2109, thanks @Synvoya).
+- Fix: **serve** the MCP server loads `graph.json` off the event loop, so a large graph reload no longer blocks concurrent requests; a request during a reload is served the current graph and a corrupt reload leaves the old graph intact (#5371, thanks @Deepjyoti-Sarmah).
+- Fix: **config** `.graphifyrc` now parses `demote_docs` / `query_demote_docs`, so a project can set doc demotion in the rcfile instead of only via the CLI flag; an explicit flag still overrides it (#5290, thanks @debojyoti10CC).
+
 ## 0.9.116 (2026-11-23)
 
 Extractor, resolution, serve and export fixes. The Objective-C change alters node ids, so the AST cache schema bumps (51 to 52) and Objective-C files re-extract on the first build after upgrading; the other fixes need no rebuild.

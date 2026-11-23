@@ -11,6 +11,7 @@ from collections import OrderedDict
 from pathlib import Path
 import threading
 from typing import NamedTuple
+import anyio
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.paths import consumed, read_graph_json
@@ -2993,8 +2994,6 @@ def _build_server(graph_path: str):
         run with no await between them, so the shared ``G`` cannot be rebound
         by another call in the middle of a handler.
         """
-        import anyio
-
         await anyio.to_thread.run_sync(_load_ctx, _resolve_graph_path(project_path))
 
     # NOTE: no decorators here — the handlers below are plain coroutines,
