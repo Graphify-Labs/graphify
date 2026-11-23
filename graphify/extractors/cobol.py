@@ -67,6 +67,14 @@ def _go_to_targets(words: list[str]) -> list[str]:
         else:
             targets.append(word)
     return targets
+# A line that begins with a statement verb. Only procedure code has these; a
+# data description begins with a level number.
+_STATEMENT = re.compile(
+    r"^(?:ACCEPT|ADD|CALL|CLOSE|COMPUTE|CONTINUE|DISPLAY|DIVIDE|EVALUATE|EXIT"
+    r"|GO\s+TO|GOBACK|IF|INITIALIZE|MOVE|MULTIPLY|OPEN|PERFORM|READ|REWRITE"
+    r"|SET|STRING|SUBTRACT|UNSTRING|WRITE)\b"
+)
+_EXEC = re.compile(r"\bEXEC\s+(?:SQL|CICS)\b")
 
 
 def _code_lines(source: str) -> list[tuple[int, str]]:
@@ -114,6 +122,47 @@ def _code_lines(source: str) -> list[tuple[int, str]]:
         else:
             logical.append((number, code))
     return logical
+
+
+def _procedure_copybook_start(code_lines: list[tuple[int, str]]) -> int | None:
+    """The line where the procedure code of a headerless copybook begins.
+
+    A copybook of procedure code is pasted into the PROCEDURE DIVISION of the
+    program that copies it, so it has paragraphs and statements but no
+    `PROCEDURE DIVISION` header of its own. Read by the header alone, such a
+    file is taken for data from its first line to its last, and every paragraph
+    and PERFORM in it is lost.
+
+    Returns the line of the first paragraph or section header, but only when
+    the file has neither a PROGRAM-ID nor a PROCEDURE DIVISION header and a
+    statement follows that header. A lone `NAME.` line is not enough: a data
+    copybook can have one where a VALUE clause runs on to the next line
+    (`SPACES.`). Returns None for every other file, which is then read as before.
+    """
+    start: int | None = None
+    has_statement = False
+    in_exec = False
+    for line, code in code_lines:
+        upper = code.upper().strip()
+        if in_exec:
+            if "END-EXEC" in upper:
+                in_exec = False
+            continue
+        if _PROGRAM.search(upper) or "PROCEDURE DIVISION" in upper:
+            return None
+        if _EXEC.search(upper):
+            if "END-EXEC" not in upper:
+                in_exec = True
+            # An embedded statement is procedure code once a paragraph has begun.
+            has_statement = has_statement or start is not None
+            continue
+        if start is None:
+            header = _PARAGRAPH.match(upper)
+            if header and header.group(1) not in _NOT_PARAGRAPHS:
+                start = line
+        elif _STATEMENT.match(upper):
+            has_statement = True
+    return start if has_statement else None
 
 
 def _mask_strings(code: str) -> str:
@@ -213,6 +262,7 @@ def extract_cobol(path: Path) -> dict:
     # END PROGRAM pops back to it, so sibling and nested programs alike
     # restore the right scope once their own body ends.
     program_stack: list[str] = []
+    procedure_start = _procedure_copybook_start(code_lines)
 
     for line, code in code_lines:
         upper = code.upper().strip()
@@ -221,7 +271,7 @@ def extract_cobol(path: Path) -> dict:
             if "END-EXEC" in upper:
                 in_exec = False
             continue
-        if re.search(r"\bEXEC\s+(?:SQL|CICS)\b", upper):
+        if _EXEC.search(upper):
             if "END-EXEC" not in upper:
                 in_exec = True
             continue
@@ -276,6 +326,9 @@ def extract_cobol(path: Path) -> dict:
             in_procedure = True
             current_scope = current_program
             continue
+
+        if procedure_start is not None and line >= procedure_start:
+            in_procedure = True
 
         if not in_procedure:
             item = _DATA_ITEM.match(upper)
