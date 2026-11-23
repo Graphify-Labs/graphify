@@ -12196,6 +12196,10 @@ def _extract_generic(
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
+                    elif config.ts_module == "tree_sitter_c" and func_node.type == "field_expression":
+                        # A C field callee is an indirect function-pointer call.
+                        # Its field name gives no evidence for a free function.
+                        callee_name = None
                     elif func_node.type in config.call_accessor_node_types:
                         is_member_call = True
                         if config.call_accessor_field:
