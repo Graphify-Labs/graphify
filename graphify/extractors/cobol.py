@@ -68,13 +68,20 @@ def _go_to_targets(words: list[str]) -> list[str]:
             targets.append(word)
     return targets
 # A line that begins with a statement verb. Only procedure code has these; a
-# data description begins with a level number.
+# data description begins with a level number. The verb must be a whole word:
+# `OPEN-FILES.` is a name, not an OPEN statement.
 _STATEMENT = re.compile(
-    r"^(?:ACCEPT|ADD|CALL|CLOSE|COMPUTE|CONTINUE|DISPLAY|DIVIDE|EVALUATE|EXIT"
-    r"|GO\s+TO|GOBACK|IF|INITIALIZE|MOVE|MULTIPLY|OPEN|PERFORM|READ|REWRITE"
-    r"|SET|STRING|SUBTRACT|UNSTRING|WRITE)\b"
+    r"^(?:ACCEPT|ADD|ALLOCATE|ALTER|CALL|CANCEL|CLOSE|COMMIT|COMPUTE|CONTINUE"
+    r"|DELETE|DISPLAY|DIVIDE|ENTRY|EVALUATE|EXIT|FREE|GENERATE|GO|GOBACK|IF"
+    r"|INITIALIZE|INITIATE|INSPECT|INVOKE|JSON|MERGE|MOVE|MULTIPLY"
+    r"|NEXT\s+SENTENCE|OPEN|PERFORM|RAISE|READ|RELEASE|RESUME|RETURN|REWRITE"
+    r"|ROLLBACK|SEARCH|SET|SORT|START|STOP|STRING|SUBTRACT|SUPPRESS|TERMINATE"
+    r"|UNLOCK|UNSTRING|VALIDATE|WRITE|XML)(?![A-Z0-9-])"
 )
-_EXEC = re.compile(r"\bEXEC\s+(?:SQL|CICS)\b")
+# What an EXEC SQL block does that is a declaration, not a statement to run:
+# these stand in the DATA DIVISION as well (`EXEC SQL INCLUDE SQLCA END-EXEC`).
+_SQL_DECLARATION = re.compile(r"^(?:INCLUDE|DECLARE|BEGIN\s+DECLARE|END\s+DECLARE)\b")
+_EXEC = re.compile(r"\bEXEC\s+(SQL|CICS)\b")
 
 
 def _code_lines(source: str) -> list[tuple[int, str]]:
@@ -138,23 +145,41 @@ def _procedure_copybook_start(code_lines: list[tuple[int, str]]) -> int | None:
     statement follows that header. A lone `NAME.` line is not enough: a data
     copybook can have one where a VALUE clause runs on to the next line
     (`SPACES.`). Returns None for every other file, which is then read as before.
+
+    An EXEC block after the header counts as a statement, except an EXEC SQL
+    declaration (INCLUDE, DECLARE), which a data copybook has as well.
     """
     start: int | None = None
     has_statement = False
     in_exec = False
+    # Inside an EXEC SQL block whose first word has not been read yet: it
+    # stands on a later line than `EXEC SQL` and decides what the block is.
+    sql_undecided = False
     for line, code in code_lines:
         upper = code.upper().strip()
         if in_exec:
+            if sql_undecided and upper:
+                sql_undecided = False
+                if start is not None and not _SQL_DECLARATION.match(upper):
+                    has_statement = True
             if "END-EXEC" in upper:
                 in_exec = False
+                sql_undecided = False
             continue
         if _PROGRAM.search(upper) or "PROCEDURE DIVISION" in upper:
             return None
-        if _EXEC.search(upper):
+        embedded = _EXEC.search(upper)
+        if embedded:
             if "END-EXEC" not in upper:
                 in_exec = True
-            # An embedded statement is procedure code once a paragraph has begun.
-            has_statement = has_statement or start is not None
+            rest = upper[embedded.end():].strip()
+            if embedded.group(1) == "SQL" and not rest:
+                sql_undecided = in_exec
+            elif start is not None and not (
+                embedded.group(1) == "SQL" and _SQL_DECLARATION.match(rest)
+            ):
+                # An embedded statement is procedure code once a paragraph has begun.
+                has_statement = True
             continue
         if start is None:
             header = _PARAGRAPH.match(upper)
