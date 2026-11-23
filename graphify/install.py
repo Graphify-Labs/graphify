@@ -597,11 +597,7 @@ def _release_section_claim(skill_dir: Path, platform_name: str, agents_md: Path)
     else:
         with contextlib.suppress(OSError):
             path.unlink()
-    return sorted(
-        name
-        for name, paths in claims.items()
-        if "" in paths or key in paths
-    )
+    return _section_claimers(skill_dir, agents_md)
 
 
 def _platforms_sharing_skill_path(
