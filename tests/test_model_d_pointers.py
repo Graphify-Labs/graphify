@@ -83,6 +83,7 @@ def test_model_d_pointer_hints_preserve_path_and_line_without_answers():
     ])
 
     assert '"src/app.py":12' in hints
+    assert "\n" in hints
     assert "preserves line hints" in hints
     assert "answer" not in hints.lower()
 
