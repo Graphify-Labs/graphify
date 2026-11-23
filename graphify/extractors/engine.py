@@ -11437,6 +11437,23 @@ def _extract_generic(
             "weight": 1.0,
         })
 
+    python_lambda_params: dict[int, set[str]] = {}
+
+    def _python_lambda_param_shadows(node, name: str) -> bool:
+        """A lambda binds parameters in its body, while defaults use the outer scope."""
+        while (parent := node.parent) is not None:
+            if parent.type in ("function_definition", "class_definition", "module"):
+                break
+            if parent.type == "lambda" and node == parent.child_by_field_name("body"):
+                if parent.id not in python_lambda_params:
+                    python_lambda_params[parent.id] = _python_param_names(
+                        parent.child_by_field_name("parameters"), source
+                    )
+                if name in python_lambda_params[parent.id]:
+                    return True
+            node = parent
+        return False
+
     def _emit_indirect_ref(ident, scope_nid: str, enclosing_locals, context: str) -> None:
         """A function referenced BY NAME — passed as a call argument, or listed as a
         value in a dispatch table — is an indirect dependency of ``scope_nid``. Emit
@@ -11457,6 +11474,8 @@ def _extract_generic(
         # it shadows in every scope — no unique same-named definition elsewhere in
         # the corpus is what this identifier refers to.
         if ident_name in js_external_imports:
+            return
+        if config.ts_module == "tree_sitter_python" and _python_lambda_param_shadows(ident, ident_name):
             return
         _emit_indirect_by_name(ident_name, ident, scope_nid, context)
 
@@ -12294,8 +12313,14 @@ def _extract_generic(
             # A known PHP $this receiver resolves against its owning class's methods.
             _builtin_member_call = is_member_call and callee_name in _LANGUAGE_BUILTIN_GLOBALS
             php_builtin_self_call = config.ts_module == "tree_sitter_php" and self_receiver == "this"
-            if callee_name and (
-                callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call
+            if (
+                callee_name
+                and (callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call)
+                and not (
+                    config.ts_module == "tree_sitter_python"
+                    and not is_member_call
+                    and _python_lambda_param_shadows(node, callee_name)
+                )
             ):
                 # Python member calls defer to receiver-based resolution unless the
                 # receiver is known to stay in the current class. Falling back to a

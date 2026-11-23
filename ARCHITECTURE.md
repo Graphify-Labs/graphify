@@ -147,6 +147,12 @@ left unresolved rather than chased one hop further, so a genuinely ambiguous
 re-export is dropped instead of guessed (package `__init__` re-exports still
 resolve through the symbol-resolution pass).
 
+A Python lambda parameter shadows same-named callables in its body. Bare calls
+through that parameter and references to it as a callback skip both in-file
+lookup and corpus fallback. Lambda defaults resolve in the enclosing scope.
+AST cache schema 52 invalidates fragments built before this rule. For an
+existing graph, run `graphify update . --force` to refresh unchanged callers.
+
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
 prefixed declarations share the same package identity; foreign namespaces and
