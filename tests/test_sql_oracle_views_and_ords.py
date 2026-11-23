@@ -104,3 +104,32 @@ def test_ords_define_module_and_handler_extraction(tmp_path):
     assert ("ords.sql", "contains", "ORDS POST /hr-public/employees/transfer") in edges
     assert ("ORDS POST /hr-public/employees/transfer", "reads_from", "hr.employees") in edges
     assert ("ORDS POST /hr-public/employees/transfer", "writes_to", "hr.transfer_audit") in edges
+
+
+def test_ords_ignores_commented_out_calls_and_supports_q_quotes(tmp_path):
+    ddl = """\
+DECLARE
+BEGIN
+  /*
+  ORDS.DEFINE_MODULE(p_module_name => 'ghost_api', p_base_path => '/ghost/');
+  ORDS.DEFINE_HANDLER(
+      p_module_name => 'ghost_api',
+      p_pattern     => 'fake',
+      p_method      => 'DELETE',
+      p_source      => 'DELETE FROM hr.employees;');
+  */
+  ORDS.DEFINE_MODULE(p_module_name => 'hr_api', p_base_path => '/hr-public/');
+  ORDS.DEFINE_HANDLER(
+      p_module_name => 'hr_api',
+      p_pattern     => 'roster',
+      p_method      => 'GET',
+      p_source      => q'[SELECT * FROM hr.roster WHERE status = 'ACTIVE']');
+END;
+/
+"""
+    labels, edges = _graph(tmp_path, "ords_q.sql", ddl)
+
+    assert "ORDS GET /hr-public/roster" in labels
+    assert ("ORDS GET /hr-public/roster", "reads_from", "hr.roster") in edges
+    assert not any("ghost" in lbl or "fake" in lbl for lbl in labels)
+

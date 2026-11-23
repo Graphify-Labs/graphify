@@ -97,23 +97,30 @@ _VIEW_AS_RX = re.compile(r"(?:\([^()]*\)\s*)?\bAS\b", re.IGNORECASE)
 # PL/SQL calls inside `DECLARE ... BEGIN ... END;` blocks (`ORDS.DEFINE_MODULE`,
 # `ORDS.DEFINE_HANDLER`). Recovering handler routes and scanning their `p_source`
 # SQL/PLSQL strings links REST endpoints to the database objects they read/write.
+_PLSQL_Q_LITERAL = (
+    r"[qQ]'(?:\[.*?\]|\{.*?\}|<.*?>|\(.*?\)|![^!]*!|#[^#]*#|~[^~]*~|\|[^|]*\|)'"
+)
+_PLSQL_STRING_LITERAL = r"(?:" + _PLSQL_Q_LITERAL + r"|'(?:''|[^'])*')"
+_ORDS_ARG_BODY = r"(?:" + _PLSQL_STRING_LITERAL + r"|[^')])*"
 _ORDS_MODULE_RX = re.compile(
-    r"\bORDS\.DEFINE_MODULE\s*\(((?:'(?:''|[^'])*'|[^')])*)\)\s*;",
+    r"\bORDS\.DEFINE_MODULE\s*\((" + _ORDS_ARG_BODY + r")\)\s*;",
     re.IGNORECASE | re.DOTALL,
 )
 _ORDS_HANDLER_RX = re.compile(
-    r"\bORDS\.DEFINE_HANDLER\s*\(((?:'(?:''|[^'])*'|[^')])*)\)\s*;",
+    r"\bORDS\.DEFINE_HANDLER\s*\((" + _ORDS_ARG_BODY + r")\)\s*;",
     re.IGNORECASE | re.DOTALL,
 )
 _ORDS_NAMED_ARG_RX = re.compile(
     r"\b(p_module_name|p_base_path|p_pattern|p_method|p_source_type|p_source)\s*=>\s*"
-    r"('(?:''|[^'])*'|NULL)",
+    r"(" + _PLSQL_STRING_LITERAL + r"|NULL)",
     re.IGNORECASE | re.DOTALL,
 )
 
 
 def _unquote_plsql_literal(literal: str) -> str:
     literal = literal.strip()
+    if len(literal) >= 4 and literal[0] in ("q", "Q") and literal[1] == "'" and literal[-1] == "'":
+        return literal[3:-2]
     if len(literal) >= 2 and literal[0] == "'" and literal[-1] == "'":
         return literal[1:-1].replace("''", "'")
     return ""
@@ -1433,11 +1440,17 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # Oracle REST Data Services (ORDS) module and handler definitions inside
         # PL/SQL anonymous blocks (`ORDS.DEFINE_MODULE`, `ORDS.DEFINE_HANDLER`).
         # `p_source` is a single-quoted SQL/PLSQL string, so read it from
-        # src_text (masked_src blanks single-quoted literals) and scan the
-        # unquoted handler body with _scan_sql + _routine_body_refs.
+        # src_text (masked_src blanks single-quoted literals), verifying at each
+        # match start that masked_src still has the unblanked ORDS call outside
+        # comments, string literals, and delimited identifiers.
         if "ORDS." in masked_src.upper():
             module_paths: dict[str, str] = {}
             for m in _ORDS_MODULE_RX.finditer(src_text):
+                if (
+                    masked_src[m.start():m.start() + 5].upper() != "ORDS."
+                    or any(s <= m.start() < e for s, e in ident_spans)
+                ):
+                    continue
                 args = {
                     am.group(1).lower(): _unquote_plsql_literal(am.group(2))
                     for am in _ORDS_NAMED_ARG_RX.finditer(m.group(1))
@@ -1446,6 +1459,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 if mod_name:
                     module_paths[mod_name.upper()] = args.get("p_base_path", "")
             for m in _ORDS_HANDLER_RX.finditer(src_text):
+                if (
+                    masked_src[m.start():m.start() + 5].upper() != "ORDS."
+                    or any(s <= m.start() < e for s, e in ident_spans)
+                ):
+                    continue
                 args = {
                     am.group(1).lower(): _unquote_plsql_literal(am.group(2))
                     for am in _ORDS_NAMED_ARG_RX.finditer(m.group(1))

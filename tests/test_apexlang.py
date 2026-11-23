@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from graphify.detect import FileType, classify_file
-from graphify.extractors.apexlang import DatabaseMirror, extract_apexlang
+from graphify.extractors.apexlang import extract_apexlang
 
 
 SAMPLE_PAGE_APX = """\
@@ -89,7 +89,6 @@ def test_extract_apexlang_components_and_edges(tmp_path: Path):
 
 
 def test_extract_apexlang_resolves_database_mirror(tmp_path: Path):
-    DatabaseMirror.clear_cache()
     tables_dir = tmp_path / "database" / "HR" / "tables"
     pkgs_dir = tmp_path / "database" / "HR" / "packages"
     tables_dir.mkdir(parents=True)
@@ -119,3 +118,30 @@ def test_extract_apexlang_resolves_database_mirror(tmp_path: Path):
         "calls",
         "database_hr_packages_hr_dispatch_pkg_spec",
     ) in edges
+
+
+def test_database_mirror_auto_refreshes_when_mirrored_files_change(tmp_path: Path):
+    tables_dir = tmp_path / "database" / "HR" / "tables"
+    tables_dir.mkdir(parents=True)
+    app_dir = tmp_path / "apps" / "HR" / "130" / "pages"
+    app_dir.mkdir(parents=True)
+    apx_file = app_dir / "p00010.apx"
+    apx_file.write_text(SAMPLE_PAGE_APX, encoding="utf-8")
+
+    # First extraction: HR_WORKERS is not mirrored yet, so it resolves to a bare stub.
+    first = extract_apexlang(apx_file)
+    first_edges = {(e["source"], e["relation"], e["target"]) for e in first["edges"]}
+    region_id = "apex_app_130_page_10_region_active_workers"
+    assert (region_id, "reads_from", "hr_workers") in first_edges
+
+    # Add HR_WORKERS.sql to the mirror without calling clear_cache().
+    (tables_dir / "HR_WORKERS.sql").write_text('CREATE TABLE "HR"."HR_WORKERS" (ID NUMBER);\n', encoding="utf-8")
+
+    second = extract_apexlang(apx_file)
+    second_edges = {(e["source"], e["relation"], e["target"]) for e in second["edges"]}
+    assert (
+        region_id,
+        "reads_from",
+        "database_hr_tables_hr_workers_hr_hr_workers",
+    ) in second_edges
+

@@ -141,11 +141,12 @@ class DatabaseMirror:
     """Resolve references to objects mirrored under ``database/<SCHEMA>/``."""
 
     TABLE_FOLDERS = ("tables", "views")
+    INDEXED_FOLDERS = (*TABLE_FOLDERS, "packages", "synonyms")
     SYNONYM_TARGET_RE = re.compile(
         r'\bFOR\s+(?:"?([A-Za-z0-9_$#]+)"?\s*\.\s*)?"?([A-Za-z0-9_$#]+)"?\s*;',
         re.IGNORECASE,
     )
-    _INDEX_CACHE: dict[str, dict[str, dict[str, dict]]] = {}
+    _INDEX_CACHE: dict[str, tuple[tuple[tuple[str, int, int], ...], dict[str, dict[str, dict]]]] = {}
 
     def __init__(self, root: Path | None = None, schema: str | None = None) -> None:
         self.root = root
@@ -154,6 +155,26 @@ class DatabaseMirror:
     @classmethod
     def clear_cache(cls) -> None:
         cls._INDEX_CACHE.clear()
+
+    @classmethod
+    def _mirror_stamp(cls, root: Path) -> tuple[tuple[str, int, int], ...]:
+        """Fingerprint mirrored .sql files so newly added, edited, or deleted objects invalidate the cache."""
+        entries: list[tuple[str, int, int]] = []
+        try:
+            schema_dirs = sorted(path for path in (root / "database").iterdir() if path.is_dir())
+        except OSError:
+            return ()
+        for schema_dir in schema_dirs:
+            for folder in cls.INDEXED_FOLDERS:
+                for file in cls._sql_files(schema_dir / folder):
+                    try:
+                        st = file.stat()
+                    except OSError:
+                        continue
+                    entries.append(
+                        (file.relative_to(root).as_posix(), st.st_mtime_ns, st.st_size)
+                    )
+        return tuple(entries)
 
     @classmethod
     def for_application_file(cls, source: Path) -> DatabaseMirror:
@@ -212,9 +233,12 @@ class DatabaseMirror:
         if self.root is None:
             return {}
         key = str(self.root.resolve())
-        if key not in self._INDEX_CACHE:
-            self._INDEX_CACHE[key] = self._scan_root(self.root)
-        return self._INDEX_CACHE[key]
+        stamp = self._mirror_stamp(self.root)
+        cached = self._INDEX_CACHE.get(key)
+        if cached is None or cached[0] != stamp:
+            cached = (stamp, self._scan_root(self.root))
+            self._INDEX_CACHE[key] = cached
+        return cached[1]
 
     def _resolve(self, schema: str, name: str, kind: str) -> str | None:
         index = self._index()
