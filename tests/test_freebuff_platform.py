@@ -376,7 +376,9 @@ def test_uninstalling_one_shared_platform_keeps_the_skill(tmp_path, capsys):
     cwd.mkdir()
 
     _run(cwd, ["freebuff", "install"], home)
-    _run(cwd, ["install", "--platform", "agents"], home)
+    # The subcommand form: it writes the same AGENTS.md section, unlike
+    # `install --platform agents`, which is skill-only.
+    _run(cwd, ["agents", "install"], home)
 
     skill = home / ".agents" / "skills" / "graphify" / "SKILL.md"
     claim = home / ".agents" / "skills" / "graphify" / ".graphify_platforms"
@@ -398,6 +400,54 @@ def test_uninstalling_one_shared_platform_keeps_the_skill(tmp_path, capsys):
     _run(cwd, ["agents", "uninstall"], home)
     assert not skill.exists()
     assert not (home / ".agents" / "skills").exists()
+
+
+def test_freebuff_uninstall_drops_the_section_an_agents_skill_install_did_not_write(
+    tmp_path,
+):
+    """Bot-reported P2 at user scope: the skill claim is not a section claim.
+
+    `install --platform agents` is skill-only, so it never wrote the AGENTS.md
+    section that `freebuff install` added. Uninstalling freebuff must remove that
+    section while the skill stays for agents.
+    """
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+
+    _run(cwd, ["freebuff", "install"], home)
+    _run(cwd, ["install", "--platform", "agents"], home)
+    agents_md = cwd / "AGENTS.md"
+    skill = home / ".agents" / "skills" / "graphify" / "SKILL.md"
+
+    _run(cwd, ["freebuff", "uninstall"], home)
+
+    assert skill.exists(), "agents still claims the shared skill"
+    body = agents_md.read_text(encoding="utf-8") if agents_md.exists() else ""
+    assert "## graphify" not in body
+
+
+def test_agents_uninstall_keeps_the_section_freebuff_wrote(tmp_path):
+    """Both subcommands write the section, so the first one to uninstall keeps it."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+
+    _run(cwd, ["agents", "install"], home)
+    _run(cwd, ["freebuff", "install"], home)
+
+    _run(cwd, ["agents", "uninstall"], home)
+
+    assert (home / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert "## graphify" in (cwd / "AGENTS.md").read_text(encoding="utf-8")
+
+    _run(cwd, ["freebuff", "uninstall"], home)
+    assert not (home / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    # The section was the only content, so AGENTS.md itself is removed.
+    body = (cwd / "AGENTS.md").read_text(encoding="utf-8") if (cwd / "AGENTS.md").exists() else ""
+    assert "## graphify" not in body
 
 
 def test_legacy_install_without_a_claim_file_still_uninstalls(tmp_path, capsys):
