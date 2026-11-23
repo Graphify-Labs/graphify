@@ -7982,8 +7982,9 @@ def _build_parser(ts_module: str, ts_language_fn: str):
 # walk_calls used to visit every call_expression in a function body. Unconditional
 # `return;` (common CubeMX USER CODE early exit) left dead tails that still became
 # calls edges. Stopping fall-through after return fixes that, but labels reachable
-# via goto / switch case must resume extraction. Static `while(1)` / `for(;;)`
-# without a `break` out of that loop also cuts sibling fall-through; `return` /
+# via goto / switch case must resume extraction. Static infinite loops
+# (`while (1)`, `while (2)`, other nonzero integer literals, `for (;;)`) without
+# a `break` out of that loop also cut sibling fall-through; `return` /
 # `goto` inside do not restore it (goto reopens label targets separately).
 #
 # Warnings for skipped unreachable calls default ON. There is no CLI/UI for this;
@@ -8069,16 +8070,48 @@ def _c_count_call_expressions(node) -> int:
     return n
 
 
+def _c_int_literal_is_nonzero(raw: str) -> bool:
+    """Parse a C/C++ integer literal spelling; True iff value != 0.
+
+    Accepts decimal / hex / octal / binary forms and common ``u``/``l``/``ll``
+    suffixes (and C23 digit separators). Unparseable spellings (floats, etc.)
+    are treated as not constantly nonzero.
+    """
+    s = raw.strip().lower().replace("'", "")
+    if not s:
+        return False
+    for suf in ("ull", "llu", "ul", "lu", "ll", "zu", "uz", "u", "l", "z"):
+        if s.endswith(suf) and len(s) > len(suf):
+            s = s[: -len(suf)]
+            break
+    if not s:
+        return False
+    try:
+        if s.startswith(("0x", "0X")):
+            val = int(s, 16)
+        elif s.startswith(("0b", "0B")):
+            val = int(s, 2)
+        elif len(s) > 1 and s[0] == "0" and s[1].isdigit():
+            val = int(s, 8)
+        else:
+            val = int(s, 10)
+    except ValueError:
+        return False
+    return val != 0
+
+
 def _c_is_constant_true_condition(node, *, allow_true_keyword: bool = False) -> bool:
     """True when a while/for condition is a literal always-true form.
 
-    Number literals (``1``, ``1u``, …) always count. The boolean keyword
-    ``true`` is only trusted for C++: tree-sitter-c also emits a ``true`` node
-    for a C identifier/macro spelling (including ``TRUE`` and ``stdbool.h``'s
-    ``true`` before preprocessing), so treating it as infinite would hide
-    fall-through calls after a loop controlled by an ordinary variable. C
-    infinite loops are therefore detected via ``while (1)`` / ``for (;;)``
-    (and other numeric always-true forms), not via ``while (true)``.
+    Any nonzero integer literal (``1``, ``2``, ``0xff``, ``1u``, …) counts.
+    Unary ``+``/``-`` around such a literal also counts when the value is
+    nonzero (``-1`` yes, ``-0`` / ``0`` no). The boolean keyword ``true`` is
+    only trusted for C++: tree-sitter-c also emits a ``true`` node for a C
+    identifier/macro spelling (including ``TRUE`` and ``stdbool.h``'s ``true``
+    before preprocessing), so treating it as infinite would hide fall-through
+    calls after a loop controlled by an ordinary variable. C infinite loops are
+    therefore detected via nonzero numeric conditions / ``for (;;)``, not via
+    ``while (true)``.
     """
     if node is None:
         return False
@@ -8087,9 +8120,23 @@ def _c_is_constant_true_condition(node, *, allow_true_keyword: bool = False) -> 
         return _c_is_constant_true_condition(
             node.named_children[0], allow_true_keyword=allow_true_keyword
         )
+    if node.type == "unary_expression" and node.named_child_count >= 1:
+        op = None
+        for child in node.children:
+            if child.type in ("+", "-"):
+                op = child.type
+                break
+        if op in ("+", "-"):
+            arg = node.child_by_field_name("argument")
+            if arg is None:
+                arg = node.named_children[0]
+            # +N / -N are nonzero iff N is nonzero (two's-complement -0 == 0).
+            return _c_is_constant_true_condition(
+                arg, allow_true_keyword=allow_true_keyword
+            )
     if node.type == "number_literal":
-        raw = (node.text or b"").decode("utf-8", errors="replace").strip().lower()
-        return raw in {"1", "0x1", "1u", "1ul", "1ull", "1l", "1ll"}
+        raw = (node.text or b"").decode("utf-8", errors="replace")
+        return _c_int_literal_is_nonzero(raw)
     if allow_true_keyword and node.type == "true":
         return True
     return False
@@ -8142,7 +8189,7 @@ def _c_body_has_break_leaving_loop(node) -> bool:
 
 
 def _c_is_static_infinite_loop(node, *, allow_true_keyword: bool = False) -> bool:
-    """``while(1)`` / ``for(;;)`` with no ``break`` out — cuts sibling fall-through.
+    """Nonzero-constant ``while`` / ``for(;;)`` with no ``break`` — cuts fall-through.
 
     The loop body is still walked for calls; ``goto`` targets after the loop are
     activated separately. A ``break`` means after-loop siblings stay reachable.

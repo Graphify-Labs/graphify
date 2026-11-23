@@ -41,8 +41,12 @@ def _call_targets(result: dict, caller_label: str) -> set[str]:
 
 @pytest.fixture(autouse=True)
 def _restore_unreachable_warning_flag():
+    """Restore the module flag after each test; do not force it on.
+
+    Forcing True here would hide regressions of the documented default
+    (``_C_CPP_WARN_UNREACHABLE = True``).
+    """
     prev = get_c_cpp_unreachable_warnings()
-    set_c_cpp_unreachable_warnings(True)
     yield
     set_c_cpp_unreachable_warnings(prev)
 
@@ -282,6 +286,67 @@ def test_static_infinite_while_skips_following_calls(tmp_path: Path, suffix: str
     targets = _call_targets(result, "f()")
     assert "tick()" in targets
     assert "dead()" not in targets
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
+@pytest.mark.parametrize("cond", ["2", "0x2", "0xff", "2u", "2ul", "-1"])
+def test_nonzero_constant_while_skips_following_calls(
+    tmp_path: Path, suffix: str, cond: str
+) -> None:
+    """Nonzero integer conditions are static-infinite like while(1) (#5338 P2)."""
+    root = _real(tmp_path)
+    main = root / f"main{suffix}"
+    body = root / f"body{suffix}"
+    main.write_text(
+        "void tick(void) {}\n"
+        "void dead(void) {}\n",
+        encoding="utf-8",
+    )
+    body.write_text(
+        "void tick(void);\n"
+        "void dead(void);\n"
+        "void f(void) {\n"
+        f"  while ({cond}) {{\n"
+        "    tick();\n"
+        "  }\n"
+        "  dead();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract([main, body], root=root, cache_root=root)
+    targets = _call_targets(result, "f()")
+    assert "tick()" in targets, (cond, targets)
+    assert "dead()" not in targets, (cond, targets)
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
+@pytest.mark.parametrize("cond", ["0", "0x0", "0u", "-0"])
+def test_zero_constant_while_keeps_following_calls(
+    tmp_path: Path, suffix: str, cond: str
+) -> None:
+    """while(0) can finish; fall-through after the loop stays reachable."""
+    root = _real(tmp_path)
+    main = root / f"main{suffix}"
+    body = root / f"body{suffix}"
+    main.write_text(
+        "void tick(void) {}\n"
+        "void after(void) {}\n",
+        encoding="utf-8",
+    )
+    body.write_text(
+        "void tick(void);\n"
+        "void after(void);\n"
+        "void f(void) {\n"
+        f"  while ({cond}) {{\n"
+        "    tick();\n"
+        "  }\n"
+        "  after();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract([main, body], root=root, cache_root=root)
+    targets = _call_targets(result, "f()")
+    assert "after()" in targets, (cond, targets)
 
 
 def test_c_while_true_variable_keeps_following_calls(tmp_path: Path) -> None:
@@ -536,13 +601,16 @@ def test_unreachable_warning_default_on_and_toggle(tmp_path: Path, suffix: str, 
         encoding="utf-8",
     )
 
-    set_c_cpp_unreachable_warnings(True)
+    # Documented default is ON — do not call set(...True) before this extract.
+    assert get_c_cpp_unreachable_warnings() is True
     extract([main, body], root=root, cache_root=root)
     err_on = capsys.readouterr().err
     assert "fall-through-unreachable" in err_on
-    assert "assembler jumps" in err_on or "asm" in err_on.lower()
+    # Disclaimer phrase only (not a loose 'asm' substring).
+    assert "assembler jumps" in err_on
 
     set_c_cpp_unreachable_warnings(False)
+    assert get_c_cpp_unreachable_warnings() is False
     # Fresh cache_root leaf so extract runs again
     root2 = root / "off"
     root2.mkdir()
