@@ -10236,7 +10236,11 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "cobol_copybook_performs",
-        frozenset({".cbl", ".cob", ".cobol", ".cpy"}),
+        # Both cases, as for R: the gate compares suffixes as written, and
+        # mainframe source is often delivered as `PROG.CBL` with `BOOK.CPY`.
+        frozenset({
+            ".cbl", ".cob", ".cobol", ".cpy", ".CBL", ".COB", ".COBOL", ".CPY",
+        }),
         resolve_cobol_copybook_performs,
     )
 )
