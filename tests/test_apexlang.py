@@ -1,6 +1,7 @@
 """Tests for Oracle APEX 26.1+ APEXlang (.apx) detection and extraction."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from graphify.detect import FileType, classify_file
@@ -79,13 +80,46 @@ def test_extract_apexlang_components_and_edges(tmp_path: Path):
     assert (da_id, "navigates_to", "apex_app_130_page_20") in edges
     assert (da_id, "references_component", "apex_app_130_lov_worker_status_lov") in edges
 
-    # SQL / PLSQL edges (CTEs must be excluded from reads_from)
+    # SQL / PLSQL edges (CTEs must be excluded from all nodes and edges)
     assert (region_id, "reads_from", "hr_workers") in edges
     assert (region_id, "reads_from", "hr_departments") in edges
-    assert not any(tgt == "active_scope" for _s, _r, tgt in edges)
+    assert not any(
+        "active_scope" in str(n.get("id", "")).casefold()
+        or "active_scope" in str(n.get("label", "")).casefold()
+        for n in result["nodes"]
+    )
     assert (region_id, "calls", "hr_dispatch_pkg_active_status") in edges
     assert (process_id, "writes_to", "hr_worker_assignments") in edges
     assert (process_id, "calls", "hr_dispatch_pkg_assign_worker") in edges
+
+
+def test_extract_apexlang_app_properties_and_malformed_input(tmp_path: Path):
+    app_file = tmp_path / "apps" / "HR" / "130" / "application.apx"
+    app_file.parent.mkdir(parents=True)
+    app_file.write_text(
+        'app 130 (\n'
+        '  name: "HR Portal"\n'
+        '  authentication "Custom Auth" (\n'
+        '    authFunctionName: "hr_auth_pkg.authenticate"\n'
+        '  )\n'
+        '  region "Summary" (\n'
+        '    tableName: "HR_EMP_SUMMARY"\n'
+        '  )\n'
+        ')\n',
+        encoding="utf-8",
+    )
+
+    result = extract_apexlang(app_file)
+    assert "error" not in result
+    edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+    assert ("apex_app_130_authentication_custom_auth", "calls", "hr_auth_pkg_authenticate") in edges
+    assert ("apex_app_130_region_summary", "reads_from", "hr_emp_summary") in edges
+
+    bad_file = tmp_path / "broken.apx"
+    bad_file.write_text('page 1 (\n  name: "Broken"\n', encoding="utf-8")
+    bad_result = extract_apexlang(bad_file)
+    assert "error" in bad_result
+    assert bad_result["nodes"] == []
 
 
 def test_extract_apexlang_resolves_database_mirror(tmp_path: Path):
@@ -120,28 +154,39 @@ def test_extract_apexlang_resolves_database_mirror(tmp_path: Path):
     ) in edges
 
 
-def test_database_mirror_auto_refreshes_when_mirrored_files_change(tmp_path: Path):
+def test_database_mirror_auto_refreshes_on_add_and_edit(tmp_path: Path):
     tables_dir = tmp_path / "database" / "HR" / "tables"
+    syn_dir = tmp_path / "database" / "HR" / "synonyms"
+    other_tables_dir = tmp_path / "database" / "ARCHIVE" / "tables"
     tables_dir.mkdir(parents=True)
+    syn_dir.mkdir(parents=True)
+    other_tables_dir.mkdir(parents=True)
+
+    (tables_dir / "HR_WORKERS_OLD.sql").write_text('CREATE TABLE "HR"."HR_WORKERS_OLD" (ID NUMBER);\n', encoding="utf-8")
+    (other_tables_dir / "EMP_V2.sql").write_text('CREATE TABLE "ARCHIVE"."EMP_V2" (ID NUMBER);\n', encoding="utf-8")
+    syn_file = syn_dir / "HR_WORKERS.sql"
+    syn_file.write_text('CREATE SYNONYM "HR"."HR_WORKERS" FOR "HR"."HR_WORKERS_OLD";\n', encoding="utf-8")
+
     app_dir = tmp_path / "apps" / "HR" / "130" / "pages"
     app_dir.mkdir(parents=True)
     apx_file = app_dir / "p00010.apx"
     apx_file.write_text(SAMPLE_PAGE_APX, encoding="utf-8")
-
-    # First extraction: HR_WORKERS is not mirrored yet, so it resolves to a bare stub.
-    first = extract_apexlang(apx_file)
-    first_edges = {(e["source"], e["relation"], e["target"]) for e in first["edges"]}
     region_id = "apex_app_130_page_10_region_active_workers"
-    assert (region_id, "reads_from", "hr_workers") in first_edges
 
-    # Add HR_WORKERS.sql to the mirror without calling clear_cache().
+    # Initial extraction resolves HR_WORKERS through its synonym to HR_WORKERS_OLD.
+    first_edges = {(e["source"], e["relation"], e["target"]) for e in extract_apexlang(apx_file)["edges"]}
+    assert (region_id, "reads_from", "database_hr_tables_hr_workers_old_hr_hr_workers_old") in first_edges
+
+    # Repoint the synonym (with changed size + explicit mtime bump) without calling clear_cache().
+    syn_file.write_text('CREATE SYNONYM "HR"."HR_WORKERS" FOR "ARCHIVE"."EMP_V2";\n  -- updated\n', encoding="utf-8")
+    st = syn_file.stat()
+    os.utime(syn_file, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+
+    second_edges = {(e["source"], e["relation"], e["target"]) for e in extract_apexlang(apx_file)["edges"]}
+    assert (region_id, "reads_from", "database_archive_tables_emp_v2_archive_emp_v2") in second_edges
+
+    # Adding a direct table HR_WORKERS in HR takes precedence on the next extraction.
     (tables_dir / "HR_WORKERS.sql").write_text('CREATE TABLE "HR"."HR_WORKERS" (ID NUMBER);\n', encoding="utf-8")
 
-    second = extract_apexlang(apx_file)
-    second_edges = {(e["source"], e["relation"], e["target"]) for e in second["edges"]}
-    assert (
-        region_id,
-        "reads_from",
-        "database_hr_tables_hr_workers_hr_hr_workers",
-    ) in second_edges
-
+    third_edges = {(e["source"], e["relation"], e["target"]) for e in extract_apexlang(apx_file)["edges"]}
+    assert (region_id, "reads_from", "database_hr_tables_hr_workers_hr_hr_workers") in third_edges

@@ -86,6 +86,20 @@ def test_oracle_view_modifiers_recover_view_and_reads_from(tmp_path, modifiers):
     assert not any(tgt in ('"EMP_ID"', '"DEPT_NAME"') for _s, _r, tgt in edges)
 
 
+def test_oracle_view_with_quoted_as_column_and_trailing_select(tmp_path):
+    ddl = (
+        'CREATE OR REPLACE FORCE EDITIONABLE VIEW "HR"."EMP_V" ("AS", "ID") '
+        'DEFAULT COLLATION "USING_NLS_COMP" AS\n'
+        '  SELECT id FROM "HR"."EMPLOYEES";\n'
+        'SELECT * FROM "HR"."UNRELATED";\n'
+    )
+    labels, edges = _graph(tmp_path, "emp_v.sql", ddl)
+
+    assert '"HR"."EMP_V"' in labels
+    assert ('"HR"."EMP_V"', "reads_from", '"HR"."EMPLOYEES"') in edges
+    assert ('"HR"."EMP_V"', "reads_from", '"HR"."UNRELATED"') not in edges
+
+
 def test_editionable_table_recovery_when_file_has_error(tmp_path):
     ddl = (
         'CREATE EDITIONABLE TABLE "HR"."AUDIT_LOG" ("ID" NUMBER);\n'
@@ -106,9 +120,10 @@ def test_ords_define_module_and_handler_extraction(tmp_path):
     assert ("ORDS POST /hr-public/employees/transfer", "writes_to", "hr.transfer_audit") in edges
 
 
-def test_ords_ignores_commented_out_calls_and_supports_q_quotes(tmp_path):
+def test_ords_ignores_comments_and_strings_and_handles_q_quotes_and_concat(tmp_path):
     ddl = """\
 DECLARE
+  v_doc VARCHAR2(200) := 'ORDS.DEFINE_HANDLER(p_module_name => ''fake'', p_pattern => ''str'', p_source => ''SELECT * FROM hr.fake_tbl'');';
 BEGIN
   /*
   ORDS.DEFINE_MODULE(p_module_name => 'ghost_api', p_base_path => '/ghost/');
@@ -118,12 +133,21 @@ BEGIN
       p_method      => 'DELETE',
       p_source      => 'DELETE FROM hr.employees;');
   */
+  -- ORDS.DEFINE_HANDLER(p_module_name => 'hr_api', p_pattern => 'line_comment', p_source => 'SELECT * FROM hr.employees');
   ORDS.DEFINE_MODULE(p_module_name => 'hr_api', p_base_path => '/hr-public/');
   ORDS.DEFINE_HANDLER(
       p_module_name => 'hr_api',
+      -- p_pattern => 'commented_arg',
       p_pattern     => 'roster',
       p_method      => 'GET',
       p_source      => q'[SELECT * FROM hr.roster WHERE status = 'ACTIVE']');
+  ORDS.DEFINE_HANDLER(
+      p_module_name => 'hr_api',
+      p_pattern     => 'roster/sync',
+      p_method      => 'POST',
+      p_source      => 'BEGIN ' || CHR(10) ||
+                       '  INSERT INTO hr.roster_audit (id) ' || CHR(10) ||
+                       '  SELECT id FROM hr.roster; END;');
 END;
 /
 """
@@ -131,5 +155,28 @@ END;
 
     assert "ORDS GET /hr-public/roster" in labels
     assert ("ORDS GET /hr-public/roster", "reads_from", "hr.roster") in edges
-    assert not any("ghost" in lbl or "fake" in lbl for lbl in labels)
+    assert "ORDS POST /hr-public/roster/sync" in labels
+    assert ("ORDS POST /hr-public/roster/sync", "reads_from", "hr.roster") in edges
+    assert ("ORDS POST /hr-public/roster/sync", "writes_to", "hr.roster_audit") in edges
+    assert not any("ghost" in lbl or "fake" in lbl or "line_comment" in lbl or "str" in lbl for lbl in labels)
 
+
+def test_ords_extracted_even_when_tree_has_no_error(tmp_path, monkeypatch):
+    """ORDS extraction must not depend on tree-sitter-sql raising an ERROR node."""
+    import tree_sitter
+
+    class _CleanRoot:
+        type = "program"
+        has_error = False
+        children: list = []
+
+    class _CleanTree:
+        root_node = _CleanRoot()
+
+    monkeypatch.setattr(tree_sitter.Parser, "parse", lambda self, _src: _CleanTree())
+
+    labels, edges = _graph(tmp_path, "clean_ords.sql", ORDS_EXPORT)
+
+    assert "ORDS POST /hr-public/employees/transfer" in labels
+    assert ("ORDS POST /hr-public/employees/transfer", "reads_from", "hr.employees") in edges
+    assert ("ORDS POST /hr-public/employees/transfer", "writes_to", "hr.transfer_audit") in edges
