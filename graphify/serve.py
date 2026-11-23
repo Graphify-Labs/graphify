@@ -138,7 +138,7 @@ def _format_model_d_pointer_hints(pointers: list[dict[str, object]]) -> str:
         lines.append(
             f"- {json.dumps(pointer['path'], ensure_ascii=False)}:{pointer['line']}"
         )
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def _read_graph(graph_path: str) -> nx.Graph:
