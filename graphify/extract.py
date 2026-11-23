@@ -9559,8 +9559,7 @@ def _resolve_go_member_calls(
         return str(label or "").strip().removeprefix(".").removesuffix("()")
 
     # A Go type node id folds in the package directory, so two packages declaring the
-    # same name stay two entries and the single-definition guard below bails: without
-    # import evidence neither one is the answer.
+    # same name stay separate candidates until package evidence narrows the lookup.
     # Only Go declarations count: `_callable_class` is corpus-wide, so a same-named Java
     # class would both answer a Go receiver and hide that nothing local declares it.
     type_def_nids: dict[str, list[str]] = {}
@@ -9581,6 +9580,15 @@ def _resolve_go_member_calls(
         for struct_nid, fields in (n.get("_go_fields") or {}).items():
             fields_by_type.setdefault(struct_nid, []).append(fields)
 
+    def same_package_types(label: str, caller_package: str | None) -> list[str]:
+        candidates = type_def_nids.get(_key(label), [])
+        if caller_package:
+            scoped = [nid for nid in candidates
+                      if caller_package in package_paths_by_nid.get(nid, ())]
+            if scoped:
+                return scoped
+        return candidates
+
     method_index: dict[tuple[str, str], list[str]] = {}
     for e in all_edges:
         if e.get("relation") != "method":
@@ -9594,6 +9602,7 @@ def _resolve_go_member_calls(
     # One edge survives per pair, so direct calls must take priority over method values.
     for rc in sorted(raw, key=lambda call: bool(call.get("indirect"))):
         receiver, callee, caller = rc["member_receiver"], rc["callee"], rc["caller_nid"]
+        caller_package = package_path_by_file.get(rc.get("source_file", ""))
         # The enclosing method's own receiver is typed by its declaration (the
         # scoped `receiver_type`), which already covers params and locals. A field
         # receiver is typed from its owning struct's declaration instead.
@@ -9601,7 +9610,7 @@ def _resolve_go_member_calls(
         from_sibling = False
         if rc.get("field_owner"):
             type_name = None
-            owner_defs = type_def_nids.get(_key(rc["field_owner"]), [])
+            owner_defs = same_package_types(rc["field_owner"], caller_package)
             declared = fields_by_type.get(owner_defs[0], []) if len(owner_defs) == 1 else []
             if len(declared) == 1:
                 type_name = declared[0].get(receiver)
@@ -9631,13 +9640,7 @@ def _resolve_go_member_calls(
             # this name must not collide into one corpus-wide ambiguity (#5242):
             # narrow to the caller's own package when that is known, the same
             # import evidence the qualified branch above already insists on.
-            type_defs = type_def_nids.get(_key(type_name), [])
-            caller_package = package_path_by_file.get(rc.get("source_file", ""))
-            if caller_package:
-                scoped = [nid for nid in type_defs
-                          if caller_package in package_paths_by_nid.get(nid, ())]
-                if scoped:
-                    type_defs = scoped
+            type_defs = same_package_types(type_name, caller_package)
         if not type_defs:
             # Declared nowhere here — usually "in a repo this build does not contain",
             # so park it for the merge (#3152). The extractor's language tag already
