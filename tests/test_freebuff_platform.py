@@ -136,20 +136,28 @@ def test_platform_project_uninstall_removes_the_freebuff_section(tmp_path):
     assert "## graphify" not in body
 
 
-def test_platform_project_uninstall_keeps_the_section_for_another_claim(tmp_path):
+def test_freebuff_project_uninstall_drops_the_section_when_agents_is_skill_only(tmp_path):
+    """Freebuff wrote the project section; a later skill-only agents install did
+    not. Uninstalling Freebuff must therefore remove that section, while the skill
+    stays because agents still claims it."""
     home = tmp_path / "home"
     proj = tmp_path / "proj"
     home.mkdir()
     proj.mkdir()
 
-    _run(proj, ["install", "--project", "--platform", "agents"], home)
     _run(proj, ["freebuff", "install", "--project"], home)
     agents_md = proj / "AGENTS.md"
+    assert "## graphify" in agents_md.read_text(encoding="utf-8")
+
+    _run(proj, ["install", "--project", "--platform", "agents"], home)
 
     _run(proj, ["uninstall", "--project", "--platform", "freebuff"], home)
 
-    assert (proj / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
-    assert "## graphify" in agents_md.read_text(encoding="utf-8")
+    assert (proj / ".agents" / "skills" / "graphify" / "SKILL.md").exists(), (
+        "agents still claims the shared skill"
+    )
+    body = agents_md.read_text(encoding="utf-8") if agents_md.exists() else ""
+    assert "## graphify" not in body
 
 
 def test_project_uninstall_all_is_quiet_about_the_shared_pair(tmp_path, capsys):

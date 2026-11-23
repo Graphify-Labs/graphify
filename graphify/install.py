@@ -2394,12 +2394,14 @@ def _freebuff_project_uninstall(
     removed = _remove_skill_file("freebuff", project=True, project_dir=project_dir)
     if removed:
         print("skill removed")
-    elif _claimed_platforms(
+    elif report_missing and not _claimed_platforms(
         _platform_skill_destination("freebuff", project=True, project_dir=project_dir).parent
     ):
-        return
-    elif report_missing:
         print("nothing to remove")
+    # The section always goes: in project scope Freebuff is the only platform that
+    # writes it (`agents --project` is skill-only), so a remaining claim means a
+    # skill-only install that never added these rules. The skill itself stays when
+    # another claim remains.
     _agents_uninstall(project_dir, platform="freebuff")
 def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = "agents") -> None:
     """`graphify agents|freebuff uninstall`: remove the skill and the AGENTS.md section."""
