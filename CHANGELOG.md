@@ -2,6 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.118 (2026-11-23)
+
+Extractor, resolution, clustering and reporting fixes. The C and C# changes alter node/edge output, so the AST cache schema bumps (52 to 53) and C/C# files re-extract on the first build after upgrading; the other fixes need no rebuild.
+
+- Fix: **csharp** a local, parameter or field named `partial`, `required`, `async`, `nint`, `nuint` or `with` (contextual keywords) that tree-sitter-c-sharp mis-parses where a statement starts with it no longer derails the file; it is rewritten to its verbatim `@name` form before parsing (byte-length preserving), so the enclosing type and the members after it are kept instead of being silently dropped (#5043, thanks @ThatAblaze).
+- Fix: **c** a call through a struct function-pointer field (`ops->run()`, `ops.run()`) no longer fabricates a `calls` edge to a same-named free function; the field name is no evidence of the pointer's runtime target, so the guess is dropped. A plain direct call still resolves (#5410, thanks @sdivyanshu90).
+- Fix: **go** a struct field's owner type is scoped to its own package, so a field of a type whose name is declared in two packages binds to the right one and its member calls resolve instead of being dropped as ambiguous (#5408, thanks @azizur100389).
+- Fix: **extract** audio and video files that are detected but not extracted (headless extract has no transcription step) are now reported in the summary instead of silently vanishing, matching the other skip notices; no nodes are fabricated for them (#5076, thanks @ayushcodes10).
+- Perf: **cluster** community-overlap counting during a rebuild is computed from shared nodes in one pass instead of intersecting every pair of communities, turning an O(communities squared) step into a linear one with byte-identical results (#5382, thanks @Max17190).
+
 ## 0.9.117 (2026-11-23)
 
 Query, export, serve and config fixes. No extraction or AST-cache change, so no rebuild is needed after upgrading.
