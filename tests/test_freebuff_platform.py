@@ -450,6 +450,25 @@ def test_agents_uninstall_keeps_the_section_freebuff_wrote(tmp_path):
     assert "## graphify" not in body
 
 
+def test_full_uninstall_removes_a_doubly_claimed_directory(tmp_path, capsys):
+    """A full teardown ignores the claims it is about to drop: no "skill kept"
+    line for a directory the same command goes on to delete."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+
+    _run(cwd, ["freebuff", "install"], home)
+    _run(cwd, ["agents", "install"], home)
+    capsys.readouterr()
+
+    _run(cwd, ["uninstall"], home)
+
+    out = capsys.readouterr().out
+    assert "skill kept" not in out
+    assert not (home / ".agents" / "skills").exists()
+
+
 def test_legacy_install_without_a_claim_file_still_uninstalls(tmp_path, capsys):
     """An install made before the claim file existed keeps the old behavior, and
     still says that the directory is shared."""

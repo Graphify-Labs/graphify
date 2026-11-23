@@ -363,6 +363,17 @@ def _claimed_platforms(skill_dir: Path) -> list[str]:
     return [name for name in data if isinstance(name, str)]
 
 
+def _record_claim_list(path: Path, names: list[str]) -> None:
+    """Atomically write a claim list (best effort)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(sorted(names)) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
 def _record_claim(skill_dst: Path, platform_name: str) -> None:
     """Add ``platform_name`` to the directory's claim file (idempotent).
 
@@ -371,14 +382,7 @@ def _record_claim(skill_dst: Path, platform_name: str) -> None:
     did.
     """
     names = sorted({*_claimed_platforms(skill_dst.parent), platform_name})
-    path = skill_dst.parent / _SKILL_CLAIM_FILE
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        tmp.write_text(json.dumps(names) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+    _record_claim_list(skill_dst.parent / _SKILL_CLAIM_FILE, names)
 
 
 def _copy_skill_file(
@@ -529,27 +533,23 @@ def _section_claimers(skill_dir: Path) -> list[str]:
 def _record_section_claim(skill_dst: Path, platform_name: str) -> None:
     """Record ``platform_name`` as a writer of the AGENTS.md section (best effort)."""
     names = sorted({*_section_claimers(skill_dst.parent), platform_name})
-    path = skill_dst.parent / _SECTION_CLAIM_FILE
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        tmp.write_text(json.dumps(names) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+    _record_claim_list(skill_dst.parent / _SECTION_CLAIM_FILE, names)
 
 
 def _release_section_claim(skill_dir: Path, platform_name: str) -> list[str]:
     """Drop ``platform_name`` from the section claim and return the names left."""
     remaining = [name for name in _section_claimers(skill_dir) if name != platform_name]
     path = skill_dir / _SECTION_CLAIM_FILE
+    tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         if remaining:
-            path.write_text(json.dumps(remaining) + "\n", encoding="utf-8")
+            tmp.write_text(json.dumps(remaining) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
         else:
             path.unlink(missing_ok=True)
     except OSError:
-        pass
+        with contextlib.suppress(OSError):
+            tmp.unlink()
     return remaining
 
 
@@ -595,21 +595,23 @@ def _remove_skill_file(
     project: bool = False,
     project_dir: Path | None = None,
     report_shared: bool = True,
+    keep_shared: bool = True,
 ) -> bool:
     """Remove a platform skill file and its version stamp without touching other scopes.
 
-    ``report_shared=False`` silences the shared-destination note, for callers that
-    remove every platform anyway (`graphify uninstall`).
+    ``report_shared=False`` silences the shared-destination note, and
+    ``keep_shared=False`` ignores the claim file, for callers that remove every
+    platform anyway (`graphify uninstall`); a full teardown must not keep a
+    directory for a claim it is about to remove itself.
     """
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
     removed = False
     with _skill_lock(skill_dst.parent):
         claims = _claimed_platforms(skill_dst.parent)
         others = [name for name in claims if name != platform_name]
-        if others:
+        if others and keep_shared:
             if platform_name in claims:
-                marker = skill_dst.parent / _SKILL_CLAIM_FILE
-                marker.write_text(json.dumps(sorted(others)) + "\n", encoding="utf-8")
+                _record_claim_list(skill_dst.parent / _SKILL_CLAIM_FILE, others)
             names = ", ".join(f"`{name}`" for name in others)
             print(
                 f"  skill kept       ->  {skill_dst.parent} is still installed for {names}; "
@@ -2426,7 +2428,7 @@ def _freebuff_project_install(project_dir: Path | None = None) -> None:
     _record_section_claim(skill_dst, "freebuff")
     _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"])
 def _freebuff_project_uninstall(
-    project_dir: Path | None = None, *, report_missing: bool = True
+    project_dir: Path | None = None, *, report_missing: bool = True, keep_shared: bool = True
 ) -> None:
     """`graphify freebuff uninstall --project`: remove the project skill and section.
 
@@ -2435,7 +2437,9 @@ def _freebuff_project_uninstall(
     form wrote it.
     """
     project_dir = project_dir or Path(".")
-    removed = _remove_skill_file("freebuff", project=True, project_dir=project_dir)
+    removed = _remove_skill_file(
+        "freebuff", project=True, project_dir=project_dir, keep_shared=keep_shared
+    )
     if removed:
         print("skill removed")
     elif report_missing and not _claimed_platforms(
@@ -2505,7 +2509,11 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     else:
         install(platform=platform_name, project=True, project_dir=project_dir)
 def _project_uninstall(
-    platform_name: str, project_dir: Path | None = None, *, report_missing: bool = True
+    platform_name: str,
+    project_dir: Path | None = None,
+    *,
+    report_missing: bool = True,
+    keep_shared: bool = True,
 ) -> None:
     """Remove project-scoped platform skill/config files only."""
     project_dir = project_dir or Path(".")
@@ -2535,9 +2543,13 @@ def _project_uninstall(
         # Freebuff writes the project AGENTS.md section, so its uninstall must
         # remove that too (and keep it while another platform still claims the
         # shared skill directory).
-        _freebuff_project_uninstall(project_dir, report_missing=report_missing)
+        _freebuff_project_uninstall(
+            project_dir, report_missing=report_missing, keep_shared=keep_shared
+        )
     elif platform_name in ("copilot", "pi", "kimi", "agents"):
-        removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
+        removed = _remove_skill_file(
+            platform_name, project=True, project_dir=project_dir, keep_shared=keep_shared
+        )
         if not removed and report_missing:
             print("nothing to remove")
     elif platform_name == "codebuddy":
@@ -2554,7 +2566,10 @@ def _project_uninstall_all(project_dir: Path | None = None) -> None:
         # `agents` and `freebuff` share one directory: whichever runs second finds
         # it gone (or keeps its claim), which is not "nothing to remove".
         _project_uninstall(
-            platform_name, project_dir, report_missing=platform_name not in ("agents", "freebuff")
+            platform_name,
+            project_dir,
+            report_missing=platform_name not in ("agents", "freebuff"),
+            keep_shared=False,
         )
     for platform_name in ("gemini", "cursor"):
         _project_uninstall(platform_name, project_dir)
@@ -2820,7 +2835,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # ~/.config/agents/skills for amp, ~/.agents/skills, ...) that the AGENTS.md
     # cleanup above does not touch, so remove every platform's.
     for platform_name in _PLATFORM_CONFIG:
-        _remove_skill_file(platform_name, report_shared=False)
+        _remove_skill_file(platform_name, report_shared=False, keep_shared=False)
     # Kilo's global command sits outside its skill dir.
     for line in _kilo_uninstall_global():
         print(f"  {line}")
