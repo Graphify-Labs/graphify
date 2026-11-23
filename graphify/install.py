@@ -338,7 +338,53 @@ def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
                 staging_root.unlink()
         elif staging_root.exists():
             shutil.rmtree(staging_root, ignore_errors=True)
-def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
+_SKILL_CLAIM_FILE = ".graphify_platforms"
+
+
+def _claimed_platforms(skill_dir: Path) -> list[str]:
+    """Platform names recorded as installed in this skill directory.
+
+    Freebuff and the generic Agent-Skills target write byte-identical content to
+    one directory, so the files on disk cannot say which name installed it. The
+    claim file answers that, and lets an uninstall keep the skill while another
+    name still wants it. Empty for installs made before the file existed, which
+    keeps their old remove-on-uninstall behavior.
+    """
+    path = skill_dir / _SKILL_CLAIM_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [name for name in data if isinstance(name, str)]
+
+
+def _record_claim(skill_dst: Path, platform_name: str) -> None:
+    """Add ``platform_name`` to the directory's claim file (idempotent).
+
+    Best effort: a failed claim write must not fail an install. The directory
+    then looks like a pre-claim install, and uninstall removes it as it always
+    did.
+    """
+    names = sorted({*_claimed_platforms(skill_dst.parent), platform_name})
+    path = skill_dst.parent / _SKILL_CLAIM_FILE
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(names) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _copy_skill_file(
+    platform_name: str,
+    *,
+    project: bool = False,
+    project_dir: Path | None = None,
+    record_platform: bool = True,
+) -> Path:
     """Copy a packaged skill file and write its version stamp.
 
     For progressive platforms (those with ``skill_refs`` set), the packaged
@@ -423,6 +469,12 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
                 tmp_dst.unlink(missing_ok=True)
 
         _write_version_stamp(skill_dst, __version__)
+        if record_platform and _platforms_sharing_skill_path(
+            platform_name, skill_dst, project=project, project_dir=project_dir
+        ):
+            # Only a shared destination needs a claim record; a refresh rewrites
+            # the same bytes and is not a new claim.
+            _record_claim(skill_dst, platform_name)
         print(f"  skill installed  ->  {skill_dst}")
     return skill_dst
 def _report_replaced_platform(
@@ -511,6 +563,18 @@ def _remove_skill_file(
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
     removed = False
     with _skill_lock(skill_dst.parent):
+        claims = _claimed_platforms(skill_dst.parent)
+        others = [name for name in claims if name != platform_name]
+        if others:
+            if platform_name in claims:
+                marker = skill_dst.parent / _SKILL_CLAIM_FILE
+                marker.write_text(json.dumps(sorted(others)) + "\n", encoding="utf-8")
+            names = ", ".join(f"`{name}`" for name in others)
+            print(
+                f"  skill kept       ->  {skill_dst.parent} is still installed for {names}; "
+                f"remove it with `graphify {others[0]} uninstall`"
+            )
+            return False
         if skill_dst.exists():
             skill_dst.unlink()
             print(f"  skill removed    ->  {skill_dst}")
@@ -523,12 +587,18 @@ def _remove_skill_file(
         if refs_dir.exists():
             shutil.rmtree(refs_dir)
             removed = True
+        marker = skill_dst.parent / _SKILL_CLAIM_FILE
+        if marker.exists():
+            marker.unlink()
+            removed = True
         for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
             try:
                 d.rmdir()
             except OSError:
                 break
-    if removed and report_shared:
+    if removed and report_shared and not claims:
+        # No claim file (an install predating it): the directory can still belong
+        # to another name that ships identical bytes, so say so.
         sharing = _platforms_sharing_skill_path(
             platform_name, skill_dst, project=project, project_dir=project_dir
         )
@@ -2317,12 +2387,20 @@ def _freebuff_project_uninstall(project_dir: Path | None = None) -> None:
     removed = _remove_skill_file("freebuff", project=True, project_dir=project_dir)
     if removed:
         print("skill removed")
+    elif _claimed_platforms(
+        _platform_skill_destination("freebuff", project=True, project_dir=project_dir).parent
+    ):
+        return
     _agents_uninstall(project_dir, platform="freebuff")
 def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = "agents") -> None:
     """`graphify agents|freebuff uninstall`: remove the skill and the AGENTS.md section."""
     removed = _remove_skill_file(platform)
     if removed:
         print("skill removed")
+    elif _claimed_platforms(_platform_skill_destination(platform).parent):
+        # Another name still uses the shared skill, and the AGENTS.md section is
+        # shared too: removing it would break the install that stays behind.
+        return
     _agents_uninstall(project_dir or Path("."), platform=platform)
 def _project_install(platform_name: str, project_dir: Path | None = None, strict: bool = False) -> None:
     """Install platform skill/config files in the current project."""

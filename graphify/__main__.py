@@ -390,7 +390,7 @@ def _refresh_one_skill(name: str, skill_dst: Path, installed: str) -> None:
     captured = io.StringIO()
     try:
         with contextlib.redirect_stdout(captured):
-            _copy_skill_file(name)
+            _copy_skill_file(name, record_platform=False)
     except (Exception, SystemExit) as exc:
         # _copy_skill_file exits on a broken package (after printing why);
         # a refresh must never take the user's actual command down with it.

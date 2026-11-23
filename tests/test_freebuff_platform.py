@@ -12,6 +12,7 @@ also what keeps ``_refresh_stale_skills`` able to refresh that directory
 ``graphify install --platform freebuff`` stays skill-only, exactly as
 ``--platform agents`` and ``--platform amp`` do.
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -62,7 +63,7 @@ def _installed_tree(base: Path) -> dict[str, bytes]:
     return {
         str(path.relative_to(skill_dir)): path.read_bytes()
         for path in sorted(skill_dir.rglob("*"))
-        if path.is_file()
+        if path.is_file() and path.name != ".graphify_platforms"
     }
 
 
@@ -87,6 +88,12 @@ def test_shared_destination_installs_identical_bytes(tmp_path, project):
     assert trees[0] == trees[1], "shared skill directory holds different bytes per platform"
     assert "SKILL.md" in trees[0]
     assert any(part.endswith("extraction-spec.md") for part in trees[0])
+
+    # The only per-platform file is the claim marker, which records who installed.
+    for name in ("freebuff", "agents"):
+        claim = tmp_path / name / ("work" if project else "home")
+        claim = claim / ".agents" / "skills" / "graphify" / ".graphify_platforms"
+        assert json.loads(claim.read_text(encoding="utf-8")) == [name]
 
 
 def test_project_install_names_the_platform_it_replaces(tmp_path, capsys):
@@ -253,9 +260,9 @@ def test_freebuff_project_install_writes_dot_agents(tmp_path):
     assert not project_skill.exists()
 
 
-def test_freebuff_uninstall_project_matches_agents_scope(tmp_path):
-    """`--project --platform freebuff` tears down the same project skill as
-    `--project --platform agents`, not the user-scope copy."""
+def test_freebuff_project_uninstall_keeps_an_agents_install(tmp_path, capsys):
+    """One directory, two claimants: uninstalling freebuff must leave the skill
+    (and its AGENTS.md section) that `--project --platform agents` installed."""
     home = tmp_path / "home"
     proj = tmp_path / "proj"
     home.mkdir()
@@ -264,10 +271,18 @@ def test_freebuff_uninstall_project_matches_agents_scope(tmp_path):
     _run(proj, ["install", "--project", "--platform", "agents"], home)
     project_skill = proj / ".agents" / "skills" / "graphify" / "SKILL.md"
     assert project_skill.exists()
+    capsys.readouterr()
 
     _run(proj, ["uninstall", "--project", "--platform", "freebuff"], home)
-    assert not project_skill.exists()
+
+    assert project_skill.exists(), "agents still claims the shared skill"
+    out = capsys.readouterr().out
+    assert "skill kept" in out
+    assert "`agents`" in out
     assert not (home / ".agents" / "skills").exists()
+
+    _run(proj, ["uninstall", "--project", "--platform", "agents"], home)
+    assert not project_skill.exists()
 
 
 def test_global_uninstall_cleans_the_shared_directory(tmp_path):
@@ -288,36 +303,78 @@ def test_global_uninstall_cleans_the_shared_directory(tmp_path):
     assert not (home / ".agents" / "skills").exists()
 
 
-def test_uninstall_reports_the_shared_agents_install(tmp_path, capsys):
-    """The shared directory means `freebuff uninstall` also removes the `agents`
-    skill: say so instead of silently taking out a second install."""
+def test_uninstalling_one_shared_platform_keeps_the_skill(tmp_path, capsys):
+    """The bot-reported P2: removing freebuff must not take out an agents install.
+
+    Both names write one directory, so the claim file records who installed it:
+    the last claimant to uninstall removes the skill, the first one only drops
+    its own claim.
+    """
     home = tmp_path / "home"
     cwd = tmp_path / "cwd"
     home.mkdir()
     cwd.mkdir()
 
     _run(cwd, ["freebuff", "install"], home)
+    _run(cwd, ["install", "--platform", "agents"], home)
+
+    skill = home / ".agents" / "skills" / "graphify" / "SKILL.md"
+    claim = home / ".agents" / "skills" / "graphify" / ".graphify_platforms"
+    assert json.loads(claim.read_text(encoding="utf-8")) == ["agents", "freebuff"]
     capsys.readouterr()
 
     _run(cwd, ["freebuff", "uninstall"], home)
 
     out = capsys.readouterr().out
+    assert "skill kept" in out, out
+    assert "`agents`" in out
+    assert skill.exists(), "agents still claims the shared skill"
+    assert (skill.parent / "references" / "extraction-spec.md").exists()
+    assert json.loads(claim.read_text(encoding="utf-8")) == ["agents"]
+    assert "## graphify" in (cwd / "AGENTS.md").read_text(encoding="utf-8"), (
+        "the shared AGENTS.md section must survive while agents is installed"
+    )
+
+    _run(cwd, ["agents", "uninstall"], home)
+    assert not skill.exists()
+    assert not (home / ".agents" / "skills").exists()
+
+
+def test_legacy_install_without_a_claim_file_still_uninstalls(tmp_path, capsys):
+    """An install made before the claim file existed keeps the old behavior, and
+    still says that the directory is shared."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+
+    _run(cwd, ["freebuff", "install"], home)
+    skill_dir = home / ".agents" / "skills" / "graphify"
+    (skill_dir / ".graphify_platforms").unlink()
+    capsys.readouterr()
+
+    _run(cwd, ["freebuff", "uninstall"], home)
+
+    out = capsys.readouterr().out
+    assert not (skill_dir / "SKILL.md").exists()
     assert "shared path" in out
     # `.agents/skills` itself contains "agents", so match the notice's wording.
     assert "is also the `agents` install target" in out
 
 
-def test_project_uninstall_reports_the_shared_agents_install(tmp_path, capsys):
+def test_project_uninstall_of_the_sole_claim_cleans_the_directory(tmp_path, capsys):
+    """Only freebuff claims the project skill, so its uninstall removes it."""
     home = tmp_path / "home"
     proj = tmp_path / "proj"
     home.mkdir()
     proj.mkdir()
 
-    _run(proj, ["install", "--project", "--platform", "agents"], home)
+    _run(proj, ["freebuff", "install", "--project"], home)
+    skill = proj / ".agents" / "skills" / "graphify" / "SKILL.md"
+    assert skill.exists()
     capsys.readouterr()
 
-    _run(proj, ["uninstall", "--project", "--platform", "freebuff"], home)
+    _run(proj, ["freebuff", "uninstall", "--project"], home)
 
-    out = capsys.readouterr().out
-    assert "shared path" in out
-    assert "is also the `agents` install target" in out
+    assert not skill.exists()
+    assert not (proj / ".agents" / "skills").exists()
