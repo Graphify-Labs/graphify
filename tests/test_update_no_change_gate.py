@@ -81,6 +81,38 @@ def test_unchanged_tree_skips_extraction_and_leaves_outputs_untouched(
     assert _snapshot(built) == before, "outputs must be byte-identical"
 
 
+@pytest.mark.parametrize("incremental", [False, True], ids=["full", "incremental"])
+def test_unchanged_tree_recreates_missing_report(built: Path, capsys, incremental: bool) -> None:
+    out = built / "graphify-out"
+    report = out / "GRAPH_REPORT.md"
+    graph = out / "graph.json"
+    report_before = report.read_bytes()
+    graph_before = graph.read_bytes()
+    graph_mtime = graph.stat().st_mtime_ns
+    report.unlink()
+    capsys.readouterr()
+
+    assert _rebuild_code(built, acquire_lock=False, incremental=incremental) is True
+
+    assert report.read_bytes() == report_before
+    assert graph.read_bytes() == graph_before
+    assert graph.stat().st_mtime_ns == graph_mtime
+    assert SKIP_MESSAGE not in capsys.readouterr().out
+
+
+def test_unchanged_no_cluster_tree_skips_without_report(tmp_path: Path, capsys) -> None:
+    root = _corpus(tmp_path / "corpus")
+    assert _rebuild_code(root, acquire_lock=False, no_cluster=True) is True
+    before = _snapshot(root)
+    assert "GRAPH_REPORT.md" not in before
+    capsys.readouterr()
+
+    assert _rebuild_code(root, acquire_lock=False, incremental=True, no_cluster=True) is True
+
+    assert SKIP_MESSAGE in capsys.readouterr().out
+    assert _snapshot(root) == before
+
+
 def test_oversized_data_json_does_not_block_the_no_change_skip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
