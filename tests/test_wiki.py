@@ -747,3 +747,43 @@ def test_god_node_article_no_direction_marker_on_undirected_graph():
     G.add_edge("b", "hub", relation="calls")
     article = _god_node_article(G, "hub", {})
     assert "(incoming)" not in article
+
+
+def test_safe_filename_and_md_link_to_handle_none_and_non_strings():
+    """_safe_filename and _md_link_to must not crash on None or non-string inputs (#5462)."""
+    from graphify.wiki import _safe_filename, _md_link_to
+
+    assert _safe_filename(None) == "unnamed"
+    assert _safe_filename(123) == "unnamed"
+    assert _safe_filename("") == "unnamed"
+
+    assert _md_link_to(None, "slug") == "[unnamed](slug.md)"
+    assert _md_link_to(None, None) == "unnamed"
+    assert _md_link_to(42, "slug") == "[42](slug.md)"
+
+
+def test_to_wiki_handles_none_labels_across_nodes_and_communities(tmp_path):
+    """to_wiki must tolerate None labels across nodes, communities, and god nodes (#5462)."""
+    G = nx.Graph()
+    G.add_node("n1", label=None, source_file="a.py")
+    G.add_node("n2", label=None, source_file="b.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED")
+
+    communities = {0: ["n1"], 1: ["n2"]}
+    labels = {0: None, 1: None}
+    god_nodes = [{"id": "n1", "label": None, "degree": 1}]
+
+    count = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    assert count == 3  # Community 0, Community 1, and God node n1
+
+    index = (tmp_path / "index.md").read_text(encoding="utf-8")
+    assert "Community 0" in index
+    assert "Community 1" in index
+    assert "index.md" in (tmp_path / "index.md").name
+
+    comm0 = (tmp_path / "Community_0.md").read_text(encoding="utf-8")
+    assert "n1" in comm0  # falls back to node ID when label is None
+
+    god = (tmp_path / "n1.md").read_text(encoding="utf-8")
+    assert "God node" in god
+    assert "n2" in god
