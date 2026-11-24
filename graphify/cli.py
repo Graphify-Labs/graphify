@@ -4106,7 +4106,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
 
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import build_from_json as _bfj
+        from graphify.paths import consumed_graph_rows, restore_arc_direction
         from graphify.security import check_graph_file_size_cap as _check_cap
 
         # Solution 3 (#1019): for the HTML view, an oversized graph.json should
@@ -4134,12 +4134,11 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
-        from graphify.paths import restore_arc_direction as _rad
-        _raw = _rad(_raw)
-        try:
-            G = _jg.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = _jg.node_link_graph(_raw)
+        if isinstance(_raw.get("nodes"), list) and isinstance(_raw.get("links"), list):
+            graph_data = consumed_graph_rows(_raw)
+        else:
+            graph_data = restore_arc_direction(_raw)
+        G = _jg.node_link_graph(graph_data, edges="links")
         if isinstance(_raw.get("hyperedges"), list):
             G.graph["hyperedges"] = _raw["hyperedges"]
 
