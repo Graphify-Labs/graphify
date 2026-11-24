@@ -178,3 +178,61 @@ def test_distinct_node_labels_sanitizes_like_the_push_loop():
     G.add_node("d")  # no file_type at all -> "Entity"
 
     assert _distinct_node_labels(G) == ["Code", "Entity"]
+
+
+def test_falkordb_push_qualifies_edge_endpoints_with_node_labels(fake_falkordb):
+    """Edge MATCH queries must qualify endpoints with node labels to use the property indexes."""
+    from graphify.exporters.graphdb import push_to_falkordb
+
+    result = push_to_falkordb(_graph(), uri="localhost:6379", graph_name="graphify")
+    assert result == {"nodes": 4, "edges": 2}
+
+    edge_matches = [c for c in fake_falkordb.calls if c.startswith("MATCH")]
+    assert len(edge_matches) == 2
+    assert "MATCH (a:Code {id: $src}), (b:Document {id: $tgt}) MERGE (a)-[r:READS]->(b) SET r += $props" in edge_matches
+    assert "MATCH (a:Code {id: $src}), (b:Database {id: $tgt}) MERGE (a)-[r:READS]->(b) SET r += $props" in edge_matches
+
+
+def test_neo4j_push_qualifies_edge_endpoints_with_node_labels(fake_neo4j):
+    """Neo4j edge MATCH queries must qualify endpoints with node labels to use property indexes."""
+    from graphify.exporters.graphdb import push_to_neo4j
+
+    result = push_to_neo4j(_graph(), uri="bolt://localhost:7687", user="neo4j", password="x")
+    assert result == {"nodes": 4, "edges": 2}
+
+    edge_matches = [c for c in fake_neo4j.calls if c.startswith("MATCH")]
+    assert len(edge_matches) == 2
+    assert "MATCH (a:Code {id: $src}), (b:Document {id: $tgt}) MERGE (a)-[r:READS]->(b) SET r += $props" in edge_matches
+    assert "MATCH (a:Code {id: $src}), (b:Database {id: $tgt}) MERGE (a)-[r:READS]->(b) SET r += $props" in edge_matches
+
+
+def test_push_handles_missing_or_none_labels_and_missing_endpoints(fake_neo4j):
+    """Edges with missing endpoints or None file_type must not crash and fallback cleanly."""
+    from graphify.exporters.graphdb import push_to_neo4j
+
+    G = nx.Graph()
+    G.add_node("n1", file_type="python")
+    G.add_node("n2", file_type=None)
+    G.add_node("n3", file_type="python")
+    # Edge with explicit _src pointing to an external/unregistered node:
+    G.add_edge("n1", "n2", _src="external_unknown", _tgt="n2", relation="CALLS")
+    # Edge between n3 and n2 with explicit direction:
+    G.add_edge("n3", "n2", _src="n3", _tgt="n2", relation="USES")
+
+    result = push_to_neo4j(G, uri="bolt://localhost:7687", user="neo4j", password="x")
+    assert result == {"nodes": 3, "edges": 2}
+
+    edge_matches = [c for c in fake_neo4j.calls if c.startswith("MATCH")]
+    assert any("MATCH (a {id: $src}), (b:Entity {id: $tgt})" in c for c in edge_matches)
+    assert any("MATCH (a:Python {id: $src}), (b:Entity {id: $tgt})" in c for c in edge_matches)
+
+
+def test_distinct_node_labels_with_none_file_type():
+    """_distinct_node_labels must safely handle None or non-string file_type without raising."""
+    from graphify.exporters.graphdb import _distinct_node_labels
+
+    G = nx.Graph()
+    G.add_node("a", file_type=None)
+    G.add_node("b", file_type="")
+    G.add_node("c", file_type="code")
+    assert _distinct_node_labels(G) == ["Code", "Entity"]
