@@ -252,14 +252,14 @@ class _GraphContextCache:
             return new_entry["G"], new_entry["communities"]
 
 
-def _node_location(d: dict) -> str:
-    """``L42-L58`` when the node records ``source_end_location``, else its ``source_location``.
+def _node_location(d: dict, site: str = "source") -> str:
+    """``L42-L58`` when the node records ``<site>_end_location``, else its ``<site>_location``.
 
     The range is printed so an agent reads the declaration, not the whole file.
     """
-    loc = str(d.get("source_location") or "")
+    loc = str(d.get(f"{site}_location") or "")
     start = re.fullmatch(r"L(\d+)", loc)
-    end = re.fullmatch(r"L(\d+)", str(d.get("source_end_location") or ""))
+    end = re.fullmatch(r"L(\d+)", str(d.get(f"{site}_end_location") or ""))
     if start and end and int(end.group(1)) > int(start.group(1)):
         return f"{loc}-{end.group(0)}"
     return loc
@@ -3257,7 +3257,7 @@ def _build_server(graph_path: str):
             # impl file is ONE node keyed to the header, so Source alone points at
             # the declaration. Name where it is implemented too, when known.
             *([f"  Defined in: {sanitize_label(str(d.get('definition_file', '')))} "
-               f"{sanitize_label(str(d.get('definition_location', '')))}"]
+               f"{sanitize_label(_node_location(d, 'definition'))}"]
               if d.get("definition_file") else []),
             *(["  Section: get_section returns this Markdown section's text"]
               if _is_section_node(d) else []),

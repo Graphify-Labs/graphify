@@ -372,3 +372,17 @@ def test_bodiless_declarations_end_at_their_signature(tmp_path, name, source, ra
     for label, expected in ranges.items():
         node = _node(result, label)
         assert (node["source_location"], node["source_end_location"]) == expected
+
+
+def test_get_node_prints_the_definition_range(tmp_path):
+    from graphify import serve
+
+    node = {"source_location": "L2", "source_end_location": "L2",
+            "definition_file": "Box.m", "definition_location": "L5", "definition_end_location": "L7"}
+    assert serve._node_location(node) == "L2"
+    assert serve._node_location(node, "definition") == "L5-L7"
+    (tmp_path / "Box.h").write_text("@interface Box : NSObject\n- (void)run;\n@end\n")
+    (tmp_path / "Box.m").write_text('#import "Box.h"\n@implementation Box\n- (void)run {\n  return;\n}\n@end\n')
+    G = build([extract([tmp_path / "Box.m", tmp_path / "Box.h"], tmp_path / "cache", root=tmp_path)])
+    run = next(n for n, d in G.nodes(data=True) if d.get("label") == "-run")
+    assert serve._node_location(G.nodes[run], "definition") == "L3-L5"
