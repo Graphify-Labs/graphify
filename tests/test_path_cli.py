@@ -560,3 +560,119 @@ def test_path_scoped_endpoint_honors_file_qualifier(monkeypatch, tmp_path, capsy
     gp = _cross_file_symbol_graph(tmp_path)
     out = _run(monkeypatch, gp, "src/billing/route.ts::readRoute", "chargeCard", capsys)
     assert "readRoute() --calls [EXTRACTED]--> chargeCard()" in out
+
+
+def _no_such_node_graph(tmp_path):
+    """#5079: `zzqqxx_no_such_symbol_9137` names nothing, but `no_such_symbol_helper()`
+    shares three of its `_`-split tokens and wins the score fallback, so `path` used
+    to print the helper's route and exit 0 while `explain` said "No node matching"."""
+    return _write_nodes(tmp_path, [
+        ("src_a_ts", "a.ts", "src/a.ts", "L1"),
+        ("src_a_ts_parse", "parse()", "src/a.ts", "L1"),
+        ("src_b_ts", "b.ts", "src/b.ts", "L1"),
+        ("src_b_ts_helper", "no_such_symbol_helper()", "src/b.ts", "L1"),
+        ("src_b_ts_format", "format()", "src/b.ts", "L1"),
+        ("src_c_ts", "c.ts", "src/c.ts", "L1"),
+        ("src_c_ts_format", "format()", "src/c.ts", "L1"),
+    ], [
+        ("src_a_ts", "src_a_ts_parse", "contains"),
+        ("src_a_ts_parse", "src_b_ts_helper", "calls"),
+        ("src_b_ts", "src_b_ts_helper", "contains"),
+        ("src_b_ts", "src_b_ts_format", "contains"),
+        ("src_c_ts", "src_c_ts_format", "contains"),
+        ("src_b_ts_helper", "src_b_ts_format", "calls"),
+    ])
+
+
+_NO_SUCH_NODE = "zzqqxx_no_such_symbol_9137"
+
+
+def test_path_refuses_endpoint_that_names_no_node(monkeypatch, tmp_path, capsys):
+    """An endpoint matching no node name at all must fail closed, like `explain`,
+    instead of routing from whichever node happened to share some tokens (#5079)."""
+    gp = _no_such_node_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "path", _NO_SUCH_NODE, "src/b.ts::format()", "--graph", str(gp)])
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == EXIT_NOT_FOUND
+    captured = capsys.readouterr()
+    assert "Shortest path" not in captured.out
+    assert _NO_SUCH_NODE in captured.err
+    assert "no_such_symbol_helper" not in captured.out
+
+
+def test_shortest_path_tool_refuses_endpoint_that_names_no_node(tmp_path):
+    """The MCP tool shares the resolver, so a bare name it cannot place is a miss too."""
+    from graphify.serve import _shortest_path_text
+    raw = json.loads(_no_such_node_graph(tmp_path).read_text())
+    G = json_graph.node_link_graph(raw, edges="links")
+    out = _shortest_path_text(G, {"source": _NO_SUCH_NODE, "target": "src/b.ts::format()"})
+    assert "Shortest path" not in out
+    assert f"No node matching source '{_NO_SUCH_NODE}' found." in out
+
+
+def _normalizing_decoy_graph(tmp_path):
+    """A node whose label tokenizes to another node's id words (#5361).
+
+    The decoy in notes.md carries the label "demo src alpha prepare", which
+    `_search_tokens` splits into the same words as the id
+    `demo::src_alpha_prepare`, so both land in the exact tier and the id query
+    used to be refused as ambiguous across two files.
+    """
+    return _write_nodes(tmp_path, [
+        ("demo::src_alpha_prepare", "prepare()", "alpha.py", "L1"),
+        ("demo::src_beta_finish", "finish()", "beta.py", "L1"),
+        ("decoy", "demo src alpha prepare", "notes.md", "L1"),
+    ], [
+        ("demo::src_alpha_prepare", "demo::src_beta_finish", "calls"),
+    ])
+
+
+@pytest.mark.parametrize("ends", [
+    ("demo::src_alpha_prepare", "demo::src_beta_finish"),
+    ("demo::src_alpha_prepare", "finish()"),
+    ("prepare()", "demo::src_beta_finish"),
+], ids=["both-ids", "id-source", "id-target"])
+def test_path_accepts_exact_node_id_over_normalizing_decoy(monkeypatch, tmp_path, capsys, ends):
+    """An endpoint that is literally a node id resolves to that node outright;
+    a label whose words normalize to the id must not turn it ambiguous (#5361)."""
+    gp = _normalizing_decoy_graph(tmp_path)
+    out = _run(monkeypatch, gp, *ends, capsys)
+    assert "Shortest path (1 hops):" in out
+    assert "prepare() --calls [EXTRACTED]--> finish()" in out
+
+
+def test_path_still_refuses_genuinely_ambiguous_label(monkeypatch, tmp_path, capsys):
+    """The decoy's own label still names one node only, but two same-label
+    nodes across files keep their ambiguity refusal — the id shortcut must not
+    swallow real ties."""
+    gp = _write_nodes(tmp_path, [
+        ("a_prepare", "prepare()", "alpha.py", "L1"),
+        ("b_prepare", "prepare()", "beta.py", "L1"),
+        ("finish", "finish()", "beta.py", "L2"),
+    ], [
+        ("a_prepare", "finish", "calls"),
+    ])
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "path", "prepare()", "finish", "--graph", str(gp)])
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == EXIT_AMBIGUOUS
+    captured = capsys.readouterr()
+    assert "Shortest path" not in captured.out
+    assert "Ambiguous: 'prepare()' matches 2 nodes in different files." in captured.err
+
+
+def test_shortest_path_tool_accepts_exact_node_id_over_normalizing_decoy(tmp_path):
+    """The MCP `shortest_path` tool shares the resolver and the id precedence."""
+    from graphify.serve import _shortest_path_text
+    raw = json.loads(_normalizing_decoy_graph(tmp_path).read_text())
+    G = json_graph.node_link_graph({**raw, "directed": True, "multigraph": True}, edges="links")
+    out = _shortest_path_text(G, {"source": "demo::src_alpha_prepare",
+                                  "target": "demo::src_beta_finish"})
+    assert "Shortest path (1 hops):" in out
+    assert "prepare() --calls [EXTRACTED]--> finish()" in out
+    assert not out.startswith("Ambiguous:")

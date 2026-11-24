@@ -20,15 +20,21 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>Reducér agenternes tokenforbrug med 80%.</b> Graphify Cloud er en altid aktiv hukommelse, der styrer dine agenter, holder kodekvaliteten høj og beviser korrekthed med formel verifikation. <a href="https://app.graphify.com/login"><b>Start en gratis 14-dages prøveperiode &rarr;</b></a>
+  <b>Delt kodebasekontekst for agenter og mennesker.</b>
+  <br/>
+  Gør din kodebase til en forespørgbar vidensgraf. Spor afhængigheder, forstå hvordan komponenter hænger sammen, og giv din kodeassistent genbrugelig kontekst på tværs af sessioner.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Kom gratis i gang, uden kort &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> holder den graf altid aktiv gennem hele din SDLC.
 </p>
 
 Skriv `/graphify` i din AI-kodeassistent, og den kortlægger hele dit projekt (kode, dokumenter, PDF-filer, billeder, videoer) til en **vidensgraf**, som du kan **forespørge i stedet for at greppe** gennem filer.
@@ -38,21 +44,30 @@ Skriv `/graphify` i din AI-kodeassistent, og den kortlægger hele dit projekt (k
 - **Ikke et vektorindeks.** Ingen embeddings, intet vektorlager: en rigtig graf, du gennemløber. Stil et spørgsmål, spor stien mellem to ting, eller forklar ét begreb.
 
 > [!NOTE]
-> **Vil du have dette altid aktivt?** [Graphify Cloud](https://app.graphify.com/login) holder grafen levende gennem hele din SDLC: understøttelse af monorepo og krydsrepo, formel verifikation og kodegennemgang med et fugleperspektiv over din SDLC, plus connectors til Sentry, Jira med mere, så hændelser og sager ligger i samme graf som din kode. **[Start en gratis 14-dages prøveperiode på app.graphify.com](https://app.graphify.com/login)**.
+> **Vil du have dette altid aktivt?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) holder grafen levende gennem hele din SDLC: understøttelse af monorepo og krydsrepo, formel verifikation og kodegennemgang med et fugleperspektiv over din SDLC, plus connectors til Sentry, Jira med mere, så hændelser og sager ligger i samme graf som din kode. **[Kom gratis i gang, uden kort](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>FastAPI-kodebasen kortlagt af graphify. Hver knude er et begreb, farver er detekterede fællesskaber, og det hele er klikbart i graph.html.</em>
+  <em>FastAPI-kodebasen kortlagt af graphify. Hver knude er et begreb, farver er detekterede delsystemer, og det hele er klikbart i graph.html.</em>
 </p>
 
-**Kom godt i gang** (30 sekunder). Kræver Python 3.10+ og uv (eller pipx):
+**Kom godt i gang** (30 sekunder). Kræver Python 3.11.5–3.14 og uv (eller pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Bruger du en anden assistent? Navngiv den eksplicit:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Se [vælg din platform](#install) for alle 20+ assistenter.
 
 Derefter, i din AI-assistent:
 
@@ -114,8 +129,8 @@ Hvad du får ud af kassen:
 
 | Funktion | Hvad du får |
 |---|---|
-| **Gudeknuder** | De mest forbundne begreber, så du ser, hvad alt flyder igennem |
-| **Fællesskaber** | Grafen opdelt i delsystemer (Leiden), med LLM-frie etiketter |
+| **Mest forbundne komponenter** | Begreberne, som alt flyder igennem — grafens hubs (også kaldet *god nodes*) |
+| **Delsystemer** | Grafen opdelt i sammenhængende grupper (Leiden *fællesskaber*), hver med en LLM-fri etiket |
 | **Links på tværs af filer** | `calls` / `imports` / `inherits` / `mixes_in` opløst på tværs af ~40 sprog via tree-sitter AST |
 | **Query, path, explain** | Stil et spørgsmål, spor stien mellem to ting, eller forklar ét begreb, alt sammen mod `graph.json` |
 | **Begrundelse + dokumentreferencer** | `# NOTE:` / `# WHY:`-kommentarer og ADR/RFC-citater bliver førsteklasses knuder forbundet til koden |
@@ -123,7 +138,20 @@ Hvad du får ud af kassen:
 | **Lokalt først** | Kode parses lokalt med tree-sitter (ingen LLM, intet forlader din maskine); kun den semantiske gennemgang af dokumenter/medier kalder en backend, og kun hvis du konfigurerer en |
 
 > [!TIP]
-> Kører du dette på tværs af mange repos eller et monorepo? [Graphify Cloud](https://app.graphify.com/login) gør det kontinuerligt og reducerer agenternes tokenforbrug med 80%, med krydsrepolinks, kodegennemgang på tværs af hele SDLC, formel verifikation og Sentry/Jira-connectors. [Start en gratis 14-dages prøveperiode &rarr;](https://app.graphify.com/login)
+> Kører du dette på tværs af mange repos eller et monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) gør det kontinuerligt og reducerer agenternes tokenforbrug med 80%, med krydsrepolinks, kodegennemgang på tværs af hele SDLC, formel verifikation og Sentry/Jira-connectors. [Kom gratis i gang, uden kort &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## Hvornår du skal gribe til Graphify
+
+Grib til grafen, når du har brug for at forstå en kodebase, ikke bare læse den igennem:
+
+| Situation | Hvad du spørger Graphify om |
+|---|---|
+| At komme ind i et ukendt projekt | "Forklar, hvordan hovedkomponenterne hænger sammen." |
+| At ændre en delt komponent | "Spor dens kaldere og afhængigheder." |
+| At undersøge en bug | "Vis stien mellem dette slutpunkt og lagringen." |
+| At vende tilbage til tidligere arbejde | "Find de relevante designbeslutninger og noter." |
 
 ---
 
@@ -159,7 +187,7 @@ Fulde vejledninger og reference findes på **[docs.graphify.com](https://docs.gr
 
 | Krav | Minimum | Tjek | Installér |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(anbefalet)* | enhver | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativ)* | enhver | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +255,7 @@ for eksempel `graphify claude install --project` eller `graphify codex install -
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (registreres automatisk) eller `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (kald med `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -306,7 +334,7 @@ Dette skriver en lille konfigurationsfil, der fortæller din assistent, at den s
 
 `GRAPH_REPORT.md` er stadig tilgængelig til bred arkitekturgennemgang.
 
-Præcis hvilke filer hver platform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex' `AGENTS.md`, Kilos indbyggede `.kilo`-plugin, Cursors `alwaysApply`-regel osv.) er dækket i **[Altid aktiv-opsætning](https://docs.graphify.com/guides/always-on)**.
+Præcis hvilke filer hver platform skriver (CodeBuddys `CODEBUDDY.md` + `PreToolUse`-hooks, Codex' `AGENTS.md`, Kilos indbyggede `.kilo`-plugin, Cursors `alwaysApply`-regel osv.) er dækket i **[Altid aktiv-opsætning](https://docs.graphify.com/open-source/vibe-coding)**.
 
 For at fjerne graphify fra alle platforme på én gang: `graphify uninstall` (tilføj `--purge` for også at slette `graphify-out/`). Eller brug kommandoen pr. platform (f.eks. `graphify claude uninstall`).
 
@@ -325,9 +353,43 @@ Begge opfordrer til afgrænsede grafforespørgsler før brede kildesøgninger. V
 
 ---
 
+## Forbind din agent via MCP
+
+Peg en vilkårlig MCP-kompatibel agent mod en Graphify-graf, og den forespørger grafen direkte i stedet for at greppe filer. Forbind til den hostede graf (Graphify Cloud, gratis plan, uden kort):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+Foretrækker du at blive lokal? Installér stdio-serveren med `uv tool install "graphifyy[mcp]"`, og kør `graphify-mcp` mod din egen `graph.json` — ingen konto nødvendig.
+
+Når du er forbundet, får din agent disse værktøjer:
+
+| Værktøj | Hvad det gør |
+|---|---|
+| `query_graph` | Stil et spørgsmål i almindeligt sprog, og få den relevante delgraf tilbage |
+| `shortest_path` | Spor, hvordan to knuder hænger sammen |
+| `get_node` / `get_neighbors` | Slå en knude op, og hvad den rører ved |
+| `get_community` / `god_nodes` | Detekterede klynger og de mest forbundne hubs |
+| `get_section` | Læs en mærket region af grafen |
+| `graph_stats` | Grafens størrelse, sprog og kantfordeling |
+
+Serveren eksponerer også PR-værktøjer (`list_prs`, `get_pr_impact`, `triage_prs`), så din agent kan gennemgå pull requests med grafkontekst.
+
+---
+
 ## Hvad der er i rapporten
 
-`GRAPH_REPORT.md` opsummerer gudeknuderne, fællesskaberne og nøglestierne til bred arkitekturgennemgang. Hvordan grafen bygges, og hvad den indeholder: **[Sådan virker graphify](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` opsummerer de mest forbundne komponenter, delsystemerne og nøglestierne til bred arkitekturgennemgang. Hvordan grafen bygges, og hvad den indeholder: **[Sådan virker graphify](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -343,8 +405,8 @@ graphify parser ~40 programmeringssprog lokalt med tree-sitter AST og kortlægge
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -362,7 +424,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Se den [fulde kommandoreference](#fuld-kommandoreference) nedenfor.
@@ -447,7 +509,7 @@ Hver kommando og hvert flag, med eksempler: **[CLI-reference](https://docs.graph
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) er det altid aktive lag bygget oven på graphify. I stedet for en graf, du genopbygger efter behov pr. mappe, holder det én levende graf gennem hele din softwareudviklingslivscyklus:
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) er det altid aktive lag bygget oven på graphify. I stedet for en graf, du genopbygger efter behov pr. mappe, holder det én levende graf gennem hele din softwareudviklingslivscyklus:
 
 - **80% færre tokens**: altid aktiv hukommelse betyder, at dine agenter holder op med at genlæse og genforklare kodebasen hver session.
 - **Monorepo og krydsrepo**: én forbundet graf på tværs af hver tjeneste og hvert repository, ikke en graf pr. mappe.
@@ -456,7 +518,7 @@ Hver kommando og hvert flag, med eksempler: **[CLI-reference](https://docs.graph
 - **SDLC-connectors**: hent Sentry, Jira med mere ind, så hændelser, sager og kode lever i én graf.
 - **Altid aktiv**: opdateres kontinuerligt i baggrunden på tværs af kode, dokumenter og møder.
 
-**[Start en gratis 14-dages prøveperiode på app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Kom gratis i gang, uden kort &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -464,7 +526,7 @@ Hver kommando og hvert flag, med eksempler: **[CLI-reference](https://docs.graph
 
 Bidrag er velkomne. Se **[CONTRIBUTING.md](../../CONTRIBUTING.md)** for udviklingsopsætningen, test- og CI-paritetskommandoerne, git-workflowet og hvad der gør et stærkt bidrag (gennemarbejdede eksempler og fejlrapporter om ekstraktion er de mest nyttige). Arkitektur og hvordan man tilføjer et sprog: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-Ny her? Sig hej på [Discord](https://discord.gg/XDnKVpzdXB) eller i [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+Ny her? Sig hej på [Discord](https://discord.gg/graphify) eller i [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
@@ -494,7 +556,7 @@ Bygger du noget i graphify-økosystemet? Det opmuntres. Hvis dit projekt bruger 
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

@@ -33,7 +33,7 @@ import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .paths import is_absolute_any_platform as _is_abs
-from .validate import validate_extraction
+from .validate import VALID_CONFIDENCES, validate_extraction
 
 
 # Deterministic (AST) extractors emit source_location "L<line>"; the semantic
@@ -70,6 +70,8 @@ def _lost_saved_semantic_nodes(
     saved_nodes: list,
     new_nodes: list,
     deleted_sources: set[str] | None = None,
+    folded: dict[str, str] | None = None,
+    dedup_remap: dict[str, str] | None = None,
 ) -> list[dict]:
     """Saved semantic nodes whose ids are absent from the new graph.
 
@@ -80,6 +82,15 @@ def _lost_saved_semantic_nodes(
     An auto-minted import stub (``external`` true, or ``type`` ``external``) is
     rebuilt from the import edges of this run. Dropping one is not a lost
     rationale or document node.
+
+    ``folded`` (when given) maps each saved node id that build_from_json merged
+    into an AST twin to that twin's id, so a caller comparing node counts can
+    discount it.
+
+    ``dedup_remap`` is the ``{merged-away id: survivor id}`` map entity dedup
+    produced this run (#4940). A saved id it folded into a survivor that is in
+    the new graph is one node, not a lost one. A survivor that is itself gone
+    excuses nothing: the content went with it.
     """
     deleted = {
         norm
@@ -89,8 +100,10 @@ def _lost_saved_semantic_nodes(
     new_ids = {node.get("id") for node in new_nodes if isinstance(node, dict)}
     # A semantic ghost deduplicated into its AST twin (#1145) loses its id but
     # the symbol survives at the same (source_file, label).
-    new_ast_loc_nodes: set[tuple[str, str]] = set()
+    new_ast_loc_nodes: dict[tuple[str, str], str] = {}
     ast_loc_collisions: set[tuple[str, str]] = set()
+    # AST file nodes, for the label-only fold of build_from_json Pass 2b (#3344).
+    new_ast_file_nodes: list[tuple[str, str]] = []
     for node in new_nodes:
         # Match build_from_json's strict canonical-AST check (#2334).
         if not isinstance(node, dict) or node.get("_origin") != "ast":
@@ -101,13 +114,15 @@ def _lost_saved_semantic_nodes(
         lbl = str(node.get("label", "")).strip()
         if not lbl:
             continue
+        if _is_file_node_label(lbl, sf):
+            new_ast_file_nodes.append((str(node.get("id")), sf))
         norm_sf = _norm_source_file(sf)
         if not norm_sf:
             continue
         key = (norm_sf, lbl)
         if key in new_ast_loc_nodes:
             ast_loc_collisions.add(key)
-        new_ast_loc_nodes.add(key)
+        new_ast_loc_nodes[key] = str(node.get("id"))
     # cluster-only and build_from_json rewrite a legacy semantic id to its
     # canonical stem, then fold a bare doc id into its `_doc` twin. That id
     # is the same node. A missing rationale id has no such successor.
@@ -136,17 +151,82 @@ def _lost_saved_semantic_nodes(
             continue
         if isinstance(node_id, str) and _renamed_present(node_id):
             continue
+        if dedup_remap:
+            survivor = dedup_remap.get(node_id)
+            if isinstance(survivor, str) and _renamed_present(survivor):
+                continue
         sf_val = node.get("source_file")
         source = _norm_source_file(sf_val) if isinstance(sf_val, str) else None
         lbl = str(node.get("label", "")).strip()
         if source and lbl:
             loc_key = (source, lbl)
-            if loc_key in new_ast_loc_nodes and loc_key not in ast_loc_collisions:
+            if (
+                not _has_independent_semantic_evidence(node)
+                and loc_key in new_ast_loc_nodes
+                and loc_key not in ast_loc_collisions
+            ):
+                if folded is not None:
+                    folded[str(node_id)] = new_ast_loc_nodes[loc_key]
                 continue
+        # Full-code rebuilds can relabel an AST file node with a path-qualified
+        # suffix when several files share a basename. The exact (source_file,
+        # label) key then disappears even though Pass 2 legitimately folded
+        # an evidence-free same-source file mention. Match by exact source
+        # identity, not bare filename, to avoid either silent data loss or a
+        # spurious fail-closed refusal on an unrelated identically named file.
+        if source and lbl and not _has_independent_semantic_evidence(node):
+            same_source_twins = {
+                nid for nid, sf in new_ast_file_nodes
+                if _norm_source_file(sf) == source
+                and _is_file_node_label(lbl, sf)
+            }
+            if len(same_source_twins) == 1:
+                if folded is not None:
+                    folded[str(node_id)] = next(iter(same_source_twins))
+                continue
+        # Only a mention of SOME OTHER file is eligible for label-only
+        # folding. If the semantic node's label names its OWN source file,
+        # it is a file-self record; it must not fold into a different source's
+        # AST file just because the basename happens to match.
+        # Only an evidence-free mention is eligible for Pass 2b's label-only
+        # fold. Rich semantic records from unrelated source files are distinct
+        # provenance, even if their label happens to be a real file name.
+        # Mirror build_from_json exactly; otherwise the shrink guard would
+        # silently exempt a lost record that the builder no longer folds.
+        file_twins = (
+            [nid for nid, sf in new_ast_file_nodes if _is_file_node_label(lbl, sf)]
+            if (
+                lbl
+                and not _has_independent_semantic_evidence(node)
+                and not _is_file_node_label(lbl, source)
+            ) else []
+        )
+        if len(file_twins) == 1:
+            if folded is not None:
+                folded[str(node_id)] = file_twins[0]
+            continue
         if source and source in deleted:
             continue
         lost.append(node)
     return lost
+
+
+def _dedup_shrink_allowance(saved_ids: set, new_ids: set, dedup_remap: dict[str, str]) -> int:
+    """How many fewer nodes the graph may have because dedup merged saved ids (#4940).
+
+    Merging N saved ids into one survivor removes N - 1 nodes when the survivor
+    is new this run, and N when it is itself a saved id (that one stays in the
+    count of the old graph). Only merges whose survivor is in the new graph
+    count: a missing survivor is a loss, not a merge.
+    """
+    losers_by_survivor: dict[str, int] = {}
+    for loser, survivor in dedup_remap.items():
+        if loser in saved_ids and survivor in new_ids:
+            losers_by_survivor[survivor] = losers_by_survivor.get(survivor, 0) + 1
+    return sum(
+        count if survivor in saved_ids else count - 1
+        for survivor, count in losers_by_survivor.items()
+    )
 
 
 # Relations that say only "these two symbols appear together", with no claim about
@@ -160,16 +240,82 @@ def _lost_saved_semantic_nodes(
 # exception is _STRUCTURAL_MEMBER_RELATIONS.
 _GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
 # Membership of a type or file. On an undirected graph these share a node pair
-# with a `calls` edge in the opposite direction when a member calls or constructs
-# its owner (`static Report Fault() { return new Report(); }`). Last-write kept
-# `calls` whenever the member id sorted after the owner id, so the membership
-# edge never reached graph.json and the member disappeared from type walks
-# (member lookup, explain, call resolution into the type). The membership edge
-# wins; the call is what this collapse drops. Directed graphs keep both, because
-# the two directions are different arcs. Same-direction `contains`/`method` vs
-# `calls` is not ranked here.
+# with a usage edge in the opposite direction when a member uses its owner: it
+# calls or constructs it (`static Report Fault() { return new Report(); }`), or
+# reads its static property or constant (`return Counter::$limit;`, #2391, #2791).
+# Last-write kept the usage edge whenever the member id sorted after the owner
+# id, so the membership edge never reached graph.json and the member disappeared
+# from type walks (member lookup, explain, call resolution into the type). The
+# membership edge wins; the usage edge is what this collapse drops. Only the
+# usage relations below lose: any other relation (`inherits` for a nested
+# subclass of its owner, an unknown one) keeps the plain last-write rule.
+# Directed graphs keep both, because the two directions are different arcs.
+# Same-direction `contains`/`method` vs `calls` is not ranked here.
 _STRUCTURAL_MEMBER_RELATIONS: frozenset[str] = frozenset({"method", "contains"})
+_MEMBER_USAGE_RELATIONS: frozenset[str] = frozenset({
+    "calls", "indirect_call", "instantiates", "uses_static_prop", "references_constant",
+})
 _CONFIDENCE_RANK: dict[str, int] = {"EXTRACTED": 3, "INFERRED": 2, "AMBIGUOUS": 1}
+# The fields that say how sure the graph is of an edge and where that came from.
+# A same-relation collision keeps one edge; the loser's copy of these fields is
+# folded into the winner's `also_seen` list instead of being discarded (#4881).
+_EVIDENCE_KEYS: tuple[str, ...] = ("confidence", "confidence_score", "source_file", "source_location")
+
+
+def _evidence(attrs: dict) -> dict:
+    """The provenance fields of one edge (or ``also_seen`` entry), scalars only."""
+    out: dict = {}
+    for key in _EVIDENCE_KEYS:
+        val = attrs.get(key)
+        if isinstance(val, bool) or val is None or val == "":
+            continue
+        if key == "confidence_score":
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(val):
+                continue
+        elif not isinstance(val, (str, int, float)):
+            continue
+        out[key] = val
+    return out
+
+
+def _evidence_sort_key(ev: dict) -> tuple:
+    # Weakest first: lowest confidence tier, then lowest score.
+    score = ev.get("confidence_score")
+    return (
+        _CONFIDENCE_RANK.get(str(ev.get("confidence", "")), 0),
+        score is None,
+        score if score is not None else 0.0,
+        str(ev.get("source_file", "")),
+        str(ev.get("source_location", "")),
+    )
+
+
+def edge_evidence(d: dict) -> list[dict]:
+    """Every provenance record an edge carries: its own, then each ``also_seen``."""
+    also = d.get("also_seen")
+    return [d, *(a for a in also if isinstance(a, dict))] if isinstance(also, list) else [d]
+
+
+def _fold_also_seen(winner: dict, loser: dict) -> None:
+    """Record ``loser``'s provenance on ``winner`` when the two collapse (#4881).
+
+    Entries that repeat the winner's own provenance, or each other, are dropped,
+    so re-feeding a written graph.json through the build is idempotent.
+    """
+    own = _evidence(winner)
+    kept: list[dict] = []
+    for raw in (*edge_evidence(winner)[1:], loser, *edge_evidence(loser)[1:]):
+        ev = _evidence(raw)
+        if ev and not ev.items() <= own.items() and ev not in kept:
+            kept.append(ev)
+    if kept:
+        winner["also_seen"] = sorted(kept, key=_evidence_sort_key)
+    else:
+        winner.pop("also_seen", None)
 
 # Import-family relations whose target may legitimately be a module OUTSIDE the
 # graph (stdlib, a third-party dependency, another repo). Historically the edge
@@ -278,20 +424,96 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
     A stub is derived from the import edges that point at it, so a stub carried
     over from an earlier graph that no edge references any more is dropped too;
     a fresh build of the same tree would not have it.
+
+    Re-pointing an endpoint also needs the alias index, not just
+    normalization: a framework-style ``#import <Kit/ToolEvent.h>`` resolves to
+    a real header whose file node is ``kit_event_toolevent``, but the edge the
+    extractor emitted names the header by its bare basename (``toolevent``).
+    Normalization alone cannot bridge those two ids, so the raw path used to
+    mint an external stub for the import and leave the edge on it while the
+    clustered path re-pointed it at the real file (#4670). Resolving against the
+    shared alias index makes both write paths agree, and only a genuinely
+    external import (e.g. ``<Foundation/Foundation.h>``) is left to mint a stub.
     """
-    mint_external_stubs_in_data(data)
     nodes = data.get("nodes")
     key = "links" if isinstance(data.get("links"), list) else "edges"
     links = data.get(key)
     if not isinstance(nodes, list) or not isinstance(links, list):
         return
+    # Match build_from_json's pre-validation alias folding before applying the
+    # raw-path persistence rules. An edge that still has no relation afterwards
+    # has no trustworthy semantic default and must not reach graph.json (#4809).
+    for edge in links:
+        if isinstance(edge, dict):
+            _fold_edge_aliases(edge)
     declared = {n.get("id") for n in nodes if isinstance(n, dict)}
     norm_to_id = {_normalize_id(nid): nid for nid in declared if isinstance(nid, str)}
+    node_by_id = {
+        n.get("id"): n for n in nodes
+        if isinstance(n, dict) and isinstance(n.get("id"), str)
+    }
+    # Alias index (#4670): the same old-stem spellings build_from_json resolves
+    # against, so an endpoint written in a pre-migration spelling still lands on
+    # the node it names. Only fills gaps — never overrides a real node id.
+    #
+    # Kept apart from norm_to_id, gated below, for the same reason
+    # build_from_json keeps it apart: the alias uniqueness check only
+    # protects against two same-stem files in one language, never a
+    # same-named node whose real identity is in another language (#4941).
+    alias_to_id = _alias_index(
+        (n.get("id"), n) for n in nodes
+        if isinstance(n, dict) and isinstance(n.get("id"), str)
+    )
+
+    # Re-point every endpoint that has a canonical form BEFORE stubbing, so an
+    # import that names a real file is not frozen onto a stub minted for its
+    # unresolved spelling. build_from_json resolves first and mints only for
+    # what is still missing; minting first is what left the raw path's import
+    # edges on a stub for a file that was in the corpus all along (#4670).
+    for e in links:
+        if not isinstance(e, dict):
+            continue
+        for primary, alias in (("source", "from"), ("target", "to")):
+            field = primary if primary in e else alias
+            endpoint = e.get(field)
+            if isinstance(endpoint, str) and endpoint in declared:
+                continue
+            if not isinstance(endpoint, str):
+                continue
+            norm = _normalize_id(endpoint)
+            canonical = norm_to_id.get(norm)
+            if canonical is None and not (primary == "target" and _is_std_angle_include(e)):
+                alias_target = alias_to_id.get(norm)
+                if alias_target is not None and _alias_lang_compatible(
+                    e.get("source_file"),
+                    (node_by_id.get(alias_target) or {}).get("source_file"),
+                ):
+                    target_attrs = node_by_id.get(alias_target) or {}
+                    target_sf = target_attrs.get("source_file", "")
+                    is_file_node = (
+                        target_attrs.get("label") == Path(target_sf).name
+                        if target_sf else False
+                    )
+                    if not (e.get("relation") in ("calls", "indirect_call") and is_file_node):
+                        canonical = alias_target
+            if canonical is not None:
+                e[field] = canonical
+
+    # Whatever still names an undeclared node is genuinely external: mint the
+    # typed stub for it so the on-disk graph.json has no undeclared endpoint
+    # (#2873), then drop the edges that still cannot attach to two declared
+    # nodes.
+    mint_external_stubs_in_data(data)
+    declared = {n.get("id") for n in nodes if isinstance(n, dict)}
     kept: list = []
     referenced: set = set()
+    dropped_schema_edges = 0
     for e in links:
         if not isinstance(e, dict):
             kept.append(e)
+            continue
+        if "relation" not in e:
+            dropped_schema_edges += 1
             continue
         attached = True
         for primary, alias in (("source", "from"), ("target", "to")):
@@ -309,6 +531,12 @@ def finalize_raw_graph_endpoints(data: dict) -> None:
             referenced.add(e.get("source", e.get("from")))
             referenced.add(e.get("target", e.get("to")))
     links[:] = kept
+    if dropped_schema_edges:
+        print(
+            f"[graphify] WARNING: dropped {dropped_schema_edges} schema-invalid edge(s) "
+            "missing required field 'relation'.",
+            file=sys.stderr,
+        )
     for hyperedge in data.get("hyperedges", []) or []:
         if isinstance(hyperedge, dict):
             members = hyperedge.get("nodes", hyperedge.get("members", hyperedge.get("node_ids", [])))
@@ -342,6 +570,23 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".cxx": "c", ".hh": "c", ".hxx": "c",
     ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
     ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
+    # Everything else extract._LANG_FAMILY_BY_EXT knows (#5247): an extension
+    # missing here resolves to no family, so the guard silently never fires
+    # (e.g. a Python `from app import db` binding to a Dart `lib/app.dart`).
+    # tests/test_build.py checks that every extract extension stays covered.
+    ".vue": "js", ".svelte": "js", ".astro": "js", ".ejs": "js",
+    ".kts": "jvm", ".gradle": "jvm",
+    ".vb": "cs", ".razor": "cs", ".cshtml": "cs", ".xaml": "cs",
+    ".phtml": "php", ".php3": "php", ".php4": "php", ".php5": "php",
+    ".php7": "php", ".phps": "php",
+    ".luau": "lua",
+    ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".r": "r", ".sol": "solidity",
+    ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
+    ".zig": "zig", ".ex": "elixir", ".exs": "elixir", ".jl": "julia",
+    ".dart": "dart", ".sql": "sql",
+    ".sh": "shell", ".bash": "shell",
+    ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
 
 
@@ -459,47 +704,97 @@ def _fold_node_aliases(node: dict) -> None:
     ``norm_label == ""`` (invisible to query/explain), and is excluded from every
     label-keyed merge/dedup — a permanent ghost that ``graphify update``
     re-feeds through build_from_json forever.
+
+    A node-level ``confidence``/``confidence_score`` pair is folded through
+    ``_fold_confidence`` too (#4529), so nodes share the normalization contract
+    edges and hyperedges already have. A node without either field is left
+    untouched.
     """
     if not node.get("label") and isinstance(node.get("name"), str) and node["name"]:
         node["label"] = node.pop("name")
     if not node.get("source_file"):
-        for alias in ("file", "path", "filepath"):
+        for alias in ("file", "path", "filepath", "src"):
             val = node.get(alias)
             if isinstance(val, str) and val.strip():
                 node["source_file"] = node.pop(alias)
                 break
+    _fold_confidence(node)
+
+
+def _fold_confidence(obj: dict) -> None:
+    """Fold a legacy/drifted ``confidence`` onto the enum, in place (#2194, #4495).
+
+    Shared by nodes, edges and hyperedges, all of which can carry the same
+    ``confidence``/``confidence_score`` pair and the same two failure modes.
+
+    A NUMERIC ``confidence`` (pre-enum graphs stored the LLM pass's float —
+    1.0/0.95/0.9/0.85 — directly in the field) normalizes to ``INFERRED``:
+    numeric confidences only ever came from the LLM semantic pass, and
+    LLM-derived edges/hyperedges are INFERRED by definition. The original
+    float moves to ``confidence_score`` unless an explicit one is already
+    present (the companion field is the authority). Without this fold, every
+    reload of a pre-enum graph re-warns once per legacy entry, forever.
+    ``bool`` is excluded despite subclassing ``int``: ``True`` is not a score.
+
+    A non-exact-match STRING ``confidence`` is model drift from the same
+    semantic pass, not a documented format — the extraction spec asks for the
+    enum plus a separate ``confidence_score`` float, so anything else here can
+    only have come from a model ignoring that spec, never a user or
+    extractor. Two shapes of drift are folded differently:
+
+    * A case variant of a real enum value (a lowercase ``"inferred"``) is
+      corrected to its canonical uppercase spelling, nothing more — it IS the
+      enum value, just mis-cased, so treating it as an unknown word and
+      re-deriving ``confidence_score`` from it (next bullet) would be wrong.
+    * Anything else (``"high"``, ``"confirmed"``, ``"medium-high"``, ...)
+      folds like the numeric case above: a value that parses as a float
+      backfills ``confidence_score``, and the field becomes ``INFERRED``
+      regardless of whether it parsed. Without this, a graph with
+      model-drifted string confidences re-warns on every command forever,
+      identically to the numeric gap above.
+
+    Structured JSON values (lists/objects) carry no usable confidence. They
+    fall back to ``INFERRED`` without inventing a numeric score, just like
+    an unrecognized nonnumeric string, before validation can hash them.
+
+    ``confidence_score`` itself is NOT popped in either case: it is a
+    legitimate companion field the edge loop sanitizes and to_json
+    round-trips.
+    """
+    _conf = obj.get("confidence")
+    if isinstance(_conf, (int, float)) and not isinstance(_conf, bool):
+        if obj.get("confidence_score") is None:
+            obj["confidence_score"] = float(_conf)
+        obj["confidence"] = "INFERRED"
+    elif isinstance(_conf, str) and _conf not in VALID_CONFIDENCES:
+        _upper = _conf.upper()
+        if _upper in VALID_CONFIDENCES:
+            obj["confidence"] = _upper
+        else:
+            if obj.get("confidence_score") is None:
+                try:
+                    obj["confidence_score"] = float(_conf)
+                except ValueError:
+                    pass
+            obj["confidence"] = "INFERRED"
+    elif isinstance(_conf, (list, dict)):
+        obj["confidence"] = "INFERRED"
+    if not obj.get("confidence") and obj.get("confidence_score") is not None:
+        obj["confidence"] = "INFERRED"
 
 
 def _fold_edge_aliases(edge: dict) -> None:
     """Fold legacy edge field aliases onto canonical keys, in place (#2194).
 
-    ``type``/``relationship`` -> ``relation`` (``type`` checked first). A
-    ``confidence_score`` float with no ``confidence`` enum backfills
-    ``confidence: "INFERRED"`` — never EXTRACTED (alias recovery is not
-    provenance) and never a threshold mapping of the float. The
-    ``confidence_score`` key itself is NOT popped: it is a legitimate companion
-    field that the edge loop sanitizes and to_json round-trips.
-
-    A NUMERIC ``confidence`` (pre-enum graphs stored the LLM pass's float —
-    1.0/0.95/0.9/0.85 — directly in the field) normalizes to ``INFERRED``:
-    numeric confidences only ever came from the LLM semantic pass, and
-    LLM-derived edges are INFERRED by definition. The original float moves to
-    ``confidence_score`` unless an explicit one is already present (the
-    companion field is the authority). Without this fold, every reload of a
-    pre-enum graph re-warns once per legacy edge, forever. ``bool`` is
-    excluded despite subclassing ``int``: ``True`` is not a score.
+    ``type``/``relationship`` -> ``relation`` (``type`` checked first), then
+    ``confidence``/``confidence_score`` via ``_fold_confidence`` (see its own
+    docstring for the numeric and string drift cases it folds).
     """
     if not edge.get("relation") and isinstance(edge.get("type"), str) and edge["type"]:
         edge["relation"] = edge.pop("type")
     if not edge.get("relation") and isinstance(edge.get("relationship"), str) and edge["relationship"]:
         edge["relation"] = edge.pop("relationship")
-    _conf = edge.get("confidence")
-    if isinstance(_conf, (int, float)) and not isinstance(_conf, bool):
-        if edge.get("confidence_score") is None:
-            edge["confidence_score"] = float(_conf)
-        edge["confidence"] = "INFERRED"
-    if not edge.get("confidence") and edge.get("confidence_score") is not None:
-        edge["confidence"] = "INFERRED"
+    _fold_confidence(edge)
 
 
 def _coerce_id(value: object) -> object:
@@ -563,9 +858,13 @@ def _coerce_non_string_ids(extraction: dict) -> None:
     for he in extraction.get("hyperedges") or ():
         if not isinstance(he, dict):
             continue
-        members = he.get("nodes")
-        if isinstance(members, list):
-            he["nodes"] = [_coerce_id(ref) for ref in members]
+        # The `members`/`node_ids` aliases (#1561) are coerced too, for the
+        # same reason as `from`/`to` above: they are folded onto `nodes` only
+        # later, by which time the node ids they name have already become str.
+        for key in ("nodes", *_HE_MEMBER_ALIASES):
+            members = he.get(key)
+            if isinstance(members, list):
+                he[key] = [_coerce_id(ref) for ref in members]
 
 
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
@@ -618,6 +917,41 @@ def _abs_identity(p: str | None, root: str | None = None) -> str | None:
         return pp.as_posix()
 
 
+def _prune_identity(p: str | None, root: str | None = None) -> str | None:
+    """Match corpus paths without resolving aliases *inside* the scan root.
+
+    A scan-root symlink is an alternate spelling of the same corpus. A source
+    symlink within it is a distinct corpus entry and must not delete its target
+    when excluded. Resolve only the root prefix, retaining the lexical suffix.
+    """
+    if not p:
+        return None
+    q = p.replace("\\", "/")
+    path = Path(q)
+    if root:
+        base = Path(root).resolve()
+        if not _is_abs(q):
+            path = base / path
+        else:
+            # Prefer lexical containment; resolving the full path here would
+            # collapse an in-corpus alias onto its separately indexed target.
+            try:
+                suffix = path.relative_to(base)
+            except ValueError:
+                # An absolute source may use a symlinked scan-root prefix.
+                # Resolve ancestors, never the source entry itself.
+                for parent in path.parents:
+                    try:
+                        if parent.resolve() == base:
+                            path = base / path.relative_to(parent)
+                            break
+                    except OSError:
+                        continue
+            else:
+                path = base / suffix
+    return os.path.normpath(str(path)).replace("\\", "/")
+
+
 def _is_file_node_label(label: "str | None", source_file: "str | None") -> bool:
     """Whether *label* is a file node's label for *source_file* — the bare
     basename, OR a directory-qualified suffix produced by the disambiguation pass
@@ -630,6 +964,25 @@ def _is_file_node_label(label: "str | None", source_file: "str | None") -> bool:
     if lbl == sf.rsplit("/", 1)[-1]:
         return True
     return "/" in lbl and (sf == lbl or sf.endswith("/" + lbl))
+
+
+def _has_independent_semantic_evidence(node: dict) -> bool:
+    """Do not label-fold a semantic record with evidence of its own.
+
+    A file mention can legitimately be folded into an AST file-self node,
+    but such a fold discards the semantic record's independent explanation
+    and attribution. Keep these records distinct unless the same-source
+    (source_file, label) twin rule already matched them.
+
+    Only genuine provenance counts. `metadata` and `captured_at` are attached
+    to ordinary INFERRED mention ghosts by extract.py, so treating them as
+    evidence would stop those ghosts folding and let duplicates proliferate
+    on real graphs (#4896).
+    """
+    return any(
+        node.get(field) not in (None, "", [], {})
+        for field in ("rationale", "source_url", "author", "contributor")
+    )
 
 
 def _shortest_unique_suffix(sf: str, all_sfs: "set[str]") -> str:
@@ -654,7 +1007,7 @@ def _file_label_reassignments(items: "list[tuple]") -> dict:
     nodes whose basename collides with another's — the shortest unique
     directory-qualified suffix (#2032). Keys of non-colliding/basename-unique file
     nodes are omitted (their label stays bare)."""
-    from collections import defaultdict
+    from collections import Counter, defaultdict
     groups: dict[str, list[tuple]] = defaultdict(list)
     for key, label, sf in items:
         if sf and label and _is_file_node_label(str(label), str(sf)):
@@ -665,8 +1018,30 @@ def _file_label_reassignments(items: "list[tuple]") -> dict:
         distinct = {sf for _, sf in members}
         if len(distinct) < 2:
             continue  # no collision — leave the bare basename label
+
+        # Batch-compute shortest unique suffixes in O(M * D) linear time
+        # instead of O(M^2 * D) all-pairs comparisons (#2032).
+        parts_by_sf = {
+            sf: tuple(p for p in sf.replace("\\", "/").split("/") if p)
+            for sf in distinct
+        }
+        suffix_counts: Counter[tuple[str, ...]] = Counter()
+        for parts in parts_by_sf.values():
+            for k in range(1, len(parts) + 1):
+                suffix_counts[parts[-k:]] += 1
+
+        label_by_sf: dict[str, str] = {}
+        for sf, parts in parts_by_sf.items():
+            resolved = None
+            for k in range(1, len(parts) + 1):
+                suffix = parts[-k:]
+                if suffix_counts[suffix] == 1:
+                    resolved = "/".join(suffix)
+                    break
+            label_by_sf[sf] = resolved if resolved is not None else "/".join(parts)
+
         for key, sf in members:
-            out[key] = _shortest_unique_suffix(sf, distinct)
+            out[key] = label_by_sf[sf]
     return out
 
 
@@ -689,6 +1064,39 @@ def disambiguate_file_labels_in_nodes(nodes: "list") -> None:
     ]
     for i, new_label in _file_label_reassignments(items).items():
         nodes[i]["label"] = new_label
+
+
+def _qualify_csharp_method_labels(G: "nx.Graph") -> None:
+    """Give C# method nodes an ``Owner.Name()`` display label (#4883). Ids and
+    edges are never changed, and an undirected graph's owner side is read from
+    the edge's recorded ``_src``/``_tgt``. Idempotent."""
+    from graphify.extractors.csharp import csharp_method_label_reassignments
+    method_edges = [
+        (data.get("_src", u), data.get("_tgt", v))
+        for u, v, data in G.edges(data=True)
+        if data.get("relation") == "method"
+    ]
+    for nid, new_label in csharp_method_label_reassignments(
+        G.nodes(data=True), method_edges
+    ).items():
+        G.nodes[nid]["label"] = new_label
+
+
+def qualify_csharp_method_labels_in_nodes(nodes: "list", edges: "list") -> None:
+    """Raw node/edge-list form of :func:`_qualify_csharp_method_labels`, in
+    place, for the --no-cluster writers that bypass build_from_json (#4883)."""
+    from graphify.extractors.csharp import csharp_method_label_reassignments
+    method_edges = [
+        (e.get("source"), e.get("target"))
+        for e in edges
+        if isinstance(e, dict) and e.get("relation") == "method"
+    ]
+    reassigned = csharp_method_label_reassignments(
+        ((n.get("id"), n) for n in nodes if isinstance(n, dict)), method_edges
+    )
+    for n in nodes:
+        if isinstance(n, dict) and n.get("id") in reassigned:
+            n["label"] = reassigned[n["id"]]
 
 
 def _infer_merge_root(graph_path: Path) -> str | None:
@@ -737,8 +1145,8 @@ def _build_prune_sets(
     """Prune match sets for build_merge / merge_raw_extraction.
 
     Returns ``(prune_set, prune_abs)`` mapping every match form of each prune
-    entry — the raw string, the :func:`_norm_source_file` relative form, and the
-    :func:`_abs_identity` absolute form — back to the ORIGINAL entry, so callers
+    entry — the raw string and the :func:`_prune_identity` absolute form —
+    back to the ORIGINAL entry, so callers
     can report which entries actually matched something (#2446). Membership
     tests read like the old set-based code (``sf in prune_set``).
 
@@ -752,15 +1160,12 @@ def _build_prune_sets(
         if not p:
             continue
         prune_set.setdefault(p, p)
-        norm = _norm_source_file(p, eff_root)
-        if norm:
-            prune_set.setdefault(norm, p)
-        a = _abs_identity(p, eff_root)
+        a = _prune_identity(p, eff_root)
         if a:
             prune_abs.setdefault(a, p)
     for s in new_sources:
         prune_set.pop(s, None)
-        a = _abs_identity(s, eff_root)
+        a = _prune_identity(s, eff_root)
         if a:
             prune_abs.pop(a, None)
     return prune_set, prune_abs
@@ -822,6 +1227,27 @@ def edge_datas(G: nx.Graph, u: str, v: str) -> list[dict]:
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         return list(raw.values())
     return [raw]
+
+
+def has_parallel_links(links: "list[dict]", directed: bool = True) -> bool:
+    """True when any two link dicts share the same endpoints.
+
+    Used to keep the serialized ``multigraph`` flag consistent with the links
+    actually stored (#4500): a simple-graph write-back can restore parallel
+    links from ``original_links`` while ``node_link_data`` derived
+    ``multigraph: false`` from the in-memory graph, and readers that honour
+    the flag then collapse the parallel edges on load.
+    """
+    seen: set = set()
+    for link in links or []:
+        if not isinstance(link, dict):
+            continue
+        endpoints = (link.get("source"), link.get("target"))
+        key = endpoints if directed else frozenset(endpoints)
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
 
 
 def dedupe_nodes(nodes: list[dict]) -> list[dict]:
@@ -899,6 +1325,124 @@ def _old_file_stems(rel: Path) -> list[str]:
     # Dedupe while preserving order (top-level files collapse both forms).
     seen: set[str] = set()
     return [f for f in forms if f and not (f in seen or seen.add(f))]
+
+
+def _alias_index(nodes: "Iterable[tuple[str, dict]]") -> dict[str, str]:
+    """Map every OLD-stem spelling of a node to that node's canonical id.
+
+    The pre-migration id recipe keyed a file's node on its stem, so a file at
+    ``Kit/Event/ToolEvent.h`` used to be ``toolevent`` and is now
+    ``kit_event_toolevent`` (#1504/#1509). An edge endpoint still written in the
+    old spelling must resolve to the migrated node instead of dangling, so each
+    node registers its old-stem forms as aliases.
+
+    An alias is committed only when EXACTLY ONE node claims it. The old-stem
+    form drops the extension and every directory but the immediate parent, so
+    "ping.h" and "ping.php" in different directories both alias to bare "ping";
+    committing an ambiguous alias would bind an edge to whichever same-stem file
+    happened to be seen first, merging unrelated files.
+
+    A Python module whose bare stem is a stdlib name (e.g. ``scripts/logging.py``)
+    must not claim the collapsed bare-stem alias ("logging"): that alias would
+    capture a genuine external ``import logging`` edge and bind it to this
+    same-named local file (#4261). The directory-scoped alias form
+    ("scripts_logging") is still registered, so a real stale-id reference to this
+    file keeps healing.
+
+    Both the normalized and the raw spelling of every alias are registered, so
+    a caller can look an endpoint up with or without normalization.
+
+    Shared by :func:`build_from_json` and :func:`finalize_raw_graph_endpoints`
+    so the clustered and the raw (``--no-cluster``) write paths resolve an
+    endpoint the same way (#4670).
+    """
+    from graphify.extractors.base import _file_stem as _fs
+    from graphify.extractors.csharp import bare_csharp_method_label
+    from graphify.extractors.resolution import _PYTHON_STDLIB_MODULE_NAMES
+
+    alias_candidates: dict[str, set[str]] = {}
+    for nid, attrs in nodes:
+        if not isinstance(nid, str) or not isinstance(attrs, dict):
+            continue
+        sf = attrs.get("source_file")
+        if not sf:
+            continue
+        rel = Path(str(sf))
+        if _is_abs(str(sf)):
+            continue
+        new_stem = make_id(_fs(rel))
+        if not new_stem:
+            continue
+        is_py_stdlib_stem = (
+            rel.suffix.lower() in (".py", ".pyi")
+            and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
+        )
+        if str(attrs.get("label", "")) == rel.name:
+            suffix = ""  # this node IS the file, whatever its (possibly salted) id
+        else:
+            suffix = ""
+            if _normalize_id(nid).startswith(new_stem):
+                suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
+        for old_stem in _old_file_stems(rel):
+            if old_stem == new_stem:
+                continue
+            if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
+                continue
+            alias = old_stem + suffix
+            alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
+            alias_candidates.setdefault(alias, set()).add(nid)
+        m_label = str(attrs.get("label", ""))
+        m_label = bare_csharp_method_label(m_label.strip(), sf) or m_label
+        if attrs.get("_origin") == "ast" and m_label.startswith("."):
+            m_name = make_id(m_label.strip().removeprefix(".").removesuffix("()"))
+            m_alias = f"{new_stem}_{m_name}"
+            if _normalize_id(nid) != _normalize_id(m_alias):
+                alias_candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
+                alias_candidates.setdefault(m_alias, set()).add(nid)
+    return {
+        alias_key: next(iter(candidates))
+        for alias_key, candidates in alias_candidates.items()
+        if len(candidates) == 1
+    }
+
+
+def _is_std_angle_include(edge: dict) -> bool:
+    """True for an include edge written as `<name>` where name is a C/C++
+    standard header (`<functional>`, `<stdio.h>`), #5218.
+
+    Such an edge's bare-stem target (`functional`) must stay an external stub:
+    the alias index would otherwise bind it to any unique same-named project
+    header (`libc/include/libc/functional.h`), the C/C++ counterpart of the
+    Python stdlib guard in :func:`_alias_index` (#4261).
+    """
+    from graphify.extractors.resolution import C_STANDARD_INCLUDE_NAMES
+
+    md = edge.get("metadata")
+    if not isinstance(md, dict) or md.get("include_kind") != "angle":
+        return False
+    raw = md.get("raw_include")
+    return isinstance(raw, str) and raw.strip() in C_STANDARD_INCLUDE_NAMES
+
+
+def _alias_lang_compatible(edge_source_file: object, alias_source_file: object) -> bool:
+    """True unless the edge's own file and the alias target's file are both in
+    a KNOWN, DIFFERENT language family (#4941).
+
+    The uniqueness check in :func:`_alias_index` only protects against
+    ambiguity between same-stem files, never against a same-named node whose
+    real identity is in another language entirely: a Dart `PunchType` enum
+    reference and an unrelated `PunchType.java` file both collapse to the
+    bare old-stem alias "punchtype", and since only the Java file ever
+    registers it, the alias commits unconditionally and binds the Dart
+    reference onto the Java file. Permissive when either side's family is
+    unknown (no source_file, or an extension outside the known map), so a
+    legitimate same-language or provenance-less alias still resolves exactly
+    as before.
+    """
+    from graphify.extract import _lang_family
+    edge_family = _lang_family(edge_source_file)
+    alias_family = _lang_family(alias_source_file)
+    return edge_family is None or alias_family is None or edge_family == alias_family
 
 
 def _semantic_id_remap(nodes: list, root: str | None) -> dict:
@@ -998,7 +1542,37 @@ def _has_global_id(node: dict) -> bool:
     return meta.get("mcp_kind") in _MCP_GLOBAL_ID_KINDS
 
 
-def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: int = 300) -> bool:
+def legacy_id_source_prefix(graph_path: str | Path) -> str | None:
+    """The scan-root prefix that a graph's stored ``source_file`` values carry.
+
+    A build scoped to a subfolder from its parent (``graphify update sub``)
+    stores ``source_file`` relative to the build's cwd (``sub/pkg/mod.py``,
+    #2603) while every id is minted relative to the scan root (``pkg_mod``).
+    The relative ``.graphify_root`` marker next to the graph records exactly
+    that offset (``sub``). Returns it in normalized POSIX form, or None when
+    there is no offset: no marker, an absolute marker (the build anchored
+    source_file at the scan root itself), ``.``, or a path leaving the cwd.
+    """
+    try:
+        text = (Path(graph_path).parent / ".graphify_root").read_text(
+            encoding="utf-8-sig"
+        ).strip()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not text:
+        return None
+    text = text.replace("\\", "/")
+    if _is_abs(text):
+        return None
+    import posixpath
+    prefix = posixpath.normpath(text)
+    if prefix in (".", "") or prefix == ".." or prefix.startswith("../"):
+        return None
+    return prefix
+
+
+def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: int = 300,
+                         source_prefix: str | None = None) -> bool:
     """Whether a loaded graph still uses pre-#1504 node IDs (parent-dir / filename
     stem) rather than the full repo-relative path. Read-only consumers (query,
     serve) use this to nudge the user to rebuild, since they don't re-extract.
@@ -1010,9 +1584,19 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
     file-stem form and would otherwise false-positive. Nodes whose ID is global by
     construction (see ``_MCP_GLOBAL_ID_KINDS``) are skipped for the same reason.
     Returns True as soon as one file node's ID matches an OLD stem form but not the
-    canonical full-path form."""
-    from graphify.extractors.base import _file_stem
+    canonical full-path form.
+
+    ``source_prefix`` (see :func:`legacy_id_source_prefix`) is the cwd->scan-root
+    offset stored source_file values carry; it is stripped before the stem is
+    derived, since ids never include it. Without it a fresh subfolder build reads
+    as legacy: ``sub/pkg/mod.py`` wants ``sub_pkg_mod``, and the real ``pkg_mod``
+    looks exactly like the old one-parent form."""
+    # From graphify.ids, not graphify.extractors.base: importing anything under
+    # graphify.extractors loads every language extractor, which `query` and the
+    # MCP server would pay on each start just for this function.
+    from graphify.ids import _file_stem
     _r = str(root) if root is not None else None
+    _pfx = (source_prefix.replace("\\", "/").rstrip("/") + "/") if source_prefix else None
     checked = 0
     for node in nodes:
         if not isinstance(node, dict):
@@ -1032,9 +1616,11 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
         if not nid or not isinstance(nid, str) or not sf:
             continue
         sf_norm = _norm_source_file(str(sf), _r) or str(sf)
-        rel = Path(sf_norm)
         if _is_abs(sf_norm):
             continue
+        if _pfx and sf_norm.startswith(_pfx):
+            sf_norm = sf_norm[len(_pfx):]
+        rel = Path(sf_norm)
         if not rel.name:
             continue  # source_file == scan root -> Path('.'), no file stem (#1618)
         new_stem = make_id(_file_stem(rel))
@@ -1063,7 +1649,9 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     splitting the file's edges across two disconnected nodes. Canonicalize to the
     semantic ``_doc`` node (it carries the richer references/hyperedges). Gated to
     ``file_type == "document"`` on BOTH twins with an identical ``source_file``,
-    so an unrelated code symbol ``foo`` and ``foo_doc`` never merge.
+    so an unrelated code symbol ``foo`` and ``foo_doc`` never merge. The bare
+    record must be a page/file node; an AST record or a heading at the `_doc`
+    ID is never a semantic twin. Legacy unmarked file twins remain supported.
     """
     by_id: dict[str, dict] = {}
     for n in nodes:
@@ -1080,6 +1668,14 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
         if not sf or bare.get("source_file") != sf:
             continue
         if node.get("file_type") != "document" or bare.get("file_type") != "document":
+            continue
+        if node.get("node_kind") == "heading" or node.get("_origin") == "ast":
+            continue
+        if bare.get("node_kind") == "heading":
+            continue
+        if bare.get("node_kind") != "page" and not _is_file_node_label(
+            bare.get("label"), sf
+        ):
             continue
         remap[nid[:-4]] = nid
     return remap
@@ -1147,7 +1743,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if node.get("file_type") in (None, ""):
             node["file_type"] = "concept"
         ft = node.get("file_type", "")
-        if ft and ft not in {"code", "document", "paper", "image", "rationale", "concept"}:
+        if not isinstance(ft, str):
+            node["file_type"] = "concept"
+        elif ft and ft not in {"code", "document", "paper", "image", "rationale", "concept"}:
             node["file_type"] = _FILE_TYPE_SYNONYMS.get(ft, "concept")
 
     # Canonicalize hyperedge member lists (#1561): producers sometimes key the
@@ -1155,8 +1753,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # `nodes` here — BEFORE validation and the semantic-rekey loop below — so
     # every downstream consumer (rekey, source_file relativize, to_json) reads
     # one canonical key, the same way edge endpoints alias from/to at build.
+    # Confidence is folded here too (#4495): a hyperedge carries the same
+    # confidence/confidence_score pair an edge does, and the same legacy
+    # numeric or model-drifted string values, but had no fold of its own.
     for he in extraction.get("hyperedges", []) or []:
-        _normalize_hyperedge_members(he)
+        if isinstance(he, dict):
+            _normalize_hyperedge_members(he)
+            _fold_confidence(he)
 
     # Fold legacy edge field aliases (`type`->`relation`,
     # `confidence_score`->`confidence`, #2194) BEFORE validation. The existing
@@ -1221,6 +1824,15 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # touched it last (#1799).
     _doc_remap = _doc_twin_remap(extraction.get("nodes", []))
     if _doc_remap:
+        # Preserve structural metadata when the semantic document wins. Keep
+        # its own ID, label, location and tier: copying AST provenance would
+        # make an AST-only update delete the semantic layer.
+        _doc_nodes = {str(n["id"]): n for n in extraction.get("nodes", [])
+                      if isinstance(n, dict) and n.get("id")}
+        for bare_id, doc_id in _doc_remap.items():
+            for key, value in _doc_nodes[bare_id].items():
+                if key not in {"id", "label", "source_location", "_origin"}:
+                    _doc_nodes[doc_id].setdefault(key, value)
         extraction["nodes"] = [
             n for n in extraction.get("nodes", [])
             if not (isinstance(n, dict) and n.get("id") in _doc_remap)
@@ -1289,6 +1901,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     _noloc_nodes: dict[tuple[str, str], str] = {}  # (source_file, label) -> ghost node id
     _ast_file_nodes: list[tuple[str, str]] = []  # (node_id, source_file) for AST file-self nodes (#3344)
     _ast_method_nodes: dict[tuple[str, str], list[str]] = {}  # (source_file, norm_method) -> [ast_nid, ...]
+    from graphify.extractors.csharp import bare_csharp_method_label
 
     # Pass 1: collect canonical nodes — AST-origin nodes take precedence over LLM nodes.
     # When 2+ AST nodes share a key (same-named symbols in same-named files across
@@ -1350,8 +1963,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # a dotfile label like `.env` is never mistaken for a method
                 # (#3705 follow-up). Key on the normalized name for parity with
                 # the alias index below and the rest of the dedup passes.
-                if label.startswith(".") and label.endswith("()"):
-                    m_name = make_id(label.removeprefix(".").removesuffix("()"))
+                m_label = bare_csharp_method_label(label, sf) or label
+                if m_label.startswith(".") and m_label.endswith("()"):
+                    m_name = make_id(m_label.removeprefix(".").removesuffix("()"))
                     _ast_method_nodes.setdefault((sf, m_name), []).append(nid)
             else:
                 # First non-AST node for this (file, label) wins as canonical; a
@@ -1374,6 +1988,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             continue  # ambiguous key: no safe canonical winner, leave ghost intact
         if key in _loc_nodes and _loc_nodes[key] != nid:
             if not dedup and G.nodes[_loc_nodes[key]].get("_origin") != "ast":
+                continue
+            # #4896: an independent semantic explanation is not a disposable
+            # AST twin even when it names the SAME physical source file.
+            # Preserve the original semantic id, rationale and source attribution.
+            if _has_independent_semantic_evidence(attrs):
                 continue
             _noloc_nodes[key] = nid
         elif key not in _loc_nodes:
@@ -1418,13 +2037,22 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 ast_id for ast_id, ast_sf in _ast_file_nodes
                 if _is_file_node_label(label, ast_sf)
             }
-            if len(matches) == 1:
+            if (
+                len(matches) == 1
+                and not _has_independent_semantic_evidence(attrs)
+                and not _is_file_node_label(label, attrs.get("source_file"))
+            ):
                 _ghost_remap[nid] = next(iter(matches))
 
     # Remove ghost nodes from the graph; edges will be re-pointed via norm_to_id.
     for ghost_id in _ghost_remap:
         G.remove_node(ghost_id)
         node_set.discard(ghost_id)
+    if _ghost_remap:
+        # These folds are intentional (#1145, #3344, #3705), so the write
+        # guards must not read them as lost nodes. Report them on the same
+        # {merged-away id: survivor id} channel entity dedup uses (#4940).
+        G.graph.setdefault("_dedup_remap", {}).update(_ghost_remap)
 
     # Normalized ID map: lets edges survive when the LLM generates IDs with
     # slightly different casing or punctuation than the AST extractor.
@@ -1463,55 +2091,44 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # unrelated same-named PHP script) is still caught as ambiguous instead of
     # the header silently dropping out of the race and leaving the PHP file as
     # the lone (wrong) "unambiguous" winner.
-    from graphify.extractors.base import _file_stem as _fs
-    from graphify.extractors.resolution import _PYTHON_STDLIB_MODULE_NAMES
-    _alias_candidates: dict[str, set[str]] = {}
-    for nid in node_set:
-        attrs = G.nodes[nid]
-        sf = attrs.get("source_file")
-        if not sf:
-            continue
-        rel = Path(str(sf))
-        if _is_abs(str(sf)):
-            continue
-        new_stem = make_id(_fs(rel))
-        # A Python module whose bare stem is a stdlib name (e.g. `scripts/logging.py`)
-        # must not claim the collapsed bare-stem alias ("logging"): that alias would
-        # capture a genuine external `import logging` / `logging.getLogger()` edge
-        # and bind it to this same-named local file (#4261). The directory-scoped
-        # alias form ("scripts_logging") is still registered, so a real stale-id
-        # reference to this file keeps healing.
-        is_py_stdlib_stem = (
-            rel.suffix.lower() in (".py", ".pyi")
-            and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
-        )
-        if str(attrs.get("label", "")) == rel.name:
-            suffix = ""  # this node IS the file, whatever its (possibly salted) id
-        else:
-            suffix = ""
-            if _normalize_id(nid).startswith(new_stem):
-                suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
-        for old_stem in _old_file_stems(rel):
-            if old_stem == new_stem:
-                continue
-            if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
-                continue
-            alias = old_stem + suffix
-            _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
-            _alias_candidates.setdefault(alias, set()).add(nid)
-        if attrs.get("_origin") == "ast" and str(attrs.get("label", "")).startswith("."):
-            m_name = make_id(str(attrs.get("label", "")).strip().removeprefix(".").removesuffix("()"))
-            m_alias = f"{new_stem}_{m_name}"
-            if _normalize_id(nid) != _normalize_id(m_alias):
-                _alias_candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
-                _alias_candidates.setdefault(m_alias, set()).add(nid)
-    for alias_key, candidates in _alias_candidates.items():
-        if len(candidates) == 1:
-            norm_to_id.setdefault(alias_key, next(iter(candidates)))
+    #
+    # The index itself lives in _alias_index so the raw (--no-cluster) write
+    # path resolves endpoints identically (#4670).
+    #
+    # Kept apart from norm_to_id, not merged into it: the uniqueness check in
+    # _alias_index only protects against two same-stem files in the SAME
+    # language racing for one alias, never against a same-named node whose
+    # real identity is in another language (#4941). Gating the alias lookup
+    # itself, below, catches that case without touching the unconditional
+    # normalized-id and ghost-remap entries norm_to_id already carries.
+    alias_to_id = _alias_index((nid, G.nodes[nid]) for nid in node_set)
+
+    def _resolve_endpoint(raw_id: str, edge_source_file: object, relation: str = "", allow_alias: bool = True) -> str:
+        norm = _normalize_id(raw_id)
+        resolved = norm_to_id.get(norm)
+        if resolved is not None:
+            return resolved
+        if not allow_alias:
+            return raw_id
+        alias_target = alias_to_id.get(norm)
+        if alias_target is not None and _alias_lang_compatible(
+            edge_source_file, G.nodes[alias_target].get("source_file")
+        ):
+            target_attrs = G.nodes[alias_target]
+            target_sf = target_attrs.get("source_file", "")
+            is_file_node = (
+                target_attrs.get("label") == Path(target_sf).name
+                if target_sf else False
+            )
+            if not (relation in ("calls", "indirect_call") and is_file_node):
+                return alias_target
+        return raw_id
+
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
     # and makes the serialized graph churn. Sorting fixes the last-write outcome.
+    dropped_schema_edges = 0
     for edge in sorted(
         extraction.get("edges", []),
         key=lambda e: (
@@ -1541,10 +2158,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
             continue
         # Remap mismatched IDs via normalization before dropping the edge.
+        _edge_rel = str(edge.get("relation", ""))
         if src not in node_set:
-            src = norm_to_id.get(_normalize_id(src), src)
+            src = _resolve_endpoint(src, edge.get("source_file"), _edge_rel)
         if tgt not in node_set:
-            tgt = norm_to_id.get(_normalize_id(tgt), tgt)
+            tgt = _resolve_endpoint(
+                tgt, edge.get("source_file"), _edge_rel,
+                allow_alias=not _is_std_angle_include(edge),
+            )
         if src not in node_set or tgt not in node_set:
             # An import/re-export whose target is not a declared node points at
             # an external module (stdlib / third-party / another repo). Mint a
@@ -1593,6 +2214,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 if not math.isfinite(_num_val) or _num_val < 0:
                     _num_val = 1.0
                 attrs[_num_key] = _num_val
+        if "also_seen" in attrs:
+            _fold_also_seen(attrs, {})
         # Backfill source_file from the endpoint nodes (every node carries one).
         # Semantic/LLM edges occasionally omit it, which downstream validation
         # flags and leaves query results with no file reference (#1279).
@@ -1604,6 +2227,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
+        # Relation aliases are folded before validation, but a still-missing
+        # relation has no trustworthy default. Other historically tolerated edge
+        # gaps have repair/default paths elsewhere in this builder; relation does
+        # not. Fail closed rather than persist an uninterpretable edge (#4809).
+        if "relation" not in attrs:
+            dropped_schema_edges += 1
+            continue
         if attrs.get("definition_file"):
             # Same portability rule as source_file (#3223); heals a graph
             # written before the fix on its next rebuild.
@@ -1674,18 +2304,28 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             incoming_rel = attrs.get("relation")
             reverse = existing.get("_src") == tgt and existing.get("_tgt") == src
             if reverse and existing_rel == incoming_rel:
+                # For an import the dropped leg is the other half of a two-file
+                # cycle. Stamp the kept edge so find_import_cycles still sees it
+                # (#4839); a type-only or deferred import closes no cycle.
+                if (
+                    incoming_rel in ("imports_from", "re_exports")
+                    and not attrs.get("type_only")
+                    and not attrs.get("deferred")
+                ):
+                    existing["reverse_import"] = True
                 continue
             # Different relations in opposite directions are two facts that only
             # share a pair because the graph is undirected. A type's
-            # `method`/`contains` edge and its member's `calls` edge back are
-            # that case: last-write kept whichever source id sorted later, and
-            # when the call won the member vanished from every walk of the
-            # type. The membership edge wins. If the call is already stored,
-            # the membership edge falls through and replaces it below.
+            # `method`/`contains` edge and its member's usage edge back (a call,
+            # a static property or constant read) are that case: last-write kept
+            # whichever source id sorted later, and when the usage won the member
+            # vanished from every walk of the type. The membership edge wins. If
+            # the usage edge is already stored, the membership edge falls through
+            # and replaces it below.
             if (
                 reverse
                 and existing_rel in _STRUCTURAL_MEMBER_RELATIONS
-                and incoming_rel == "calls"
+                and incoming_rel in _MEMBER_USAGE_RELATIONS
             ):
                 continue
         # A pair that already carries a SPECIFIC relation must not be downgraded
@@ -1714,19 +2354,48 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 existing_rank = _CONFIDENCE_RANK.get(existing_conf, 0)
                 incoming_rank = _CONFIDENCE_RANK.get(incoming_conf, 0)
                 if existing_rank > incoming_rank:
+                    _fold_also_seen(existing_attrs, attrs)
                     continue
                 if existing_rank == incoming_rank:
-                    if existing_attrs.get("source_location") and not attrs.get("source_location"):
+                    # An AST edge keeps its pair against a semantic copy of the same
+                    # relation (#5334). Otherwise a copy with a line number won by
+                    # arrival order, the edge moved to the document, and the next
+                    # --update of that document deleted the code fact. Strict
+                    # _origin, not _is_ast_tier: inside a build the only unstamped
+                    # items are fresh semantic chunks (see the ghost-collapse note).
+                    existing_ast = existing_attrs.get("_origin") == "ast"
+                    incoming_ast = attrs.get("_origin") == "ast"
+                    if existing_ast != incoming_ast:
+                        if existing_ast:
+                            _fold_also_seen(existing_attrs, attrs)
+                            continue
+                        # The incoming AST edge replaces the semantic copy below.
+                    elif existing_attrs.get("source_location") and not attrs.get("source_location"):
+                        _fold_also_seen(existing_attrs, attrs)
                         continue
-                    existing_score = existing_attrs.get("confidence_score")
-                    incoming_score = attrs.get("confidence_score")
-                    if (
-                        existing_score is not None
-                        and incoming_score is not None
-                        and existing_score > incoming_score
-                    ):
-                        continue
+                    else:
+                        existing_score = existing_attrs.get("confidence_score")
+                        incoming_score = attrs.get("confidence_score")
+                        if (
+                            existing_score is not None
+                            and incoming_score is not None
+                            and existing_score > incoming_score
+                        ):
+                            _fold_also_seen(existing_attrs, attrs)
+                            continue
+                _fold_also_seen(attrs, existing_attrs)
+                # add_edge merges into the stored dict: a field only the loser
+                # carried (its score, its line) would otherwise stay on the winner.
+                for _key in (*_EVIDENCE_KEYS, "also_seen"):
+                    if _key not in attrs:
+                        existing_attrs.pop(_key, None)
         G.add_edge(src, tgt, **attrs)
+    if dropped_schema_edges:
+        print(
+            f"[graphify] WARNING: dropped {dropped_schema_edges} schema-invalid edge(s) "
+            "missing required field 'relation'.",
+            file=sys.stderr,
+        )
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
         # Relativize hyperedge source_file the same way nodes and edges are
@@ -1787,6 +2456,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # directory-qualified display label so lookup/discovery can disambiguate
     # them (#2032). Labels only — ids and edges are untouched.
     _disambiguate_file_node_labels(G)
+    # Also last, after the method-ghost passes above: C# methods display with
+    # their owning type (#4883).
+    _qualify_csharp_method_labels(G)
     return G
 
 
@@ -1826,6 +2498,7 @@ def build(
         combined["output_tokens"] += ext.get("output_tokens", 0)
     _root = str(Path(root).resolve()) if root else None
     _dedup_collapsed = 0
+    _dedup_remap: dict[str, str] = {}
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
@@ -1855,6 +2528,7 @@ def build(
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
             protected_ids=protected_ids,
+            remap_out=_dedup_remap,
         )
         _dedup_collapsed = _before_dedup - len(combined["nodes"])
     G = build_from_json(combined, directed=directed, root=_root, dedup=dedup)
@@ -1862,6 +2536,10 @@ def build(
     # Popped before to_json so it is not stored in graph.json.
     if _dedup_collapsed:
         G.graph["_dedup_collapsed"] = _dedup_collapsed
+    # Which ids dedup folded into which survivor, for the #479 write guard
+    # (#4940). Popped by to_json, so it is not stored in graph.json.
+    if _dedup_remap:
+        G.graph.setdefault("_dedup_remap", {}).update(_dedup_remap)
     return G
 
 
@@ -1878,6 +2556,20 @@ def take_shrink_accounting(G) -> tuple[int, int]:
     collapsed = int(attrs.pop("_dedup_collapsed", 0) or 0)
     pruned = int(attrs.pop("_pruned_node_count", 0) or 0)
     return collapsed, pruned
+
+
+def take_dedup_remap(G) -> dict[str, str]:
+    """Read and remove the ``{merged-away id: survivor id}`` map (#4940).
+
+    ``build`` stashes it on ``G.graph`` when entity dedup merged nodes.
+    ``to_json`` calls this to excuse a saved id the merge folded into a twin,
+    and it also drops the key so it is never persisted into graph.json.
+    """
+    attrs = getattr(G, "graph", None)
+    if not isinstance(attrs, dict):
+        return {}
+    remap = attrs.pop("_dedup_remap", None)
+    return dict(remap) if isinstance(remap, dict) else {}
 
 
 def _norm_label(label: str | None) -> str:
@@ -1944,7 +2636,8 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
 
 def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
     """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
-    an incremental merge, accepting both the ``links`` and ``edges`` spellings.
+    an incremental merge, accepting both the ``links`` and ``edges`` spellings
+    and either hyperedge persistence slot (top-level or ``graph.hyperedges``).
 
     Reads the JSON directly instead of going through node_link_graph().
     The latter rebuilds an undirected nx.Graph and then enumerating
@@ -1972,6 +2665,26 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     links_key = "links" if "links" in data else "edges"
     nodes = list(data.get("nodes", []))
     edges = list(data.get(links_key, []))
+    # Hyperedge persistence is dual-slot (#2485): to_json writes BOTH a
+    # top-level `hyperedges` key and the nested `graph.hyperedges` (node_link
+    # graph attrs), but node_link_data-only writers emit just the nested slot.
+    # build_from_json already folds the nested slot onto the top-level key;
+    # this loader must do the same or an incremental merge silently drops a
+    # nested-only graph's whole hyperedge set — the data loss #5081 reported,
+    # still reachable through that writer shape.
+    #
+    # A top-level LIST wins: it is the canonical slot, so an explicit [] there
+    # must not be resurrected from a stale nested copy (the CLI's source pruner
+    # also edits only the top-level key). A missing, null, or otherwise
+    # malformed top-level value falls back to the nested list instead of
+    # dropping a set that is still readable.
+    top_level = data.get("hyperedges")
+    if isinstance(top_level, list):
+        hyperedges = top_level
+    else:
+        graph_attrs = data.get("graph")
+        nested = graph_attrs.get("hyperedges") if isinstance(graph_attrs, dict) else None
+        hyperedges = nested if isinstance(nested, list) else []
     # Backfill tier provenance on legacy items (#2334): _origin is stamped at
     # extraction time only (extract.py for AST, and the semantic path never
     # stamps), so pre-0.9.16 graphs and externally-merged fragments carry
@@ -1984,7 +2697,7 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     return (
         nodes,
         edges,
-        list(data.get("hyperedges", [])),
+        hyperedges,
         bool(data.get("directed", False)),
     )
 
@@ -2052,6 +2765,18 @@ def _tier_replacement_sources(
             if norm:
                 new_sem_sources.add(norm)
 
+    # Failure metadata overrides dispatch provenance, including an explicit
+    # ast_sources argument from a caller using the older extraction contract.
+    # Match identity as well as spelling so relative/absolute paths agree.
+    failure_root = str(root) if root is not None else None
+    failed_ast = {
+        _abs_identity(str(sf), failure_root)
+        for ch in chunks if isinstance(ch, dict)
+        for sf in (ch.get("failed_sources") or []) if sf
+    }
+    new_ast_sources = {
+        sf for sf in new_ast_sources if _abs_identity(sf, failure_root) not in failed_ast
+    }
     return new_ast_sources, new_sem_sources
 
 
@@ -2124,10 +2849,7 @@ def merge_raw_extraction(
             return False
         if sf in prune_set:
             return True
-        norm = _norm_source_file(sf, _prune_root)
-        if norm and norm in prune_set:
-            return True
-        a = _abs_identity(sf, _prune_root)
+        a = _prune_identity(sf, _prune_root)
         return bool(a) and a in prune_abs
 
     # #2446: when NONE of the prune entries match anything stored, the guessed
@@ -2376,19 +3098,15 @@ def build_merge(
 
     def _prune_match(sf: "str | None") -> bool:
         # Match a node/edge/hyperedge source_file against the prune set in a
-        # form-insensitive way: exact string, normalised-relative, then the
-        # absolute-identity fallback for the third-form case (#2012). Records
+        # form-insensitive way: exact string, then corpus-path identity for
+        # alternate root/absolute spellings (#2012). Records
         # WHICH prune entry matched, so the prune report can count only the
         # entries that actually hit something (#2446).
         if not sf:
             return False
         hit = prune_set.get(sf)
         if hit is None:
-            norm = _norm_source_file(sf, _prune_root)
-            if norm:
-                hit = prune_set.get(norm)
-        if hit is None:
-            a = _abs_identity(sf, _prune_root)
+            a = _prune_identity(sf, _prune_root)
             if a:
                 hit = prune_abs.get(a)
         if hit is None:
@@ -2565,6 +3283,28 @@ def build_merge(
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)
 
+        # build() revalidated hyperedge members BEFORE this prune removed the
+        # deleted files' nodes, so a surviving cross-file hyperedge can still
+        # name one of them (#5081). Now that the node set is final, mirror
+        # build()'s #1916 policy: drop members that no longer resolve, and drop
+        # the hyperedge itself only when no member remains (single-member
+        # hyperedges are legal).
+        if G.graph.get("hyperedges"):
+            _pruned_hyperedges = []
+            for he in G.graph["hyperedges"]:
+                if not isinstance(he, dict):
+                    _pruned_hyperedges.append(he)
+                    continue
+                members = he.get("nodes")
+                if isinstance(members, list):
+                    live = [m for m in members if _hashable(m) and m in G]
+                    if not live:
+                        continue
+                    if live != members:
+                        he["nodes"] = live
+                _pruned_hyperedges.append(he)
+            G.graph["hyperedges"] = _pruned_hyperedges
+
         orphaned = _sweep_orphans()
         n_nodes += len(orphaned)
         # Excuse only saved nodes this prune removed (#3774). A stub minted
@@ -2658,11 +3398,19 @@ def build_merge(
     # guard (#1951), and refusing it here would reintroduce the #1116
     # false-refuse for legitimate edits that remove symbols from a file.
     if had_graph and not dedup:
+        # Ghost folds build_from_json made on purpose (#1145, #3344, #3705).
+        # Read, not popped: to_json reads the same map and strips it.
+        _folds = G.graph.get("_dedup_remap") or {}
+
         def _in_new_graph(n: dict) -> bool:
             nid = n.get("id")
             if nid is None or not _hashable(nid):
                 return True  # untrackable identity — never count as lost
             if nid in G:
+                return True
+            # A fold into a survivor still in the graph is one node, not a
+            # loss; a survivor that is gone excuses nothing (#4955).
+            if _folds.get(nid) in G:
                 return True
             # Doc-twin heal (#1799): build_from_json merges a markdown
             # quick-scan's bare doc node into its semantic `<id>_doc` twin for
@@ -2701,6 +3449,24 @@ def build_merge(
 
     if unverified_semantic_shrink:
         G.graph["_unverified_semantic_shrink"] = unverified_semantic_shrink
+
+    # Saved sources whose semantic nodes this run replaced or pruned on purpose,
+    # for to_json's lost-node check: LLM ids are not stable across re-extracts.
+    # A source with an unverified shrink (#3203) stays guarded. Popped by to_json.
+    def _replaced_on_purpose(sf: str) -> bool:
+        norm = _norm_source_file(sf, _replace_root) or sf
+        if norm in unverified_semantic_shrink:
+            return False
+        return sf in new_sem_sources or norm in new_sem_sources or _prune_match(sf)
+
+    _replaced_sources = {
+        n["source_file"] for n in _disk_nodes
+        if isinstance(n, dict) and not _is_ast_tier(n)
+        and isinstance(n.get("source_file"), str) and n["source_file"]
+        and _replaced_on_purpose(n["source_file"])
+    }
+    if _replaced_sources:
+        G.graph["_replaced_sources"] = sorted(_replaced_sources)
 
     return G
 

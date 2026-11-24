@@ -22,9 +22,18 @@ class DataProcessor extends BaseProcessor implements Processor;
   rand Config m_cfg;
   protected BaseProcessor m_parent;
 
+  function new(Config cfg);
+    m_cfg = cfg;
+  endfunction
+
   function Result #(Payload) build(Payload input);
     return current;
   endfunction
+
+  task reset(Config cfg);
+    Flag local_flag;
+    local_flag = cfg;
+  endtask
 endclass
 
 module leaf;

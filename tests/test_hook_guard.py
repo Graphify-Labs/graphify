@@ -260,7 +260,7 @@ def test_fresh_query_stamp_silences_nudges_after_the_first(tmp_path, monkeypatch
     _fresh_stamp(tmp_path)
     # The stamp is project-wide and cannot tell which agent queried, so each
     # agent still gets its first nudge; later ones are silenced.
-    assert "MANDATORY" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
     assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
     assert _invoke("search", _search_payload(), tmp_path, monkeypatch) == ""
 
@@ -275,34 +275,34 @@ def test_subagents_get_their_own_nudge_budget(tmp_path, monkeypatch):
     # Claude Code subagents share the parent's session_id and differ by agent_id.
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "1")
     sid = "s" * 64  # long ids must not truncate distinct agents into one key
-    assert "MANDATORY" in _invoke("read", _read_payload(sid), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(sid), tmp_path, monkeypatch)
     assert _invoke("read", _read_payload(sid), tmp_path, monkeypatch) == ""
-    assert "MANDATORY" in _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch)
     assert _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch) == ""
-    assert "MANDATORY" in _invoke("read", _read_payload(sid, "agent-b"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(sid, "agent-b"), tmp_path, monkeypatch)
 
 
 def test_subagent_first_nudge_survives_parent_query(tmp_path, monkeypatch):
-    assert "MANDATORY" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
     _fresh_stamp(tmp_path)  # parent queried
     assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
-    assert "MANDATORY" in _invoke("read", _read_payload(agent="agent-a"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload(agent="agent-a"), tmp_path, monkeypatch)
 
 
 def test_nudges_capped_per_session(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "3")
     outs = [_invoke("read", _read_payload("cap"), tmp_path, monkeypatch) for _ in range(3)]
-    assert all("MANDATORY" in o for o in outs)
+    assert all("knowledge graph at" in o for o in outs)
     assert _invoke("read", _read_payload("cap"), tmp_path, monkeypatch) == ""
     assert _invoke("search", _search_payload("cap"), tmp_path, monkeypatch) == ""
     # Another session has its own budget.
-    assert "MANDATORY" in _invoke("read", _read_payload("other"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload("other"), tmp_path, monkeypatch)
 
 
 def test_read_and_search_nudges_share_the_session_budget(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "2")
-    assert "MANDATORY" in _invoke("search", _search_payload("mix"), tmp_path, monkeypatch)
-    assert "MANDATORY" in _invoke("read", _read_payload("mix"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("search", _search_payload("mix"), tmp_path, monkeypatch)
+    assert "knowledge graph at" in _invoke("read", _read_payload("mix"), tmp_path, monkeypatch)
     assert _invoke("search", _search_payload("mix"), tmp_path, monkeypatch) == ""
 
 
@@ -316,14 +316,14 @@ def test_nudge_cap_default_is_five(tmp_path, monkeypatch):
 def test_nudge_cap_disabled(value, tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", value)
     outs = [_invoke("read", _read_payload("nocap"), tmp_path, monkeypatch) for _ in range(8)]
-    assert all("MANDATORY" in o for o in outs)
+    assert all("knowledge graph at" in o for o in outs)
 
 
 def test_nudges_without_session_id_are_not_counted(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "1")
     payload = {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
     outs = [_invoke("read", payload, tmp_path, monkeypatch) for _ in range(3)]
-    assert all("MANDATORY" in o for o in outs)
+    assert all("knowledge graph at" in o for o in outs)
 
 
 # --------------------------------------------------------------------------- #
@@ -441,6 +441,57 @@ def test_custom_out_search_nudge_names_effective_graph(tmp_path, monkeypatch):
                   tmp_path, monkeypatch, out_name="artifacts/graphify")
     assert "artifacts/graphify/graph.json" in _ctx(out)
     assert "graphify-out/" not in _ctx(out)
+
+
+# --------------------------------------------------------------------------- #
+# #5132: the search nudge softens to STALE the same way the read nudge does,
+# instead of never checking graph freshness at all.
+# --------------------------------------------------------------------------- #
+def test_grep_single_file_target_stale_nudge(tmp_path, monkeypatch):
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("x = 1\n", encoding="utf-8")
+    g = tmp_path / "graphify-out" / "graph.json"
+    g.parent.mkdir(parents=True)
+    g.write_text("{}", encoding="utf-8")
+    os.utime(g, (1, 1))
+    out = _invoke(
+        "search",
+        {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": str(target)}},
+        tmp_path, monkeypatch, graph=False,
+    )
+    assert "STALE" in _ctx(out)
+
+
+def test_grep_single_file_target_fresh_is_not_stale(tmp_path, monkeypatch):
+    """Control: a single-file Grep target newer than nothing (graph just built
+    after the file) still gets the plain nudge, not the stale one."""
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("x = 1\n", encoding="utf-8")
+    out = _invoke(
+        "search",
+        {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": str(target)}},
+        tmp_path, monkeypatch,
+    )
+    assert "STALE" not in _ctx(out)
+    assert "graphify query" in _ctx(out)
+
+
+def test_search_needs_update_marker_makes_the_nudge_stale(tmp_path, monkeypatch):
+    """A directory target has no single mtime to check, but the corpus-wide
+    needs_update marker (the same one Read already honors) still softens it,
+    same as a pending non-code change does for Read."""
+    out_dir = tmp_path / "graphify-out"
+    out_dir.mkdir(parents=True)
+    (out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    (out_dir / "needs_update").write_text("1", encoding="utf-8")
+    out = _invoke(
+        "search",
+        {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": "."}},
+        tmp_path, monkeypatch, graph=False,
+    )
+    assert "STALE" in _ctx(out)
 
 
 @pytest.mark.parametrize("kind,payload,const", [

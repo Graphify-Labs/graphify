@@ -243,3 +243,122 @@ def test_a_use_from_another_crate_does_not_land_on_a_same_named_declaration(tmp_
         "src/a.rs": "pub struct File;\npub struct Command;\npub struct Serialize;\n",
         "src/user.rs": "use std::fs::File;\nuse std::{process::Command, io};\nuse serde::Serialize;\n"})
     assert _imports(result, "user.rs") == ["command", "file", "io", "serialize"]
+
+
+# --- #4564: a `use` rooted at a child mod declared in the same scope ---
+
+_CHILD = {"src/lib.rs": "pub mod model;\n", "src/model/item.rs": "pub struct Invoice(pub u64);\n"}
+
+
+def _decl(result: dict, label: str, suffix: str) -> str:
+    return next(n["id"] for n in result["nodes"] if n["label"] == label and n.get("source_file", "").endswith(suffix))
+
+
+@pytest.mark.parametrize("model", [
+    "mod item;\npub use item::Invoice;\n",                          # the issue
+    "pub use item::Invoice;\nmod item;\n",                          # the use comes first
+    "mod item;\npub(crate) use item::Invoice;\n",
+    "mod item;\npub use item::Invoice as Bill;\n",                  # rename
+    "pub mod item;\npub use item::{self as items, Invoice};\n",     # `self` needs a valid form
+], ids=["plain", "use_first", "pub_crate", "rename", "self_alias_group"])
+def test_a_use_rooted_at_a_child_mod_lands_on_the_declaration(tmp_path: Path, model: str):
+    """#4564: `item::Invoice` next to `mod item;` named no node for the rewire, so the
+    edge dangled on a bare `invoice` that build then minted as an external stub."""
+    result = _extract(tmp_path, {**_CHILD, "src/model.rs": model})
+    imports = _imports(result, "model.rs")
+    assert _decl(result, "Invoice", "item.rs") in imports
+    assert not {"invoice", "invoice_as_bill"} & set(imports)
+
+
+def test_the_issue_repro_builds_without_an_external_stub(tmp_path: Path):
+    """The symptom of #4564, end to end: build minted an `external` stub `invoice`
+    that tied with the declaration in `affected` and `explain`."""
+    _write(tmp_path, {**_CHILD, "src/model.rs": "mod item;\npub use item::Invoice;\n"})
+    graph = _build(tmp_path)
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    assert not [n for n in graph["nodes"] if n.get("type") == "external" and str(n.get("label")).lower() == "invoice"]
+    declaration = next(n["id"] for n in graph["nodes"]
+                       if n["label"] == "Invoice" and n.get("source_file", "").endswith("item.rs"))
+    model_file = next(n["id"] for n in graph["nodes"] if n["label"] == "model.rs")
+    targets = [e["target"] for e in graph["links"] if e["relation"] == "imports_from" and e["source"] == model_file]
+    assert targets == [declaration] and nodes[targets[0]].get("type") != "external"
+
+
+def test_a_group_and_a_nested_path_from_a_child_mod_land_on_the_declarations(tmp_path: Path):
+    result = _extract(tmp_path, {
+        "src/lib.rs": "pub mod model;\n",
+        "src/model.rs": "mod item;\npub use item::{Invoice, Receipt};\npub use item::sub::Credit;\n",
+        "src/model/item.rs": "pub mod sub;\npub struct Invoice(pub u64);\npub struct Receipt(pub u64);\n",
+        "src/model/item/sub.rs": "pub struct Credit(pub u64);\n"})
+    wanted = {_decl(result, "Invoice", "item.rs"), _decl(result, "Receipt", "item.rs"), _decl(result, "Credit", "sub.rs")}
+    assert wanted <= set(_imports(result, "model.rs"))
+    assert not {"invoice", "receipt", "credit"} & set(_imports(result, "model.rs"))
+
+
+def test_a_use_of_a_mod_declared_inline_lands_on_the_declaration(tmp_path: Path):
+    result = _extract(tmp_path, {"src/lib.rs": "pub mod model;\n", "src/model.rs":
+        "pub mod outer {\n    mod item {\n        pub struct Invoice(pub u64);\n    }\n    pub use item::Invoice;\n}\n"})
+    assert _imports(result, "model.rs") == [_decl(result, "Invoice", "model.rs")]
+
+
+def test_a_second_import_of_the_same_item_does_not_change_the_result(tmp_path: Path):
+    """Masking guard: v8 already resolves this, because the second file lends the rewire a node."""
+    result = _extract(tmp_path, {**_CHILD, "src/lib.rs": "pub mod model;\npub mod other;\n",
+        "src/model.rs": "pub mod item;\npub use item::Invoice;\n", "src/other.rs": "use crate::model::item::Invoice;\n"})
+    invoice = _decl(result, "Invoice", "item.rs")
+    assert _imports(result, "model.rs") == [invoice] == _imports(result, "other.rs")
+
+
+def test_two_types_with_one_name_stay_two_nodes_and_are_not_swapped(tmp_path: Path):
+    """Each parent re-exports its own `Invoice`: a fix may resolve them or leave them
+    unresolved, but never picks one for both."""
+    files = {"src/lib.rs": "pub mod billing;\npub mod shipping;\n"}
+    for parent in ("billing", "shipping"):
+        files[f"src/{parent}.rs"] = "mod item;\npub use item::Invoice;\n"
+        files[f"src/{parent}/item.rs"] = "pub struct Invoice(pub u64);\n"
+    result = _extract(tmp_path, files)
+    billing, shipping = _decl(result, "Invoice", "billing/item.rs"), _decl(result, "Invoice", "shipping/item.rs")
+    assert billing != shipping
+    assert shipping not in _imports(result, "billing.rs")
+    assert billing not in _imports(result, "shipping.rs")
+
+
+# The serde guard of 5faa05c8: these pass on v8 and must keep passing.
+_SERDE = {"src/model.rs": "pub struct Serialize;\n", "src/serde.rs": "pub struct Local;\n"}
+
+
+@pytest.mark.parametrize("lib", [
+    "pub mod model;\nmod serde;\nuse ::serde::Serialize;\n",                    # a leading `::` is the crate
+    "pub mod model;\nmod serde;\nmod tests {\n    use serde::Serialize;\n}\n",  # an inner mod is its own scope
+    "pub mod model;\nuse serde::Serialize;\n",                                 # no local mod at all
+], ids=["leading_colons", "inner_scope", "outside_crate"])
+def test_a_use_of_another_crate_still_does_not_land_on_a_same_named_declaration(tmp_path: Path, lib: str):
+    files = {**_SERDE, "src/lib.rs": lib}
+    if "mod serde;" not in lib:
+        del files["src/serde.rs"]
+    assert _imports(_extract(tmp_path, files), "lib.rs") == ["serialize"]
+
+
+def test_a_use_rooted_at_a_local_mod_named_like_a_crate_lands_on_the_local_declaration(tmp_path: Path):
+    """The converse, and valid Rust: with `mod serde;` in scope, `serde::Serialize` is the local type."""
+    result = _extract(tmp_path, {"src/lib.rs": "mod serde;\nuse serde::Serialize;\n", "src/serde.rs": "pub struct Serialize;\n"})
+    assert _imports(result, "lib.rs") == [_decl(result, "Serialize", "serde.rs")]
+
+
+def test_a_cache_entry_from_before_child_mod_names_is_not_served(tmp_path: Path, monkeypatch):
+    import graphify.cache as cache_mod
+    from graphify.cache import save_cached
+
+    files = {**_CHILD, "src/model.rs": "mod item;\npub use item::Invoice;\n"}
+    _write(tmp_path, files)
+    path = tmp_path / "src" / "model.rs"
+    current = cache_mod._AST_CACHE_SCHEMA
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 17)  # the schema before this fix
+    stale = rust_module.extract_rust(path)
+    for edge in stale["edges"]:
+        edge.pop("_rust_use_name", None)  # what 0.9.92 cached for a child-mod `use`
+    save_cached(path, stale, tmp_path, cache_root=tmp_path / "graphify-out")
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current)
+    result = extract(sorted(tmp_path / name for name in files), root=tmp_path,
+                     cache_root=tmp_path / "graphify-out", parallel=False)
+    assert _imports(result, "model.rs") == [_decl(result, "Invoice", "item.rs")]

@@ -18,7 +18,8 @@ implementers the answer is all N, not none. Each implementer is still subject
 to the single-owner guard `resolve_pascal_inherited_calls` and
 `resolve_ruby_member_calls` already use: an implementer that itself declares
 more than one method of the same name is ambiguous and is skipped on its own,
-independently of its siblings.
+independently of its siblings, unless the overloads pair up one-to-one by
+signature or parameter count (C#, #4584).
 
 The join is per method rather than per call site, so one edge per implementer
 reconnects every call that reaches the interface method. Confidence is
@@ -125,6 +126,9 @@ def resolve_interface_dispatch(
             mnode = node_by_id.get(method_nid)
             if mnode is None or not declared_in(mnode, suffixes):
                 continue
+            # A constructor shares its type's name but implements nothing.
+            if (mnode.get("metadata") or {}).get("kind") == "constructor":
+                continue
             name = method_label(mnode)
             if name:
                 # A set, so the same method arriving on two `method` edges cannot
@@ -165,31 +169,86 @@ def resolve_interface_dispatch(
             continue
         score = _dispatch_confidence(len(gated_impls))
 
+        interface_name = method_label(interface_node).split("<", 1)[0].strip()
         for impl_nid, impl_node in gated_impls:
             impl_methods = methods_of.get(impl_nid, {})
             for name, declared in interface_methods.items():
-                if len(declared) != 1:
-                    continue
-                # Ambiguity is per implementer: one implementer overloading a
-                # name does not disqualify its siblings from a clean match.
-                candidates = impl_methods.get(name, set())
-                if len(candidates) != 1:
-                    continue
-                source = next(iter(declared))
-                target = next(iter(candidates))
-                if source == target or (source, target) in existing_pairs:
-                    continue
-                existing_pairs.add((source, target))
-                new_edges.append({
-                    "source": source,
-                    "target": target,
-                    "relation": DISPATCH_RELATION,
-                    "context": "call",
-                    "confidence": "INFERRED",
-                    "confidence_score": score,
-                    "source_file": str(impl_node.get("source_file", "")),
-                    "source_location": impl_node.get("source_location"),
-                    "weight": 1.0,
-                })
+                for source, target in _implementing_pairs(
+                    declared, impl_methods.get(name, set()), interface_name, node_by_id
+                ):
+                    if source == target or (source, target) in existing_pairs:
+                        continue
+                    existing_pairs.add((source, target))
+                    new_edges.append({
+                        "source": source,
+                        "target": target,
+                        "relation": DISPATCH_RELATION,
+                        "context": "call",
+                        "confidence": "INFERRED",
+                        "confidence_score": score,
+                        "source_file": str(impl_node.get("source_file", "")),
+                        "source_location": impl_node.get("source_location"),
+                        "weight": 1.0,
+                    })
 
     all_edges.extend(new_edges)
+
+
+def _implementing_pairs(
+    declared: set[str], candidates: set[str], interface_name: str, node_by_id: dict
+) -> list[tuple[str, str]]:
+    """Pair an interface's methods of one name with the implementer's members.
+
+    A C# explicit implementation (``int IA.Get()``) implements a member of its
+    own interface and wins over a public ``Get()`` for it; it never implements
+    another interface. So the interface methods are paired with the explicit
+    implementations of this interface first, and only the ones left over with
+    the ordinary members (``int IA.Get()`` explicit beside a public
+    ``int Get(int)`` implementing ``IA.Get(int)``). Languages without explicit
+    implementations see a single ordinary pass.
+    """
+    def _explicit(nid: str) -> str | None:
+        meta = (node_by_id.get(nid) or {}).get("metadata")
+        return meta.get("explicit_interface") if isinstance(meta, dict) else None
+
+    own = {c for c in candidates if _explicit(c) == interface_name}
+    ordinary = {c for c in candidates if not _explicit(c)}
+    pairs = _overload_pairs(declared, own, node_by_id) if own else []
+    left = declared - {source for source, _ in pairs}
+    if left and ordinary:
+        pairs += _overload_pairs(left, ordinary, node_by_id)
+    return pairs
+
+
+def _overload_pairs(
+    declared: set[str], candidates: set[str], node_by_id: dict
+) -> list[tuple[str, str]]:
+    """Pair an interface's methods of one name with an implementer's.
+
+    One of each pairs up as always. Otherwise (C# overloads, #4584) each
+    interface method pairs with the one implementer method of the same declared
+    signature, else of the same parameter count among those no signature
+    claimed; no unique match, no edge. An implementer method takes at most one
+    interface method, so an overload implemented on a base class is not pinned
+    on a sibling of the same count.
+    """
+    if len(declared) == 1 and len(candidates) == 1:
+        return [(next(iter(declared)), next(iter(candidates)))]
+
+    def _meta(nid: str) -> dict:
+        meta = (node_by_id.get(nid) or {}).get("metadata")
+        return meta if isinstance(meta, dict) else {}
+
+    pairs: dict[str, str] = {}
+    for key in ("signature", "arity"):
+        taken = set(pairs.values())
+        for source in sorted(declared):
+            want = _meta(source).get(key)
+            if source in pairs or want is None:
+                continue
+            hits = [c for c in candidates if c not in taken and _meta(c).get(key) == want]
+            if len(hits) == 1:
+                pairs[source] = hits[0]
+    # Two interface methods on one implementer method: neither is certain.
+    targets = list(pairs.values())
+    return [(s, t) for s, t in pairs.items() if targets.count(t) == 1]

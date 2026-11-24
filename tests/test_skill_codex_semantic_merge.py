@@ -26,7 +26,12 @@ def _python_blocks(body: str, start: str, end: str) -> list[str]:
 
 
 def _run(source: str, *, cwd: Path, corpus: Path, spec: Path) -> None:
-    source = source.replace("INPUT_PATH", corpus.as_posix()).replace("SPEC_PATH", spec.as_posix())
+    # Since #4762 the blocks read the scan root from the trusted .graphify_root
+    # sidecar instead of a substituted INPUT_PATH literal; simulate Step 1's write.
+    out = cwd / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / ".graphify_root").write_text(corpus.as_posix(), encoding="utf-8")
+    source = source.replace("SPEC_PATH", spec.as_posix())
     subprocess.run([sys.executable, "-c", source], cwd=cwd, check=True,
                    capture_output=True, text=True)
 
@@ -51,7 +56,9 @@ def test_codex_chunk_results_survive_b3_merge_cache_and_all_cached_rerun(tmp_pat
     b0 = _python_blocks(skill, "**Step B0", "**Step B1")
     b3 = _python_blocks(skill, "**Step B3", "#### Part C")
     part_c = _python_blocks(skill, "#### Part C", "\n### ")[:1]
-    assert len(b0) == 1 and len(b3) == 3 and len(part_c) == 1
+    # Step B3.5 (the partial-read coverage check from #3987) sits between the
+    # B3 merge and Part C, so the sliced range holds four blocks, not three.
+    assert len(b0) == 1 and len(b3) == 4 and len(part_c) == 1
 
     corpus = tmp_path / "corpus"
     corpus.mkdir()

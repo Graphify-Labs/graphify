@@ -17,6 +17,8 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import os_long_path as _os_long_path
+from graphify.paths import stash_preread_bytes as _stash_preread_bytes
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 # AST cache entries are the output of graphify's own extractor code, so they
@@ -37,7 +39,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 16  # Rust `use` edges carry the imported name as written (`_rust_use_name`, #4439); prior (15): Go generic receiver types normalized (`Box[T]` -> `Box`) so methods attach to the type node; prior (14): C# receiver resolution for nameless/`new X()`/`foreach` receivers (defer + receiver-chain markers) and `_`/case-distinct node ids (underscore-salted); prior (13): Kotlin/Scala/C++/Swift generic & template type params no longer mint sourceless stubs; Objective-C NS_ENUM/NS_OPTIONS extraction and `_callable`/`_callable_class` markers; Go and PHP receiver-typed member calls park cross-repo (`go_type_table`/`php_type_table`, receiver fields); prior (12): Java inherited-supertype (`receiver_unbound`) and chained/new/cast receiver typing (`java_receiver_chain`, `_java_ret`); C/C++ quoted cross-directory include provenance (`include_kind`); JS external imports anchored to the package, not the path leaf; prior (11): Python property-accessor decorators / `Self`, Swift `Self`, Go generic type params, Python forward type-hint file node, PowerShell dot-source, C# verbatim-interpolated string recovery; (10): C# partial types carry `type_path`; (9): Python property-read raw calls and `_py_property` nodes; (8): Rust `use`-group per-binding edges; (7): Python opaque-base/super(args) markers + nested-class enclosing ids.
+_AST_CACHE_SCHEMA = 55  # A Python call made through a function parameter (the enclosing function's own parameter, or one captured from an outer function) is no longer bound to a module-level definition of that name, since the parameter is a runtime callback with an unknown target (#5418); so cached Python extractions re-run; prior (54): A Python call to a name that a lambda parameter shadows is no longer bound to a module-level definition inside the lambda body, scoped to that body only (#5417); a Go selector resolves against its visible lexical binding before a same-named import, so a local that shadows an imported package name binds to the local's type member and an unknown local does not resolve as a package (#5411); and a COBOL `GO TO` emits a `calls` edge (`context=go_to`) to the paragraph it jumps to, fail-closed on an unknown target (#5423); so cached Python, Go and COBOL extractions re-run; prior (53): A C# local, parameter or field named `partial`, `required`, `async`, `nint`, `nuint` or `with`, which tree-sitter-c-sharp 0.23.5 reads as its keyword where a statement starts with it (`partial |= x;`, `required.Add(1);`) or in `var with = 1;`, is rewritten to `@name` before parsing (byte-length preserving, only where the parse needs it), so the statement is no longer an ERROR and the enclosing type and the members after it are no longer dropped (#5043); so cached C# extractions re-run; a C call through a struct function-pointer field (`ops->run()`, `ops.run()`) no longer binds to a same-named free function, since the field name is no evidence of the pointer's runtime target and the guessed edge was false (#5410); so cached C extractions re-run; prior (52): An Objective-C method whose name folds onto a sibling's id within one @interface/@implementation/@protocol (a leading/trailing `_` as in `-setup`/`-_setup`, or a case-only difference) gets a distinct salted node id instead of overwriting it, matching the salting already done for Rust/C#/Java/Swift; the @interface declaration and @implementation definition of one method still share a single node (#5390); so cached Objective-C extractions re-run; prior (51): A bash `source` line or script invocation whose path resolves outside the scan root, including any UNC path (\\host\share, //host/share), is no longer stat-ed or turned into an edge, so a hostile corpus can no longer coerce an outbound SMB authentication probe on Windows (GHSA-g6c9-j4vm-mwq4); so cached bash extractions re-run; a Rust impl-block method, associated const or static whose name folds onto a sibling's id (`fn foo`/`fn _foo`, `fn e`/`fn E`) gets a distinct salted node id instead of overwriting it (#5380); so cached Rust extractions re-run; a C# call through a static member of a type (`Audio.Instance.Click()`, `Audio.Instance?.Click()`, or `var a = Audio.Instance; a.Click()`) resolves through the member's declared type, stamped as a `receiver_chain`/`receiver_var_chain` on the raw call (#5376); so cached C# extractions re-run; a PHP file keeps every call site to one callee (the build folds repeats into `also_seen`), a `$this->m()` call binds through the enclosing class, and a scoped call looks its method up the `inherits` chain (#5362); so cached PHP extractions re-run; prior (50): A Kotlin member call on a receiver whose type is declared (parameter, property, `val x: T` or `val x = T()`) binds to that type's method instead of the last same-named method in the file, and carries `kotlin_receiver_type` so the cross-file pass resolves it (#5355); a Java field or class annotated with Lombok `@Getter` gets a synthesized `getX()`/`isX()` getter node so `obj.getX()` resolves to it as javac would, respecting `AccessLevel.NONE` and not duplicating a hand-written getter (#5148); and a PostgreSQL PL/pgSQL routine body the grammar only parses through ERROR recovery (`RETURN QUERY SELECT ... FROM t`) has its table reads recovered instead of dropped (#5349); a T-SQL procedure header the grammar only partly parses yields a single routine node instead of a duplicate under the misread name (#5236); a VB.NET method declared after a multi-line string literal is kept by reparsing with multi-line strings flattened first (#5320); a C++ `std::`-qualified type reference gets its own sourceless stub instead of being rewired onto a same-named project symbol (#5219); and a Python `import mod` from a `sys.path.insert` directory binds `mod.func()` to the function node (#5253); so cached Kotlin, Java, SQL, VB.NET, C++ and Python extractions re-run; prior (49): Members or functions of one scope whose names differ only by a leading/trailing `_` (or a Scala `_=` setter, or a Ruby/Elixir `!`/`?` suffix) or only by case get distinct node ids, the one public name keeping its plain id and the twins salted, as already done for Python/C#/Java/PHP: now in Ruby methods including inside `class << self` (`_read_attribute`/`read_attribute`, `_where!`/`where!`, #5292), Lua table-field functions (`M._load`/`M.load`, `Runner:_start`/`Runner:start`, #5294), Scala members including getter/setter pairs and companion objects (`_enter`/`enter`, `size`/`size_=`, `forEach`/`foreach`, #5296) and Elixir defs (`_name`/`name`, `get`/`get!`, `__schema__`/`schema`, #5298); and a Rust prelude trait's type argument (`Celsius` in `impl From<Celsius>`) is read as a generic-argument reference rather than mistaken for the trait itself (#5332); a Ruby method written inline after an access modifier (`private def validate`) keeps its class membership instead of becoming a file-level function (#5310); a Swift call that is the last operand of an operator expression (`base + bonus()`) and a Kotlin call under a prefix operator (`!isEmpty()`) are extracted instead of dropped (#5311, #5312); and a VB.NET parameter with a default value is counted as Optional in any modifier order (`ByVal Optional x = 0`), correcting its arity (#5320); a Ruby `include`/`prepend`/`extend` written inside a `class << self` block emits its `mixes_in` edge (#5317); a Python class with a parameterized base (`class C(Base[T])`) emits the `inherits` edge to the base and is walked for inherited calls instead of being treated as opaque (#5318); and a tsconfig `extends` and exact `paths` mapping resolve to the real scanned config/file instead of a dangling stub (#5223); so cached Ruby, Lua, Scala, Elixir, Rust, Swift, Kotlin, VB.NET, Python and TypeScript-config extractions re-run; prior (48): A Go same-package member call types its receiver by a bare name scoped to the caller's own package instead of matching that name against every package in the corpus, so two packages each declaring a type with the same name (e.g. `alpha.Service` and `beta.Service`) keep their own same-file member calls instead of both losing them to a corpus-wide ambiguity bail (#5242); each Java overload gets its own node keyed by arity and erased signature (with generic bounds erased per scope), and the `affected` override-matching is made arity-aware so a split `run(int)` is not tied to a supertype `run()` by label alone (#5251); a JS `this.x = function(params){}` member's own params and enclosing-bound names shadow outer names, so an argument-position param no longer fabricates a false `indirect_call` to a same-named corpus function (#5241); a C/C++ directory-qualified angle include `<dir/header.h>` resolves to the local file and standard-library headers are kept off the alias index (#5218); and a SQL table named with non-ASCII letters that the grammar collapses no longer mints an empty-id node or an edge to an empty id (#5250); a Pascal unit the tree-sitter grammar cannot parse end to end is recovered through a byte-length-preserving masked retry (escaped string literals and compiler directives) instead of yielding no nodes (#5264), and the Pascal extractor now records unit-level global variables and a qualifier on unresolved qualified raw_calls so a call through a global object variable (`DM.Open`, the Delphi data-module idiom) resolves to the variable's type member (#3101); so cached Go, Java, JS/TS, C/C++, SQL and Pascal extractions re-run; prior (47): A JS/TS name bound in an enclosing scope and captured into a tracked nested closure no longer fabricates a false `indirect_call` to a same-named corpus function (#5217); a T-SQL procedure that parses structurally (not via ERROR recovery) keeps its INSERT/UPDATE/DELETE/SELECT INTO writes (#5146); and an Oracle `CREATE PACKAGE [BODY]`'s member procedures and functions, and their table reads/writes, are recovered instead of yielding only a file node (#5168); and nested types get owner-qualified ids so same-named nested types under different owners no longer collide into one node, with qualified calls (`Outer.Inner.m()`, `Outer::Inner::m()`) resolving through the owner chain (#5185); so cached JS/TS, SQL and nested-type (C#, Java, Scala, C++, TS) extractions re-run; prior (46): A non-UTF-8 C# file with any preprocessor directive is decoded (Windows-1252/UTF-16, #4145) before the directive blanking of #5003 instead of being parsed as raw bytes, so its non-ASCII identifiers are no longer cut short and later members are no longer dropped (#5194); a C# explicit interface implementation (`void IFoo.Bar()`) is kept out of overload binding and gets a distinct node id so it no longer collapses with a public `Bar` overload and calls dispatch to the right member (#5193); and members whose names differ only by a leading/trailing `_` (or `~`, or by case) get distinct node ids in Kotlin (#5206), Swift (#5204), Dart (#5200) and C++ (including constructor `Foo` vs destructor `~Foo`, #5202), as already done for Python/C#/Java/PHP; a variadic parameter (`xs ...T`, `T... xs`, `params T[]`, `T*`, `...$xs`) references its element type in Go, Java, C#, Scala and PHP (#4638); and a Dart legacy typedef that returns a function type (`typedef int Function(int) Make();`) is named by its own declared name instead of `Function` (#4641); so cached C#, Kotlin, Swift, Dart, C++, Go, Java, Scala and PHP extractions re-run; prior (45): A C# field or primary-constructor parameter whose type name does not start with a capital (`_Pair`, `pair`, `bool`) is recorded in the receiver table, and a member call on a receiver that no local, parameter, field or property declares carries `receiver_undeclared`, so `_Pair.Make()`/`pair.Create()` bind as static calls (#5174); a Java call through a class-qualified static field (`Service.INSTANCE.get()`) resolves via the field's declared type, recorded in a static-field type table (#5149); and a SQL routine body preserves comma joins and keeps a `@dblink` suffix distinct, an unparsed derived table's alias is no longer read as a table, and Oracle `[NON]EDITIONABLE` PROCEDURE/FUNCTION/TRIGGER DDL is recovered instead of yielding only a file node (#5169, #5147, #5167); so cached C#, Java and SQL extractions re-run; prior (44): A folded C++ parameterless member records its `definition_file` anchored to the source root instead of a cache-root-relative `../`-walk; a PHP route closure takes its path only from the arguments before it, so a string argument after the closure no longer becomes the route's path or leaks into an enclosing group's prefix (#5135); two module-level declarations in one file differing only by a leading/trailing `_` keep distinct ids (the first keeps the plain id, the rest are salted) across JS, TS, C, C++, PHP, Ruby, Kotlin, Swift and Lua (#2810); PHP methods of one class/trait/interface/enum differing only by a `_` keep distinct ids (#5137); and Java members differing only by a `_` or only by case keep distinct ids (#5151); so cached C++, PHP, Java and module-level-id extractions re-run; prior (43): A dotted Python subscript annotation (`mod.MyBox[Foo]`) walks its value once as the type, not again as its own generic argument, so the false `generic_arg` reference no longer replaces the real `parameter_type`/`return_type` edge, a C++ plain class/struct forward folds into its unique exactly-qualified definition when one file reaches the other through unconditional exact quoted includes, and a parameterless member declaration folds into its proven out-of-line definition by matching return type/qualifiers, with per-node `_cpp_member_records`/`_cpp_class_kind` facts persisted (#5117); a C++ member receiver resolves through a scoped type alias (`using Alias = ns::Type;`) and through inherited fields/methods, with forward-declared pointee types completed at the use site via a lexical-scope lookup, fail-closed on ambiguous/virtual/diamond bases (#5118); and a C++ out-of-line template member keeps its proven primary-template owner while calls in a `#if`-guarded initializer or argument list are recovered from byte-preserving branch views, with dependent receivers left unresolved (#5115); so cached Python and C++ extractions re-run; prior (42): A bare, unqualified free-function mention in a Markdown document (`token` in prose, no `()` and no namespace) binds to a same-named function only when the defining file, or another symbol from it, is cited within the heading's section chain, instead of matching any same-named callable anywhere in the corpus; reference-style links (`[text][label]`) resolve at the use site (#4804, #4806); and a C# classic extension-method call (`x.Foo()` where `Foo` is a `static ... Foo(this X x, ...)`) binds to the extension's declaration through a post-nominal additive pass, gated to a visible namespace, a matching `this` type and a unique applicable method, with a BCL deny-list and fail-closed on ambiguity or an instance-method shadow (#4828); so cached Markdown and C# extractions re-run; prior (41): A C++ member-call chain routed through class fields declared in other headers (`client.actions->Execute()`, with value `.`, raw-pointer `->` and single-arg `unique_ptr`/`shared_ptr` receivers) resolves to the field type's member across the include set, gated to a unique type and member and fail-closed otherwise, and class fields are persisted on the node (#5098); and a Markdown code span naming an uppercase `\`-namespace class (`\Foo\Bar`, `App\API`) or a type-qualified method call (`Type::member()`) is kept as a symbol mention instead of being dropped, while a non-call `Type::CONST`/`Type::class` stays dropped (#5093); so cached C++ and Markdown extractions re-run; prior (40): Solidity members, free functions and types whose names differ only by a leading `_` (or by case) in one scope (`_grantRole(bytes32,address)` / `grantRole(bytes32,address)`) get separate node ids: the one public name keeps its id and the others are salted, as in Python and C# (#3302, #4415), so the `_` function no longer vanishes and its calls stop landing on its twin (#5027); a Solidity call on a receiver of a contract or interface type (`IERC20 token; token.transfer()`, `IERC20(a).transfer()`, `token().balanceOf()`) binds by name and arity through that type's linearization to the type's own member instead of producing no edge, gated to a single visible contract/interface and fail-closed on an unknown or ambiguous type (#5060); a Solidity call attached by a `using A for T` directive (`using SafeCast for uint256; x.toUint48()`) binds to the library or free function it attaches, matched by the receiver's type and an arity one greater than the call (the receiver), fail-closed when the type is unknown or two functions fit (#5062); a C# constructor (instance, static or primary) is its own node owned by its type through a `method` edge, its body and `: base(...)`/`: this(...)` calls credited to it, and `new X(...)`/`: base`/`: this` additively link the arity-correct overload (#5054); and a C# call inside a property/indexer accessor, expression body, operator or conversion is credited to that member (an indexer is a `this[]` node, an operator a `.operator +()` node) instead of being lost (#5056), so cached Solidity and C# extractions re-run; prior (39): A Markdown code span written as a backslash namespace (`\Foo\Bar`) or a type-qualified member (`Type::member`) is recognised as a symbol mention and emits a `ns_qualified` raw_call (#4610, #4695), so cached Markdown extractions re-run; prior (38): C# preprocessor directives and `#if` branches that would derail tree-sitter-c-sharp are blanked before parsing (byte-length preserving, so lines and columns do not move), so a directive no longer closes the enclosing class early and drops later members or calls (#5003); a Solidity library call (`Lib.f()`, including an aliased import), and an `emit`/`revert`/`require` naming a declared event or error, link to the member they name instead of producing no edge, resolved only when a single visible type and a unique name/arity member match (#5001, #5005); and a YAML `<<` merge sequence gives the earlier anchor precedence for a duplicated key, matching the merge spec and PyYAML, so the winning key carries its correct source line (#4995); so cached C#, Solidity and YAML extractions re-run; prior (37): Solidity `import "../x/Y.sol"` resolves the `..` to the real file instead of a dangling stub that kept the importer's own folder (#4985); a Python module-level singleton (`g = Service()` then `g.method()`) resolves its member calls through the instance's type, gated by an exact-spelling and lexical-shadow guard (#4972); Kotlin resolves a call to an overloaded method and attributes calls inside an `init {}` block to the class, and a bare call no longer binds to a class the caller cannot reach (#4935, #4956); a Go same-file member call resolves through the receiver's type instead of a declaration-order-dependent same-named method (#4962, #4966); a Go member call on a receiver typed from another package (`pkg.T`) binds only to the `T` declared at the path the file imports `pkg` from (#3368, #4853); and a Go interface method call additively dispatches to the interface's implicit implementers (#4934), so cached Solidity, Python, Kotlin and Go extractions re-run; prior (36): C++ extraction changes: a type-alias reference (`using Foo = Bar;` then `Foo x;`) binds by exact spelling so it no longer loses to a same-normalized function, and a salted alias keeps its own `contains` edge (#4951); a member call `x.m()` binds by the receiver's type, now typed from parameters and class fields and not just locals, with untyped receivers kept bound in-file (#3215, #4946); an out-of-line/split-header definition attaches to the unique owner whose class file is in its include set via a `_cpp_qualified` identity marker, instead of file-containing or cross-binding to an unrelated same-named function (#4916, #4920); and a local callable value (a lambda or `std::function` local) is kept out of global call resolution by byte-range binding lifetimes so it no longer mints a spurious INFERRED call to a same-named global (#4917, #4921), so cached C++ extractions re-run; prior (35): A Rust module-qualified call like `crate::b::helper()` resolves to the function it names via qualifier-verified cross-file resolution, kept inside the caller's crate and out of local names (#2135, #4944); a Rust call written inside an expression macro's arguments (`println!`, `vec!`, ...) is linked, with a parsed call winning the dedupe (#4945); and cache keys keep their written case (file I/O through os_long_path, cache identity via normpath not normcase, and the digest salt no longer lowercased) so README.md and readme.md stop sharing one digest on a case-sensitive filesystem, which also changes the salt digest for any relative path carrying an uppercase char (#4925, #4937), so cached Rust extractions and any uppercase-path cache entries re-run; prior (34): A bare call inside a Python method no longer self-binds to a same-named method, so it resolves to the imported/module function instead (#4933); a Go method value reached through a receiver field is linked as an indirect_call (#4931); and a Go package-level `var` initialiser references the types it names (#4932), so cached Python and Go extractions re-run; prior (33): A Scala `extension (x: T)` method is scoped to its receiver type T (#2044, #4856); and a Terraform node carries its original scope so ids stay portable when the cached project is moved to a new directory (#4858, #4861), so cached Scala and Terraform extractions re-run; prior (32): A type and a function whose names differ only in case get separate node ids (#4904, #4908); and a PHP `Scope::MEMBER` access in a class-level initializer (const value, property/parameter default) emits a references_constant edge (#4648, #4895); R `setClass`/`setRefClass` `contains=` superclasses get inherits edges (#4902); an Elixir bare call resolves to the caller's own module first (#4900); a Dart mixin `on A, B` clause resolves every constraint (#4899); and a Fortran derived-type `extends` emits an inherits edge (#4897), so cached extractions for those languages re-run (#4904); Go credits a call in a package-level `var` initialiser (and its closures) to the file node (#4867); a Go method value passed as an argument is linked as an `indirect_call` (#4868); a Go receiver's field whose struct is declared in a sibling file of the same package is typed so its member calls resolve (#4866); and a Python dispatch table's `module.func` values resolve to the referenced functions as `indirect_call`s (#4773), so cached Go and Python extractions re-run; prior (30): File and per-declaration ids are kept distinct so a top-level declaration sharing the file's name is not dropped (#4854); a SystemVerilog `function new(...)` constructor gets its own node, `method` edge and parameter refs (#4848); a Go `var x = T{}`/`var x = &T{}` types `x` as `T` for receiver resolution like `x := T{}` (#4843); a PowerShell `using module`/`using assembly` name drops its file extension (#4847); a Solidity free-function `using {a, b} for T` set emits `uses` edges (#4846); a CommonLisp forward-referenced superclass binds to its local node instead of a sourceless stub (#4845); and Pascal `inherited`/`inline` form component blocks are recognised so later `object` blocks keep their parent (#4844), so cached extractions across those languages re-run; prior (29): OCaml `and`-chained module/class bindings are all walked (only the first was, so later bindings were silently dropped, #4822), and a SystemVerilog class `task` method is modeled like a `function` one with its own node and parameter refs while its task-locals no longer leak as class fields (#4774), so cached OCaml and Verilog/SystemVerilog extractions re-run; prior (28): Markdown ATX headings parse per CommonMark (closing `#` runs dropped, 0-3 space indent, hash-only lines mint no node, #4790) and fenced code blocks are tracked by CommonMark rules so headings inside fences stop leaking (#4787); YAML keys carry their written spelling and real line and `on`/`off`/`yes`/`no` keys no longer fold to booleans (#4784); rationale labels redact more credential shapes before caching (#4647); Razor `@implements` interface edges are extracted (#4820); aliased Terraform providers get their own node and `provider =` refs resolve (#4819); COBOL paragraphs after a nested `END PROGRAM` reattach to the enclosing program (#4824); Blade `wire:click` binds the bare method name (#4823); a Pascal record is a type with its own methods (#4825); VB.NET operator declarations are extracted as members with their bodies walked (#4821); and a Fortran call resolves to the subroutine it names (#4795), so cached Markdown/YAML/rationale/Razor/Terraform/COBOL/Blade/Pascal/VB.NET/Fortran extractions re-run; prior (27): VB.NET external namespace/type stubs now carry a `source_file` sentinel (#4725); Python member calls resolve through injected fields and method-result types (#4726); a Rust `use` is scoped to the crate it names (#4699), so cached VB.NET/Python/Rust extractions re-run; prior (26): Zig no longer crosses a call between a method and a same-named free function (#4755), and a Dart unnamed `extension on T` is detected (#4741), so cached Zig and Dart extractions re-run; prior (25): Python/Go/C++/Rust explicit type aliases (and Rust `union` items) are extracted as type nodes so references resolve instead of minting sourceless stubs (#4578/#4579/#4580/#4581); each C# method overload gets its own node bound by arity (#4584); a package.json dependency's manifest entry links to its ref node (#4569), so cached extractions re-run; prior (24): Objective-C `NS_CLOSED_ENUM` declarations are extracted as enums like `NS_ENUM` (#4705), and a `CREATE TABLE` whose column default the SQL grammar rejects (MySQL `DEFAULT current_timestamp()`) is recovered from its ERROR node (#4613), so cached ObjC and SQL extractions re-run; prior (23): `.yaml`/`.yml` files are structurally extracted (keys as nodes, config-vs-data gated) and reclassified from document to code (#2214), so cached YAML re-extracts; prior (22): SQL labels drop T-SQL brackets and routine bodies emit `reads_from`/`writes_to` (#4635), and a `GO` batch separator ends a statement (#4651), so cached `.sql` extractions re-run; prior (21): a CommonJS `const X = require('./m')` binding no longer mints a module-scope node that shadows the class the required file exports, so `new X()` resolves to the required declaration (#4621); prior (20): Obsidian `[[wikilink]]` targets that start with the scan root's own folder names now resolve to the real page (#4559), so cached markdown extractions re-run; prior (19): Dart `typedef` declarations are extracted as aliases (not variables of type `typedef`); C++ Metal/CUDA GPU qualifiers no longer mint sourceless god nodes (#4550); a `.h` header containing `extern "C"` routes to the C++ extractor; prior (18): Kotlin `typealias` (#4553), C# `delegate` (#4552), and Swift `macro` declarations (#4551) are now extracted so references stop minting sourceless stubs; Rust `use` rooted at a `mod` declared in the same scope carries `_rust_use_name` (#4564); prior (17): Python pytest-fixture markers (`_py_fixture`/`_python_fixture_param`, #4332) and module-level class-id collision salting (#2810); TS `this.field` typed from any method incl. static (#4473); Solidity callables carry `metadata.arity` + inherited-call/`super`/modifier raw calls (#4379); Go type-decl and Rust file-item case-distinct node ids (#4444); prior (16): Rust `use` edges carry the imported name as written (`_rust_use_name`, #4439); (15): Go generic receiver types normalized (`Box[T]` -> `Box`) so methods attach to the type node; prior (14): C# receiver resolution for nameless/`new X()`/`foreach` receivers (defer + receiver-chain markers) and `_`/case-distinct node ids (underscore-salted); prior (13): Kotlin/Scala/C++/Swift generic & template type params no longer mint sourceless stubs; Objective-C NS_ENUM/NS_OPTIONS extraction and `_callable`/`_callable_class` markers; Go and PHP receiver-typed member calls park cross-repo (`go_type_table`/`php_type_table`, receiver fields); prior (12): Java inherited-supertype (`receiver_unbound`) and chained/new/cast receiver typing (`java_receiver_chain`, `_java_ret`); C/C++ quoted cross-directory include provenance (`include_kind`); JS external imports anchored to the package, not the path leaf; prior (11): Python property-accessor decorators / `Self`, Swift `Self`, Go generic type params, Python forward type-hint file node, PowerShell dot-source, C# verbatim-interpolated string recovery; (10): C# partial types carry `type_path`; (9): Python property-read raw calls and `_py_property` nodes; (8): Rust `use`-group per-binding edges; (7): Python opaque-base/super(args) markers + nested-class enclosing ids.
 
 
 # Per-process memo: distributions() scans site-packages metadata, which is
@@ -410,7 +412,10 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     # relative so a moved/cloned corpus still hits (#2199) — same load/save
     # re-anchoring the detect manifest uses.
     _stat_index_root = new_root
-    _stat_index_anchor = Path(root).resolve()
+    # Spell the anchor like the in-memory keys (_normalize_path): callers pass an
+    # os_long_path() root, and on Windows relpath() cannot relate "\\?\C:\..." to
+    # "C:\...", so every key stayed absolute and a moved corpus missed (#5035).
+    _stat_index_anchor = _normalize_path(Path(root).resolve())
     p = _stat_index_file(_stat_index_root)
     _stat_index_path = p
     _stat_index = {}
@@ -498,14 +503,22 @@ def _flush_stat_index() -> None:
 
 
 def _normalize_path(path: Path) -> Path:
-    """Normalize path for consistent cache keys across Windows path spellings."""
+    """Normalize a path for cache identity without folding case.
+
+    Windows spellings can differ in separators and in the optional
+    extended-length prefix. Case is not equivalent on every volume a Windows
+    process can reach, so the key keeps the caller's case. Use
+    paths.os_long_path() for the path handed to the filesystem.
+    """
     import sys
     if sys.platform != "win32":
         return path
     s = str(path)
-    if s.startswith("\\\\?\\"):
+    if s.startswith("\\\\?\\UNC\\"):
+        s = "\\\\" + s[8:]  # \\?\UNC\server\share -> \\server\share
+    elif s.startswith("\\\\?\\"):
         s = s[4:]  # strip extended-length prefix \\?\
-    return Path(os.path.normcase(s))
+    return Path(os.path.normpath(s))
 
 
 def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = None) -> str:
@@ -524,19 +537,30 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
 
     For Markdown files (.md), only the body below the YAML frontmatter is hashed,
     so metadata-only changes (e.g. reviewed, status, tags) do not invalidate the cache.
+
+    The path handed to the filesystem comes from os_long_path(); the cache key
+    preserves case because case sensitivity belongs to the volume, not the
+    platform (#4925).
     """
     global _stat_index_dirty
-    p = _normalize_path(Path(path))
-    root = _normalize_path(Path(root))
-    if not p.is_file():
-        raise IsADirectoryError(f"file_hash requires a file, got: {p}")
+    raw_path = Path(path)
+    raw_root = Path(root)
+    src = Path(_os_long_path(raw_path))
+    root_src = Path(_os_long_path(raw_root))
+    if not src.is_file():
+        raise IsADirectoryError(f"file_hash requires a file, got: {src}")
 
     # The stat index is a cache artifact, so it must follow the cache location
     # (cache_root), not the key-anchor root — otherwise it leaves a stray
     # graphify-out/cache/stat-index.json inside the analyzed source tree even when
     # the AST cache itself is redirected to CWD (#1774 completion).
-    _ensure_stat_index(root, cache_root=cache_root)
-    resolved = p.resolve()
+    #
+    # The index root, key and salt use the normalized spelling. The \\?\ form
+    # from os_long_path() is for I/O only: as the root it made load_cached()'s
+    # plain cache_root look like a second root (#3989), and no key was relative
+    # to it, so every key was written absolute (#2199).
+    _ensure_stat_index(_normalize_path(raw_root), cache_root=cache_root)
+    resolved = _normalize_path(src.resolve())
     abs_key = str(resolved)
     # The salt is the path component that enters the digest (relative to root, or
     # the absolute-path fallback). The stat-index memo MUST be keyed by it too:
@@ -545,17 +569,17 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # path served whichever was computed first — making file_hash order-dependent
     # and poisoning the persisted stat-index across runs (#1989). Store one digest
     # per salt so alternating roots don't force re-reads.
-    resolved_root = root.resolve()
+    resolved_root = _normalize_path(root_src.resolve())
     try:
         resolved_rel = resolved.relative_to(resolved_root)
     except ValueError:
         # Preserve the existing fallback for a target outside the corpus. An
         # in-root symlink to such a target is excluded by collect_files(), but
         # direct cache callers still rely on the resolved external identity.
-        salt = resolved.as_posix().lower()
+        salt = resolved.as_posix()
     else:
-        walked = Path(os.path.abspath(p))
-        walked_root = Path(os.path.abspath(root))
+        walked = Path(os.path.abspath(raw_path))
+        walked_root = Path(os.path.abspath(raw_root))
         try:
             walked_rel = walked.relative_to(walked_root)
         except ValueError:
@@ -566,18 +590,18 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
             walked_rel = None
             for parent in walked.parents:
                 try:
-                    if parent.resolve() == resolved_root:
+                    if _normalize_path(parent.resolve()) == resolved_root:
                         walked_rel = walked.relative_to(parent)
                         break
                 except OSError:
                     continue
             if walked_rel is None:
                 walked_rel = resolved_rel
-        salt = walked_rel.as_posix().lower()
+        salt = walked_rel.as_posix()
 
     st: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st = src.stat()
         if _stat_sig_fresh(_stat_index.get(abs_key), st):
             hashes = _stat_index[abs_key].get("hashes")
             if isinstance(hashes, dict):
@@ -592,8 +616,14 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # Captured BEFORE the read so the stamp can never post-date content that
     # changed while we were reading it (see _stat_sig_fresh).
     observed_at_ns = time.time_ns()
-    raw = p.read_bytes()
-    content = _body_content(raw) if p.suffix.lower() == ".md" else raw
+    raw = src.read_bytes()
+    # Hand these exact bytes to the extractor's _read_source_bytes() so a cold
+    # build reads each file once, not once here and again to parse (#perf). Keyed
+    # by the caller's path (raw_path), which the extraction worker also passes to
+    # the extractor; the \\?\ long-path form is for I/O only. The cache key below
+    # is still the SHA256 of these same raw bytes, unchanged.
+    _stash_preread_bytes(raw_path, raw)
+    content = _body_content(raw) if src.suffix.lower() == ".md" else raw
     h = hashlib.sha256()
     h.update(content)
     h.update(b"\x00")
@@ -627,13 +657,14 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     correct, just not accelerated.
     """
     global _stat_index_dirty
-    p = _normalize_path(Path(path))
-    root = _normalize_path(Path(root))
-    _ensure_stat_index(root, cache_root=cache_root)
-    abs_key = str(p.resolve())
+    raw_path = Path(path)
+    raw_root = Path(root)
+    src = Path(_os_long_path(raw_path))
+    _ensure_stat_index(_normalize_path(raw_root), cache_root=cache_root)
+    abs_key = str(_normalize_path(src.resolve()))
     st: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st = src.stat()
         entry = _stat_index.get(abs_key)
         if _stat_sig_fresh(entry, st) and "word_count" in entry:
             return entry["word_count"]
@@ -643,7 +674,7 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     # Captured BEFORE compute() reads the file, for the same reason file_hash
     # stamps before its read (see _stat_sig_fresh).
     observed_at_ns = time.time_ns()
-    wc = compute(Path(path))
+    wc = compute(raw_path)
 
     if st is not None:
         _stat_entry_for(abs_key, st, observed_at_ns)["word_count"] = wc
@@ -700,24 +731,37 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
                 source = item.get(key)
                 if not source:
                     continue
-                sp = Path(source)
-                if not sp.is_absolute():
-                    # os.path.abspath is lexical (no symlink resolution),
-                    # matching the symbolic relativization below.
-                    cwd_form = Path(os.path.abspath(sp))
-                    try:
-                        if cwd_form == root_resolved / sp or not cwd_form.exists():
-                            continue  # already root-relative, or a ghost path
-                    except OSError:
-                        continue
-                    sp = cwd_form
-                try:
-                    rel = os.path.relpath(sp, root_resolved)
-                except (ValueError, OSError):
-                    continue  # out-of-root (e.g. Windows cross-drive)
-                if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
-                    continue  # escaped root — keep absolute
-                item[key] = rel.replace(os.sep, "/")
+                rel = _relativized_source_value(source, root_resolved)
+                if rel is not None:
+                    item[key] = rel
+
+
+def _relativized_source_value(source: str, root_resolved: Path) -> "str | None":
+    """Portable form of one ``source_file``/``definition_file`` value, or
+    ``None`` when the value must be left untouched.
+
+    Single source of truth for the per-field rule in
+    :func:`_relativize_source_files_in` so the copy-on-write write path
+    (:func:`_save_cached_on_disk`) reproduces it byte-for-byte.
+    """
+    sp = Path(source)
+    if not sp.is_absolute():
+        # os.path.abspath is lexical (no symlink resolution),
+        # matching the symbolic relativization below.
+        cwd_form = Path(os.path.abspath(sp))
+        try:
+            if cwd_form == root_resolved / sp or not cwd_form.exists():
+                return None  # already root-relative, or a ghost path
+        except OSError:
+            return None
+        sp = cwd_form
+    try:
+        rel = os.path.relpath(sp, root_resolved)
+    except (ValueError, OSError):
+        return None  # out-of-root (e.g. Windows cross-drive)
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return None  # escaped root — keep absolute
+    return rel.replace(os.sep, "/")
 
 
 def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
@@ -936,6 +980,16 @@ def _relativize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
     if not id_anchors and not path_anchors:
         return
 
+    anchor = _make_id_anchor_fn(id_anchors, path_anchors)
+    _rewrite_strings(payload, anchor)
+    _rewrite_id_keyed_table_keys(payload, anchor)
+
+
+def _make_id_anchor_fn(id_anchors: list, path_anchors: list):
+    """Build the id/path -> marker rewriter used by both the in-place
+    (:func:`_relativize_ids_in`) and copy-on-write (:func:`_save_cached_on_disk`)
+    write paths, so the two stay byte-identical."""
+
     def anchor(value: str) -> str:
         # Path form first: it requires a separator, which an id never contains.
         for a in path_anchors:
@@ -949,8 +1003,7 @@ def _relativize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
                 return _ROOT_MARKER + "_" + value[len(a) + 1:]
         return value
 
-    _rewrite_strings(payload, anchor)
-    _rewrite_id_keyed_table_keys(payload, anchor)
+    return anchor
 
 
 def _absolutize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
@@ -1099,10 +1152,11 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         return None
     h = _salted_key(h, salt)
     prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
-    entry = cache_dir(location, kind, prompt_fp) / f"{h}.json"
+    # Extended-length form so a deep root does not push the entry past MAX_PATH.
+    entry = Path(_os_long_path(cache_dir(location, kind, prompt_fp) / f"{h}.json"))
     legacy_hit = False
     if prompt_fp and not entry.exists() and allow_legacy:
-        legacy = cache_dir(location, kind) / f"{h}.json"
+        legacy = Path(_os_long_path(cache_dir(location, kind) / f"{h}.json"))
         if legacy.exists():
             entry, legacy_hit = legacy, True
     if entry.exists():
@@ -1202,6 +1256,157 @@ def _present_target_files(result: dict, root: Path) -> list[str]:
     return sorted(present)
 
 
+def _rewrite_strings_cow(obj: object, fn):
+    """Copy-on-write counterpart of :func:`_rewrite_strings`.
+
+    Returns ``obj`` itself when ``fn`` changes no reachable string VALUE, and
+    otherwise a NEW dict/list that shares every unchanged child by reference and
+    holds fresh containers only on the paths where something changed. Same
+    value-only traversal rule as :func:`_rewrite_strings` (dict keys and the id-
+    keyed ``objc_field_types["tables"]`` bucket are handled separately), so the
+    produced value is byte-identical to deep-copying then rewriting in place —
+    without ever mutating ``obj``.
+    """
+    if isinstance(obj, dict):
+        new: "dict | None" = None
+        for key, value in obj.items():
+            if isinstance(value, str):
+                nv = fn(value)
+                if nv != value:
+                    if new is None:
+                        new = dict(obj)
+                    new[key] = nv
+            elif isinstance(value, (dict, list)):
+                nv = _rewrite_strings_cow(value, fn)
+                if nv is not value:
+                    if new is None:
+                        new = dict(obj)
+                    new[key] = nv
+        return new if new is not None else obj
+    if isinstance(obj, list):
+        new_list: "list | None" = None
+        for i, value in enumerate(obj):
+            if isinstance(value, str):
+                nv = fn(value)
+                if nv != value:
+                    if new_list is None:
+                        new_list = list(obj)
+                    new_list[i] = nv
+            elif isinstance(value, (dict, list)):
+                nv = _rewrite_strings_cow(value, fn)
+                if nv is not value:
+                    if new_list is None:
+                        new_list = list(obj)
+                    new_list[i] = nv
+        return new_list if new_list is not None else obj
+    return obj
+
+
+def _relativize_source_files_cow(payload: dict, root: Path) -> dict:
+    """Copy-on-write counterpart of :func:`_relativize_source_files_in`.
+
+    Returns ``payload`` unchanged (same object) when no ``source_file`` /
+    ``definition_file`` field needs rewriting, else a new payload that shallow-
+    copies only the affected buckets and their affected item dicts, sharing the
+    rest by reference. Never mutates ``payload``.
+    """
+    try:
+        root_resolved = Path(root).resolve()
+    except OSError:
+        return payload
+    new_payload: "dict | None" = None
+    for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
+        items = payload.get(bucket)
+        if not items:
+            continue
+        new_items: "list | None" = None
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            new_item: "dict | None" = None
+            for key in ("source_file", "definition_file"):
+                source = item.get(key)
+                if not source:
+                    continue
+                rel = _relativized_source_value(source, root_resolved)
+                if rel is not None and rel != source:
+                    if new_item is None:
+                        new_item = dict(item)
+                    new_item[key] = rel
+            if new_item is not None:
+                if new_items is None:
+                    new_items = list(items)
+                new_items[i] = new_item
+        if new_items is not None:
+            if new_payload is None:
+                new_payload = dict(payload)
+            new_payload[bucket] = new_items
+    return new_payload if new_payload is not None else payload
+
+
+def _relativize_ids_cow(payload: dict, path: "str | Path", root: Path) -> dict:
+    """Copy-on-write counterpart of :func:`_relativize_ids_in`.
+
+    Returns ``payload`` unchanged when nothing anchors, else a new payload with
+    fresh containers only where ids/paths (and the id-keyed
+    ``objc_field_types["tables"]`` keys) were anchored. Never mutates ``payload``.
+    """
+    id_anchors, _, path_anchors, _ = _portability_anchors(path, root)
+    if not id_anchors and not path_anchors:
+        return payload
+    anchor = _make_id_anchor_fn(id_anchors, path_anchors)
+    new = _rewrite_strings_cow(payload, anchor)
+
+    # Mirror _rewrite_id_keyed_table_keys: rewrite objc_field_types["tables"]
+    # KEYS, copy-on-write along payload -> objc_field_types -> tables so the
+    # caller's objects are never mutated.
+    if isinstance(new, dict):
+        orig_ft = payload.get("objc_field_types") if isinstance(payload, dict) else None
+        ft = new.get("objc_field_types")
+        tables = ft.get("tables") if isinstance(ft, dict) else None
+        if isinstance(tables, dict):
+            rebuilt = {
+                (anchor(k) if isinstance(k, str) else k): v for k, v in tables.items()
+            }
+            # Values are shared by reference, so inequality means a key changed.
+            # When equal, the rebuilt dict preserves order and serializes
+            # identically, so sharing the original is byte-equivalent.
+            if rebuilt != tables:
+                if new is payload:
+                    new = dict(payload)
+                if new.get("objc_field_types") is orig_ft:
+                    new["objc_field_types"] = dict(orig_ft)
+                new["objc_field_types"]["tables"] = rebuilt
+    return new
+
+
+def _save_cached_on_disk(result: dict, p: Path, root: Path, kind: str) -> dict:
+    """Build the portable on-disk payload for :func:`save_cached` WITHOUT
+    mutating the caller's ``result``.
+
+    Replaces the former ``copy.deepcopy(result)`` + three in-place rewrites with
+    a copy-on-write transform: fresh dicts/lists are allocated only for the
+    sub-objects whose fields actually change (``source_file``/``definition_file``
+    relativization and root-marker id/path anchoring), and everything else is
+    shared by reference. The returned object is byte-identical to the old
+    deepcopy path's output. ``result`` is left exactly as the caller passed it.
+    """
+    work = result
+    # target_file presence stamp (#, AST only). Read-only over ``result``; the
+    # stamp is added to a fresh top-level dict and is itself anchored by the
+    # id/path pass below, exactly as the old deepcopy path did.
+    if kind == "ast":
+        targets = _present_target_files(result, root)
+        if targets:
+            work = {**result, _CACHED_TARGETS_KEY: targets}
+    # source_file/definition_file -> bare relative (#777). Owns that field's
+    # format, so it runs strictly before the id/path anchoring.
+    work = _relativize_source_files_cow(work, root)
+    # Root -> marker inside ids and remaining paths (#2257).
+    work = _relativize_ids_cow(work, p, root)
+    return work
+
+
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
                 prompt_file: "str | Path | None" = None,
@@ -1243,28 +1448,22 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     # source_file field's original absolute form. Mutating the input here would
     # silently break those remaps on the first extraction pass.
     #
-    # The copy is unconditional (it used to be gated on a non-empty
-    # nodes/edges/hyperedges/raw_calls bucket): a truthiness gate skips the copy
-    # for a result whose only payload lives in another bucket — an empty
-    # ``nodes`` beside a populated ``bash_sources`` — and the id/path anchoring
-    # below would then mutate the caller's dict for real.
+    # This used to ``copy.deepcopy(result)`` and rewrite in place. deepcopy is a
+    # heavy per-file cost on every cold-build cache write; :func:`_save_cached_on_disk`
+    # instead builds the same portable payload copy-on-write — allocating fresh
+    # dicts/lists only for the sub-objects whose fields are actually rewritten and
+    # sharing the rest by reference — so ``result`` is still never mutated (the
+    # anchoring would otherwise corrupt the caller's absolute source_file/ids) and
+    # the on-disk bytes are unchanged.
     on_disk = result
     if isinstance(result, dict):
-        import copy as _copy
-        on_disk = _copy.deepcopy(result)
-        if kind == "ast":
-            targets = _present_target_files(on_disk, root)
-            if targets:
-                on_disk[_CACHED_TARGETS_KEY] = targets
-        _relativize_source_files_in(on_disk, root)
-        # Then replace the absolute root inside the ids and remaining paths, so
-        # the entry replays portably under any root (#2257). Strictly after the
-        # source_file pass, which owns that field's bare-relative format.
-        _relativize_ids_in(on_disk, p, root)
+        on_disk = _save_cached_on_disk(result, p, root, kind)
     h = _salted_key(file_hash(p, root, cache_root=cache_root), salt)
     location = cache_root if cache_root is not None else root
-    target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
-    entry = target_dir / f"{h}.json"
+    # Extended-length form: under a deep root the entry, and its longer temp
+    # name, overrun Windows MAX_PATH and the write fails the whole extraction.
+    target_dir = _os_long_path(cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file)))
+    entry = os.path.join(target_dir, f"{h}.json")
     fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
     try:
         os.write(fd, json.dumps(on_disk).encode())
@@ -1592,7 +1791,7 @@ def save_semantic_cache(
         source_file arrived absolute (Windows detect() output) can never be
         cached verbatim. A shallow copy keeps the caller's dicts untouched —
         downstream steps may still rely on the original absolute shape (same
-        reasoning as :func:`save_cached`'s on-disk deepcopy).
+        reasoning as :func:`save_cached`'s on-disk copy-on-write transform).
         """
         src = item.get("source_file")
         if not src:
@@ -1820,6 +2019,193 @@ def save_semantic_cache(
             stacklevel=2,
         )
     return saved
+
+
+def mark_semantic_cache_partial(
+    files: Iterable[str | Path],
+    root: Path = Path("."),
+    *,
+    mode: str | None = None,
+    prompt: "str | Path | None" = None,
+    prompt_file: "str | Path | None" = None,
+    cache_root: "Path | None" = None,
+) -> list[Path]:
+    """Stamp the serving semantic cache entry for each file ``partial: True``.
+
+    The semantic cache is deliberately unversioned and content-hash keyed, so a
+    degraded extraction — e.g. a document chunk that returned only its
+    file-level node — is otherwise replayed as authoritative on every later
+    run. The #3203 shrink guard keeps refusing the graph write while the cache
+    keeps suppressing the LLM call that could heal it, so the corpus is stuck
+    until an operator deletes the entry by hand (#5083).
+
+    The guard compares against graph.json, which :func:`save_semantic_cache`
+    deliberately does not read (the cache writer does not know the graph), so
+    the CLI marks the entry after the fact instead. ``load_cached`` already
+    treats ``partial`` as a miss: the next run re-dispatches the file and a
+    complete extraction overwrites the same content-hash key with a clean
+    entry, which is the self-healing path the ``_partial`` truncation flag
+    already uses.
+
+    Marks the entry the read path would actually serve — the
+    prompt-fingerprint namespace when it exists, else the pre-fingerprint flat
+    layout ``load_cached`` falls back to — so a legacy entry cannot keep
+    shadowing the marked one.
+
+    ``files`` may be absolute, or relative to ``root`` (the shape of the shrink
+    guard's canonical ``source_file`` keys). Returns the entry paths actually
+    marked. Best-effort: a missing, unreadable or already-partial entry is
+    skipped rather than failing the extraction.
+    """
+    kind = "semantic" if mode is None else f"semantic-{mode}"
+    location = cache_root if cache_root is not None else root
+    prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
+    marked: list[Path] = []
+    for value in files:
+        p = Path(value)
+        if not p.is_absolute():
+            p = Path(root) / p
+        try:
+            h = file_hash(p, root, cache_root=cache_root)
+        except (OSError, ValueError):
+            continue
+        candidates: list[Path] = []
+        if prompt_fp:
+            candidates.append(cache_dir(location, kind, prompt_fp) / f"{h}.json")
+        candidates.append(cache_dir(location, kind) / f"{h}.json")
+        entry = next(
+            (c for c in candidates if c.exists()), None
+        )
+        if entry is None:
+            continue
+        # Extended-length form for I/O only: under a deep root the entry path
+        # overruns Windows MAX_PATH. Report the logical path to callers.
+        io_entry = Path(_os_long_path(entry))
+        try:
+            payload = json.loads(io_entry.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("partial"):
+            continue
+        payload["partial"] = True
+        # Match save_cached's I/O: the temp file and the replace dest both use
+        # the extended-length form so a deep root cannot fail the write.
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(Path(_os_long_path(entry.parent))),
+            prefix=f"{entry.stem}.",
+            suffix=".tmp",
+        )
+        try:
+            os.write(fd, json.dumps(payload).encode())
+            os.close(fd)
+            _os_replace_with_fallback(tmp_path, io_entry)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            continue
+        marked.append(entry)
+    return marked
+
+
+def drop_unreported_chunk_sources(out_dir: Path, root: Path) -> tuple[list[str], int]:
+    """Treat a dispatched file with no coverage entry as unread (skill path, #2225).
+
+    A semantic subagent reports how many lines of each file it read in its chunk's
+    ``coverage`` map. A file it never opened can still get nodes guessed from its
+    name, and has no entry (or 0), so a check of the reported counts alone passes it
+    and the guesses are cached as a complete extraction. This finds every file in
+    ``.graphify_uncached.txt`` that is non-empty on disk, is not an image (images
+    have no line count) and has no positive count; drops what the chunk files
+    attribute to it; and returns those files, verbatim, for the caller to mark
+    partial so the next ``--update`` re-dispatches them.
+
+    Items are dropped by ``source_file``, never by id: a file that was read can
+    mint the same deterministic id. An edge or hyperedge from a file that was read
+    is dropped only when it points at an id that no kept chunk node, AST node or
+    cached node still carries. A chunk with no ``coverage`` map at all did not
+    follow the contract, so files it holds items for are not judged; with no map
+    anywhere, nothing is. Returns ``(unread_files, dropped_item_count)``.
+    """
+    from graphify.detect import IMAGE_EXTENSIONS
+
+    out_dir, root = Path(out_dir), Path(root)
+    dispatched_file = out_dir / ".graphify_uncached.txt"
+    if not dispatched_file.exists():
+        return [], 0
+
+    def full(src: str) -> Path:
+        p = Path(src)
+        return (p if p.is_absolute() else root / p).resolve()
+
+    def key(src: str) -> str:
+        return os.path.normcase(str(full(src)))
+
+    chunks = {
+        c: json.loads(c.read_text(encoding="utf-8"))
+        for c in sorted(out_dir.glob(".graphify_chunk_*.json"))
+    }
+    if not any("coverage" in d for d in chunks.values()):
+        # No chunk reports coverage at all (a producer predating the coverage
+        # contract): there is nothing to judge a missing entry against.
+        return [], 0
+    covered: dict[str, int] = {}
+    # A file with items in a chunk that carries no coverage map at all cannot be
+    # judged: that chunk did not follow the contract, so its silence proves nothing.
+    unjudged: set[str] = set()
+    for d in chunks.values():
+        if "coverage" not in d:
+            unjudged |= {
+                key(x["source_file"])
+                for k in ("nodes", "edges", "hyperedges") for x in d.get(k) or []
+                if x.get("source_file")
+            }
+        for src, n in (d.get("coverage") or {}).items():
+            covered[key(src)] = max(covered.get(key(src), 0), int(n))
+
+    dispatched = [line for line in dispatched_file.read_text(encoding="utf-8").splitlines() if line]
+    unread = [
+        f for f in dispatched
+        if Path(f).suffix.lower() not in IMAGE_EXTENSIONS
+        and covered.get(key(f), 0) == 0 and key(f) not in unjudged
+        and full(f).is_file() and full(f).stat().st_size > 0
+    ]
+    if not unread:
+        return [], 0
+    gone = {key(f) for f in unread}
+
+    def from_unread(item: dict) -> bool:
+        return bool(item.get("source_file")) and key(item["source_file"]) in gone
+
+    kept_ids = {n.get("id") for d in chunks.values() for n in d.get("nodes") or [] if not from_unread(n)}
+    for other in (".graphify_ast.json", ".graphify_cached.json"):
+        if (out_dir / other).exists():
+            payload = json.loads((out_dir / other).read_text(encoding="utf-8"))
+            kept_ids |= {n.get("id") for n in payload.get("nodes") or []}
+    dangling = {n.get("id") for d in chunks.values() for n in d.get("nodes") or [] if from_unread(n)} - kept_ids
+
+    dropped = 0
+    for path, d in chunks.items():
+        nodes = [n for n in d.get("nodes") or [] if not from_unread(n)]
+        edges = [
+            e for e in d.get("edges") or []
+            if not from_unread(e) and e.get("source") not in dangling and e.get("target") not in dangling
+        ]
+        hyperedges = [
+            h for h in d.get("hyperedges") or []
+            if not from_unread(h) and not dangling & set(h.get("nodes") or [])
+        ]
+        removed = sum(len(d.get(k) or []) for k in ("nodes", "edges", "hyperedges")) - len(nodes) - len(edges) - len(hyperedges)
+        if removed:
+            d["nodes"], d["edges"], d["hyperedges"] = nodes, edges, hyperedges
+            path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+            dropped += removed
+    return unread, dropped
 
 
 def scope_semantic_result(

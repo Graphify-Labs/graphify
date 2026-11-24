@@ -895,3 +895,38 @@ def test_surprise_score_normalizes_backslash_paths():
 def test_surprise_score_ignores_leading_dot_slash():
     assert _cross_reasons("./pkg/a.py", "b.py")
     assert not _cross_reasons("./a.py", "b.py")
+
+
+def _betweenness_case(n: int, m: int, *, directed: bool = False, extras: bool = False) -> nx.Graph:
+    """A random graph keyed by string ids, optionally with self-loops and isolated nodes."""
+    G = nx.gnm_random_graph(n, m, seed=n + m, directed=directed)
+    G = nx.relabel_nodes(G, {i: f"n{i:04d}" for i in G})
+    if extras:
+        G.add_edges_from([("n0003", "n0003"), ("n0010", "n0010")])
+        G.add_nodes_from(["lone_a", "lone_b"])
+    return G
+
+
+@pytest.mark.parametrize(
+    ("G", "k"),
+    [
+        (nx.Graph(), None),
+        (nx.path_graph(["a"]), None),
+        (nx.path_graph(["a", "b"]), None),
+        (nx.path_graph(["a", "b", "c", "d"]), None),
+        (nx.star_graph(6), None),
+        (nx.cycle_graph(9), None),
+        (nx.complete_graph(5), None),
+        (_betweenness_case(60, 70, extras=True), None),
+        (_betweenness_case(60, 140, directed=True, extras=True), None),
+        (_betweenness_case(300, 420, extras=True), 40),
+        (_betweenness_case(200, 500, directed=True), 30),
+        # suggest_questions samples 100 sources once a graph has more than 1000 nodes.
+        (_betweenness_case(1500, 1900, extras=True), 100),
+    ],
+)
+def test_betweenness_matches_networkx_bit_for_bit(G, k):
+    from graphify.analyze import _betweenness_centrality
+
+    expected = nx.betweenness_centrality(G, k=k, seed=42)
+    assert list(_betweenness_centrality(G, k, seed=42).items()) == list(expected.items())

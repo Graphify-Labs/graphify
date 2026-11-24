@@ -2,11 +2,11 @@
 # Generates an agent-crawlable wiki: index.md + one article per community + god node articles
 from __future__ import annotations
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 import re
 import networkx as nx
 
-from graphify.build import edge_data
 from graphify.paths import stem_filename_budget, write_text_atomic_if_changed
 
 # Room _unique_slug needs for the collision suffix ("_2" … "_9999") it appends
@@ -30,9 +30,7 @@ _SLUG_SUFFIX_RESERVE = 5
 _UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
-# The navigation footer links the catalog by its fixed filename rather than via
-# the label resolver, so an article whose own label is "index" resolves to its
-# own (deduplicated) file instead of the catalog.
+# The navigation footer always links the catalog by its fixed filename.
 _INDEX_LINK = "[index](index.md)"
 
 
@@ -149,15 +147,18 @@ def _md_link_to(label: str, slug: str | None) -> str:
     return f"[{text}]({slug}.md)"
 
 
-def _cross_community_links(G: nx.Graph, nodes: list[str], own_cid: int, labels: dict[int, str], node_community: dict[str, int]) -> list[tuple[str, int]]:
-    """Return (community_label, edge_count) pairs for cross-community connections, sorted descending."""
-    counts: dict[str, int] = Counter()
-    for nid in nodes:
-        for neighbor in G.neighbors(nid):
-            ncid = node_community.get(neighbor)
-            if ncid is not None and ncid != own_cid:
-                counts[labels.get(ncid, f"Community {ncid}")] += 1
-    return sorted(counts.items(), key=lambda x: -x[1])
+def _incident_edges(
+    G: nx.Graph, nodes: Iterable[str],
+) -> Iterator[tuple[str, str, dict]]:
+    """Yield each incident edge once, including reciprocal and parallel edges."""
+    nodes = list(nodes)
+    selected = set(nodes)
+    yield from G.edges(nodes, data=True)
+    if isinstance(G, nx.DiGraph):
+        # Edges with both endpoints selected were already in the outgoing view.
+        for source, target, data in G.in_edges(nodes, data=True):
+            if source not in selected:
+                yield source, target, data
 
 
 def _community_article(
@@ -168,29 +169,21 @@ def _community_article(
     labels: dict[int, str],
     cohesion: float | None,
     node_community: dict[str, int] | None = None,
-    resolver: dict[str, str] | None = None,
+    community_slugs: dict[int, str] | None = None,
 ) -> str:
-    resolver = resolver or {}
+    community_slugs = community_slugs or {}
     top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
-    cross = _cross_community_links(G, nodes, cid, labels, node_community or {})
-
-    # Edge confidence breakdown, over every edge INCIDENT to the community (the
-    # cross-community ones included — those are disproportionately the uncertain
-    # edges, and AMBIGUOUS is what ARCHITECTURE.md flags for human review).
-    #
-    # ``G.edges(nbunch)`` reports each incident edge exactly once. Walking
-    # ``nodes x G.neighbors`` instead visited an edge once per endpoint inside
-    # the community, so an intra-community edge was counted TWICE while a
-    # crossing one was counted once. Intra-community edges are overwhelmingly
-    # the high-confidence EXTRACTED ones — that is what makes a community — so
-    # the split was biased towards confidence and understated the review
-    # burden. On a MultiGraph this also counts parallel edges individually
-    # rather than collapsing them to the first (``edge_data``), which is the
-    # same understatement: an AMBIGUOUS edge parallel to an EXTRACTED one used
-    # to be invisible here.
-    conf_counts: Counter = Counter(
-        d.get("confidence", "EXTRACTED") for *_, d in G.edges(nodes, data=True)
-    )
+    selected = set(nodes)
+    cross_counts: Counter[int] = Counter()
+    conf_counts: Counter[str] = Counter()
+    communities = node_community or {}
+    for source, target, data in _incident_edges(G, nodes):
+        conf_counts[data.get("confidence", "EXTRACTED")] += 1
+        neighbor = target if source in selected else source
+        ncid = communities.get(neighbor)
+        if ncid is not None and ncid != cid:
+            cross_counts[ncid] += 1
+    cross = sorted(cross_counts.items(), key=lambda item: -item[1])
     total_edges = sum(conf_counts.values()) or 1
 
     sources = sorted({G.nodes[n].get("source_file") or "" for n in nodes} - {""})
@@ -218,8 +211,10 @@ def _community_article(
 
     lines += ["## Relationships", ""]
     if cross:
-        for other_label, count in cross[:12]:
-            lines.append(f"- {_md_link(other_label, resolver)} ({count} shared connections)")
+        for other_cid, count in cross[:12]:
+            other_label = labels.get(other_cid, f"Community {other_cid}")
+            link = _md_link_to(other_label, community_slugs.get(other_cid))
+            lines.append(f"- {link} ({count} shared connections)")
     else:
         lines.append("- No strong cross-community connections detected")
     lines.append("")
@@ -241,8 +236,16 @@ def _community_article(
     return "\n".join(lines)
 
 
-def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_community: dict[str, int] | None = None, resolver: dict[str, str] | None = None) -> str:
-    resolver = resolver or {}
+def _god_node_article(
+    G: nx.Graph,
+    nid: str,
+    labels: dict[int, str],
+    node_community: dict[str, int] | None = None,
+    community_slugs: dict[int, str] | None = None,
+    god_slugs: dict[str, str] | None = None,
+) -> str:
+    community_slugs = community_slugs or {}
+    god_slugs = god_slugs or {}
     d = G.nodes[nid]
     node_label = _escape_md_brackets(d.get("label", nid))
     src = d.get("source_file", "")
@@ -253,19 +256,32 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
     lines += [f"# {node_label}", ""]
     lines += [f"> God node · {G.degree(nid)} connections · `{src}`", ""]
 
-    if community_name:
-        lines += [f"**Community:** {_md_link(community_name, resolver)}", ""]
+    if cid is not None and community_name:
+        lines += [f"**Community:** {_md_link_to(community_name, community_slugs.get(cid))}", ""]
 
     # Group neighbors by relation type
     by_relation: dict[str, list[str]] = {}
-    for neighbor in sorted(G.neighbors(nid), key=lambda n: G.degree(n), reverse=True):
-        nd = G.nodes[neighbor]
-        ed = edge_data(G, nid, neighbor)
+    directed = isinstance(G, nx.DiGraph)
+    connections = (
+        (target if source == nid else source, source != nid, data)
+        for source, target, data in _incident_edges(G, [nid])
+    )
+    for neighbor, incoming, ed in sorted(
+        connections, key=lambda item: G.degree(item[0]), reverse=True
+    ):
+        neighbor_label = G.nodes[neighbor].get("label", neighbor)
         rel = ed.get("relation", "related")
-        neighbor_label = nd.get("label", neighbor)
         conf = ed.get("confidence", "")
         conf_str = f" `{conf}`" if conf else ""
-        by_relation.setdefault(rel, []).append(f"{_md_link(neighbor_label, resolver)}{conf_str}")
+        # On a directed graph an incident edge can point either way. Mark the
+        # ones where this node is the target, so a directional relation like
+        # `calls` is not read backwards: an unmarked entry is outgoing (this
+        # node -> neighbor), an `(incoming)` entry is neighbor -> this node
+        # (#5369 follow-up).
+        dir_str = " _(incoming)_" if directed and incoming else ""
+        by_relation.setdefault(rel, []).append(
+            f"{_md_link_to(neighbor_label, god_slugs.get(neighbor))}{conf_str}{dir_str}"
+        )
 
     lines += ["## Connections by Relation", ""]
     for rel, targets in sorted(by_relation.items()):
@@ -298,9 +314,7 @@ def _index_md(
 ) -> str:
     """Render index.md.
 
-    Takes the slugs the articles were actually written under —
-    ``community_slugs`` (cid -> slug) and ``god_articles`` ((node_id, slug)) —
-    rather than the label -> slug resolver the articles use for prose links.
+    Takes the exact slugs for community IDs and god-node IDs.
     Two communities, or two god nodes, can share a label while owning separate
     files, and a label lookup cannot tell them apart: it points every row at
     whichever was registered first and orphans the rest (#3032/#3033).
@@ -407,7 +421,7 @@ def to_wiki(
     god_nodes_data = god_nodes_data or []
 
     # Build node->community lookup once; node attrs never carry community (it lives in
-    # the communities dict), so _cross_community_links and _god_node_article need this.
+    # the communities dict), so community and god-node articles need this.
     node_community: dict[str, int] = {n: cid for cid, nodes in communities.items() for n in nodes}
 
     count = 0
@@ -419,20 +433,27 @@ def to_wiki(
     # Articles are capped against THIS wiki directory, not just NAME_MAX: on
     # Windows a 200-char slug under an ordinary graphify-out/wiki/ overruns
     # MAX_PATH and write_text raises FileNotFoundError partway through the
-    # export (#2655). No-op on POSIX.
+    # export (#2655). On POSIX it only tightens where the wiki's filesystem has
+    # a NAME_MAX below 255 (#2109).
     _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
 
     def _unique_slug(base: str) -> str:
-        # Fold case in the collision check: two labels differing only by case
-        # (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
+        # Fold with casefold(), the SAME rule the orphan sweep below indexes
+        # produced filenames with - not lower(). Two labels differing only by
+        # case (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
         # filesystems (macOS/APFS, Windows/NTFS), so they must dedup against each
-        # other while still emitting the original-case filename.
+        # other while still emitting the original-case filename. lower() is not
+        # enough for Unicode: "Straße".lower() != "STRASSE".lower(), yet both
+        # casefold to "strasse", so both slugs were allocated and the sweep's
+        # folded map kept one and unlinked the other current article (#5087).
+        # Same fold on both sides keeps every produced name distinct here, so a
+        # name the sweep sees is always one it produced.
         slug = base
         n = 2
-        while slug.lower() in used_slugs:
+        while slug.casefold() in used_slugs:
             slug = f"{base}_{n}"
             n += 1
-        used_slugs.add(slug.lower())
+        used_slugs.add(slug.casefold())
         return slug
 
     # First pass: assign every article its slug before rendering any body, so the
@@ -440,18 +461,11 @@ def to_wiki(
     # slug), which differs from the label — _safe_filename turns spaces into
     # underscores and substitutes reserved chars, and a slug may pick up a numeric
     # suffix from collision dedup — so the final slug must be known up front.
-    # resolver maps display label -> slug; labels with no article are absent, so
-    # _md_link renders them as plain text. Communities are slugged before god nodes
-    # (and setdefault keeps the first), preserving the filename-assignment order
-    # the case-collision dedup relies on.
-    resolver: dict[str, str] = {}
-
     community_slugs: dict[int, str] = {}
     for cid in communities:
         label = labels.get(cid, f"Community {cid}")
         slug = _unique_slug(_safe_filename(label, _slug_limit))
         community_slugs[cid] = slug
-        resolver.setdefault(label, slug)
 
     god_articles: list[tuple[str, str]] = []  # (node_id, slug)
     for node_data in god_nodes_data:
@@ -459,19 +473,21 @@ def to_wiki(
         if nid and nid in G:
             slug = _unique_slug(_safe_filename(node_data['label'], _slug_limit))
             god_articles.append((nid, slug))
-            resolver.setdefault(node_data['label'], slug)
 
-    # Second pass: render and write each article with the full resolver in hand.
+    # Resolve body links by community and node ID, since labels can repeat.
+    god_slugs = dict(god_articles)
     for cid, nodes in communities.items():
         label = labels.get(cid, f"Community {cid}")
-        article = _community_article(G, cid, nodes, label, labels, cohesion.get(cid), node_community, resolver)
+        article = _community_article(
+            G, cid, nodes, label, labels, cohesion.get(cid), node_community, community_slugs,
+        )
         fname = f"{community_slugs[cid]}.md"
         write_text_atomic_if_changed(out / fname, article)
         produced.add(fname)
         count += 1
 
     for nid, slug in god_articles:
-        article = _god_node_article(G, nid, labels, node_community, resolver)
+        article = _god_node_article(G, nid, labels, node_community, community_slugs, god_slugs)
         fname = f"{slug}.md"
         write_text_atomic_if_changed(out / fname, article)
         produced.add(fname)
@@ -490,8 +506,43 @@ def to_wiki(
 
     # Sweep orphans: remove only the *.md this run did not produce, so a relabelled
     # community's stale page is still cleaned up without rewriting the survivors.
+    #
+    # Compare folded names, and rename a case-only change before judging it. On a
+    # case-preserving, case-insensitive filesystem (APFS, NTFS) an existing entry
+    # keeps its old case, so `write_text_atomic_if_changed(out / "Groups.md")`
+    # rewrites the contents of `groups.md` without renaming it. The exact-name
+    # check then saw `"groups.md" not in {"Groups.md"}`, unlinked the file this run
+    # had just written, and left `index.md` pointing at `Groups.md` with nothing
+    # behind it (#4508).
+    #
+    # _unique_slug dedups on casefold(), so this map is one-to-one. sorted()
+    # keeps the survivor deterministic (not set-iteration order) if it ever is not.
+    produced_by_fold = {name.casefold(): name for name in sorted(produced)}
     for old_article in out.glob("*.md"):
-        if old_article.name not in produced:
+        # Never delete a file this run produced. The fold map is one-to-one only
+        # because _unique_slug dedups on casefold(); this exact-name check keeps
+        # that promise even if a future slug rule drifts from the fold rule again
+        # (#5087: two current Unicode labels, only one fold key, one article lost).
+        if old_article.name in produced:
+            continue
+        wanted = produced_by_fold.get(old_article.name.casefold())
+        if wanted is None:
             old_article.unlink()
+        elif old_article.name != wanted:
+            # Case-only relabel. On a case-SENSITIVE filesystem (ext4, most Linux
+            # CI and production hosts) this run already wrote the correct content
+            # to `out / wanted` as a DISTINCT file, so the lower-case `old_article`
+            # is just a stale twin: unlink it, never rename it over the fresh file
+            # (doing so would silently restore the stale body). Only on a
+            # case-INSENSITIVE filesystem (APFS, NTFS) are the two the same inode,
+            # where a two-step rename through a temporary name is needed to make
+            # the new case reach disk so the index.md link resolves.
+            target = out / wanted
+            if target.exists() and not target.samefile(old_article):
+                old_article.unlink()
+            else:
+                temp = out / f".{wanted}.case-tmp"
+                old_article.rename(temp)
+                temp.rename(target)
 
     return count

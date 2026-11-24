@@ -14,7 +14,12 @@ from pathlib import Path
 
 from graphify.paths import out_path
 from graphify.watch import _read_build_excludes, _read_build_gitignore
-result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
+# Step B3.5 lists the files this run reads only partway, and the manifest write (and Step 9,
+# if it runs) keeps them unstamped. Only B3.5 rewrites the list, so drop one an earlier run
+# left: it would keep a file this run serves from the cache unstamped on every run (#4807).
+Path('graphify-out/.graphify_partial.txt').unlink(missing_ok=True)
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
+result = detect_incremental(Path(INPUT_PATH), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
 new_total = result.get('new_total', 0)
 nf = result.get('new_files', {})
 print(json.dumps({
@@ -72,7 +77,7 @@ print('code_only:', code_only)
 "
 ```
 
-If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run only Step 3A (AST) on the changed files, skip Step 3B entirely (no subagents), then go straight to merge and Steps 4–8.
+If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run Step 3A (AST) on the changed files, then follow only Part B's **Fast path** to overwrite `.graphify_semantic.json` with an empty result and run Part C to create `.graphify_extract.json` from the fresh AST result. Skip semantic cache checks/writes and subagents (Steps B0–B3); do not reuse semantic sidecars from a prior run. Continue to the incremental merge and Steps 4–8 only after Part C has completed.
 
 If `code_only` is False (any changed file is a doc/paper/image/video): **first, if any changed file is in `new_files['video']`, run `references/transcribe.md` (Step 2.5) on those files, then rewrite `.graphify_detect.json` to move the resulting transcript paths into `files['document']` and drop `files['video']`** — otherwise raw `.mp4/.mp3` paths are fed to semantic subagents as unreadable media (#1392). Then run the full Steps 3A–3C pipeline as normal.
 
@@ -103,11 +108,12 @@ from graphify.detect import save_manifest
 # Load new extraction and incremental state
 new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
 incremental = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding=\"utf-8\"))
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
 deleted = list(incremental.get('deleted_files', []))
 # prune_sources is ONLY for genuinely DELETED files. Changed/re-extracted files are
 # handled by build_merge's replace-on-re-extract (#1344): every source_file in
 # new_chunks is dropped from the base before merge, so old/stale nodes don't survive.
-# Do NOT add `changed` here: with root= passed, prune_set relativizes to the same base
+# Do NOT add changed here: with root= passed, prune_set relativizes to the same base
 # as the freshly merged nodes and would DELETE the re-extracted content (#1178 is moot
 # now that replace — not the dedup pass — reconciles changed files).
 prune = list(deleted) or None
@@ -124,7 +130,7 @@ G = build_merge(
     [new_extraction],
     graph_path='graphify-out/graph.json',
     prune_sources=prune,
-    root='INPUT_PATH',
+    root=INPUT_PATH,
     directed=IS_DIRECTED,
 )
 print(f'[graphify update] Merged: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges')
@@ -161,7 +167,13 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 # is lost forever (#2015). Mirrors the library extract path
 # (cli._stamped_manifest_files + clear_semantic + scan_corpus).
 from graphify.cli import _stamped_manifest_files
-_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'))
+# A file a subagent only partly read (Step B3.5 lists it) DID produce output, so the
+# filter alone would stamp it and the next --update would never re-queue it. Pass the
+# list as Step 9 does after a full build, so it stays unstamped and is retried (#2225, #4807).
+# Leave the list on disk: Step 9 reads it too if it runs after the update.
+_pf = Path('graphify-out/.graphify_partial.txt')
+_partial = {l.strip() for l in _pf.read_text(encoding='utf-8').splitlines() if l.strip()} if _pf.exists() else set()
+_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path(INPUT_PATH), partial_source_files=_partial)
 # Changed semantic files dispatched this run but NOT stamped had their chunk fail
 # or be omitted; clear any stale semantic_hash so they are re-queued (#1948).
 _sem_types = ('document', 'paper', 'image')
@@ -171,7 +183,7 @@ _cleared = _dispatched - _stamped
 # scan_corpus = the RAW full corpus so in-root files newly excluded since last run
 # are dropped rather than masquerading as deletions; untouched rows preserved (#1908).
 _scan = {f for fl in incremental['files'].values() for f in fl}
-save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
+save_manifest(_manifest_files, root=INPUT_PATH, scan_corpus=_scan, clear_semantic=_cleared or None)
 print('[graphify update] Manifest saved.')
 "
 ```

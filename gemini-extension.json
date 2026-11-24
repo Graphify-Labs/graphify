@@ -1,0 +1,11 @@
+{
+  "name": "graphify",
+  "version": "1.0.0",
+  "description": "Query your codebase as a local knowledge graph in Gemini CLI. Graphify maps callers, dependencies, change impact and tests with deterministic AST parsing: every edge explained, no vector store, nothing leaves your machine. Free and open source.",
+  "mcpServers": {
+    "graphify": {
+      "command": "graphify-mcp"
+    }
+  },
+  "contextFileName": "GEMINI.md"
+}

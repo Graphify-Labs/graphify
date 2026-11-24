@@ -40,3 +40,8 @@ paper/
 
 # macOS Finder metadata
 .DS_Store
+
+# MSBuild restore/build output: editors with C# tooling restore the fixture
+# .csproj files on open
+tests/fixtures/**/obj/
+tests/fixtures/**/bin/
