@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
-from graphify.extractors.engine import _cpp_declarator_name, _semantic_reference_edge
+from graphify.extractors.engine import (
+    _cpp_declarator_name,
+    _semantic_reference_edge,
+    _underscore_salted_nid,
+)
 from graphify.extractors.resolution import _resolve_c_include_path
 from graphify.security import sanitize_metadata
 from pathlib import Path
@@ -426,6 +430,58 @@ def extract_objc(path: Path) -> dict:
 
     macro_enums = _macro_enum_members()
 
+    # make_id casefolds and strips leading/trailing underscores, and a method's id
+    # was minted as plain _make_id(container, name) with no collision check, unlike
+    # every other object-oriented extractor (#3302, #4415, #5058, #5151, #5380). Two
+    # methods of one @interface/@implementation/@protocol differing only by a leading
+    # underscore or by case, such as -setup and -_setup (a common ObjC convention for
+    # a public method and its private helper), minted one node id; the second
+    # declaration overwrote the first, and its own calls were credited to the
+    # survivor instead.
+    #
+    # Pre scan every container's direct method/selector names, grouped by the id
+    # each name would fold to (one level down from the container, the same shape
+    # _make_id(stem, name) groups file level declarations by elsewhere), so a
+    # collision within one container's method set is told apart from an unrelated
+    # collision in a different container that happens to share a selector name.
+    method_name_groups: dict[str, set[str]] = {}
+
+    def _scan_method_groups(node, container_nid: str | None = None) -> None:
+        t = node.type
+        if t == "class_interface":
+            identifiers = [c for c in node.children if c.type == "identifier"]
+            if not identifiers:
+                for child in node.children:
+                    _scan_method_groups(child, container_nid)
+                return
+            name = _read(identifiers[0])
+            cls_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
+            container_nid = _make_id(cls_stem, name)
+        elif t == "class_implementation":
+            name = next((_read(c) for c in node.children if c.type == "identifier"), None)
+            if not name:
+                for child in node.children:
+                    _scan_method_groups(child, container_nid)
+                return
+            impl_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
+            container_nid = _make_id(impl_stem, name)
+        elif t == "protocol_declaration":
+            name = next((_read(c) for c in node.children if c.type == "identifier"), None)
+            if name:
+                container_nid = _make_id(stem, name)
+        elif t in ("method_declaration", "method_definition"):
+            if container_nid is not None:
+                parts = [_read(c) for c in node.children if c.type == "identifier"]
+                method_name = "".join(parts) if parts else None
+                if method_name:
+                    key = _make_id(container_nid, method_name)
+                    method_name_groups.setdefault(key, set()).add(method_name)
+            return
+        for child in node.children:
+            _scan_method_groups(child, container_nid)
+
+    _scan_method_groups(root)
+
     def walk(node, parent_nid: str | None = None) -> None:
         t = node.type
         line = node.start_point[0] + 1
@@ -613,7 +669,9 @@ def extract_objc(path: Path) -> dict:
             parts = [_read(c) for c in node.children if c.type == "identifier"]
             method_name = "".join(parts) if parts else None
             if method_name:
-                method_nid = _make_id(container, method_name)
+                method_nid = _underscore_salted_nid(
+                    _make_id(container, method_name), method_name, method_name_groups,
+                )
                 add_node(method_nid, f"{prefix}{method_name}", line, _CALLABLE)
                 add_edge(container, method_nid, "method", line)
                 if t == "method_definition":

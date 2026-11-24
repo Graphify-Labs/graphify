@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Μειώστε τη δαπάνη token των agent κατά 80%.</b> Το Graphify Cloud είναι πάντα ενεργή μνήμη που διακυβερνά τους agent σας, διατηρεί υψηλή την ποιότητα κώδικα, και αποδεικνύει την ορθότητα με τυπική επαλήθευση. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;</b></a>
+  <b>Κοινό πλαίσιο βάσης κώδικα για agent και ανθρώπους.</b>
+  <br/>
+  Μετατρέψτε τη βάση κώδικά σας σε έναν γράφο γνώσης με δυνατότητα ερωτημάτων. Εντοπίστε εξαρτήσεις, κατανοήστε πώς συνδέονται τα στοιχεία, και δώστε στον coding agent σας επαναχρησιμοποιήσιμο πλαίσιο σε όλες τις συνεδρίες.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> διατηρεί αυτόν τον γράφο πάντα ενεργό σε ολόκληρο τον SDLC σας.
 </p>
 
 Πληκτρολογήστε `/graphify` στον βοηθό κωδικοποίησης AI σας και αυτός χαρτογραφεί ολόκληρο το έργο σας (κώδικα, έγγραφα, PDF, εικόνες, βίντεο) σε έναν **γράφο γνώσης** τον οποίο μπορείτε να **ρωτάτε αντί να κάνετε grep** στα αρχεία.
@@ -41,18 +47,27 @@
 > **Το θέλετε πάντα ενεργό;** Το [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) διατηρεί τον γράφο ζωντανό σε ολόκληρο τον SDLC σας: υποστήριξη monorepo και cross-repo, τυπική επαλήθευση, και έλεγχο κώδικα με πανοραμική εικόνα του SDLC σας, συν connectors για Sentry, Jira, και άλλα ώστε τα συμβάντα και τα tickets να βρίσκονται στον ίδιο γράφο με τον κώδικά σας. **[Ξεκινήστε δωρεάν, χωρίς κάρτα](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>Η βάση κώδικα του FastAPI χαρτογραφημένη από το graphify. Κάθε κόμβος είναι μια έννοια, τα χρώματα είναι εντοπισμένες κοινότητες, και το σύνολο είναι clickable στο graph.html.</em>
+  <em>Η βάση κώδικα του FastAPI χαρτογραφημένη από το graphify. Κάθε κόμβος είναι μια έννοια, τα χρώματα είναι εντοπισμένα υποσυστήματα, και το σύνολο είναι clickable στο graph.html.</em>
 </p>
 
-**Ξεκινήστε** (30 δευτερόλεπτα). Χρειάζεται Python 3.11+ και uv (ή pipx):
+**Ξεκινήστε** (30 δευτερόλεπτα). Χρειάζεται Python 3.11.5–3.14 και uv (ή pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Χρησιμοποιείτε διαφορετικό βοηθό; Ονομάστε τον ρητά:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Δείτε [επιλέξτε την πλατφόρμα σας](#install) για όλους τους 20+ βοηθούς.
 
 Στη συνέχεια, στον βοηθό AI σας:
 
@@ -112,8 +127,8 @@ Shortest path (3 hops):
 
 | Δυνατότητα | Τι λαμβάνετε |
 |---|---|
-| **God nodes** | Οι πιο συνδεδεμένες έννοιες, ώστε να βλέπετε μέσα από τι ρέουν όλα |
-| **Κοινότητες** | Ο γράφος χωρισμένος σε υποσυστήματα (Leiden), με ετικέτες χωρίς LLM |
+| **Τα πιο συνδεδεμένα στοιχεία** | Οι έννοιες μέσα από τις οποίες ρέουν όλα — οι κεντρικοί κόμβοι (hubs) του γράφου (γνωστά και ως *god nodes*) |
+| **Υποσυστήματα** | Ο γράφος χωρισμένος σε συνεκτικές ομάδες (Leiden *communities*), καθεμία με ετικέτα χωρίς LLM |
 | **Σύνδεσμοι μεταξύ αρχείων** | `calls` / `imports` / `inherits` / `mixes_in` επιλυμένοι σε ~40 γλώσσες μέσω tree-sitter AST |
 | **Query, path, explain** | Κάντε μια ερώτηση, εντοπίστε τη διαδρομή μεταξύ δύο πραγμάτων, ή εξηγήστε μία έννοια, όλα πάνω στο `graph.json` |
 | **Σκεπτικό + αναφορές εγγράφων** | Τα σχόλια `# NOTE:` / `# WHY:` και οι παραπομπές ADR/RFC γίνονται κόμβοι πρώτης κατηγορίας συνδεδεμένοι με τον κώδικα |
@@ -122,6 +137,19 @@ Shortest path (3 hops):
 
 > [!TIP]
 > Το εκτελείτε σε πολλά repos ή σε monorepo; Το [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) το κάνει συνεχώς και μειώνει τη δαπάνη token των agent κατά 80%, με συνδέσμους cross-repo, έλεγχο κώδικα σε όλο τον SDLC, τυπική επαλήθευση, και connectors Sentry/Jira. [Ξεκινήστε δωρεάν, χωρίς κάρτα &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## Πότε να στραφείτε στο Graphify
+
+Στραφείτε στον γράφο όταν χρειάζεται να κατανοήσετε μια βάση κώδικα, όχι απλώς να τη διαβάσετε από την αρχή ως το τέλος:
+
+| Κατάσταση | Τι να ρωτήσετε το Graphify |
+|---|---|
+| Ένταξη σε ένα άγνωστο έργο | "Εξηγήστε πώς συνδέονται τα κύρια στοιχεία." |
+| Αλλαγή ενός κοινόχρηστου στοιχείου | "Εντοπίστε τους καλούντες και τις εξαρτήσεις του." |
+| Διερεύνηση ενός σφάλματος | "Δείξτε τη διαδρομή μεταξύ αυτού του σημείου πρόσβασης και της αποθήκευσης." |
+| Επανεξέταση προηγούμενης εργασίας | "Βρείτε τις σχετικές αποφάσεις σχεδίασης και σημειώσεις." |
 
 ---
 
@@ -157,7 +185,7 @@ Shortest path (3 hops):
 
 | Απαίτηση | Ελάχιστο | Έλεγχος | Εγκατάσταση |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(συνιστάται)* | οποιαδήποτε | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(εναλλακτικά)* | οποιαδήποτε | `pipx --version` | `pip install pipx` |
 
@@ -219,7 +247,7 @@ graphify install --project --platform codex
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (αυτόματα εντοπισμένο) ή `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (καλέστε με `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -317,9 +345,43 @@ graphify install --project --platform codex
 
 ---
 
+## Συνδέστε τον πράκτορά σας μέσω MCP
+
+Στρέψτε οποιονδήποτε πράκτορα με δυνατότητα MCP σε έναν γράφο Graphify και θα ερωτά τον γράφο απευθείας αντί να κάνει grep στα αρχεία. Συνδεθείτε στον φιλοξενούμενο γράφο (Graphify Cloud, δωρεάν πρόγραμμα, χωρίς κάρτα):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+Προτιμάτε να μείνετε τοπικά; Εγκαταστήστε τον διακομιστή stdio με `uv tool install "graphifyy[mcp]"` και εκτελέστε το `graphify-mcp` πάνω στο δικό σας `graph.json`· δεν χρειάζεται λογαριασμός.
+
+Μόλις συνδεθείτε, ο πράκτοράς σας αποκτά αυτά τα εργαλεία:
+
+| Εργαλείο | Τι κάνει |
+|---|---|
+| `query_graph` | Κάντε μια ερώτηση σε φυσική γλώσσα και λάβετε πίσω τον σχετικό υπογράφο |
+| `shortest_path` | Εντοπίστε πώς συνδέονται δύο κόμβοι |
+| `get_node` / `get_neighbors` | Αναζητήστε έναν κόμβο και με τι εφάπτεται |
+| `get_community` / `god_nodes` | Εντοπισμένες συστάδες και οι πιο διασυνδεδεμένοι κόμβοι |
+| `get_section` | Διαβάστε μια επισημασμένη περιοχή του γράφου |
+| `graph_stats` | Μέγεθος, γλώσσες και ανάλυση ακμών του γράφου |
+
+Ο διακομιστής εκθέτει επίσης εργαλεία για pull request (`list_prs`, `get_pr_impact`, `triage_prs`) ώστε ο πράκτοράς σας να μπορεί να εξετάζει pull requests με το πλαίσιο του γράφου.
+
+---
+
 ## Τι περιέχει η αναφορά
 
-Το `GRAPH_REPORT.md` συνοψίζει τους god nodes, τις κοινότητες, και τις βασικές διαδρομές για ευρύ έλεγχο αρχιτεκτονικής. Πώς κατασκευάζεται ο γράφος και τι περιέχει: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+Το `GRAPH_REPORT.md` συνοψίζει τα πιο συνδεδεμένα στοιχεία, τα υποσυστήματα, και τις βασικές διαδρομές για ευρύ έλεγχο αρχιτεκτονικής. Πώς κατασκευάζεται ο γράφος και τι περιέχει: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -335,8 +397,8 @@ graphify install --project --platform codex
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -354,7 +416,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Δείτε την [πλήρη αναφορά εντολών](#full-command-reference) παρακάτω.

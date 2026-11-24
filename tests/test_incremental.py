@@ -223,6 +223,47 @@ def test_update_preserves_generic_rust_self_call_to_unchanged_impl(tmp_path):
     assert has_call()
 
 
+@pytest.mark.parametrize("incremental", [False, True], ids=["fresh", "incremental"])
+def test_svelte_imports_resolve_through_star_barrel(tmp_path, monkeypatch, incremental):
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "none")
+    flags = ["--code-only", "--no-cluster"]
+    if incremental:
+        (tmp_path / "existing.ts").write_text("export const existing = 1;\n", encoding="utf-8")
+        initial = _run(["extract", ".", *flags], tmp_path)
+        assert initial.returncode == 0, initial.stderr
+
+    (tmp_path / "types").mkdir()
+    (tmp_path / "types" / "index.ts").write_text('export * from "./a";\n', encoding="utf-8")
+    (tmp_path / "types" / "a.ts").write_text(
+        "export type Foo = { id: string };\nexport const BAR = 1;\n", encoding="utf-8"
+    )
+    component = tmp_path / "Use.svelte"
+    component.write_text(
+        '<script lang="ts">\n'
+        '  import type { Foo } from "./types";\n'
+        '  import { BAR } from "./types";\n'
+        "  export let x: Foo;\n"
+        "</script>\n"
+        "<p>{x.id} {BAR}</p>\n",
+        encoding="utf-8",
+    )
+    result = _run(["extract", ".", *flags], tmp_path)
+    assert result.returncode == 0, result.stderr
+    if incremental:
+        assert "incremental scan" in result.stdout
+        assert "AST extraction on 3 code files" in result.stdout
+
+    graph = json.loads((tmp_path / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    if incremental:
+        assert any(node.get("source_file") == "existing.ts" for node in nodes.values())
+    assert {
+        (edge["source_location"], edge["target"], nodes[edge["target"]]["source_file"])
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge["relation"] == "imports" and edge["source_file"] == component.name
+    } == {("L2", "types_a_foo", "types/a.ts"), ("L3", "types_a_bar", "types/a.ts")}
+
+
 def test_extract_no_cluster_incremental_code_only_preserves_doc_nodes(tmp_path):
     """#2169: an incremental --code-only --no-cluster run over a mixed corpus
     must carry forward doc-sourced nodes it did not re-extract."""

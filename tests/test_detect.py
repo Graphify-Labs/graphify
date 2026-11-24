@@ -2499,6 +2499,7 @@ _USER_FILES_GRAPHIFY_EDITS = {
 }
 
 
+@pytest.mark.serial  # runs `graphify install` and scans HOME; unsafe under xdist workers
 def test_detect_skips_every_file_graphify_install_writes(tmp_path, monkeypatch):
     """Run every project install in install.py (plus the CLI installers that
     write into the project directly) and check that nothing graphify wrote

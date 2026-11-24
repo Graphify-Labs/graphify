@@ -18,8 +18,8 @@ from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
 # and CREATE PROCEDURE [dbo].[usp_Load] ... are both recovered. A bare [\w$.]+
 # stops dead at the leading delimiter, which silently dropped every quoted
 # PL/pgSQL routine (#2180) and every bracket-named T-SQL procedure. T-SQL's
-# AS BEGIN...END body idiom always lands in recovery — the grammar has no
-# create_procedure parse for it — and T-SQL spells re-creation CREATE OR ALTER
+# AS BEGIN...END body idiom lands in recovery (from tree-sitter-sql 0.3.12 it
+# may also partially parse; see #5236 below) — and T-SQL spells re-creation CREATE OR ALTER
 # (it has no OR REPLACE), so accept that form too, mirroring fb_proc_or_trigger.
 # Inside a bracket-delimited part, a literal ] is escaped by doubling
 # ([a]]b] names the identifier a]b), so consume ]] before treating a
@@ -597,6 +597,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # structured walk mints a plain node for it; the package recovery below uses
     # this to drop that duplicate once it owns the package-qualified member.
     structured_routine_lines: dict[str, int] = {}
+    error_routines: set[str] = set()  # walk routines whose node holds an ERROR
 
     def _read(n) -> str:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
@@ -725,6 +726,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 structured_routine_lines[nid] = line
                 _walk_from_refs(node, nid, line)
                 _walk_writes(node, nid)
+                if node.has_error:
+                    error_routines.add(nid)
 
         elif t == "create_procedure":
             name = _obj_name(node)
@@ -735,6 +738,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 structured_routine_lines[nid] = line
                 _walk_from_refs(node, nid, line)
                 _walk_writes(node, nid)
+                if node.has_error:
+                    error_routines.add(nid)
 
         elif t == "alter_table":
             name = _obj_name(node)
@@ -1227,20 +1232,52 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # name a genuine statement captures is allowed to be a delimited
         # identifier; its CREATE never is.
         masked_src, ident_spans = _scan_sql(src_text)
-        for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
-            if any(s <= m.start() < e for s, e in ident_spans):
-                continue
+        routine_matches = [
+            m for m in _ROUTINE_RECOVERY_RX.finditer(masked_src)
+            if not any(s <= m.start() < e for s, e in ident_spans)
+        ]
+        # Every routine the scan finds, by line. A walk routine on a CREATE's
+        # line is a misread only when no match on that line carries its id: two
+        # routines can share a line, and the other one is real.
+        recovered_on_line: dict[int, set[str]] = {}
+        for m in routine_matches:
+            recovered_on_line.setdefault(
+                src_text[: m.start()].count("\n") + 1, set()
+            ).add(_make_id(stem, m.group(1)))
+        for m in routine_matches:
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
             fn_nid = _make_id(stem, fn_name)
+            # A routine the tree parsed cleanly keeps its tree-based edges and is
+            # not scanned. One whose node holds an ERROR (a PL/pgSQL
+            # `RETURN QUERY SELECT ... FROM t` puts t inside one, #5349) is
+            # scanned too, adding only the edges the walk missed.
+            # From tree-sitter-sql 0.3.12 a T-SQL header can partially parse as
+            # create_procedure with a misread name: unparenthesised params are
+            # absorbed (`p @x INT`) or taken as the name (`INT`), and a ""/]]
+            # escape truncates it. The walk then minted a second routine with
+            # the wrong id and its own copy of the edges (#5236). A walk routine
+            # on this CREATE's line under another id is that misread: drop it
+            # and its edges, and let this match own the node and re-derive refs.
+            for dup in [nid for nid, ln in structured_routine_lines.items()
+                        if ln == fn_line and nid not in recovered_on_line[fn_line]]:
+                nodes[:] = [n for n in nodes if n["id"] != dup]
+                edges[:] = [e for e in edges if e["source"] != dup and e["target"] != dup]
+                structured_routine_lines.pop(dup)
+                for key in [k for k, v in routine_nids.items() if v == dup]:
+                    del routine_nids[key]
+                seen_ids.discard(dup)
             # A routine the tree already produced (a cleanly parsed function)
             # keeps its tree-based reads_from; scanning it too would double them.
             from_tree = fn_nid in seen_ids
             _add_node(fn_nid, f"{_clean_ident(fn_name)}()", fn_line)
-            if from_tree:
+            if from_tree and fn_nid not in error_routines:
                 continue
             end = _BODY_END_RX.search(masked_src, m.end())
-            seen_refs: set[tuple[str, str]] = set()
+            # A walk routine with an ERROR in it keeps the edges the walk found;
+            # the scan adds only what the ERROR hid.
+            seen_refs: set[tuple[str, str]] = {
+                (e["relation"], e["target"]) for e in edges if e["source"] == fn_nid}
             for relation, tbl, pos in _routine_body_refs(masked_src[m.end():end.start() if end else len(masked_src)]):
                 tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
                 if (relation, tbl_nid) in seen_refs:

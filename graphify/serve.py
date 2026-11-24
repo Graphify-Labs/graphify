@@ -11,6 +11,7 @@ from collections import OrderedDict
 from pathlib import Path
 import threading
 from typing import NamedTuple
+import anyio
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.paths import consumed, read_graph_json
@@ -699,11 +700,13 @@ class _QueryScores(NamedTuple):
     term_order: tuple[str, ...] = ()
 
 
-# Query seeding prefers source code over tests and docs. A test named after a bug
-# repeats the question's words in its own name (``UsernameValidatorsTests``), so it
-# wins the exact-label tier and takes the seed slots the source it tests should
-# get. Only `query` applies this weight; `path`, `explain` and `_score_nodes`
-# callers score exactly as before.
+# Query seeding prefers source code over tests, docs and images. A test named
+# after a bug repeats the question's words in its own name
+# (``UsernameValidatorsTests``), so it wins the exact-label tier and takes the
+# seed slots the source it tests should get; an image's own rich caption label
+# (e.g. a golden-test render whose summary mentions the same terms as the
+# question) does the same thing (#445). Only `query` applies this weight;
+# `path`, `explain` and `_score_nodes` callers score exactly as before.
 _QUERY_DEMOTE_WEIGHT = 0.3
 _QUERY_TEST_WORDS = frozenset({"test", "tests", "testing", "testcase", "unittest"})
 _QUERY_DOC_WORDS = frozenset({"doc", "docs", "documentation", "readme"})
@@ -712,9 +715,9 @@ _QUERY_DOC_DIRS = frozenset({"doc", "docs", "example", "examples"})
 
 
 def _query_path_weight(terms: list[str], demote_docs: bool = True):
-    """Score multiplier per node for `query`: tests, docs, config files and nodes
-    without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the question itself
-    asks about tests (or docs); everything else counts 1.0."""
+    """Score multiplier per node for `query`: tests, docs, images, config files
+    and nodes without a source file count `_QUERY_DEMOTE_WEIGHT`, unless the
+    question itself asks about tests (or docs); everything else counts 1.0."""
     words = {tok for t in terms for tok in _search_tokens(t)}
     keep_tests = bool(words & _QUERY_TEST_WORDS)
     keep_docs = (not demote_docs) or bool(words & _QUERY_DOC_WORDS)
@@ -726,7 +729,7 @@ def _query_path_weight(terms: list[str], demote_docs: bool = True):
             return _QUERY_DEMOTE_WEIGHT
         if not keep_docs and (
             not path
-            or data.get("file_type") in ("document", "paper")
+            or data.get("file_type") in ("document", "paper", "image")
             or parts[-1].endswith(_QUERY_DOC_SUFFIXES)
             or any(p in _QUERY_DOC_DIRS for p in parts[:-1])
         ):
@@ -1175,6 +1178,15 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
 # TypeScript graph would start losing edges from its other contexts.
 _HERITAGE_RELATIONS = frozenset({"inherits", "implements", "extends"})
 
+# Relations a `call` filter matches whatever their context. A `calls` edge's
+# context says where the call was found, not whether it is one:
+# `merge-graphs` finishes a member call into another repo as a `calls` edge
+# with `context="cross_repo"` (#3152), so a filter that only read `context`
+# dropped exactly the calls that cross a repository boundary from "who calls
+# X". The shared-type links carry the same context but another relation, so
+# they stay out.
+_CONTEXT_RELATIONS: dict[str, frozenset[str]] = {"call": frozenset({"calls"})}
+
 
 def _normalize_context_filters(filters: list[str] | None) -> list[str]:
     if not filters:
@@ -1218,7 +1230,9 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
-    relations = filters & _HERITAGE_RELATIONS
+    relations = set(filters & _HERITAGE_RELATIONS)
+    for context in filters:
+        relations |= _CONTEXT_RELATIONS.get(context, frozenset())
 
     def keep(data: dict) -> bool:
         if data.get("context") in filters:
@@ -2456,10 +2470,17 @@ def _resolve_path_endpoint(
     and routing from the closest-sounding label instead prints a path through
     a symbol nobody asked about.
 
+    An exact node-id key wins outright: it cannot name another node, so the
+    tier match below must not turn it into an ambiguity with a label whose
+    tokens normalize to the same words (#5361) — the same precedence
+    `_resolve_single_node` gives an id for `explain` (#5343).
+
     Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
     score fallback picked the node; ``(None, [], message)`` when ambiguous; and
     ``(None, [], None)`` when nothing matches.
     """
+    if query in G:
+        return query, [], None
     source_exact, exact, _, _ = _find_node_tiers(G, query)
     hits = source_exact or exact
     if hits:
@@ -2959,6 +2980,22 @@ def _build_server(graph_path: str):
         G, communities = _load_ctx(path)
         active_graph_path = str(Path(path).resolve())
 
+    async def _warm_graph(project_path) -> None:
+        """Load (or reload) the target graph in a worker thread (#5371).
+
+        ``_ctx_cache.load`` parses graph.json and builds its trigram index,
+        which takes seconds on a large graph. Run on the event loop, it stops
+        every other request, so the stale entry ``load`` hands concurrent
+        callers during a rebuild (#5177) was never reachable. After this
+        returns, ``_select_graph`` is a cache hit, or gets the current
+        entry while another call's rebuild is still in flight.
+
+        Only the load leaves the loop. ``_select_graph`` and the handler still
+        run with no await between them, so the shared ``G`` cannot be rebound
+        by another call in the middle of a handler.
+        """
+        await anyio.to_thread.run_sync(_load_ctx, _resolve_graph_path(project_path))
+
     # NOTE: no decorators here — the handlers below are plain coroutines,
     # bound to the Server at the END of this function in a version-aware way:
     # mcp 1.x exposes the @server.list_tools()/... decorator API, mcp 2.x
@@ -3444,6 +3481,7 @@ def _build_server(graph_path: str):
         ]
 
     async def read_resource(uri: AnyUrl) -> str:
+        await _warm_graph(None)
         _select_graph(None)  # resources read the server's default graph
         uri_str = str(uri)
         if uri_str == "graphify://report":
@@ -3501,6 +3539,7 @@ def _build_server(graph_path: str):
         if not handler:
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
+            await _warm_graph(project_path)
             _select_graph(project_path)  # bind G/communities to the target graph
             return [types.TextContent(type="text", text=handler(arguments))]
         except ToolError:

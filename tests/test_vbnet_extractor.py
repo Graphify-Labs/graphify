@@ -435,3 +435,130 @@ def test_vbnet_required_parameters_after_byval_stay_required(tmp_path):
     assert by_label["B()"]["accepted_arities"] == [1]
     assert by_label["F()"]["accepted_arities"] == [1, 2]
     assert ("Caller()", "B()") not in _edge_labels(result, "calls")
+
+
+_JS_BODY = (
+    "Public Class Demo\n"
+    "    Public Sub Antes()\n"
+    "        Dim a = 1\n"
+    "    End Sub\n"
+    "    Public Sub Medio(ByVal id As String)\n"
+    "        Dim s = \"\n"
+    "        var el = document.getElementById('abc');\n"
+    "        return el;\"\n"
+    "        Antes()\n"
+    "    End Sub\n"
+    "\n"
+    "    Public Sub Despues()\n"
+    "        Antes()\n"
+    "    End Sub\n"
+    "End Class\n"
+)
+
+
+@_needs_vbnet
+def test_vbnet_methods_after_a_multiline_string_with_a_quote_survive(tmp_path):
+    # #5320: a ' on a continuation line of a multi-line string used to
+    # open a comment that swallowed a ')' and lost the rest of the file.
+    source = tmp_path / "Demo.vb"
+    source.write_text(_JS_BODY, encoding="utf-8")
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Antes()", "Medio()", "Despues()"} <= labels
+    calls = _edge_labels(result, "calls")
+    assert ("Medio()", "Antes()") in calls
+    assert ("Despues()", "Antes()") in calls
+
+
+@_needs_vbnet
+def test_vbnet_multiline_string_keeps_later_line_numbers(tmp_path):
+    source = tmp_path / "Demo.vb"
+    source.write_text(_JS_BODY, encoding="utf-8")
+
+    result = extract([source], cache_root=tmp_path)
+
+    by_label = {node["label"]: node for node in result["nodes"]}
+    assert by_label["Despues()"]["source_location"] == "L12"
+
+
+@_needs_vbnet
+def test_vbnet_statement_continuing_after_a_multiline_string_survives(tmp_path):
+    source = tmp_path / "Demo.vb"
+    source.write_text(
+        "Public Class Demo\n"
+        "    Public Sub Helper()\n"
+        "    End Sub\n"
+        "    Public Sub Medio(ByVal id As String)\n"
+        "        Dim s = \"\n"
+        "        f('\" & id & \"');\n"
+        "        x = \"\"quoted\"\";\" & id\n"
+        "        Helper()\n"
+        "    End Sub\n"
+        "    Public Sub Despues()\n"
+        "        Helper()\n"
+        "    End Sub\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    assert ("Medio()", "Helper()") in calls
+    assert ("Despues()", "Helper()") in calls
+
+
+@_needs_vbnet
+def test_vbnet_multiline_interpolated_string_with_a_quote_survives(tmp_path):
+    # The same failure through $"...": the interpolated text rule also
+    # stops at a line break, so the ' on the next line opens a comment.
+    source = tmp_path / "Demo.vb"
+    source.write_text(
+        "Public Class Demo\n"
+        "    Public Sub Helper()\n"
+        "    End Sub\n"
+        "    Public Sub Medio(ByVal id As String)\n"
+        "        Dim s = $\"\n"
+        "        var el = document.getElementById('{id}');\n"
+        "        return el;\"\n"
+        "        Helper()\n"
+        "    End Sub\n"
+        "    Public Sub Despues()\n"
+        "        Helper()\n"
+        "    End Sub\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert "Despues()" in labels
+    calls = _edge_labels(result, "calls")
+    assert ("Medio()", "Helper()") in calls
+    assert ("Despues()", "Helper()") in calls
+
+
+@_needs_vbnet
+def test_vbnet_quote_inside_a_comment_does_not_open_a_string(tmp_path):
+    # Guard: a " inside a comment must not be read as the start of a
+    # multi-line string, or the rewrite would blank real code.
+    source = tmp_path / "Demo.vb"
+    source.write_text(
+        "Public Class Demo\n"
+        "    Public Sub A()\n"
+        "        ' say \"hi\n"
+        "        B()\n"
+        "    End Sub\n"
+        "    Public Sub B()\n"
+        "        Dim s = \"it's fine\"\n"
+        "    End Sub\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert ("A()", "B()") in _edge_labels(result, "calls")

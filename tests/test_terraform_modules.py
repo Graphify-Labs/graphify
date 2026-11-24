@@ -47,6 +47,7 @@ def _assert_integrity(result):
         assert e["target"] in ids, e
 
 
+@pytest.mark.serial  # drives a real ProcessPoolExecutor; unsafe under xdist workers
 @pytest.mark.parametrize("suffix", [".tf", ".hcl", ".tfvars"])
 @pytest.mark.parametrize("directory", ["", "deploy"])
 @pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])

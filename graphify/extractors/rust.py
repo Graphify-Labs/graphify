@@ -412,6 +412,15 @@ def extract_rust(path: Path) -> dict:
     items_by_id: dict[str, set[tuple[bool, str]]] = {}
     declared_type_names: dict[str, set[str]] = {}
 
+    # (pre-registry id a member's name would fold to, inside one impl-type's
+    # members) -> every raw spelling that folds there. Keyed the same way
+    # items_by_id keys file-level items, just one level down: a name is only a
+    # collision with another member of the SAME type whose id it folds onto,
+    # not with every other member the type happens to declare (#3302's rule,
+    # impl-block shape). Populated below, inside _scan_type_items's own
+    # impl_item branch.
+    impl_method_names: dict[str, set[str]] = {}
+
     def _scan_type_items(node) -> None:
         t = node.type
         if t in ("struct_item", "enum_item", "trait_item", "union_item", "type_item",
@@ -434,8 +443,25 @@ def extract_rust(path: Path) -> dict:
                 refs: list[tuple[str, str]] = []
                 _rust_collect_type_refs(type_node, source, False, refs)
                 bare = next((ref for ref, role in refs if role == "type"), type_name)
-                items_by_id.setdefault(_make_id(stem, type_name), set()).add((True, bare))
+                impl_pre_nid = _make_id(stem, type_name)
+                items_by_id.setdefault(impl_pre_nid, set()).add((True, bare))
                 impl_bare_names[node.start_byte] = bare
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.children:
+                        if child.type not in (
+                            "function_item", "function_signature_item",
+                            "static_item", "const_item",
+                        ):
+                            continue
+                        member_name_node = child.child_by_field_name("name")
+                        if member_name_node is None:
+                            continue
+                        member_name = _read_text(member_name_node, source)
+                        if not member_name or member_name == "_":
+                            continue
+                        member_key = _make_id(impl_pre_nid, member_name)
+                        impl_method_names.setdefault(member_key, set()).add(member_name)
             return
         if t == "use_declaration":
             return
@@ -468,6 +494,23 @@ def extract_rust(path: Path) -> dict:
             salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
             nid = _make_id(plain_nid, salt)
         return decl_registry.resolve(nid, name, "type", seen_ids)
+
+    # A method/const/static of one impl-block type whose name folds to a
+    # sibling's id (`fn foo` / `fn _foo`, `fn e` / `fn E`) used to mint one
+    # node: the second declaration overwrote the first's, and its own calls
+    # were credited to the survivor. Mirrors file_item_nid just above, minus
+    # the declared-type carve out (a member has no type of its own to prefer
+    # keeping stable) and the decl_registry hop (impl members are never
+    # re-declared the way a trait signature plus its impl are).
+    def impl_member_nid(parent_impl_nid: str, pre_impl_nid: str | None, name: str) -> str:
+        nid = _make_id(parent_impl_nid, name)
+        if pre_impl_nid is None:
+            return nid
+        names = impl_method_names.get(_make_id(pre_impl_nid, name), ())
+        if len(names) >= 2 and name in names:
+            salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+            nid = _make_id(nid, salt)
+        return nid
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = file_item_nid(_make_id(stem, name), name)
@@ -523,6 +566,7 @@ def extract_rust(path: Path) -> dict:
         parent_impl_nid: str | None = None,
         parent_impl_type: str | None = None,
         parent_impl_key: str | None = None,
+        parent_impl_pre_nid: str | None = None,
     ) -> None:
         t = node.type
 
@@ -532,7 +576,7 @@ def extract_rust(path: Path) -> dict:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
-                    func_nid = _make_id(parent_impl_nid, func_name)
+                    func_nid = impl_member_nid(parent_impl_nid, parent_impl_pre_nid, func_name)
                     add_node(func_nid, f".{func_name}()", line)
                     add_edge(parent_impl_nid, func_nid, "method", line)
                     if parent_impl_type:
@@ -564,7 +608,7 @@ def extract_rust(path: Path) -> dict:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
-                    func_nid = _make_id(parent_impl_nid, func_name)
+                    func_nid = impl_member_nid(parent_impl_nid, parent_impl_pre_nid, func_name)
                     add_node(func_nid, f".{func_name}()", line)
                     add_edge(parent_impl_nid, func_nid, "method", line)
                 else:
@@ -753,7 +797,7 @@ def extract_rust(path: Path) -> dict:
                     return
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
-                    item_nid = _make_id(parent_impl_nid, item_name)
+                    item_nid = impl_member_nid(parent_impl_nid, parent_impl_pre_nid, item_name)
                     add_node(item_nid, f".{item_name}", line)
                     add_edge(parent_impl_nid, item_nid, "contains", line)
                 else:
@@ -778,10 +822,12 @@ def extract_rust(path: Path) -> dict:
             impl_nid: str | None = None
             impl_type_bare: str | None = None
             impl_key: str | None = None
+            impl_pre_nid: str | None = None
             if type_node:
                 type_name = _read_text(type_node, source).strip()
+                impl_pre_nid = _make_id(stem, type_name)
                 impl_nid = file_item_nid(
-                    _make_id(stem, type_name), impl_bare_names.get(node.start_byte, type_name)
+                    impl_pre_nid, impl_bare_names.get(node.start_byte, type_name)
                 )
                 add_node(impl_nid, type_name, node.start_point[0] + 1)
                 impl_key = _rust_simple_generic_impl_key(node, source)
@@ -823,6 +869,7 @@ def extract_rust(path: Path) -> dict:
                         parent_impl_nid=impl_nid,
                         parent_impl_type=impl_type_bare,
                         parent_impl_key=impl_key,
+                        parent_impl_pre_nid=impl_pre_nid,
                     )
             return
 

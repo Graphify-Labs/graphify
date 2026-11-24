@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>将代理的 token 花费削减 80%。</b> Graphify Cloud 是常驻在线的记忆层，为你的代理提供治理、保持高代码质量，并以形式化验证证明正确性。<a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>免费开始，无需信用卡 &rarr;</b></a>
+  <b>为代理与人类共享的代码库上下文。</b>
+  <br/>
+  将你的代码库变成一张可查询的知识图谱。追踪依赖关系，理解各组件如何连接，并为你的编码代理提供跨会话复用的上下文。
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>免费开始，无需信用卡 &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> 让这张图谱在你的整个 SDLC 中保持常驻在线。
 </p>
 
 在你的 AI 编码助手中输入 `/graphify`，它就会把你的整个项目（代码、文档、PDF、图片、视频）映射成一张**知识图谱**，让你可以**用查询取代逐文件 grep**。
@@ -41,18 +47,27 @@
 > **想让它常驻在线吗？** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 会在你整个 SDLC 中保持图谱实时更新：支持 monorepo 与跨 repo、形式化验证，以及以鸟瞰视角审视 SDLC 的代码审查，还有 Sentry、Jira 等连接器，让事故与工单和你的代码落在同一张图谱中。**[免费开始，无需信用卡](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify 的交互式 graph.html，将 FastAPI 代码库显示为力导向知识图谱，并附上检测到的社区图例" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify 的交互式 graph.html，将 FastAPI 代码库显示为力导向知识图谱，并附上检测到的子系统图例" width="900">
 </p>
 <p align="center">
-  <em>由 graphify 映射出的 FastAPI 代码库。每个节点都是一个概念，颜色代表检测到的社区，而整张图在 graph.html 中都可点击。</em>
+  <em>由 graphify 映射出的 FastAPI 代码库。每个节点都是一个概念，颜色代表检测到的子系统，而整张图在 graph.html 中都可点击。</em>
 </p>
 
-**开始使用**（30 seconds）。需要 Python 3.11+ 与 uv（或 pipx）：
+**开始使用**（30 seconds）。需要 Python 3.11.5–3.14 与 uv（或 pipx）：
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # 设置 Claude Code（默认）
 ```
+
+使用其他助手？请明确指定它：
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex（用 $graphify 调用，而非 /graphify）
+```
+
+查看[挑选你的平台](#install)了解全部 20+ 助手。
 
 然后，在你的 AI 助手中：
 
@@ -112,8 +127,8 @@ Shortest path (3 hops):
 
 | 能力 | 你会得到什么 |
 |---|---|
-| **God nodes** | 连接数最多的概念，让你看出一切都流经哪里 |
-| **Communities** | 将图谱拆分为子系统（Leiden），并附上不需 LLM 的标签 |
+| **连接最多的组件** | 一切都流经的概念 —— 图谱的枢纽（也称 *god nodes*） |
+| **子系统** | 将图谱拆分为内聚的分组（Leiden *communities*），每组都附带一个不需 LLM 的标签 |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` 通过 tree-sitter AST 在 ~40 languages 间解析 |
 | **Query, path, explain** | 问一个问题、追踪两个事物之间的路径，或解释某一个概念，全都针对 `graph.json` 进行 |
 | **Rationale + doc refs** | `# NOTE:` / `# WHY:` 注释以及 ADR/RFC 引用会成为一等节点，并链接到代码 |
@@ -122,6 +137,19 @@ Shortest path (3 hops):
 
 > [!TIP]
 > 要在许多 repo 或 monorepo 上运行吗？[Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) 会持续不断地执行此事，并将代理的 token 花费削减 80%，提供跨 repo 链接、覆盖整个 SDLC 的代码审查、形式化验证，以及 Sentry/Jira 连接器。[免费开始，无需信用卡 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## 何时该使用 Graphify
+
+当你需要理解一个代码库，而不仅仅是逐文件读完它时，就该使用这张图谱：
+
+| 场景 | 该问 Graphify 什么 |
+|---|---|
+| 加入一个不熟悉的项目 | “解释各主要组件如何连接。” |
+| 修改一个共享组件 | “追踪它的调用方与依赖关系。” |
+| 调查一个 bug | “展示这个端点与存储之间的路径。” |
+| 回顾此前的工作 | “找出相关的设计决策与笔记。” |
 
 ---
 
@@ -157,7 +185,7 @@ Shortest path (3 hops):
 
 | 需求 | 最低版本 | 检查 | 安装 |
 |---|---|---|---|
-| Python | 3.11+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -219,7 +247,7 @@ graphify install --project --platform codex
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` （用 `$graphify` 调用） |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -317,9 +345,43 @@ Pi 没有 `PreToolUse` hook，因此 `graphify pi guard install` 会注册一个
 
 ---
 
+## 通过 MCP 连接你的代理
+
+把任何支持 MCP 的代理指向一个 Graphify 图谱，它就会直接查询图谱，而不是 grep 文件。连接到托管图谱（Graphify Cloud，免费方案，无需信用卡）：
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+想留在本地？用 `uv tool install "graphifyy[mcp]"` 安装 stdio 服务器，针对你自己的 `graph.json` 运行 `graphify-mcp` 即可，无需账户。
+
+连接之后，你的代理会获得以下工具：
+
+| 工具 | 它的作用 |
+|---|---|
+| `query_graph` | 用自然语言提一个问题，取回相关的子图 |
+| `shortest_path` | 追踪两个节点如何相连 |
+| `get_node` / `get_neighbors` | 查找一个节点以及它所接触的内容 |
+| `get_community` / `god_nodes` | 检测到的社区，以及连接最多的枢纽 |
+| `get_section` | 读取图谱中一个带标签的区域 |
+| `graph_stats` | 图谱的规模、语言以及边的细分 |
+
+该服务器还暴露了 PR 工具（`list_prs`、`get_pr_impact`、`triage_prs`），让你的代理能够在带有图谱上下文的情况下审查 pull request。
+
+---
+
 ## 报告里有什么
 
-`GRAPH_REPORT.md` 汇总了 god nodes、社区与关键路径，供广泛的架构审查之用。图谱如何构建以及它包含什么：**[How graphify works](https://docs.graphify.com/concepts/architecture)**。
+`GRAPH_REPORT.md` 汇总了连接最多的组件、子系统与关键路径，供广泛的架构审查之用。图谱如何构建以及它包含什么：**[How graphify works](https://docs.graphify.com/concepts/architecture)**。
 
 ---
 
@@ -335,8 +397,8 @@ graphify 在本地以 tree-sitter AST 解析 ~40 programming languages，并通�
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # 更细粒度的子系统
+/graphify . --cluster-only --exclude-hubs 99     # 从连接最多的组件排名中抑制工具类超级枢纽
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -354,7 +416,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # 共享图谱子系统的 PR：合并顺序风险
 ```
 
 请见下方的[完整命令参考](#full-command-reference)。

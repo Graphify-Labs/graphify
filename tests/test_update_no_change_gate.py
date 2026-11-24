@@ -81,6 +81,63 @@ def test_unchanged_tree_skips_extraction_and_leaves_outputs_untouched(
     assert _snapshot(built) == before, "outputs must be byte-identical"
 
 
+@pytest.mark.parametrize("incremental", [False, True], ids=["full", "incremental"])
+def test_unchanged_tree_recreates_missing_report(built: Path, capsys, incremental: bool) -> None:
+    out = built / "graphify-out"
+    report = out / "GRAPH_REPORT.md"
+    graph = out / "graph.json"
+    report_before = report.read_bytes()
+    graph_before = graph.read_bytes()
+    graph_mtime = graph.stat().st_mtime_ns
+    report.unlink()
+    capsys.readouterr()
+
+    assert _rebuild_code(built, acquire_lock=False, incremental=incremental) is True
+
+    assert report.read_bytes() == report_before
+    assert graph.read_bytes() == graph_before
+    assert graph.stat().st_mtime_ns == graph_mtime
+    assert SKIP_MESSAGE not in capsys.readouterr().out
+
+
+def test_unchanged_no_cluster_tree_skips_without_report(tmp_path: Path, capsys) -> None:
+    root = _corpus(tmp_path / "corpus")
+    assert _rebuild_code(root, acquire_lock=False, no_cluster=True) is True
+    before = _snapshot(root)
+    assert "GRAPH_REPORT.md" not in before
+    capsys.readouterr()
+
+    assert _rebuild_code(root, acquire_lock=False, incremental=True, no_cluster=True) is True
+
+    assert SKIP_MESSAGE in capsys.readouterr().out
+    assert _snapshot(root) == before
+
+
+def test_oversized_data_json_does_not_block_the_no_change_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """A data file over the JSON size cap is declined by design, not a failure.
+
+    extract_json() reports an over-1-MiB JSON as an error, so the extractor
+    counted it as a failed source. A failed source is never stamped into the
+    manifest, so the next run re-extracted it and the no-change gate never
+    passed, forcing the full pipeline on every `graphify update`. Declined
+    files are stamped (#2879), so an unchanged tree with one must still skip.
+    """
+    root = _corpus(tmp_path / "corpus")
+    (root / "data").mkdir()
+    (root / "data" / "dump.json").write_bytes(b'{"rows": "' + b"x" * 1_100_000 + b'"}')
+    assert _rebuild_code(root, acquire_lock=False) is True
+    before = _snapshot(root)
+    calls = _spy_extract(monkeypatch)
+
+    assert _rebuild_code(root, acquire_lock=False) is True
+
+    assert SKIP_MESSAGE in capsys.readouterr().out
+    assert calls == [], "an unchanged oversized data file must not force extraction"
+    assert _snapshot(root) == before
+
+
 def test_new_file_takes_the_full_path(
     built: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
