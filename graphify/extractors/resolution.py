@@ -4235,6 +4235,7 @@ def _merge_decl_def_classes(
     # Identify, per surviving id, which node to keep (header preferred). We can't
     # mutate all_nodes mid-scan, so collect a set of node object ids to drop.
     drop_objs: set[int] = set()
+    merged_ids: set[str] = set()
     for nid, group in by_id.items():
         if len(group) < 2:
             continue
@@ -4302,6 +4303,7 @@ def _merge_decl_def_classes(
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
+                merged_ids.add(nid)
 
     if not drop_objs:
         return
@@ -4310,7 +4312,12 @@ def _merge_decl_def_classes(
     # own label/source_file (and now carries the impl's definition_file/
     # definition_location); edges are unchanged because the id is identical. Then
     # de-dup any now-identical edges (e.g. the impl file's `contains`/`method`
-    # edge that duplicates the header's after the collapse).
+    # edge that duplicates the header's after the collapse). Only edges touching
+    # a merged id are twins. Every other edge in the batch is left alone: two
+    # unrelated files can still share raw ids here (sample.cu and sample.metal
+    # both define Vec3), and disambiguation splits those apart only later, so a
+    # batch-wide de-dup kept one file's edges and dropped the other's depending
+    # on input order. It also dropped every self-loop, such as a recursive call.
     all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
 
     seen_keys: set[tuple] = set()
@@ -4318,6 +4325,9 @@ def _merge_decl_def_classes(
     for e in all_edges:
         src = e.get("source")
         tgt = e.get("target")
+        if src not in merged_ids and tgt not in merged_ids:
+            rewritten.append(e)
+            continue
         if src == tgt:
             continue
         k = (src, tgt, e.get("relation"), e.get("context"))
