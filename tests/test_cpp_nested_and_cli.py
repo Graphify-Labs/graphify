@@ -42,8 +42,15 @@ def test_cpp_enum_specifier_members_are_extracted(tmp_path):
     assert ("Old", "Y") in case_of
     # An anonymous enum (`typedef enum { A, B } Flag`) has no type name, so it is
     # skipped rather than emitting a nameless node; its members do not appear.
+    # The typedef name `Flag` is a declared type of its own (an alias node, with
+    # no members of its own) since namespace-scope typedefs are extracted.
     assert "A" not in labels
-    assert "Flag" not in labels
+    assert "" not in labels
+    assert ("colors.hpp", "Flag") in {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"] if e["relation"] == "contains"
+    }
+    assert not any(src == "Flag" for src, _ in case_of)
 
 
 def test_cpp_enum_nested_in_class_and_namespace_is_extracted(tmp_path):
@@ -119,8 +126,12 @@ def test_cpp_union_specifier_is_extracted(tmp_path):
     assert ("Value", "i") in defines
     assert ("Value", "f") in defines
     # An anonymous union (`typedef union { ... } Anon`) has no type name, so it is
-    # skipped rather than emitting a nameless node, like an anonymous enum.
-    assert "Anon" not in labels
+    # skipped rather than emitting a nameless node, like an anonymous enum. The
+    # typedef name `Anon` is an alias node of its own, owning none of the members.
+    assert "" not in labels
+    assert ("value.hpp", "Anon") in contains
+    assert not any(src == "Anon" for src, _ in defines)
+    assert not {"a", "b"} & labels
 
 
 def test_cpp_union_member_function_is_a_method(tmp_path):

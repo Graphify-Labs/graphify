@@ -16,6 +16,7 @@ and 55,690 characters of text (#2906).
 will carry, used by both the boundary pass and the slice reader, so the offsets
 a `FileSlice` holds always index the same string.
 """
+import os
 import zlib
 from pathlib import Path
 
@@ -184,6 +185,47 @@ def test_a_rewritten_pdf_is_re_read(tmp_path):
 def test_repeated_reads_agree(big_pdf):
     _, p = big_pdf
     assert len({unit_source_text(p) for _ in range(3)}) == 1
+
+
+def test_relative_pdf_cache_is_scoped_to_its_corpus(tmp_path, monkeypatch):
+    """Equal relative paths and stat metadata must not leak text across roots."""
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for root, text in zip(roots, ["First corpus", "Other corpus"]):
+        root.mkdir()
+        pdf = root / "paper.pdf"
+        _make_pdf(pdf, [text], compress=False)
+        timestamp = 1_700_000_000_000_000_000
+        os.utime(pdf, ns=(timestamp, timestamp))
+    assert (roots[0] / "paper.pdf").stat().st_size == (roots[1] / "paper.pdf").stat().st_size
+
+    monkeypatch.chdir(roots[0])
+    first = unit_source_text(Path("paper.pdf"))
+    if not first.strip():
+        pytest.skip("pypdf not available")
+    monkeypatch.chdir(roots[1])
+    second = unit_source_text(Path("paper.pdf"))
+    assert "First corpus" in first
+    assert "Other corpus" in second
+    assert "First corpus" not in second
+
+
+def test_relative_and_absolute_pdf_paths_share_conversion(tmp_path, monkeypatch):
+    import graphify.file_slice as slicing
+
+    pdf = tmp_path / "alias.pdf"
+    _make_pdf(pdf, ["One conversion"])
+    calls = []
+    convert = slicing._pdf_text
+
+    def counted(path):
+        calls.append(path)
+        return convert(path)
+
+    monkeypatch.setattr(slicing, "_pdf_text", counted)
+    monkeypatch.chdir(tmp_path)
+    relative = unit_source_text(Path("alias.pdf"))
+    assert unit_source_text(pdf) == relative
+    assert len(calls) == 1
 
 
 def test_bisect_slice_of_a_pdf_indexes_extracted_text_not_bytes(big_pdf):

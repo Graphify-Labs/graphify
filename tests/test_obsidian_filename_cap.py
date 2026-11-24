@@ -1,7 +1,11 @@
 """Regression tests for issue #1094: to_obsidian / to_canvas must cap filenames
 to stay under the 255-byte filesystem limit, instead of crashing with
 OSError ENAMETOOLONG on long node labels."""
+import json
+import os
+
 import networkx as nx
+import pytest
 
 from graphify.export import to_obsidian, to_canvas
 
@@ -63,7 +67,6 @@ def test_obsidian_wikilink_resolves_after_truncation(tmp_path):
 
 
 def test_canvas_long_label_file_ref_capped(tmp_path):
-    import json
     G, comms = _graph(["c" * 300, "ok"])
     out = tmp_path / "graph.canvas"
     to_canvas(G, comms, str(out))
@@ -71,3 +74,40 @@ def test_canvas_long_label_file_ref_capped(tmp_path):
     for node in data.get("nodes", []):
         if node.get("type") == "file":
             assert len(node["file"].encode("utf-8")) <= 255, node["file"]
+
+
+_POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="NAME_MAX budget is the POSIX branch")
+
+
+@_POSIX_ONLY
+def test_obsidian_respects_target_filesystem_name_max(tmp_path, monkeypatch):
+    """#2109: eCryptfs can report NAME_MAX=143 rather than the usual 255."""
+    monkeypatch.setattr(os, "pathconf", lambda _path, _name: 143)
+    G, _ = _graph(["n" * 170, "n" * 170])
+    comms = {0: ["n0"], 1: ["n1"]}
+
+    to_obsidian(
+        G,
+        comms,
+        str(tmp_path),
+        community_labels={0: "c" * 170, 1: "c" * 170},
+    )
+
+    names = [p.name for p in tmp_path.glob("*.md")]
+    assert _max_name_bytes(tmp_path) <= 143
+    assert len({name.lower() for name in names}) == len(names)
+
+
+@_POSIX_ONLY
+def test_canvas_respects_target_filesystem_name_max(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "pathconf", lambda _path, _name: 143)
+    G, comms = _graph(["n" * 170, "n" * 170])
+    out = tmp_path / "graph.canvas"
+
+    to_canvas(G, comms, str(out))
+
+    data = json.loads(out.read_text())
+    file_refs = [n["file"] for n in data.get("nodes", []) if n.get("type") == "file"]
+    assert file_refs
+    assert max(len(name.encode("utf-8")) for name in file_refs) <= 143
+    assert len({name.lower() for name in file_refs}) == len(file_refs)

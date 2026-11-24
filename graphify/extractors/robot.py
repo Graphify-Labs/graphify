@@ -6,6 +6,7 @@ import re
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
+from graphify.rcfile import effective_suffix
 
 
 # Robot Framework standard libraries - imports of these are noise (like the
@@ -159,7 +160,7 @@ def extract_robot(path: Path) -> dict:
     add_node(file_nid, path.name, 1)
 
     try:
-        if path.suffix.lower() == ".resource":
+        if effective_suffix(path).lower() == ".resource":
             model = get_resource_model(str_path)
         else:
             model = get_model(str_path)
@@ -185,6 +186,20 @@ def extract_robot(path: Path) -> dict:
     def add_call_edges(src: str, name: str, line: int) -> None:
         for tgt in kw_targets(name):
             add_edge(src, tgt, "calls", line, context="call")
+
+    # Robot Framework allows two test cases in one file to share a name (it
+    # only warns, never a parse/run error, unlike a duplicate keyword
+    # definition) - stem-qualifying by name alone then collapses both onto
+    # one node, so the second test's own keyword calls land on the first
+    # test's id and line. Counted up front so every occurrence of a
+    # duplicated name salts by its own line number regardless of visit
+    # order, and a name used only once keeps the plain id it always had.
+    test_name_counts: dict[str, int] = {}
+
+    class _TestCaseCountVisitor(ModelVisitor):
+        def visit_TestCase(self, node):
+            if node.name:
+                test_name_counts[node.name] = test_name_counts.get(node.name, 0) + 1
 
     class _RobotVisitor(ModelVisitor):
         def __init__(self):
@@ -252,7 +267,10 @@ def extract_robot(path: Path) -> dict:
         def visit_TestCase(self, node):
             if not node.name:
                 return
-            tc_nid = _make_id(stem, node.name)
+            if test_name_counts.get(node.name, 0) >= 2:
+                tc_nid = _make_id(stem, node.name, f"L{node.lineno}")
+            else:
+                tc_nid = _make_id(stem, node.name)
             add_node(tc_nid, node.name, node.lineno)
             add_edge(file_nid, tc_nid, "contains", node.lineno)
             prev, self.scope_nid = self.scope_nid, tc_nid
@@ -289,6 +307,7 @@ def extract_robot(path: Path) -> dict:
                 add_call_edges(self.scope_nid, node.value, node.lineno)
 
     try:
+        _TestCaseCountVisitor().visit(model)
         _RobotVisitor().visit(model)
     except Exception as e:
         return {"nodes": nodes, "edges": edges, "error": str(e)}

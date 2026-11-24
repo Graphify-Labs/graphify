@@ -1205,7 +1205,8 @@ def test_csharp_using_static_on_partial_holder_class(tmp_path: Path):
 
     assert len(slice_a_defs) == 1
     assert len(slice_b_defs) == 1
-    assert len(shared_defs) == 2, "nested partial SharedNested declarations remain unmerged in graph"
+    assert len(shared_defs) == 1, "nested partial SharedNested halves merge under the same outer"
+    assert shared_defs[0]["id"] in contains_targets
     assert slice_a_defs[0]["id"] in contains_targets
     assert slice_b_defs[0]["id"] in contains_targets
 

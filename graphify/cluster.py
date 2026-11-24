@@ -1,12 +1,112 @@
 """Community detection on NetworkX graphs. Uses Leiden (graspologic) if available, falls back to Louvain (networkx). Splits oversized communities. Returns cohesion scores."""
 from __future__ import annotations
 import contextlib
+import hashlib
 import inspect
 import io
 import json
 import os
 import sys
+from collections import Counter
+from pathlib import Path
 import networkx as nx
+
+
+# Sidecar that caches the last computed community assignment next to graph.json,
+# keyed by a hash of the graph topology that produced it (see _topology_hash).
+_PARTITION_CACHE_NAME = ".graphify_partition_cache.json"
+
+
+def _topology_hash(
+    G: nx.Graph,
+    *,
+    resolution: float,
+    exclude_hubs_percentile: float | None,
+    ambiguous_scale: float,
+) -> str:
+    """Cheap, order-independent fingerprint of everything that affects the
+    partition: the node set, the weighted + confidence-tagged edge set, and the
+    clustering parameters.
+
+    Node and edge contributions are folded in by XORing each element's SHA-256,
+    so the result is independent of NetworkX's (hash-seed-dependent) iteration
+    order without paying for a global sort of nodes or edges - the whole point is
+    to be dramatically cheaper than the community detection it guards. Edge
+    endpoints are canonicalised as an unordered pair so the (A,B)/(B,A)
+    adjacency-order flip #1667 describes does not change the hash.
+
+    Raw ``weight`` and ``confidence`` are hashed (not the post-scaling effective
+    weight) together with ``ambiguous_scale``; since the reweight in cluster() is
+    a deterministic function of exactly those, equal inputs here mean an
+    identical effective graph, hence an identical partition.
+    """
+    acc_nodes = 0
+    for n in G.nodes():
+        d = hashlib.sha256(b"n\x00" + str(n).encode("utf-8", "replace")).digest()
+        acc_nodes ^= int.from_bytes(d, "big")
+    acc_edges = 0
+    for u, v, attrs in G.edges(data=True):
+        a, b = sorted((str(u), str(v)))
+        w = repr(float(attrs.get("weight", 1.0)))
+        c = str(attrs.get("confidence", ""))
+        payload = ("e\x00" + a + "\x01" + b + "\x01" + w + "\x01" + c).encode(
+            "utf-8", "replace"
+        )
+        acc_edges ^= int.from_bytes(hashlib.sha256(payload).digest(), "big")
+    h = hashlib.sha256()
+    h.update(
+        repr(
+            (
+                "topology-v1",
+                float(resolution),
+                None if exclude_hubs_percentile is None else float(exclude_hubs_percentile),
+                float(ambiguous_scale),
+                bool(G.is_directed()),
+                G.number_of_nodes(),
+                G.number_of_edges(),
+            )
+        ).encode("utf-8")
+    )
+    h.update(acc_nodes.to_bytes(32, "big"))
+    h.update(acc_edges.to_bytes(32, "big"))
+    return "v1:" + h.hexdigest()
+
+
+def _load_cached_partition(
+    cache_path: "str | Path", topo_hash: str
+) -> dict[int, list[str]] | None:
+    """Return the cached community assignment iff it was computed for exactly this
+    topology hash, else None. Any read/parse problem returns None (fail open)."""
+    try:
+        raw = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("topology_hash") != topo_hash:
+        return None
+    comms = raw.get("communities")
+    if not isinstance(comms, dict):
+        return None
+    try:
+        return {int(cid): list(nodes) for cid, nodes in comms.items()}
+    except (TypeError, ValueError):
+        return None
+
+
+def _store_cached_partition(
+    cache_path: "str | Path", topo_hash: str, communities: dict[int, list[str]]
+) -> None:
+    """Persist ``communities`` keyed by ``topo_hash`` beside the graph, atomically."""
+    from graphify.paths import write_json_atomic
+
+    write_json_atomic(
+        cache_path,
+        {
+            "version": 1,
+            "topology_hash": topo_hash,
+            "communities": {str(cid): nodes for cid, nodes in communities.items()},
+        },
+        ensure_ascii=False,
+    )
 
 
 def _suppress_output():
@@ -133,11 +233,19 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
         G.edges(data=True),
         key=lambda row: (
             *sorted((str(row[0]), str(row[1]))),
-            json.dumps(row[2], sort_keys=True, ensure_ascii=False, default=str),
+            # Tie-break only. On a non-multigraph nx.Graph the unordered endpoint
+            # pair above is already unique per edge, so this third element never
+            # actually decides the order between two distinct edges - it exists
+            # purely for determinism. A cheap float therefore produces the exact
+            # same ordering as the former json.dumps(row[2], sort_keys=True) of
+            # the whole attr dict, without re-serialising every edge in pure
+            # Python ahead of the fast native Leiden call.
+            float(row[2].get("weight", 1.0)),
         ),
     )
     for src, tgt, attrs in edge_rows:
         stable.add_edge(src, tgt, **attrs)
+    del edge_rows  # `stable` holds the edges now
 
     native_result = _native_leiden(stable, resolution)
     if native_result is not None:
@@ -235,6 +343,7 @@ def cluster(
     resolution: float = 1.0,
     exclude_hubs_percentile: float | None = None,
     ambiguous_scale: float = 0.5,
+    cache_dir: "str | Path | None" = None,
 ) -> dict[int, list[str]]:
     """Run Leiden community detection. Returns {community_id: [node_ids]}.
 
@@ -261,6 +370,14 @@ def cluster(
         graph and in `/graphify path`/`explain` output — only partitioning
         is affected). Overridden by ``GRAPHIFY_AMBIGUOUS_SCALE`` env var
         when that is set to a parseable float. See #4199.
+    cache_dir: if set, a directory (normally the graphify-out/ beside
+        graph.json) where the computed partition is persisted keyed by a hash
+        of the graph topology. When ``cluster()`` is next called with a graph
+        whose topology hash matches the cached one, the cached assignment is
+        reused instead of re-running community detection — it is exactly what a
+        recompute would produce for the same graph. Any cache miss, missing or
+        corrupt sidecar, or unwritable directory falls through to a normal
+        recompute (fail open). Omit (``None``) to disable caching entirely.
     """
     if G.number_of_nodes() == 0:
         return {}
@@ -272,12 +389,37 @@ def cluster(
     # #4199 — scale AMBIGUOUS edge weights so they do not warp partitioning.
     # Env override lets `GRAPHIFY_AMBIGUOUS_SCALE=1.0 graphify ...` restore the
     # pre-fix behavior without a code change. Malformed values are ignored.
+    # Resolved here, BEFORE the partition-cache key is computed, so the cache is
+    # keyed on the scale actually applied below.
     env_scale = os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE")
     if env_scale is not None:
         try:
             ambiguous_scale = float(env_scale)
         except ValueError:
             pass
+
+    # Partition cache: cluster() is deterministic for a fixed graph + params +
+    # hash seed, so a topology-hash match means the persisted assignment is
+    # exactly what community detection would recompute — reuse it and skip the
+    # whole (full-graph) partition + split + re-index pipeline. Fail open on any
+    # problem (compute normally). The hash is cheap next to clustering.
+    _cache_path = None
+    _topo_hash = None
+    if cache_dir is not None:
+        try:
+            _cache_path = Path(cache_dir) / _PARTITION_CACHE_NAME
+            _topo_hash = _topology_hash(
+                G,
+                resolution=resolution,
+                exclude_hubs_percentile=exclude_hubs_percentile,
+                ambiguous_scale=ambiguous_scale,
+            )
+            _cached = _load_cached_partition(_cache_path, _topo_hash)
+            if _cached is not None:
+                return _cached
+        except Exception:
+            _cache_path = None
+
     if ambiguous_scale != 1.0 and any(
         d.get("confidence") == "AMBIGUOUS" for _, _, d in G.edges(data=True)
     ):
@@ -388,7 +530,17 @@ def cluster(
     # permute run-to-run - which reads as massive "community churn" in a per-node
     # cid diff even though the actual grouping is reproducible (#1090 follow-up).
     final_communities.sort(key=lambda nodes: (-len(nodes), tuple(sorted(map(str, nodes)))))
-    return {i: sorted(nodes) for i, nodes in enumerate(final_communities)}
+    result = {i: sorted(nodes) for i, nodes in enumerate(final_communities)}
+
+    # Persist the assignment keyed by this run's topology hash so an unchanged
+    # graph reuses it next time. Fail open: a write problem must never fail the
+    # build — the cache is a pure optimization.
+    if _cache_path is not None and _topo_hash is not None:
+        try:
+            _store_cached_partition(_cache_path, _topo_hash, result)
+        except Exception:
+            pass
+    return result
 
 
 def _split_community(G: nx.Graph, nodes: list[str]) -> list[list[str]]:
@@ -443,17 +595,16 @@ def remap_communities_to_previous(
     if not communities:
         return {}
 
-    new_sets = {cid: set(nodes) for cid, nodes in communities.items()}
-    old_sets: dict[int, set[str]] = {}
-    for node, old_cid in previous_node_community.items():
-        old_sets.setdefault(old_cid, set()).add(node)
-
+    # Count only community pairs that share a node. Deduplicate members
+    # for the overlap count to preserve the original set semantics.
     overlaps: list[tuple[int, int, int]] = []
-    for old_cid, old_nodes in old_sets.items():
-        for new_cid, new_nodes in new_sets.items():
-            overlap = len(old_nodes & new_nodes)
-            if overlap > 0:
-                overlaps.append((overlap, old_cid, new_cid))
+    for new_cid, nodes in communities.items():
+        counts = Counter(
+            previous_node_community[node]
+            for node in set(nodes)
+            if node in previous_node_community
+        )
+        overlaps.extend((count, old_cid, new_cid) for old_cid, count in counts.items())
     overlaps.sort(key=lambda x: (-x[0], x[1], x[2]))
 
     new_to_final: dict[int, int] = {}
@@ -480,3 +631,28 @@ def remap_communities_to_previous(
     for new_cid, nodes in communities.items():
         remapped[new_to_final[new_cid]] = sorted(nodes)
     return dict(sorted(remapped.items(), key=lambda kv: kv[0]))
+
+
+def label_still_applies(
+    cid: int,
+    current_members: list[str],
+    previous_node_community: dict[str, int],
+    saved_sig: str | None,
+    current_sig: str | None,
+) -> bool:
+    """Whether a saved label still names this community (#2298).
+
+    An equal membership signature keeps the label. Otherwise the label stays
+    only when the nodes shared with the previous assignment are a strict
+    majority of both the previous set and the current set. A one-node fragment
+    of a large community fails that test, so remap reusing the old id is not
+    enough to keep the name.
+    """
+    if saved_sig is not None and current_sig is not None and saved_sig == current_sig:
+        return True
+    saved = {str(node) for node, old in previous_node_community.items() if old == cid}
+    current = {str(node) for node in current_members}
+    if not saved or not current:
+        return False
+    overlap = len(saved & current)
+    return overlap * 2 > len(saved) and overlap * 2 > len(current)

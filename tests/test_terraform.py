@@ -479,3 +479,91 @@ resource "aws_ecs_task_definition" "app" {
     dumped = _json.dumps(node)
     for secret in ("hunter2", "in-a-map", "parameter/api"):
         assert secret not in dumped
+
+
+def test_aliased_providers_of_the_same_type_get_distinct_nodes(tmp_path):
+    """Two `provider "aws" {...}` blocks distinguished only by `alias` must not
+    collapse onto one node: before, the second block's own attributes
+    silently overwrote the first's, and the SAME id with no alias could never
+    tell the two configurations apart."""
+    body = """\
+provider "aws" {
+  alias  = "west"
+  region = "us-west-1"
+}
+
+provider "aws" {
+  alias  = "east"
+  region = "us-east-1"
+}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "provider.aws.west" in by_label
+    assert "provider.aws.east" in by_label
+    assert by_label["provider.aws.west"]["attributes"]["region"] == "us-west-1"
+    assert by_label["provider.aws.east"]["attributes"]["region"] == "us-east-1"
+
+
+def test_unaliased_provider_keeps_its_plain_id(tmp_path):
+    """The common case, a single provider block for a type with no `alias`,
+    must be unaffected: same id, same reference behaviour as before."""
+    body = 'variable "region" { default = "us-east-1" }\nprovider "aws" { region = var.region }\n'
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    labels = set(_labels(r))
+    assert "provider.aws" in labels
+    assert "provider.aws.None" not in labels
+    assert ("provider.aws", "var.region") in _rel_pairs(r, "references")
+
+
+def test_provider_reference_resolves_to_its_aliased_block(tmp_path):
+    """`provider = aws.west` inside a resource names the ALIASED provider
+    block, not a resource/data node that happens to share that shape; before,
+    this produced a dangling edge to a node that was never minted."""
+    body = """\
+provider "aws" {
+  alias  = "west"
+  region = "us-west-1"
+}
+
+resource "aws_instance" "web" {
+  provider = aws.west
+}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    refs = _rel_pairs(r, "references")
+    assert ("aws_instance.web", "provider.aws.west") in refs
+    # the target must be a real node, not a dangling id with no matching node
+    ids = {n["id"] for n in r["nodes"]}
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "references"}
+    assert targets <= ids
+
+
+def test_bare_provider_reference_resolves_to_the_unaliased_block(tmp_path):
+    """`provider = aws` with no alias must resolve to the plain `provider.aws`
+    node, the same one the block itself minted."""
+    body = """\
+provider "aws" { region = "us-east-1" }
+
+resource "aws_instance" "web" {
+  provider = aws
+}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    assert ("aws_instance.web", "provider.aws") in _rel_pairs(r, "references")
+
+
+def test_a_local_named_provider_is_not_misread_as_a_provider_reference(tmp_path):
+    """A local variable that happens to be NAMED `provider` is a local
+    definition, not a provider assignment; its own value must resolve through
+    the normal reference rules, not the provider-alias address space."""
+    body = """\
+locals {
+  provider = data.aws_caller_identity.current.account_id
+}
+
+data "aws_caller_identity" "current" {}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", body))
+    refs = _rel_pairs(r, "references")
+    assert ("local.provider", "data.aws_caller_identity.current") in refs

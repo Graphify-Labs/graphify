@@ -45,7 +45,9 @@ def validate_extraction(data: dict) -> list[str]:
                     )
                 else:
                     node_ids.add(node["id"])
-            if "file_type" in node and node["file_type"] not in VALID_FILE_TYPES:
+            if "file_type" in node and (
+                not isinstance(node["file_type"], str) or node["file_type"] not in VALID_FILE_TYPES
+            ):
                 errors.append(
                     f"Node {i} (id={node.get('id', '?')!r}) has invalid file_type "
                     f"'{node['file_type']}' - must be one of {sorted(VALID_FILE_TYPES)}"
@@ -65,7 +67,10 @@ def validate_extraction(data: dict) -> list[str]:
             for field in REQUIRED_EDGE_FIELDS:
                 if field not in edge:
                     errors.append(f"Edge {i} missing required field '{field}'")
-            if "confidence" in edge and edge["confidence"] not in VALID_CONFIDENCES:
+            if "confidence" in edge and (
+                not isinstance(edge["confidence"], str)
+                or edge["confidence"] not in VALID_CONFIDENCES
+            ):
                 errors.append(
                     f"Edge {i} has invalid confidence '{edge['confidence']}' "
                     f"- must be one of {sorted(VALID_CONFIDENCES)}"

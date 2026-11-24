@@ -1,9 +1,12 @@
 """Graph analysis: god nodes (most connected), surprising connections (cross-community), suggested questions."""
 from __future__ import annotations
+import math
+import random
+import re
 from pathlib import Path
 import networkx as nx
 
-from graphify.build import edge_data
+from graphify.build import edge_datas
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
 # graphs. Excluded from god-node ranking so they don't displace real abstractions
@@ -82,8 +85,12 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
         from graphify.build import _is_file_node_label
         if _is_file_node_label(label, source_file):
             return True
-    # Method stub: AST extractor labels methods as '.method_name()'
+    # Method stub: AST extractor labels methods as '.method_name()'; C# methods
+    # carry their owner for display ('Owner.method_name()', #4883).
     if label.startswith(".") and label.endswith("()"):
+        return True
+    from graphify.extractors.csharp import bare_csharp_method_label
+    if bare_csharp_method_label(label, source_file) is not None:
         return True
     # Module-level function stub: labeled 'function_name()' - only has a contains edge
     # These are real functions but structurally isolated by definition; not a gap worth flagging
@@ -406,18 +413,22 @@ def _cross_community_surprises(
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
-            data = edge_data(G, u, v)
-            result.append({
-                "source": G.nodes[u].get("label", u),
-                "target": G.nodes[v].get("label", v),
-                "source_files": [
-                    G.nodes[u].get("source_file", ""),
-                    G.nodes[v].get("source_file", ""),
-                ],
-                "confidence": data.get("confidence", "EXTRACTED"),
-                "relation": data.get("relation", ""),
-                "note": f"Bridges graph structure (betweenness={score:.3f})",
-            })
+            for data in edge_datas(G, u, v):
+                result.append({
+                    "source": G.nodes[u].get("label", u),
+                    "target": G.nodes[v].get("label", v),
+                    "source_files": [
+                        G.nodes[u].get("source_file", ""),
+                        G.nodes[v].get("source_file", ""),
+                    ],
+                    "confidence": data.get("confidence", "EXTRACTED"),
+                    "relation": data.get("relation", ""),
+                    "note": f"Bridges graph structure (betweenness={score:.3f})",
+                })
+                if len(result) >= top_n:
+                    break
+            if len(result) >= top_n:
+                break
         return result
 
     # Build node → community map
@@ -472,6 +483,83 @@ def _cross_community_surprises(
     return deduped[:top_n]
 
 
+# networkx 3.5 changed how sampled betweenness scores are rescaled.
+_NETWORKX_RESCALES_SAMPLES_BY_SOURCE = tuple(int(p) for p in re.findall(r"\d+", nx.__version__)[:2]) >= (3, 5)
+
+
+def _betweenness_centrality(G: nx.Graph, k: int | None, seed: int) -> dict[str, float]:
+    """The scores of ``nx.betweenness_centrality(G, k=k, seed=seed)``, bit for bit.
+
+    Unweighted, normalized and without endpoints, the only form used here. networkx
+    keeps the search state in dicts keyed by node id and rebuilds the path counts and
+    predecessor lists over the whole graph for each source. This numbers the nodes
+    once, keeps the same state in lists, and resets only the entries a source reached.
+    The search order, the accumulation order and the rescale for sampled sources
+    follow networkx 3.5 and later. Older networkx rescaled sampled scores differently,
+    so there this returns networkx's own result.
+    """
+    if not _NETWORKX_RESCALES_SAMPLES_BY_SOURCE:
+        return nx.betweenness_centrality(G, k=k, seed=seed)
+    if k is not None and k <= 1:
+        # A single sampled source can't be rescaled (the per-source factor divides
+        # by k-1). Defer to networkx, which handles it. suggest_questions never
+        # passes k <= 1; this only guards direct callers of the helper.
+        return nx.betweenness_centrality(G, k=k, seed=seed)
+    nodes = list(G)
+    n = len(nodes)
+    if k == n:
+        k = None
+    index = {node: i for i, node in enumerate(nodes)}
+    neighbors = [[index[w] for w in G[v]] for v in nodes]
+    sources = range(n) if k is None else [index[v] for v in random.Random(seed).sample(nodes, k)]
+    scores = [0.0] * n
+    dist = [-1] * n
+    sigma = [0.0] * n  # number of shortest paths from the source
+    delta = [0.0] * n
+    preds: list[list[int]] = [[] for _ in range(n)]
+    for s in sources:
+        dist[s] = 0
+        sigma[s] = 1.0
+        order = [s]  # the breadth-first queue, which is also the visit order
+        i = 0
+        while i < len(order):
+            v = order[i]
+            i += 1
+            next_dist = dist[v] + 1
+            sigma_v = sigma[v]
+            for w in neighbors[v]:
+                if dist[w] < 0:
+                    dist[w] = next_dist
+                    order.append(w)
+                elif dist[w] != next_dist:
+                    continue
+                sigma[w] += sigma_v
+                preds[w].append(v)
+        for w in reversed(order):
+            coeff = (1 + delta[w]) / sigma[w]
+            for v in preds[w]:
+                delta[v] += sigma[v] * coeff
+            if w != s:
+                scores[w] += delta[w]
+        for v in order:
+            dist[v] = -1
+            sigma[v] = delta[v] = 0.0
+            preds[v] = []
+    targets = n - 1  # a path through a node cannot end at that node
+    if targets >= 2:
+        if k is None:
+            scale = 1 / (targets * (targets - 1))
+            scores = [score * scale for score in scores]
+        else:
+            # A sampled source cannot lie on a path from itself.
+            source_scale = 1 / ((k - 1) * (targets - 1)) if k > 1 else math.nan
+            other_scale = 1 / (k * (targets - 1))
+            sampled = set(sources)
+            scores = [score * (source_scale if i in sampled else other_scale)
+                      for i, score in enumerate(scores)]
+    return dict(zip(nodes, scores))
+
+
 def suggest_questions(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -512,7 +600,7 @@ def suggest_questions(
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
     if G.number_of_edges() > 0:
         k = min(100, G.number_of_nodes()) if G.number_of_nodes() > 1000 else None
-        betweenness = nx.betweenness_centrality(G, k=k, seed=42)
+        betweenness = _betweenness_centrality(G, k, seed=42)
         # Top bridge nodes that are NOT file-level hubs
         bridges = sorted(
             [(n, s) for n, s in betweenness.items()
@@ -575,11 +663,19 @@ def suggest_questions(
         and G.nodes[n].get("file_type") != "rationale"
     ]
     if isolated:
+        has_semantic_layer = any(
+            G.nodes[n].get("file_type") in ("document", "paper", "image")
+            for n in G.nodes()
+        )
+        reason = (
+            "possible documentation gaps or missing edges" if has_semantic_layer
+            else "possible missing edges"
+        )
         labels = [G.nodes[n].get("label", n) for n in isolated[:3]]
         questions.append({
             "type": "isolated_nodes",
             "question": f"What connects {', '.join(f'`{l}`' for l in labels)} to the rest of the system?",
-            "why": f"{len(isolated)} weakly-connected nodes found - possible documentation gaps or missing edges.",
+            "why": f"{len(isolated)} weakly-connected nodes found - {reason}.",
         })
 
     # 5. Low-cohesion communities → structural questions
@@ -757,12 +853,14 @@ def find_import_cycles(
 
         # Deferred `import(...)` edges are real dependencies but do not form a
         # hard file-level cycle, so they are excluded from cycle detection (#1241).
-        if data.get("deferred"):
-            continue
         # Type-only imports/re-exports (`import type` / `export type ... from`)
         # are erased at compile time - a cycle that closes through one cannot
         # exist at runtime (#3123). The edge itself stays in the graph.
-        if data.get("type_only"):
+        forward = not data.get("deferred") and not data.get("type_only")
+        # An undirected build keeps one edge per file pair, so the other file's
+        # runtime import back is only a stamp on this edge (#4839).
+        reverse = bool(data.get("reverse_import"))
+        if not forward and not reverse:
             continue
 
         src_file_attr = data.get("source_file", "")
@@ -787,7 +885,10 @@ def find_import_cycles(
         if not tgt_file:
             continue
 
-        file_graph.add_edge(src_file_attr, tgt_file)
+        if forward:
+            file_graph.add_edge(src_file_attr, tgt_file)
+        if reverse:
+            file_graph.add_edge(tgt_file, src_file_attr)
 
     if not file_graph.edges():
         return []
@@ -797,6 +898,17 @@ def find_import_cycles(
     # enumerating all elementary cycles and post-filtering — avoids exponential
     # blowup on dense graphs with many long cycles (#1196).
     cycles: list[list[str]] = []
+    # Two-file cycles first, read straight off reciprocal edges in O(E). The
+    # capped enumeration below stops in networkx's yield order, not by length,
+    # so on a graph with many longer cycles it could fill the cap before ever
+    # reaching a two-file mutual import - the tightest coupling, which this
+    # function promises to list first.
+    if max_cycle_length >= 2:
+        for u, v in file_graph.edges():
+            if len(cycles) >= top_n * 10:
+                break
+            if u < v and file_graph.has_edge(v, u):
+                cycles.append([u, v])
     for cycle in nx.simple_cycles(file_graph, length_bound=max_cycle_length):
         if len(cycle) <= max_cycle_length:
             cycles.append(cycle)
