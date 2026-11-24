@@ -30,9 +30,7 @@ _SLUG_SUFFIX_RESERVE = 5
 _UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
-# The navigation footer links the catalog by its fixed filename rather than via
-# the label resolver, so an article whose own label is "index" resolves to its
-# own (deduplicated) file instead of the catalog.
+# The navigation footer always links the catalog by its fixed filename.
 _INDEX_LINK = "[index](index.md)"
 
 
@@ -62,45 +60,8 @@ def _safe_filename(name: str, limit: int = 200) -> str:
     return s[:limit] if s else 'unnamed'
 
 
-def _md_link(label: str, resolver: dict[str, str]) -> str:
-    """Render a link to another wiki article as a portable relative markdown link.
-
-    ``resolver`` maps an article's display label to the slug (filename stem) it
-    was written under. When the label has an article, emit a standard
-    ``[label](slug.md)`` link whose target is the on-disk name VERBATIM.
-
-    The target is deliberately not percent-encoded (#2597). ``quote()`` turned
-    ``_make_id().md`` into ``_make_id%28%29.md`` while the file stayed raw, so
-    the link pointed at a path that does not exist. Renderers hid it by
-    decoding before resolving, but the wiki's whole purpose is to be
-    agent-crawlable, and an agent that reads the target off disk verbatim got a
-    FileNotFoundError. ``_safe_filename`` now keeps the slug free of everything
-    that would need encoding, so raw emission and the filename are the same
-    string by construction — one source of truth instead of two spellings that
-    happened to agree only for URL-safe labels.
-
-    The old ``[[label]]`` form only resolved inside Obsidian, because the
-    on-disk filename differs from the label — _safe_filename turns spaces into
-    underscores and substitutes reserved characters — so e.g.
-    ``[[Domain Data Models]]`` pointed at a non-existent
-    ``Domain Data Models.md`` everywhere else.
-
-    Labels with no article — most node-level links, since only communities and
-    god nodes get article files — render as plain text instead of a dead link
-    that points nowhere even inside Obsidian.
-    """
-    return _md_link_to(label, resolver.get(label))
-
-
 def _md_link_to(label: str, slug: str | None) -> str:
-    """Render ``[label](slug.md)`` for a slug that is already known.
-
-    Same output as :func:`_md_link`, minus the label lookup. The index knows the
-    exact slug of every article it lists — two same-labelled articles have
-    distinct slugs — so it links by that slug instead of re-deriving one from the
-    label, which collapses duplicates onto whichever was registered first
-    (#3032/#3033). ``None`` means no article exists, rendered as plain text.
-    """
+    """Link to the exact on-disk filename (#2597), or render plain text."""
     text = label.replace("[", r"\[").replace("]", r"\]")
     if slug is None:
         return text
@@ -129,12 +90,12 @@ def _community_article(
     labels: dict[int, str],
     cohesion: float | None,
     node_community: dict[str, int] | None = None,
-    resolver: dict[str, str] | None = None,
+    community_slugs: dict[int, str] | None = None,
 ) -> str:
-    resolver = resolver or {}
+    community_slugs = community_slugs or {}
     top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
     selected = set(nodes)
-    cross_counts: Counter[str] = Counter()
+    cross_counts: Counter[int] = Counter()
     conf_counts: Counter[str] = Counter()
     communities = node_community or {}
     for source, target, data in _incident_edges(G, nodes):
@@ -142,7 +103,7 @@ def _community_article(
         neighbor = target if source in selected else source
         ncid = communities.get(neighbor)
         if ncid is not None and ncid != cid:
-            cross_counts[labels.get(ncid, f"Community {ncid}")] += 1
+            cross_counts[ncid] += 1
     cross = sorted(cross_counts.items(), key=lambda item: -item[1])
     total_edges = sum(conf_counts.values()) or 1
 
@@ -171,8 +132,10 @@ def _community_article(
 
     lines += ["## Relationships", ""]
     if cross:
-        for other_label, count in cross[:12]:
-            lines.append(f"- {_md_link(other_label, resolver)} ({count} shared connections)")
+        for other_cid, count in cross[:12]:
+            other_label = labels.get(other_cid, f"Community {other_cid}")
+            link = _md_link_to(other_label, community_slugs.get(other_cid))
+            lines.append(f"- {link} ({count} shared connections)")
     else:
         lines.append("- No strong cross-community connections detected")
     lines.append("")
@@ -194,8 +157,16 @@ def _community_article(
     return "\n".join(lines)
 
 
-def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_community: dict[str, int] | None = None, resolver: dict[str, str] | None = None) -> str:
-    resolver = resolver or {}
+def _god_node_article(
+    G: nx.Graph,
+    nid: str,
+    labels: dict[int, str],
+    node_community: dict[str, int] | None = None,
+    community_slugs: dict[int, str] | None = None,
+    god_slugs: dict[str, str] | None = None,
+) -> str:
+    community_slugs = community_slugs or {}
+    god_slugs = god_slugs or {}
     d = G.nodes[nid]
     node_label = d.get("label", nid)
     src = d.get("source_file", "")
@@ -206,8 +177,8 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
     lines += [f"# {node_label}", ""]
     lines += [f"> God node · {G.degree(nid)} connections · `{src}`", ""]
 
-    if community_name:
-        lines += [f"**Community:** {_md_link(community_name, resolver)}", ""]
+    if cid is not None and community_name:
+        lines += [f"**Community:** {_md_link_to(community_name, community_slugs.get(cid))}", ""]
 
     # Group neighbors by relation type
     by_relation: dict[str, list[str]] = {}
@@ -230,7 +201,7 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
         # (#5369 follow-up).
         dir_str = " _(incoming)_" if directed and incoming else ""
         by_relation.setdefault(rel, []).append(
-            f"{_md_link(neighbor_label, resolver)}{conf_str}{dir_str}"
+            f"{_md_link_to(neighbor_label, god_slugs.get(neighbor))}{conf_str}{dir_str}"
         )
 
     lines += ["## Connections by Relation", ""]
@@ -264,9 +235,7 @@ def _index_md(
 ) -> str:
     """Render index.md.
 
-    Takes the slugs the articles were actually written under —
-    ``community_slugs`` (cid -> slug) and ``god_articles`` ((node_id, slug)) —
-    rather than the label -> slug resolver the articles use for prose links.
+    Takes the exact slugs for community IDs and god-node IDs.
     Two communities, or two god nodes, can share a label while owning separate
     files, and a label lookup cannot tell them apart: it points every row at
     whichever was registered first and orphans the rest (#3032/#3033).
@@ -413,18 +382,11 @@ def to_wiki(
     # slug), which differs from the label — _safe_filename turns spaces into
     # underscores and substitutes reserved chars, and a slug may pick up a numeric
     # suffix from collision dedup — so the final slug must be known up front.
-    # resolver maps display label -> slug; labels with no article are absent, so
-    # _md_link renders them as plain text. Communities are slugged before god nodes
-    # (and setdefault keeps the first), preserving the filename-assignment order
-    # the case-collision dedup relies on.
-    resolver: dict[str, str] = {}
-
     community_slugs: dict[int, str] = {}
     for cid in communities:
         label = labels.get(cid, f"Community {cid}")
         slug = _unique_slug(_safe_filename(label, _slug_limit))
         community_slugs[cid] = slug
-        resolver.setdefault(label, slug)
 
     god_articles: list[tuple[str, str]] = []  # (node_id, slug)
     for node_data in god_nodes_data:
@@ -432,19 +394,21 @@ def to_wiki(
         if nid and nid in G:
             slug = _unique_slug(_safe_filename(node_data['label'], _slug_limit))
             god_articles.append((nid, slug))
-            resolver.setdefault(node_data['label'], slug)
 
-    # Second pass: render and write each article with the full resolver in hand.
+    # Resolve body links by community and node ID, since labels can repeat.
+    god_slugs = dict(god_articles)
     for cid, nodes in communities.items():
         label = labels.get(cid, f"Community {cid}")
-        article = _community_article(G, cid, nodes, label, labels, cohesion.get(cid), node_community, resolver)
+        article = _community_article(
+            G, cid, nodes, label, labels, cohesion.get(cid), node_community, community_slugs,
+        )
         fname = f"{community_slugs[cid]}.md"
         write_text_atomic_if_changed(out / fname, article)
         produced.add(fname)
         count += 1
 
     for nid, slug in god_articles:
-        article = _god_node_article(G, nid, labels, node_community, resolver)
+        article = _god_node_article(G, nid, labels, node_community, community_slugs, god_slugs)
         fname = f"{slug}.md"
         write_text_atomic_if_changed(out / fname, article)
         produced.add(fname)
