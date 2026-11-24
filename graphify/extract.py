@@ -7441,6 +7441,67 @@ def _resolve_csharp_member_calls(
             field_type, owner, (owner or {}).get("source_file", "")
         )
 
+    # A nested type's enclosing type: its static members are in scope too.
+    outer_type_of = {
+        nested: holder
+        for holder, nested_by_label in resolver.nested_types_by_holder.items()
+        for nested in nested_by_label.values()
+    }
+
+    def _head_is_visible_value(head: str, caller: str, caller_node: dict | None,
+                               src_file: str) -> bool:
+        """Whether a field/property named ``head`` is in scope at the caller.
+
+        The extractor already rules out the caller's locals, parameters and its
+        own type's members; a base type, an enclosing type or a ``using
+        static`` type declared in another file is only known here. Any of them
+        declaring ``head`` makes ``head.X`` a member access on a value, never a
+        namespace or type path.
+        """
+        owner = enclosing_type.get(caller) or (caller if caller in type_nids else None)
+        frontier = [owner] if owner else []
+        if caller_node is not None:
+            frontier.extend(resolver.static_using_holders(caller_node, src_file))
+        seen: set[str] = set()
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            if head in class_fields.get(nid, {}):
+                return True
+            frontier.extend(bases_of.get(nid, []))
+            if nid in outer_type_of:
+                frontier.append(outer_type_of[nid])
+        return False
+
+    def _receiver_path_type(path: list[str], caller: str, caller_node: dict | None,
+                            src_file: str, *, member_only: bool) -> tuple[str | None, bool]:
+        """The type of a dotted receiver: ``(type id, named in source)``.
+
+        ``path`` is a qualified type path (``Audio.Mixer``,
+        ``Acme.Systems.Audio.Mixer``), optionally followed by one static member
+        (``...Mixer.Instance``) whose declared type is the receiver's. The
+        whole path naming a type is a static call on it (``member_only`` rules
+        that out for a ``var`` initializer, which is a value). If both readings
+        resolve, nothing is guessed.
+        """
+        if caller_node is None or _head_is_visible_value(path[0], caller, caller_node, src_file):
+            return None, False
+        whole = None
+        if not member_only:
+            whole = resolver.resolve_receiver_type_path(path, caller_node, src_file)
+        via_member = None
+        if len(path) >= 3:
+            owner = resolver.resolve_receiver_type_path(path[:-1], caller_node, src_file)
+            if owner:
+                via_member = _field_type_nid(owner, path[-1])
+        if whole and via_member:
+            return None, False
+        if whole:
+            return whole, True
+        return via_member, False
+
     # Method return types per class, for `var v = R.M<A>()` (#4266).
     method_returns = _bind_member_field_tables(per_file, all_nodes, lang="csharp_returns")
 
@@ -7488,20 +7549,29 @@ def _resolve_csharp_member_calls(
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
         chain = rc.get("receiver_chain") or []
-        if not (receiver or chain) or not callee or not caller:
+        receiver_path = rc.get("receiver_path") or []
+        if not (receiver or chain or receiver_path) or not callee or not caller:
             continue
         src_file = rc.get("source_file", "")
         caller_node = node_by_id.get(caller)
         if not receiver:
             # x.F.M() -> [type of x, "F"]; xs[i].M() -> [element type].
-            type_nid = _resolve_type_name_nid(chain[0], caller_node, src_file)
-            for field in chain[1:]:
-                if not type_nid:
-                    break
-                type_nid = _field_type_nid(type_nid, field)
+            type_nid = None
+            if chain:
+                type_nid = _resolve_type_name_nid(chain[0], caller_node, src_file)
+                for field in chain[1:]:
+                    if not type_nid:
+                        break
+                    type_nid = _field_type_nid(type_nid, field)
+            type_qualified = False
+            if not type_nid and receiver_path:
+                # `Acme.Audio.Mixer.Reset()` / `Acme.Audio.Mixer.Instance.Play()`:
+                # a qualified type path, then at most one static member.
+                type_nid, type_qualified = _receiver_path_type(
+                    receiver_path, caller, caller_node, src_file, member_only=False,
+                )
             if not type_nid:
                 continue
-            type_qualified = False
         elif receiver == "this":
             type_nid = enclosing_type.get(caller) or (caller if caller in type_nids else None)
             if not type_nid:
@@ -7524,6 +7594,15 @@ def _resolve_csharp_member_calls(
                 if not type_nid:
                     break
                 type_nid = _field_type_nid(type_nid, field)
+            if not type_nid:
+                continue
+            type_qualified = False
+        elif rc.get("receiver_var_path"):
+            # `var a = Acme.Audio.Mixer.Instance; a.M()`: `a` has the declared
+            # type of the static member at the end of the qualified path.
+            type_nid, _named = _receiver_path_type(
+                rc["receiver_var_path"], caller, caller_node, src_file, member_only=True,
+            )
             if not type_nid:
                 continue
             type_qualified = False
