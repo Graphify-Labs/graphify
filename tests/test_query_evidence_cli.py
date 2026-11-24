@@ -303,6 +303,27 @@ def test_evidence_redacts_credential_shaped_content(project):
     assert value not in result.stdout
 
 
+def test_evidence_redacts_multiline_private_key_blocks(project):
+    entry = project / "entry.py"
+    body = "synthetic-private-key-body"
+    entry.write_text(
+        entry.read_text(encoding="utf-8").replace(
+            "return handle_request(payload)",
+            'return handle_request("""-----BEGIN PRIVATE KEY-----\n'
+            f'{body}\n-----END PRIVATE KEY-----""")',
+        ),
+        encoding="utf-8",
+    )
+    rebuilt = _graphify(project, "update", ".", "--no-cluster")
+    assert rebuilt.returncode == 0, rebuilt.stderr
+
+    result = _query(project)
+    assert result.returncode == 0, result.stderr
+    assert body not in result.stdout
+    assert "10 |     return handle_request(\"\"\"[redacted]" in result.stdout
+    assert '12 | """)' in result.stdout
+
+
 def test_evidence_respects_ambiguous_names_and_qualified_seeds(project):
     (project / "other.py").write_text("def handle_request(value):\n    return value\n", encoding="utf-8")
     rebuilt = _graphify(project, "update", ".", "--no-cluster")

@@ -19,7 +19,7 @@ import networkx as nx
 
 from graphify.build import _CONFIDENCE_RANK
 from graphify.paths import _is_test_path
-from graphify.security import _MAX_LABEL_LEN, redact_secrets, sanitize_label
+from graphify.security import _MAX_LABEL_LEN, redact_private_key_blocks, redact_secrets, sanitize_label
 
 _CALLER_QUESTION = re.compile(
     r"who calls (.+?)(?:,? and under what condition[s]?)?\??", re.IGNORECASE
@@ -134,7 +134,7 @@ def _python_excerpts(
         tree = ast.parse(source)
     except (OSError, RuntimeError, ValueError, SyntaxError, LookupError):
         return {}
-    lines = source.split("\n")
+    lines = redact_private_key_blocks(source).split("\n")
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     excerpts = {}
     for node in parents:

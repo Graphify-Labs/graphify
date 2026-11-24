@@ -412,12 +412,13 @@ _MAX_LABEL_LEN = 256
 # userinfo. Boundaries are alphanumeric-only lookarounds rather than \b so a
 # token glued to an identifier by `_` (`token_ghp_...`, `AKIA..._prod`) still
 # matches.
-_SECRET_SHAPE_RE = re.compile(
-    # Header through the END line, or to end of text when the block is cut off:
-    # the base64 body is the secret, not the header.
+_PRIVATE_KEY_BLOCK_RE = re.compile(
     r"(?s:-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
     r"(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|.*))"
-    r"|(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])"
+)
+_SECRET_SHAPE_RE = re.compile(
+    _PRIVATE_KEY_BLOCK_RE.pattern
+    + r"|(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])"
     r"|(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}"
     r"|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{22,}"
     r"|(?<![A-Za-z0-9])xox[abeoprs]-[A-Za-z0-9-]{10,}"
@@ -434,6 +435,13 @@ _SECRET_SHAPE_RE = re.compile(
 )
 
 REDACTED_MARKER = "[redacted]"
+
+
+def redact_private_key_blocks(text: str) -> str:
+    """Remove private-key blocks before taking excerpts, preserving line numbers."""
+    return _PRIVATE_KEY_BLOCK_RE.sub(
+        lambda match: REDACTED_MARKER + "\n" * match[0].count("\n"), text
+    )
 
 
 def redact_secrets(text: str | None) -> str:
