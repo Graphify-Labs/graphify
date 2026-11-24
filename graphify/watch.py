@@ -3833,7 +3833,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             if _is_read_only_event(event):
                 return
-            path = Path(os.fsdecode(event.src_path))
+            path = Path(os.fsdecode(event.src_path)).resolve()
             if manual and (
                 path.parent not in watched or not path.parent.exists()
             ):
@@ -3851,7 +3851,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             # Atomic replacement reports the new root config in dest_path.
             dest_raw = getattr(event, "dest_path", None)
-            dest_path = Path(os.fsdecode(dest_raw)) if dest_raw else None
+            dest_path = Path(os.fsdecode(dest_raw)).resolve() if dest_raw else None
             if path == root_config_path or dest_path == root_config_path:
                 override_snapshot = activate_language_overrides(watch_root_for_ignore)
                 config_changed = True
