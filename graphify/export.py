@@ -660,8 +660,7 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
             f"MATCH (a {{id: '{u_esc}'}}), (b {{id: '{v_esc}'}}) "
             f"MERGE (a)-[:{rel} {{confidence: '{conf}'}}]->(b);"
         )
-    with open(output_path, "w", encoding="utf-8") as f:  # nosec
-        f.write("\n".join(lines))
+    write_text_atomic(output_path, "\n".join(lines) + "\n")
 
 
 # Keep backward-compatible alias - skill.md calls generate_html
@@ -1454,6 +1453,7 @@ def to_graphml(
     # .graphml on disk that downstream tooling mistakes for a completed export
     # (#1831). Write to a sibling temp file, then replace on success.
     out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     try:
         nx.write_graphml(H, str(tmp))
@@ -1531,7 +1531,9 @@ def to_svg(
         ax.legend(handles=patches, loc="upper left", framealpha=0.7,
                   facecolor="#2a2a4e", labelcolor="white", fontsize=8)
 
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
-    plt.savefig(output_path, format="svg", bbox_inches="tight",
+    plt.savefig(str(out), format="svg", bbox_inches="tight",
                 facecolor=fig.get_facecolor())
     plt.close(fig)

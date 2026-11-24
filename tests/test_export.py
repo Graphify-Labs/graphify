@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
-from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
+from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian, to_svg
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -1809,3 +1809,28 @@ console.log(JSON.stringify({
         "shortCount": ["hidden", "visible", "1 node"],
         "shortLeave": ["hidden", "hidden", ""],
     }
+
+
+def test_exporters_create_missing_parent_directories(tmp_path):
+    """to_cypher, to_graphml, and to_svg automatically create missing parent directories."""
+    G = make_graph()
+    communities = cluster(G)
+
+    cypher_path = tmp_path / "nested" / "sub_cypher" / "out.cypher"
+    assert not cypher_path.parent.exists()
+    to_cypher(G, str(cypher_path))
+    assert cypher_path.exists()
+    assert "MERGE (n:Code" in cypher_path.read_text(encoding="utf-8")
+
+    graphml_path = tmp_path / "nested" / "sub_graphml" / "out.graphml"
+    assert not graphml_path.parent.exists()
+    to_graphml(G, communities, str(graphml_path))
+    assert graphml_path.exists()
+    assert "<graphml" in graphml_path.read_text(encoding="utf-8")
+
+    svg_path = tmp_path / "nested" / "sub_svg" / "out.svg"
+    assert not svg_path.parent.exists()
+    to_svg(G, communities, str(svg_path), community_labels={0: "Core"})
+    assert svg_path.exists()
+    assert "<svg" in svg_path.read_text(encoding="utf-8")
+
