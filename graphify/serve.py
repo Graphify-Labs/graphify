@@ -637,10 +637,17 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     uncached = [t for t in terms if t not in cache]
     if uncached:
         df: dict[str, int] = {t: 0 for t in uncached}
-        for _, data in G.nodes(data=True):
-            norm_label = (
-                data.get("norm_label") or _strip_diacritics(data.get("label") or "")
-            ).lower()
+        # Document frequency is "term appears in norm_label". The trigram index
+        # is a superset of that (it indexes every searchable field), so it can
+        # skip the nodes that cannot match; the exact `in norm_label` test below
+        # still decides. A short or common term makes `_trigram_candidates`
+        # return None and the full scan runs exactly as before. IDF stays a
+        # whole-graph statistic either way (#1431 invariant).
+        fields = _node_fields(G)
+        candidates = _trigram_candidates(G, uncached)
+        node_ids = G.nodes() if candidates is None else candidates
+        for nid in node_ids:
+            norm_label = fields[nid].norm_label
             for t in uncached:
                 if t in norm_label:
                     df[t] += 1
