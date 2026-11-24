@@ -76,11 +76,10 @@ jobs:
         # (/dev/shm) to remove the disk bottleneck (~2.8x locally), then xdist
         # `-n auto` to parallelize the now-CPU-bound work (~6x combined). The
         # handful of timing/concurrency `serial` tests run in a quick second
-        # serial pass where their wall-clock assertions are reliable.
-        env:
-          TMPDIR: /dev/shm
+        # serial pass on regular /tmp, where their wall-clock assertions hold
+        # (tmpfs + xdist CPU contention makes a watchdog rebuild lose its race).
         run: |
-          uv run --frozen pytest tests/ -q --tb=short -n auto -m "not serial"
+          TMPDIR=/dev/shm uv run --frozen pytest tests/ -q --tb=short -n auto -m "not serial"
           uv run --frozen pytest tests/ -q --tb=short -m serial
 
       - name: Verify install works end-to-end
