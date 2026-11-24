@@ -1,0 +1,412 @@
+"""Shopify theme Liquid extractor (regex only, deterministic).
+
+Extracts the references a `.liquid` file of a Shopify theme makes to the rest of
+the theme, so `graphify affected` answers "who uses this snippet / section /
+block":
+
+* ``render`` / ``include 'x'``          -> ``snippets/x.liquid``      (``imports``)
+* ``section 'x'``                       -> ``sections/x.liquid``      (``imports``)
+* ``sections 'x'``                      -> ``sections/x.json``        (``imports``)
+* ``content_for 'block', type: 'x'``    -> ``blocks/x.liquid``        (``imports``)
+* ``{% schema %}`` ``blocks[]`` entries -> ``blocks/<type>.liquid``   (``imports``)
+* ``'x' | asset_url``                   -> ``assets/x[.liquid]``      (``references``)
+* ``'a.b' | t`` / ``| translate``       -> key ``a.b`` of the default locale (``references``)
+
+Gates and limits, all fail-closed:
+
+* A file is only analysed inside a theme root: the nearest ancestor (at most
+  three levels up) holding ``layout/theme.liquid``. Jekyll and Eleventy also use
+  ``.liquid`` with different ``include`` semantics, so elsewhere only the file
+  node is emitted.
+* Only statically named targets that exist inside the theme root get an edge.
+  Dynamic names (``render some_var``), names containing ``/``, ``\\`` or ``..``,
+  and absolute asset names get none.
+* Text inside ``comment``, ``doc``, ``raw``, ``stylesheet``, ``javascript`` and
+  inline ``{% # %}`` regions is ignored; line numbers still count it.
+* ``| t`` edges need exactly one ``locales/*.default.json``; keys under
+  ``shopify.`` are provided by Shopify and get no edge.
+
+Not covered: the ``{% block %}`` / ``{% partial %}`` preview tags, CSS and app
+references, dynamic ``content_for 'blocks'`` expansion.
+"""
+from __future__ import annotations
+
+import bisect
+import json
+import os
+import re
+from pathlib import Path
+
+from graphify.extractors.base import _make_id, _read_source_text
+
+_THEME_ROOT_LEVELS = 3
+_MAX_LOCALE_BYTES = 8 * 1024 * 1024
+
+_STMT_NAME = re.compile(r"\s*([A-Za-z_]\w*)")
+_NAME_ARG = re.compile(r"""\s*(['"])([^'"\n]*)\1""")
+_BLOCK_TYPE = re.compile(r"""\btype\s*:\s*(['"])([^'"\n]*)\1""")
+# A quoted literal directly piped into asset_url or into the t / translate filter.
+_FILTER = re.compile(r"""(['"])([^'"\n]+)\1\s*\|\s*(asset_url|t|translate)(?![\w])""")
+_LEADING_COMMENT = re.compile(r"\A\s*/\*.*?\*/", re.DOTALL)
+
+_SKIP_UNTIL = {
+    "raw": "endraw",
+    "doc": "enddoc",
+    "stylesheet": "endstylesheet",
+    "javascript": "endjavascript",
+}
+_COMPOSITION = {
+    "render": "snippets",
+    "include": "snippets",
+    "section": "sections",
+}
+
+# (theme root, locale path) -> (mtime_ns, parsed locale or None)
+_LOCALE_CACHE: dict[tuple[str, str], tuple[int, dict | None]] = {}
+
+
+def _find_theme_root(path: Path) -> Path | None:
+    """Nearest ancestor within three levels that holds ``layout/theme.liquid``."""
+    for parent in list(path.parents)[:_THEME_ROOT_LEVELS]:
+        if (parent / "layout" / "theme.liquid").is_file():
+            return parent
+    return None
+
+
+def _safe_component(name: str) -> bool:
+    """True for a bare file-name component: no separators, no ``..``, not empty."""
+    return bool(name) and "/" not in name and "\\" not in name and ".." not in name and "\0" not in name
+
+
+def _safe_asset(name: str) -> bool:
+    """True for a relative asset name that cannot leave ``assets/``."""
+    return bool(name) and not name.startswith(("/", "\\")) and "\\" not in name and ".." not in name and "\0" not in name
+
+
+def _inside(root: Path, target: Path) -> bool:
+    try:
+        Path(os.path.realpath(target)).relative_to(os.path.realpath(root))
+    except ValueError:
+        return False
+    return True
+
+
+def _default_locale(root: Path) -> tuple[Path, dict] | None:
+    """The parsed ``locales/*.default.json`` when exactly one exists, else None."""
+    candidates = sorted((root / "locales").glob("*.default.json")) if (root / "locales").is_dir() else []
+    if len(candidates) != 1:
+        return None
+    locale_path = candidates[0]
+    try:
+        stat = locale_path.stat()
+    except OSError:
+        return None
+    key = (str(root), str(locale_path))
+    cached = _LOCALE_CACHE.get(key)
+    if cached is not None and cached[0] == stat.st_mtime_ns:
+        data = cached[1]
+    else:
+        data = None
+        if stat.st_size <= _MAX_LOCALE_BYTES:
+            try:
+                text = _read_source_text(locale_path)
+                parsed = json.loads(_LEADING_COMMENT.sub("", text, count=1))
+                data = parsed if isinstance(parsed, dict) else None
+            except (OSError, ValueError):
+                data = None
+        _LOCALE_CACHE[key] = (stat.st_mtime_ns, data)
+    return (locale_path, data) if data is not None else None
+
+
+def _has_key(locale: dict, key: str) -> bool:
+    node: object = locale
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return isinstance(node, (str, dict))
+
+
+class _Collector:
+    """Accumulates nodes and de-duplicated edges for one file, in source order."""
+
+    def __init__(self, path: Path, root: Path) -> None:
+        self.path = path
+        self.root = root
+        self.file_id = _make_id(str(path))
+        self.nodes: list[dict] = [{
+            "id": self.file_id, "label": path.name, "file_type": "code",
+            "source_file": str(path), "source_location": None,
+        }]
+        self.edges: list[dict] = []
+        self._node_ids = {self.file_id}
+        self._seen: set[tuple[str, str, int]] = set()
+        self._locale: tuple[Path, dict] | None | _Unset = _UNSET
+
+    def _declare(self, node: dict) -> None:
+        if node["id"] not in self._node_ids:
+            self._node_ids.add(node["id"])
+            self.nodes.append(node)
+
+    def file_edge(self, relation: str, target: Path, line: int) -> None:
+        """Edge to an existing file inside the theme; declares non-Liquid targets."""
+        if not target.is_file() or not _inside(self.root, target):
+            return
+        target_id = _make_id(str(target))
+        if not self._first(target_id, relation, line):
+            return
+        if target.suffix != ".liquid":
+            self._declare({
+                "id": target_id, "label": target.name, "file_type": "code",
+                "source_file": str(target), "source_location": None,
+            })
+        self.edges.append({
+            "source": self.file_id, "target": target_id, "target_file": str(target),
+            "relation": relation, "confidence": "EXTRACTED", "confidence_score": 1.0,
+            "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+        })
+
+    def key_edge(self, key: str, line: int) -> None:
+        """``references`` edge to a translation key found in the default locale."""
+        if key.startswith("shopify."):
+            return
+        if self._locale is _UNSET:
+            self._locale = _default_locale(self.root)
+        if self._locale is None or isinstance(self._locale, _Unset):
+            return
+        locale_path, data = self._locale
+        if not _has_key(data, key):
+            return
+        target_id = _make_id("liquid_t", key)
+        if not self._first(target_id, "references", line):
+            return
+        self._declare({
+            "id": target_id, "label": key, "file_type": "concept",
+            "source_file": str(locale_path), "source_location": None,
+        })
+        self.edges.append({
+            "source": self.file_id, "target": target_id, "relation": "references",
+            "confidence": "EXTRACTED", "confidence_score": 1.0,
+            "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+        })
+
+    def _first(self, target_id: str, relation: str, line: int) -> bool:
+        key = (target_id, relation, line)
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
+
+    # -- statement level -------------------------------------------------
+
+    def statement(self, text: str, line: int) -> None:
+        """Handle one tag body or one line of a ``{% liquid %}`` block."""
+        for m in _FILTER.finditer(text):
+            name, kind = m.group(2), m.group(3)
+            if kind == "asset_url":
+                self._asset(name, line)
+            else:
+                self.key_edge(name, line)
+        head = _STMT_NAME.match(text)
+        if head is None:
+            return
+        tag = head.group(1)
+        rest = text[head.end():]
+        if tag in _COMPOSITION:
+            arg = _NAME_ARG.match(rest)
+            if arg and _safe_component(arg.group(2)):
+                folder = _COMPOSITION[tag]
+                self.file_edge("imports", self.root / folder / f"{arg.group(2)}.liquid", line)
+        elif tag == "sections":
+            arg = _NAME_ARG.match(rest)
+            if arg and _safe_component(arg.group(2)):
+                self.file_edge("imports", self.root / "sections" / f"{arg.group(2)}.json", line)
+        elif tag == "content_for":
+            arg = _NAME_ARG.match(rest)
+            if arg and arg.group(2) == "block":
+                m = _BLOCK_TYPE.search(rest[arg.end():])
+                if m and _safe_component(m.group(2)):
+                    self.file_edge("imports", self.root / "blocks" / f"{m.group(2)}.liquid", line)
+
+    def _asset(self, name: str, line: int) -> None:
+        if not _safe_asset(name):
+            return
+        direct = self.root / "assets" / name
+        if direct.is_file():
+            self.file_edge("references", direct, line)
+        else:
+            self.file_edge("references", self.root / "assets" / f"{name}.liquid", line)
+
+    def schema(self, body: str, line: int) -> None:
+        """``blocks[]`` entries of a section/block schema that name a theme block file."""
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return
+        blocks = data.get("blocks") if isinstance(data, dict) else None
+        if not isinstance(blocks, list):
+            return
+        search_from = body.find('"blocks"')
+        for entry in blocks:
+            if not isinstance(entry, dict):
+                continue
+            block_type = entry.get("type")
+            if not isinstance(block_type, str) or "name" in entry or block_type.startswith("@"):
+                continue
+            if not _safe_component(block_type):
+                continue
+            entry_line = line
+            if search_from >= 0:
+                m = re.compile(r'"type"\s*:\s*"' + re.escape(block_type) + '"').search(body, search_from)
+                if m:
+                    entry_line = line + body.count("\n", 0, m.start())
+            self.file_edge("imports", self.root / "blocks" / f"{block_type}.liquid", entry_line)
+
+
+class _Unset:
+    """Sentinel: the locale has not been looked up yet."""
+
+
+_UNSET = _Unset()
+
+
+def _scan(src: str, out: _Collector) -> None:
+    """Walk ``{% %}`` / ``{{ }}`` tokens in order, honouring masked regions."""
+    line_starts = [0]
+    pos = src.find("\n")
+    while pos != -1:
+        line_starts.append(pos + 1)
+        pos = src.find("\n", pos + 1)
+
+    def line_of(offset: int) -> int:
+        return bisect.bisect_right(line_starts, offset)
+
+    i = 0
+    n = len(src)
+    tag_close = 0   # cached position of the next "%}" at or after i (-2 = none left)
+    out_close = 0
+    comment_depth = 0
+    skip_until: str | None = None
+    next_t = next_o = -2  # cached next opener offsets (-1 = none left)
+    while i < n:
+        if next_t != -1 and next_t < i:
+            next_t = src.find("{%", i)
+        if next_o != -1 and next_o < i:
+            next_o = src.find("{{", i)
+        t, o = next_t, next_o
+        if t == -1 and o == -1:
+            break
+        is_tag = t != -1 and (o == -1 or t < o)
+        start = t if is_tag else o
+        if is_tag:
+            if tag_close != -2 and tag_close < start + 2:
+                tag_close = src.find("%}", start + 2)
+                if tag_close == -1:
+                    tag_close = -2
+            close = tag_close
+        else:
+            if out_close != -2 and out_close < start + 2:
+                out_close = src.find("}}", start + 2)
+                if out_close == -1:
+                    out_close = -2
+            close = out_close
+        if close == -2:
+            # No closer left for this opener kind: it is plain text.
+            i = start + 2
+            if is_tag and o == -1:
+                break
+            continue
+        body_start = start + 2
+        body_end = close
+        if body_start < body_end and src[body_start] == "-":
+            body_start += 1
+        if body_end > body_start and src[body_end - 1] == "-":
+            body_end -= 1
+        body = src[body_start:body_end]
+        i = close + 2
+        if not is_tag:
+            if comment_depth == 0 and skip_until is None:
+                out.statement(body, line_of(start))
+            continue
+        head = _STMT_NAME.match(body)
+        name = head.group(1) if head else ""
+        if skip_until is not None:
+            if name == skip_until:
+                skip_until = None
+            continue
+        if comment_depth:
+            if name == "comment":
+                comment_depth += 1
+            elif name == "endcomment":
+                comment_depth -= 1
+            continue
+        if name == "comment":
+            comment_depth = 1
+        elif name in _SKIP_UNTIL:
+            skip_until = _SKIP_UNTIL[name]
+        elif name == "schema":
+            end = _find_end_tag(src, i, "endschema")
+            if end is not None:
+                out.schema(src[i:end[0]], line_of(i))
+                i = end[1]
+        elif name == "liquid":
+            _liquid_block(body, head.end() if head else 0, line_of(body_start), out)
+        elif body.lstrip().startswith("#"):
+            continue
+        else:
+            out.statement(body, line_of(start))
+
+
+_END_TAG = re.compile(r"\{%-?\s*(\w+)")
+
+
+def _find_end_tag(src: str, start: int, name: str) -> tuple[int, int] | None:
+    """Offsets (start of the closing tag, just after it) of the next ``{% name %}``."""
+    for m in _END_TAG.finditer(src, start):
+        if m.group(1) != name:
+            continue
+        close = src.find("%}", m.end())
+        if close == -1:
+            return None
+        return m.start(), close + 2
+    return None
+
+
+def _liquid_block(body: str, skip: int, body_line: int, out: _Collector) -> None:
+    """Handle the lines of a ``{% liquid %}`` tag as individual statements."""
+    first_line = body_line + body.count("\n", 0, skip)
+    comment_depth = 0
+    for index, raw in enumerate(body[skip:].split("\n")):
+        line = first_line + index
+        stmt = raw.strip()
+        if not stmt or stmt.startswith("#"):
+            continue
+        head = _STMT_NAME.match(stmt)
+        word = head.group(1) if head else ""
+        if comment_depth:
+            if word == "comment":
+                comment_depth += 1
+            elif word == "endcomment":
+                comment_depth -= 1
+            continue
+        if word == "comment":
+            comment_depth = 1
+            continue
+        out.statement(stmt, line)
+
+
+def extract_liquid(path: Path) -> dict:
+    """Extract theme-composition edges from a Shopify theme `.liquid` file.
+
+    Returns only the file node when the file is not inside a theme root.
+    """
+    try:
+        src = _read_source_text(path)
+    except OSError:
+        return {"error": f"cannot read {path}"}
+    path = Path(os.path.abspath(path))
+    root = _find_theme_root(path)
+    out = _Collector(path, root if root is not None else path.parent)
+    if root is not None:
+        _scan(src, out)
+    return {"nodes": out.nodes, "edges": out.edges}

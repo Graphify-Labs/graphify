@@ -61,6 +61,7 @@ from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.cobol import extract_cobol, resolve_cobol_copybook_performs  # noqa: F401
+from graphify.extractors.liquid import extract_liquid  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
     _is_cs_file,
@@ -4888,6 +4889,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".go": "go",
     ".rs": "rust",
     ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".liquid": "liquid",
     ".r": "r",
     ".sol": "solidity",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
@@ -11771,6 +11773,7 @@ _DISPATCH: dict[str, Any] = {
     ".cob": extract_cobol,
     ".cobol": extract_cobol,
     ".cpy": extract_cobol,
+    ".liquid": extract_liquid,
     ".vb": extract_vbnet,
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,

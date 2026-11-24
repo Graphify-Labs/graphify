@@ -581,6 +581,7 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".php7": "php", ".phps": "php",
     ".luau": "lua",
     ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".liquid": "liquid",
     ".r": "r", ".sol": "solidity",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
     ".zig": "zig", ".ex": "elixir", ".exs": "elixir", ".jl": "julia",
