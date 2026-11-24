@@ -24,10 +24,27 @@ choices from the options below:
 - **One file at a time:** `graphify summarize "<file>"` prints that file's
   summary and writes nothing.
 
-Each entry also carries `generated_by`, so summaries from another generator can
-share the file later. Not implemented yet: summaries written by an LLM backend,
-summaries in `graphify query` and the MCP server, and freshness metadata (rerun
-`graphify summarize` after updating the graph).
+Each entry carries `generated_by`, so summaries from different generators share
+the file.
+
+The opt-in LLM backend is implemented as `graphify summarize --backend NAME`
+(#5041), for documents only:
+
+- **Explicit.** No model is called unless `--backend` is given. `--dry-run`
+  shows the documents, tokens and estimated cost first.
+- **Input.** The first `--pages N` pages of each document (default 15), with
+  table-of-contents lines left out. PDFs are included; a PDF with no node in
+  the graph is stored by path in a `files` section of the sidecar.
+- **Shape.** A built-in description of what a summary says, or the user's own
+  with `--profile NAME`. The same length limit applies as for rule-based
+  summaries.
+- **Freshness.** Each model-written entry records hashes of the text and of
+  the prompt it came from. An unchanged document is not sent again, and a run
+  without `--backend` drops a model-written summary whose document changed.
+
+Not implemented yet: model-written summaries for code files, summaries in
+`graphify query` and the MCP server, and freshness metadata for rule-based
+summaries (rerun `graphify summarize` after updating the graph).
 
 ## Problem
 

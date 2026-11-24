@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -444,7 +445,9 @@ def test_word_document_is_summarized_from_its_title_page(tmp_path: Path) -> None
     doc.save(str(root / "sap.docx"))
     assert _rebuild_code(root, acquire_lock=False, no_cluster=True) is True
     summaries = _summaries(root)
-    converted = [s for src, s in summaries.items() if "converted" in src]
+    # graphify converts sap.docx to converted/sap_<8 hex>.md and summarizes that.
+    converted = [s for src, s in summaries.items()
+                 if re.fullmatch(r".*converted/sap_[0-9a-f]{8}\.md", src)]
     assert converted == [
         "Statistical Analysis Plan. Protocol Number: ABC-123; Study Phase: Phase 3; Version: 2.0."]
 
@@ -526,6 +529,10 @@ def test_hostile_long_lines_cost_a_bounded_amount_of_work(tmp_path: Path, monkey
         def search(self, text: str):
             seen.append(len(text))
             return real.search(text)
+
+        def __getattr__(self, name: str):
+            # Anything else the code calls on the pattern goes to the real one.
+            return getattr(real, name)
 
     monkeypatch.setattr(summarize, "_TOC_TAIL_RE", Recording())
     hostile = ["\t" * 50_000, "\t" * 50_000 + "x", "|" * 50_000,
@@ -720,6 +727,29 @@ def test_cli_writes_the_sidecar_and_leaves_the_graph_alone(tmp_path: Path) -> No
     assert {e["source_file"] for e in nodes.values()} == {"pkg/billing.py", "docs/guide.md"}
 
 
+def test_cli_finds_a_word_file_by_its_original_name(tmp_path: Path) -> None:
+    # The graph holds the Markdown a Word file was converted to, named
+    # <stem>_<8 hex>.md in a converted/ folder, not the Word file itself.
+    root = _project(tmp_path, {"converted/protocol_0123abcd.md": PROTOCOL,
+                               "docs/guide.md": GUIDE})
+    by_original = _run_cli(root, "summarize", "protocol.docx")
+    assert by_original.returncode == 0, by_original.stderr
+    assert "Node: protocol_0123abcd.md" in by_original.stdout
+    assert by_original.stdout == _run_cli(root, "summarize", "protocol_0123abcd.md").stdout
+    # Only a converted file answers to the original's name.
+    assert _run_cli(root, "summarize", "guide.docx").returncode == 4
+    assert _run_cli(root, "summarize", "protocol.pdf").returncode == 4
+
+
+def test_cli_says_so_when_a_word_file_name_fits_two_converted_files(tmp_path: Path) -> None:
+    root = _project(tmp_path, {"a/converted/protocol_0123abcd.md": PROTOCOL,
+                               "b/converted/protocol_89abcdef.md": PROTOCOL})
+    out = _run_cli(root, "summarize", "protocol.docx")
+    assert out.returncode == 3
+    assert "a/converted/protocol_0123abcd.md" in out.stdout
+    assert "b/converted/protocol_89abcdef.md" in out.stdout
+
+
 def test_cli_honours_graph_and_out(tmp_path: Path) -> None:
     root = _project(tmp_path, {"docs/guide.md": GUIDE})
     target = tmp_path / "elsewhere" / "summaries.json"
@@ -882,3 +912,28 @@ def test_help_lists_summarize(tmp_path: Path) -> None:
     out = _run_cli(tmp_path, "--help")
     assert out.returncode == 0, out.stderr
     assert "  summarize" in out.stdout
+
+
+def test_cli_help_shows_the_command_own_options(tmp_path: Path) -> None:
+    """`graphify summarize --help` used to stop at the top-level help guard and
+    print only "Run 'graphify --help' for full usage."."""
+    for flag in ("--help", "-h"):
+        out = _run_cli(tmp_path, "summarize", flag)
+        assert out.returncode == 0, out.stderr
+        assert "usage: graphify summarize" in out.stdout
+        for option in ("--max-chars", "--out", "--backend", "--profile", "--pages",
+                       "--dry-run", "--force"):
+            assert option in out.stdout, option
+    assert not (tmp_path / "graphify-out").exists()
+
+
+def test_cli_out_elsewhere_says_explain_does_not_read_it(tmp_path: Path) -> None:
+    root = _project(tmp_path, {"pkg/billing.py": BILLING})
+    out = _run_cli(root, "summarize", "--out", str(tmp_path / "elsewhere.json"))
+    assert out.returncode == 0, out.stderr
+    assert "Note: graphify explain reads" in out.stdout
+    # Naming the default file is not "elsewhere".
+    default = _graph_path(root).parent / SUMMARY_SIDECAR_NAME
+    out = _run_cli(root, "summarize", "--out", str(default))
+    assert out.returncode == 0, out.stderr
+    assert "Note:" not in out.stdout

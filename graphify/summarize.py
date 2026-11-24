@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,9 @@ SUMMARY_MIN_MAX_CHARS = 50
 SUMMARY_HARD_MAX_CHARS = 1000
 SUMMARY_SCHEMA_VERSION = 1
 SUMMARY_GENERATOR = "deterministic"
+# The file's generator when some entries were written by a model; each entry's
+# own ``generated_by`` says which.
+SUMMARY_MIXED_GENERATOR = "mixed"
 
 _MAX_LEAD_CHARS = 120
 _MAX_SYMBOLS = 5
@@ -97,6 +101,8 @@ _SENTENCE_END = (".", "!", "?", "…")
 _UNNAMED_COMMUNITY_RE = re.compile(r"^Community \d+$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _NO_LINE = 10**9
+# Office files graphify converts to Markdown before reading them.
+_CONVERTED_SUFFIXES = (".docx", ".xlsx")
 
 
 def _clean(text: Any) -> str:
@@ -226,9 +232,33 @@ def is_file_node(data: dict) -> bool:
     return _is_file_node_label(data.get("label"), data.get("source_file"))
 
 
+def is_document_node(data: dict) -> bool:
+    """Whether a file node is a document, as opposed to a code file."""
+    return data.get("node_kind") == "page" or data.get("file_type") == "document"
+
+
 def file_node_ids(G: nx.Graph) -> list[str]:
     """Ids of the file-level nodes, sorted, so every run walks them in one order."""
     return sorted((n for n, d in G.nodes(data=True) if is_file_node(d)), key=str)
+
+
+def converted_file_nodes(G: nx.Graph, name: str) -> list[str]:
+    """File nodes of the Markdown that graphify converted the Word or Excel
+    file ``name`` to.
+
+    The graph holds the converted file (``converted/<stem>_<8 hex>.md``), not
+    the original, so the original's name matches no node on its own.
+    """
+    original = Path(unicodedata.normalize("NFC", str(name)))
+    if original.suffix.lower() not in _CONVERTED_SUFFIXES or not original.stem:
+        return []
+    converted = re.compile(re.escape(original.stem) + r"_[0-9a-f]{8}\.md", re.IGNORECASE)
+    out = []
+    for nid in file_node_ids(G):
+        source = Path(unicodedata.normalize("NFC", str(G.nodes[nid].get("source_file") or "")))
+        if "converted" in source.parts[:-1] and converted.fullmatch(source.name):
+            out.append(nid)
+    return out
 
 
 @dataclass(frozen=True)
@@ -591,7 +621,7 @@ def summarize_node(G: nx.Graph, nid: str, root: "Path | None" = None, *,
     data = G.nodes[nid]
     if not is_file_node(data):
         return None
-    is_document = data.get("node_kind") == "page" or data.get("file_type") == "document"
+    is_document = is_document_node(data)
     default = SUMMARY_DOCUMENT_MAX_CHARS if is_document else SUMMARY_MAX_CHARS
     limit = _limit(default if max_chars is None else max_chars)
     if is_document:
@@ -603,42 +633,70 @@ def summarize_node(G: nx.Graph, nid: str, root: "Path | None" = None, *,
 
 
 def build_summaries(G: nx.Graph, root: "Path | None" = None,
-                    max_chars: "int | None" = None) -> dict[str, Any]:
-    """The sidecar document for ``G``: one entry per file node that has a summary."""
-    nodes: dict[str, dict[str, str]] = {}
+                    max_chars: "int | None" = None,
+                    overrides: "dict[str, dict[str, Any]] | None" = None,
+                    files: "dict[str, dict[str, Any]] | None" = None) -> dict[str, Any]:
+    """The sidecar document for ``G``: one entry per file node that has a summary.
+
+    ``overrides`` maps a node id to a summary written some other way (by a
+    model, see ``graphify.summarize_llm``): its ``summary`` and
+    ``generated_by`` take the place of the rule-based ones, and its other keys
+    are kept on the entry. Without overrides every entry is rule-based.
+
+    ``files`` are whole entries for files that have no node in the graph (a
+    PDF, unless it was extracted by a model), keyed by path inside the project.
+    They go in a ``files`` section of their own, which is left out when empty.
+    """
+    nodes: dict[str, dict[str, Any]] = {}
     index = _index(G)
+    overrides = overrides or {}
+    used = False
     for nid in file_node_ids(G):
-        summary = summarize_node(G, nid, root, index=index, max_chars=max_chars)
+        override = overrides.get(str(nid))
+        summary = (override["summary"] if override
+                   else summarize_node(G, nid, root, index=index, max_chars=max_chars))
         if not summary:
             continue
         data = G.nodes[nid]
-        nodes[str(nid)] = {
+        entry: dict[str, Any] = {
             "label": _clean(data.get("label")),
             "source_file": _clean(data.get("source_file")),
             "summary": summary,
             "generated_by": SUMMARY_GENERATOR,
         }
-    return {
+        if override:
+            entry.update(override)
+            used = True
+        nodes[str(nid)] = entry
+    out: dict[str, Any] = {
         "version": SUMMARY_SCHEMA_VERSION,
-        "generator": SUMMARY_GENERATOR,
+        "generator": SUMMARY_MIXED_GENERATOR if used or files else SUMMARY_GENERATOR,
         "nodes": nodes,
     }
+    if files:
+        out["files"] = {key: files[key] for key in sorted(files)}
+    return out
 
 
 def write_summaries(G: nx.Graph, out_path: Path, root: "Path | None" = None,
-                    max_chars: "int | None" = None) -> tuple[Path, int, int]:
+                    max_chars: "int | None" = None,
+                    overrides: "dict[str, dict[str, Any]] | None" = None,
+                    files: "dict[str, dict[str, Any]] | None" = None,
+                    ) -> tuple[Path, int, int]:
     """Write the sidecar for ``G`` to ``out_path``.
 
-    Returns ``(path, summarized, file_nodes)``. When no file node has a summary
-    no file is created. A sidecar that is already there is replaced by an empty
+    Returns ``(path, summarized, file_nodes)``; ``summarized`` counts file
+    nodes, not the entries of ``files``. When there is nothing to write no
+    file is created. A sidecar that is already there is replaced by an empty
     one: left alone, its entries would go on being shown as current.
+    ``overrides`` and ``files`` are passed on to ``build_summaries``.
     """
     out_path = Path(out_path)
-    data = build_summaries(G, root, max_chars)
+    data = build_summaries(G, root, max_chars, overrides, files)
     summarized = len(data["nodes"])
-    if summarized or out_path.is_file():
+    if summarized or files or out_path.is_file():
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        # No timestamp, and entries in node-id order: the same input gives the same bytes.
+        # No timestamp, and entries in key order: the same input gives the same bytes.
         write_text_atomic(out_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return out_path, summarized, len(file_node_ids(G))
 
@@ -651,16 +709,30 @@ def load_summaries(graph_path: Path) -> dict[str, dict[str, Any]]:
     length `--max-chars` allows, since the file can be edited by hand or
     written by another tool.
     """
-    sidecar = Path(graph_path).parent / SUMMARY_SIDECAR_NAME
+    return load_sidecar(Path(graph_path).parent / SUMMARY_SIDECAR_NAME)
+
+
+def load_sidecar(sidecar: Path) -> dict[str, dict[str, Any]]:
+    """``load_summaries`` for a sidecar at any path, such as one written with ``--out``."""
+    return _load_section(sidecar, "nodes")
+
+
+def load_sidecar_files(sidecar: Path) -> dict[str, dict[str, Any]]:
+    """``{path: entry}`` for the files in ``sidecar`` that have no node in the
+    graph, read with the same care as ``load_sidecar`` reads the node entries."""
+    return _load_section(sidecar, "files")
+
+
+def _load_section(sidecar: Path, section: str) -> dict[str, dict[str, Any]]:
     try:
-        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        data = json.loads(Path(sidecar).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    nodes = data.get("nodes") if isinstance(data, dict) else None
-    if not isinstance(nodes, dict):
+    entries = data.get(section) if isinstance(data, dict) else None
+    if not isinstance(entries, dict):
         return {}
     out: dict[str, dict[str, Any]] = {}
-    for nid, entry in nodes.items():
+    for key, entry in entries.items():
         if not isinstance(entry, dict):
             continue
         summary = entry.get("summary")
@@ -669,6 +741,6 @@ def load_summaries(graph_path: Path) -> dict[str, dict[str, Any]]:
             continue
         if source is not None and not isinstance(source, str):
             continue
-        out[str(nid)] = {**entry,
+        out[str(key)] = {**entry,
                          "summary": _shorten(_clean_summary(summary), SUMMARY_HARD_MAX_CHARS)}
     return out

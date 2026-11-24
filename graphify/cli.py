@@ -2573,10 +2573,13 @@ def dispatch_command(cmd: str) -> None:
 
         p = _ap.ArgumentParser(
             prog="graphify summarize",
-            description="Write a short deterministic summary of every file-level node "
-                        "to a sidecar next to graph.json. No model is called and "
-                        "graph.json is not modified. With a file name, print that "
-                        "file's summary and write nothing.",
+            description="Write a short summary of every file-level node to a sidecar "
+                        "next to graph.json; graph.json is not modified. The summary is "
+                        "made by fixed rules and no model is called, unless --backend is "
+                        "given: then the opening pages of each document, PDFs included, "
+                        "are sent to that model, which writes the document's summary; "
+                        "code files are never sent. With a file name, print that file's "
+                        "summary and write nothing.",
         )
         p.add_argument("file", nargs="?", default=None,
                        help="a file's name, path or node id: print its summary only")
@@ -2598,6 +2601,29 @@ def dispatch_command(cmd: str) -> None:
                        help=f"longest a summary may be, {SUMMARY_MIN_MAX_CHARS} to "
                             f"{SUMMARY_HARD_MAX_CHARS} (default {SUMMARY_MAX_CHARS} for a code "
                             f"file, {SUMMARY_DOCUMENT_MAX_CHARS} for a document)")
+        from graphify.summarize_llm import (
+            SUMMARY_MAX_PAGES,
+            SUMMARY_MIN_PAGES,
+            SUMMARY_PAGES,
+        )
+        p.add_argument("--backend", default=None, metavar="NAME",
+                       help="have this model write the summary of each document. Off unless "
+                            "given: an API key in the environment alone never turns it on")
+        p.add_argument("--model", default=None, metavar="NAME",
+                       help="model to use with --backend (default: the backend's default)")
+        p.add_argument("--pages", type=int, default=None, metavar="N",
+                       help=f"how much of each document --backend sends, {SUMMARY_MIN_PAGES} to "
+                            f"{SUMMARY_MAX_PAGES} pages (default {SUMMARY_PAGES})")
+        p.add_argument("--profile", default=None, metavar="NAME",
+                       help="with --backend: your own rules for what a summary must say, read "
+                            "from .graphify/summaries/NAME.md in the project, else from the "
+                            "same folder in your home directory")
+        p.add_argument("--dry-run", action="store_true",
+                       help="with --backend: print the documents, tokens and estimated cost; "
+                            "send nothing and write nothing")
+        p.add_argument("--force", action="store_true",
+                       help="with --backend: send every document again, including those "
+                            "whose summary is still current")
         opts = p.parse_args(sys.argv[2:])
         if opts.file is not None and opts.out is not None:
             p.error("--out writes the summaries of every file; it cannot be used with a file name")
@@ -2605,18 +2631,154 @@ def dispatch_command(cmd: str) -> None:
                 and not SUMMARY_MIN_MAX_CHARS <= opts.max_chars <= SUMMARY_HARD_MAX_CHARS):
             p.error(f"--max-chars must be between {SUMMARY_MIN_MAX_CHARS} and "
                     f"{SUMMARY_HARD_MAX_CHARS}, got {opts.max_chars}")
+        if opts.backend is None:
+            for flag, given in (("--model", opts.model is not None),
+                                ("--pages", opts.pages is not None),
+                                ("--profile", opts.profile is not None),
+                                ("--dry-run", opts.dry_run),
+                                ("--force", opts.force)):
+                if given:
+                    p.error(f"{flag} only applies with --backend")
+        else:
+            from graphify.llm import (
+                BACKENDS as _BACKENDS,
+                _format_backend_env_keys,
+                _get_backend_api_key,
+                backend_disabled_by_env as _backend_disabled_by_env,
+            )
+
+            if opts.backend not in _BACKENDS:
+                p.error(f"unknown backend '{opts.backend}'. "
+                        f"Available: {', '.join(sorted(_BACKENDS))}")
+            if (opts.pages is not None
+                    and not SUMMARY_MIN_PAGES <= opts.pages <= SUMMARY_MAX_PAGES):
+                p.error(f"--pages must be between {SUMMARY_MIN_PAGES} and "
+                        f"{SUMMARY_MAX_PAGES}, got {opts.pages}")
+            # A dry run sends nothing, so it needs neither a key nor the switch.
+            if not opts.dry_run:
+                if _backend_disabled_by_env():
+                    p.error("GRAPHIFY_BACKEND turns every model call off; unset it to "
+                            "use --backend")
+                if (not _get_backend_api_key(opts.backend)
+                        and opts.backend not in ("ollama", "bedrock", "claude-cli")):
+                    print(f"error: no API key for backend '{opts.backend}'. "
+                          f"Set {_format_backend_env_keys(opts.backend)}.", file=sys.stderr)
+                    sys.exit(1)
+        pages = SUMMARY_PAGES if opts.pages is None else opts.pages
         from graphify.sections import section_root
 
         gp = Path(opts.graph or _default_graph_path()).resolve()
         G = _load_cli_graph(gp)
+        root = section_root(gp)
+        profile = None
+        if opts.profile is not None:
+            from graphify.summarize_llm import ProfileError, load_profile
+
+            try:
+                profile = load_profile(opts.profile, root)
+            except ProfileError as exc:
+                p.error(str(exc))
+
+        def _usage_line(usage: dict) -> "str | None":
+            from graphify.llm import estimate_cost as _estimate_cost
+
+            used_in, used_out = usage.get("input", 0), usage.get("output", 0)
+            if not (used_in or used_out):
+                return None
+            line = f"Tokens: {used_in:,} in / {used_out:,} out"
+            cost = _estimate_cost(opts.backend, used_in, used_out)
+            if cost:
+                from graphify.summarize_llm import model_name as _model_name
+
+                line += f", estimated cost ${cost:.4f}"
+                # One price is recorded per backend, the one of its default model.
+                default = _model_name(opts.backend, None)
+                if opts.model is not None and opts.model != default:
+                    line += f" at the price recorded for {default}"
+            return line
         if opts.file is not None:
             # One file: computed from the graph as it is now and printed. The
             # sidecar is neither read nor written.
             from graphify.security import sanitize_label
             from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
-            from graphify.summarize import is_file_node
+            from graphify.summarize import converted_file_nodes, is_file_node
 
-            nid, refusal = _resolve_single_node(G, opts.file)
+            def _with_model(documents: list, file_nodes: int) -> None:
+                """Dry run, or send the one document and print its summary."""
+                from graphify.summarize_llm import (
+                    Entries,
+                    dry_run_report,
+                    model_name,
+                    prepare,
+                    run_jobs,
+                )
+
+                if opts.dry_run:
+                    print()
+                    print("\n".join(dry_run_report(
+                        documents, file_nodes, backend=opts.backend, model=opts.model,
+                        pages=pages, max_chars=opts.max_chars, profile=profile)))
+                    return
+                print(f"  Sending:   the first {pages} pages to {opts.backend} "
+                      f"({model_name(opts.backend, opts.model)})"
+                      + (f", profile {profile.name} ({profile.path})" if profile else ""))
+                jobs, _ = prepare(documents, Entries(), backend=opts.backend,
+                                  model=opts.model, pages=pages, max_chars=opts.max_chars,
+                                  profile=profile, force=True)
+                run = run_jobs(jobs, Entries(), backend=opts.backend, model=opts.model,
+                               pages=pages, max_chars=opts.max_chars, profile=profile)
+                if run.interrupted:
+                    sys.exit(130)
+                if run.failed:
+                    print(f"error: {run.failed[0][1]}", file=sys.stderr)
+                    sys.exit(1)
+                print(f"  Summary:   {(run.entries.get(documents[0]) or {}).get('summary')}")
+                usage = _usage_line(run.usage)
+                if usage:
+                    print(f"  {usage}")
+
+            nid = refusal = None
+            if opts.file.lower().endswith(".pdf"):
+                # A PDF is found on disk: the graph has no node for one unless
+                # a model extracted it.
+                from graphify.summarize_llm import find_pdfs, match_pdfs, pdf_node, plan_pdfs
+
+                found = match_pdfs(find_pdfs(root, gp.parent), root, opts.file)
+                if len(found) > 1:
+                    print(f"'{sanitize_label(opts.file)}' is the name of more than one PDF; "
+                          "give the path of one of them:")
+                    for match in found:
+                        print(f"  {sanitize_label(match.relative_to(root.resolve()).as_posix())}")
+                    sys.exit(EXIT_AMBIGUOUS)
+                if found:
+                    nid = pdf_node(G, root, found[0])
+                if found and nid is None:
+                    print(f"File: {sanitize_label(found[0].name)}")
+                    print("  Source:    "
+                          f"{sanitize_label(found[0].relative_to(root.resolve()).as_posix())}")
+                    if opts.backend is None:
+                        print("  A PDF has no rule-based summary. Run with --backend to have "
+                              "a model write one.")
+                        return
+                    documents, skipped = plan_pdfs(found, root, pages)
+                    if not documents:
+                        print(f"error: {skipped[0][1]}", file=sys.stderr)
+                        sys.exit(1)
+                    _with_model(documents, 0)
+                    return
+            if nid is None:
+                nid, refusal = _resolve_single_node(G, opts.file)
+            if nid is None:
+                # A Word file is in the graph as the Markdown it was converted to.
+                converted = converted_file_nodes(G, opts.file)
+                if len(converted) > 1:
+                    print(f"'{sanitize_label(opts.file)}' was converted to more than one "
+                          "file; give one of them:")
+                    for match in converted:
+                        print(f"  {sanitize_label(str(G.nodes[match].get('source_file') or ''))}")
+                    sys.exit(EXIT_AMBIGUOUS)
+                if converted:
+                    nid = converted[0]
             if nid is None:
                 print(refusal)
                 sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(refusal) else EXIT_NOT_FOUND)
@@ -2629,7 +2791,17 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(1)
             print(f"Node: {label}")
             print(f"  Source:    {sanitize_label(str(d.get('source_file') or ''))}")
-            summary = summarize_node(G, nid, section_root(gp), max_chars=opts.max_chars)
+            if opts.backend is not None:
+                from graphify.summarize_llm import plan_documents
+
+                documents = plan_documents(G, root, pages, opts.max_chars, only=nid)
+                if not documents:
+                    print("  Not a document that can be read, so it is not sent; "
+                          "it keeps its rule-based summary.")
+                    return
+                _with_model(documents, 1)
+                return
+            summary = summarize_node(G, nid, root, max_chars=opts.max_chars)
             print(f"  Summary:   {summary or '(nothing to summarize in this file)'}")
             return
         out = Path(opts.out) if opts.out else gp.parent / SUMMARY_SIDECAR_NAME
@@ -2637,16 +2809,125 @@ def dispatch_command(cmd: str) -> None:
         if out.resolve() == gp or (out.exists() and out.samefile(gp)):
             p.error("--out is the graph file itself; summaries are written beside "
                     "graph.json, never into it")
+        from graphify.summarize import file_node_ids, load_sidecar, load_sidecar_files
+        from graphify.summarize_llm import Entries, kept_entries
+
+        existing = Entries(load_sidecar(out), load_sidecar_files(out))
+        run = None
+        unchanged = Entries()
+        stale = stale_files = 0
+        if opts.backend is not None:
+            from graphify.security import sanitize_label
+            from graphify.summarize_llm import (
+                dry_run_report,
+                find_pdfs,
+                model_name,
+                plan_documents,
+                plan_pdfs,
+                prepare,
+                run_jobs,
+            )
+
+            # A PDF has no node unless a model extracted it, so PDFs come from disk.
+            pdfs = find_pdfs(root, gp.parent)
+            if pdfs:
+                print(f"Reading the first {pages} pages of {len(pdfs)} PDF file(s)...",
+                      file=sys.stderr, flush=True)
+            documents = plan_documents(G, root, pages, opts.max_chars)
+            from_disk, skipped = plan_pdfs(pdfs, root, pages, documents)
+            documents += from_disk
+            for source, reason in skipped:
+                print(f"warning: {sanitize_label(source)}: {reason}; it is not sent",
+                      file=sys.stderr)
+            jobs, unchanged = prepare(documents, existing, backend=opts.backend,
+                                      model=opts.model, pages=pages, max_chars=opts.max_chars,
+                                      profile=profile, force=opts.force)
+            if opts.dry_run:
+                print("\n".join(dry_run_report(
+                    [job.document for job in jobs], len(file_node_ids(G)),
+                    backend=opts.backend, model=opts.model, pages=pages,
+                    max_chars=opts.max_chars, profile=profile,
+                    unchanged=len(unchanged.nodes), unchanged_files=len(unchanged.files))))
+                return
+            overrides = Entries(dict(unchanged.nodes), dict(unchanged.files))
+            if jobs:
+                # Say what leaves the machine before any of it does.
+                print(f"Sending the first {pages} pages of {len(jobs)} document(s) to "
+                      f"{opts.backend} ({model_name(opts.backend, opts.model)}).")
+                if profile is not None:
+                    print(f"Profile: {profile.name} ({profile.path})")
+                run = run_jobs(
+                    jobs, existing, backend=opts.backend, model=opts.model, pages=pages,
+                    max_chars=opts.max_chars, profile=profile,
+                    progress=lambda number, total, document: print(
+                        f"  [{number}/{total}] {document.source_file}",
+                        file=sys.stderr, flush=True))
+                overrides.nodes.update(run.entries.nodes)
+                overrides.files.update(run.entries.files)
+                # A PDF with no node has no rule-based summary to fall back to.
+                no_node = {document.source_file for document in from_disk}
+                for source, reason in run.failed:
+                    left = ("it has no summary"
+                            if source in no_node and source not in overrides.files
+                            else "it keeps its earlier summary")
+                    print(f"warning: {source}: {reason}; {left}", file=sys.stderr)
+        else:
+            overrides, stale, stale_files = kept_entries(G, root, existing)
         had_sidecar = out.is_file()
         out_path, summarized, file_nodes = write_summaries(
-            G, out, section_root(gp), opts.max_chars)
-        if summarized:
-            print(f"Summarized {summarized} of {file_nodes} file nodes -> {out_path}")
+            G, out, root, opts.max_chars, overrides.nodes, overrides.files)
+        if summarized or overrides.files:
+            count = len(overrides.files)
+            print(f"Summarized {summarized} of {file_nodes} file nodes"
+                  + (f", and {count} PDF file{'' if count == 1 else 's'} with no node"
+                     if count else "")
+                  + f" -> {out_path}")
         else:
             what = (f"None of the {file_nodes} file nodes in {gp} has anything to summarize"
                     if file_nodes else f"No file nodes to summarize in {gp}")
             print(f"{what}; cleared the earlier summaries in {out_path}." if had_sidecar
                   else f"{what}; nothing written.")
+        default_out = gp.parent / SUMMARY_SIDECAR_NAME
+        if opts.out and out.resolve() != default_out.resolve():
+            print(f"  Note: graphify explain reads {default_out} only, not this file.")
+        rule_based = summarized - len(overrides.nodes)
+        if opts.backend is None:
+            if overrides:
+                print(f"  {len(overrides)} written earlier by a model are kept; "
+                      f"{rule_based} rule-based")
+            if stale:
+                print(f"  {stale} model-written summaries were out of date, because their "
+                      "document changed, and are rule-based again. Run with --backend to "
+                      "write them again.")
+            if stale_files:
+                print(f"  {stale_files} PDF summaries were removed, because their file "
+                      "changed or is gone. Run with --backend to write them again.")
+            return
+        written = run.written if run else 0
+        parts = [f"{written} written by {opts.backend}:{model_name(opts.backend, opts.model)}"]
+        if unchanged:
+            parts.append(f"{len(unchanged)} unchanged and not sent again")
+        earlier = len(overrides) - written - len(unchanged)
+        if earlier:
+            parts.append(f"{earlier} kept from an earlier run")
+        parts.append(f"{rule_based} rule-based")
+        print("  " + ", ".join(parts))
+        if run is None:
+            return
+        usage = _usage_line(run.usage)
+        if usage:
+            print(usage)
+            _record_extract_cost(gp.parent, run.usage.get("input", 0),
+                                 run.usage.get("output", 0), written)
+        again = "Run again to continue: a finished document is not sent twice."
+        if run.interrupted:
+            print(f"Interrupted; {run.not_sent} document(s) were not sent. {again}",
+                  file=sys.stderr)
+            sys.exit(130)
+        if run.stopped:
+            print(f"Stopped: {run.stopped}; {run.not_sent} document(s) were not sent. "
+                  f"Fix the cause, then {again[0].lower()}{again[1:]}", file=sys.stderr)
+            sys.exit(1)
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
