@@ -12757,6 +12757,33 @@ def extract(
         if _raw_tp != _tp:
             _remap_seen.add(_raw_tp)
             remap_paths.append(_raw_tp)
+    # Nodes this batch emits for a file that is NOT in it, such as the
+    # code-behind class a XAML file embeds from Foo.xaml.cs. In a full scan the
+    # other file is in `paths` and the loop below canonicalizes that node's
+    # scan-path id. On an incremental run that edits only Foo.xaml it was never
+    # registered, so the absolute path leaked into the persisted id.
+    for _n in all_nodes:
+        _sf = _n.get("source_file")
+        if not _sf or not isinstance(_sf, str):
+            continue
+        _raw_sp = Path(_sf)
+        try:
+            _sp = _resolved(_raw_sp)
+        except (OSError, RuntimeError):
+            continue
+        if _sp in _remap_seen:
+            continue
+        _remap_seen.add(_sp)
+        try:
+            _sp.relative_to(root)
+            if not _sp.is_file():
+                continue
+        except (ValueError, OSError):
+            continue
+        remap_paths.append(_sp)
+        if _raw_sp != _sp:
+            _remap_seen.add(_raw_sp)
+            remap_paths.append(_raw_sp)
     for path in remap_paths:
         old_id = _make_id(str(path))
         try:
