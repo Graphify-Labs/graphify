@@ -2,6 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.120 (2026-11-24)
+
+Resolution, export and performance fixes. The Python change alters call edges, so the AST cache schema bumps (54 to 55) and Python files re-extract on the first build after upgrading; the other fixes need no rebuild.
+
+- Fix: **python** a call made through a function parameter (the enclosing function's own parameter, or one captured from an outer function) is no longer bound to a module-level definition of that name; the parameter is a runtime callback whose target is unknown. A genuine call to an outer function from a non-shadowing scope still resolves (#5418, thanks @Deepjyoti-Sarmah). Complements the 0.9.119 lambda-parameter fix.
+- Fix: **go** a type declared across sibling files in a package folds to one node per directory even when a same-named package exists elsewhere, so its member calls resolve instead of being dropped as ambiguous; the two same-named packages stay distinct (#5304 follow-up, thanks @PravalVerma).
+- Fix: **wiki** article bodies link cross-references by node ID rather than label, so two nodes sharing a label link to their own articles instead of collapsing onto the first-registered one; the link text stays the human-readable label (thanks @azizur100389).
+- Fix: **affected** the reverse traversal on an undirected graph walks incident edges instead of scanning the whole edge list, fixing a dropped-orientation bug (it returned nothing on an annotated undirected graph) and turning an O(edges) step into O(degree); the directed path that the CLI always uses is unchanged (#5437, thanks @Gaurav-meena95).
+- Perf: **build** file-label disambiguation for shared basenames is computed with a suffix counter instead of per-file all-pairs comparison, turning an O(files²) step into a near-linear one (~260x on a 2,000-file collision) with byte-identical labels (thanks @Gaurav-meena95).
+
 ## 0.9.119 (2026-11-24)
 
 A fix for a core-install regression in 0.9.118, plus extractor and query fixes. The Python, Go and COBOL changes alter node/edge output, so the AST cache schema bumps (53 to 54) and those languages re-extract on the first build after upgrading; the other fixes need no rebuild.
