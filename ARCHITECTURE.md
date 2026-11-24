@@ -72,6 +72,14 @@ when no changed file is eligible for extraction. Changes to in-scope ignore
 files also refresh the eligible AST corpus so newly included files can enter
 the graph.
 
+Wiki community audits and relationships on directed graphs include incoming
+and outgoing edges. Each incident edge contributes once per community,
+including distinct reciprocal and parallel edges.
+
+C calls through struct function-pointer fields stay unresolved unless evidence
+identifies the target. A bare name match is insufficient for field callees.
+AST cache schema 53 retires older call facts.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
@@ -181,7 +189,7 @@ pairs with the separate `definition_file` / `definition_location` site.
 Objective-C declarations and implementations in one file follow the same rule.
 Duplicate records only backfill an end location when the corresponding file and
 start location match. Build, JSON export and global graphs preserve both fields.
-AST cache schema 52 invalidates results that predate declaration ranges.
+AST cache schema 54 invalidates results that predate declaration ranges.
 
 `graphify section` and the `get_section` MCP tool return the text of a Markdown
 heading's section (`graphify/sections.py`). The section's end is found at read

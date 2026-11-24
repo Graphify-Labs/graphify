@@ -4681,6 +4681,7 @@ def dispatch_command(cmd: str) -> None:
             doc_files = []
             paper_files = []
             image_files = []
+            video_files = []
             deleted_files = []
             excluded_files = []
             graph_stale_sources = []
@@ -4702,6 +4703,7 @@ def dispatch_command(cmd: str) -> None:
             doc_files = [Path(p) for p in new_by_type.get("document", [])]
             paper_files = [Path(p) for p in new_by_type.get("paper", [])]
             image_files = [Path(p) for p in new_by_type.get("image", [])]
+            video_files = [Path(p) for p in new_by_type.get("video", [])]
             deleted_files = list(detection.get("deleted_files", []))
             excluded_files = list(detection.get("excluded_files", []))
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
@@ -4776,6 +4778,7 @@ def dispatch_command(cmd: str) -> None:
             doc_files = [Path(p) for p in files_by_type.get("document", [])]
             paper_files = [Path(p) for p in files_by_type.get("paper", [])]
             image_files = [Path(p) for p in files_by_type.get("image", [])]
+            video_files = [Path(p) for p in files_by_type.get("video", [])]
             deleted_files = []
             excluded_files = []
             graph_stale_sources = []
@@ -4895,6 +4898,16 @@ def dispatch_command(cmd: str) -> None:
             print(
                 f"[graphify extract] {len(_sec)} file(s) skipped as potentially sensitive "
                 f"(rename or move if wrongly flagged): {_snames}{_smore}"
+            )
+        # Audio/video files are detected (classified together under the "video"
+        # bucket) but headless extract has no transcription step wired in, so they
+        # were previously dropped with no trace: a media-only corpus silently wrote
+        # an empty graph and exited 0 with no indication anything had been found
+        # and skipped (#5076).
+        if video_files:
+            print(
+                f"[graphify extract] {len(video_files)} audio/video file(s) detected but "
+                "not extracted (headless extract has no transcription step)"
             )
         stages.mark("detect")
 

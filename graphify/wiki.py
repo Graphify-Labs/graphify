@@ -2,11 +2,11 @@
 # Generates an agent-crawlable wiki: index.md + one article per community + god node articles
 from __future__ import annotations
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 import re
 import networkx as nx
 
-from graphify.build import edge_datas
 from graphify.paths import stem_filename_budget, write_text_atomic_if_changed
 
 # Room _unique_slug needs for the collision suffix ("_2" … "_9999") it appends
@@ -107,15 +107,18 @@ def _md_link_to(label: str, slug: str | None) -> str:
     return f"[{text}]({slug}.md)"
 
 
-def _cross_community_links(G: nx.Graph, nodes: list[str], own_cid: int, labels: dict[int, str], node_community: dict[str, int]) -> list[tuple[str, int]]:
-    """Return (community_label, edge_count) pairs for cross-community connections, sorted descending."""
-    counts: dict[str, int] = Counter()
-    for nid in nodes:
-        for neighbor in G.neighbors(nid):
-            ncid = node_community.get(neighbor)
-            if ncid is not None and ncid != own_cid:
-                counts[labels.get(ncid, f"Community {ncid}")] += 1
-    return sorted(counts.items(), key=lambda x: -x[1])
+def _incident_edges(
+    G: nx.Graph, nodes: Iterable[str],
+) -> Iterator[tuple[str, str, dict]]:
+    """Yield each incident edge once, including reciprocal and parallel edges."""
+    nodes = list(nodes)
+    selected = set(nodes)
+    yield from G.edges(nodes, data=True)
+    if isinstance(G, nx.DiGraph):
+        # Edges with both endpoints selected were already in the outgoing view.
+        for source, target, data in G.in_edges(nodes, data=True):
+            if source not in selected:
+                yield source, target, data
 
 
 def _community_article(
@@ -130,25 +133,17 @@ def _community_article(
 ) -> str:
     resolver = resolver or {}
     top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
-    cross = _cross_community_links(G, nodes, cid, labels, node_community or {})
-
-    # Edge confidence breakdown, over every edge INCIDENT to the community (the
-    # cross-community ones included — those are disproportionately the uncertain
-    # edges, and AMBIGUOUS is what ARCHITECTURE.md flags for human review).
-    #
-    # ``G.edges(nbunch)`` reports each incident edge exactly once. Walking
-    # ``nodes x G.neighbors`` instead visited an edge once per endpoint inside
-    # the community, so an intra-community edge was counted TWICE while a
-    # crossing one was counted once. Intra-community edges are overwhelmingly
-    # the high-confidence EXTRACTED ones — that is what makes a community — so
-    # the split was biased towards confidence and understated the review
-    # burden. On a MultiGraph this also counts parallel edges individually
-    # rather than collapsing them to the first (``edge_data``), which is the
-    # same understatement: an AMBIGUOUS edge parallel to an EXTRACTED one used
-    # to be invisible here.
-    conf_counts: Counter = Counter(
-        d.get("confidence", "EXTRACTED") for *_, d in G.edges(nodes, data=True)
-    )
+    selected = set(nodes)
+    cross_counts: Counter[str] = Counter()
+    conf_counts: Counter[str] = Counter()
+    communities = node_community or {}
+    for source, target, data in _incident_edges(G, nodes):
+        conf_counts[data.get("confidence", "EXTRACTED")] += 1
+        neighbor = target if source in selected else source
+        ncid = communities.get(neighbor)
+        if ncid is not None and ncid != cid:
+            cross_counts[labels.get(ncid, f"Community {ncid}")] += 1
+    cross = sorted(cross_counts.items(), key=lambda item: -item[1])
     total_edges = sum(conf_counts.values()) or 1
 
     sources = sorted({G.nodes[n].get("source_file") or "" for n in nodes} - {""})
@@ -216,16 +211,27 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
 
     # Group neighbors by relation type
     by_relation: dict[str, list[str]] = {}
-    for neighbor in sorted(G.neighbors(nid), key=lambda n: G.degree(n), reverse=True):
-        nd = G.nodes[neighbor]
-        neighbor_label = nd.get("label", neighbor)
-        for ed in edge_datas(G, nid, neighbor):
-            rel = ed.get("relation", "related")
-            conf = ed.get("confidence", "")
-            conf_str = f" `{conf}`" if conf else ""
-            by_relation.setdefault(rel, []).append(
-                f"{_md_link(neighbor_label, resolver)}{conf_str}"
-            )
+    directed = isinstance(G, nx.DiGraph)
+    connections = (
+        (target if source == nid else source, source != nid, data)
+        for source, target, data in _incident_edges(G, [nid])
+    )
+    for neighbor, incoming, ed in sorted(
+        connections, key=lambda item: G.degree(item[0]), reverse=True
+    ):
+        neighbor_label = G.nodes[neighbor].get("label", neighbor)
+        rel = ed.get("relation", "related")
+        conf = ed.get("confidence", "")
+        conf_str = f" `{conf}`" if conf else ""
+        # On a directed graph an incident edge can point either way. Mark the
+        # ones where this node is the target, so a directional relation like
+        # `calls` is not read backwards: an unmarked entry is outgoing (this
+        # node -> neighbor), an `(incoming)` entry is neighbor -> this node
+        # (#5369 follow-up).
+        dir_str = " _(incoming)_" if directed and incoming else ""
+        by_relation.setdefault(rel, []).append(
+            f"{_md_link(neighbor_label, resolver)}{conf_str}{dir_str}"
+        )
 
     lines += ["## Connections by Relation", ""]
     for rel, targets in sorted(by_relation.items()):
@@ -367,7 +373,7 @@ def to_wiki(
     god_nodes_data = god_nodes_data or []
 
     # Build node->community lookup once; node attrs never carry community (it lives in
-    # the communities dict), so _cross_community_links and _god_node_article need this.
+    # the communities dict), so community and god-node articles need this.
     node_community: dict[str, int] = {n: cid for cid, nodes in communities.items() for n in nodes}
 
     count = 0
@@ -379,7 +385,8 @@ def to_wiki(
     # Articles are capped against THIS wiki directory, not just NAME_MAX: on
     # Windows a 200-char slug under an ordinary graphify-out/wiki/ overruns
     # MAX_PATH and write_text raises FileNotFoundError partway through the
-    # export (#2655). No-op on POSIX.
+    # export (#2655). On POSIX it only tightens where the wiki's filesystem has
+    # a NAME_MAX below 255 (#2109).
     _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
 
     def _unique_slug(base: str) -> str:
