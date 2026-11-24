@@ -409,7 +409,8 @@ def _cross_community_surprises(
             return []
         if G.number_of_nodes() > 5000:
             return []
-        betweenness = nx.edge_betweenness_centrality(G)
+        k = min(50, G.number_of_nodes()) if G.number_of_nodes() > 500 else None
+        betweenness = nx.edge_betweenness_centrality(G, k=k, seed=42)
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
