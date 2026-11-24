@@ -3906,9 +3906,10 @@ def serve_http(
         session_timeout=session_timeout,
     )
 
+    display_host = f"[{host.strip('[]')}]" if ":" in host else host
     auth_note = "api-key required" if api_key else "no auth (set --api-key to require one)"
     print(
-        f"graphify MCP server (streamable-http) on http://{host}:{port}{path} - {auth_note}",
+        f"graphify MCP server (streamable-http) on http://{display_host}:{port}{path} - {auth_note}",
         file=sys.stderr,
     )
     if host in ("0.0.0.0", "::", "") and not api_key:
