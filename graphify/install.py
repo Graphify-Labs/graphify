@@ -564,9 +564,8 @@ def _section_claimers(skill_dir: Path, agents_md: Path) -> list[str]:
     )
 
 
-def _record_section_claim(skill_dst: Path, platform_name: str, agents_md: Path) -> None:
+def _record_section_claim(skill_dir: Path, platform_name: str, agents_md: Path) -> None:
     """Record ``platform_name`` as a writer of ``agents_md``'s section (best effort)."""
-    skill_dir = skill_dst.parent
     claims = _section_claims(skill_dir)
     paths = claims.setdefault(platform_name, [])
     key = _section_claim_key(agents_md)
@@ -577,8 +576,40 @@ def _record_section_claim(skill_dst: Path, platform_name: str, agents_md: Path) 
     _record_claim_list(skill_dir / _SECTION_CLAIM_FILE, claims)
 
 
-def _release_section_claim(skill_dir: Path, platform_name: str, agents_md: Path) -> list[str]:
-    """Drop this project's claim for ``platform_name``; return who still claims it.
+def _section_claim_dir(
+    platform_name: str, *, project: bool, project_dir: Path | None = None
+) -> Path:
+    """The directory holding ``platform_name``'s skill, where its claim file lives."""
+    return _platform_skill_destination(
+        platform_name, project=project, project_dir=project_dir
+    ).parent
+
+
+def _agents_md_claimers(agents_md: Path) -> list[str]:
+    """Platforms recorded as having written ``agents_md``'s section, any scope.
+
+    Each platform records its claim beside its own skill, so a section written by
+    e.g. codex is invisible from the shared ``.agents`` directory that freebuff
+    uninstalls from. Removing rules another platform still installs would turn
+    that platform's always-on mechanism off behind its back, so every installed
+    destination is consulted before the section is deleted.
+    """
+    project_dir = agents_md.parent
+    names: set[str] = set()
+    for name in _PLATFORM_CONFIG:
+        for project in (False, True):
+            try:
+                skill_dir = _section_claim_dir(
+                    name, project=project, project_dir=project_dir
+                )
+            except (KeyError, OSError):
+                continue
+            names.update(_section_claimers(skill_dir, agents_md))
+    return sorted(names)
+
+
+def _release_section_claim(skill_dir: Path, platform_name: str, agents_md: Path) -> None:
+    """Drop this project's claim for ``platform_name``.
 
     Other projects keep their own claims, so uninstalling one project never
     leaves a section behind in it, and never removes a section another project
@@ -597,7 +628,6 @@ def _release_section_claim(skill_dir: Path, platform_name: str, agents_md: Path)
     else:
         with contextlib.suppress(OSError):
             path.unlink()
-    return _section_claimers(skill_dir, agents_md)
 
 
 def _platforms_sharing_skill_path(
@@ -2386,6 +2416,11 @@ def _agents_md_target(project_dir: Path | None) -> Path:
 def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     target = _agents_md_target(project_dir)
+    # Record who wrote the section before writing it: the claim tells an
+    # uninstall of another platform whether the rules are still wanted.
+    skill_dir = _section_claim_dir(platform, project=project, project_dir=project_dir)
+    if skill_dir.is_dir():
+        _record_section_claim(skill_dir, platform, target)
 
     if target.exists():
         content, newline = _read_keep_newline(target)
@@ -2454,9 +2489,8 @@ def _agents_platform_install(project_dir: Path | None = None, platform: str = "a
     The bare `graphify install --platform agents|freebuff` path stays skill-only
     (via install()), exactly as amp's `--platform amp` does.
     """
-    skill_dst = _copy_skill_file(platform)
+    _copy_skill_file(platform)
     _agents_install(project_dir or Path("."), platform)
-    _record_section_claim(skill_dst, platform, _agents_md_target(project_dir))
 def _freebuff_install(project_dir: Path | None = None) -> None:
     """`graphify freebuff install`: the shared Agent-Skills bundle + AGENTS.md.
 
@@ -2477,7 +2511,6 @@ def _freebuff_project_install(project_dir: Path | None = None) -> None:
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file("freebuff", project=True, project_dir=project_dir)
     _agents_install(project_dir, "freebuff", project=True)
-    _record_section_claim(skill_dst, "freebuff", _agents_md_target(project_dir))
     _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"])
 def _freebuff_project_uninstall(
     project_dir: Path | None = None, *, report_missing: bool = True, keep_shared: bool = True
@@ -2498,23 +2531,15 @@ def _freebuff_project_uninstall(
         _platform_skill_destination("freebuff", project=True, project_dir=project_dir).parent
     ):
         print("nothing to remove")
-    # The skill stays while another name claims it; the section goes unless
-    # another name recorded writing it too (`agents --project` is skill-only, so
-    # it never does).
-    skill_dir = _platform_skill_destination("freebuff", project=True, project_dir=project_dir).parent
-    if _release_section_claim(skill_dir, "freebuff", _agents_md_target(project_dir)):
-        return
-    _agents_uninstall(project_dir, platform="freebuff")
+    # The skill stays while another name claims it, and the section goes unless
+    # another installed platform recorded writing it here too (`agents --project`
+    # is skill-only, so it never does).
+    _agents_uninstall(project_dir, platform="freebuff", project=True)
 def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = "agents") -> None:
     """`graphify agents|freebuff uninstall`: remove the skill and the AGENTS.md section."""
     removed = _remove_skill_file(platform)
     if removed:
         print("skill removed")
-    skill_dir = _platform_skill_destination(platform).parent
-    agents_md = _agents_md_target(project_dir)
-    if _release_section_claim(skill_dir, platform, agents_md):
-        # Another name wrote the section in this same project: the rules stay wanted.
-        return
     _agents_uninstall(project_dir or Path("."), platform=platform)
 def _project_install(platform_name: str, project_dir: Path | None = None, strict: bool = False) -> None:
     """Install platform skill/config files in the current project."""
@@ -2582,7 +2607,7 @@ def _project_uninstall(
         _kiro_uninstall(project_dir)
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
-        _agents_uninstall(project_dir, platform=platform_name)
+        _agents_uninstall(project_dir, platform=platform_name, project=True)
         if platform_name == "codex":
             _uninstall_codex_hook(project_dir)
     elif platform_name == "antigravity":
@@ -2627,26 +2652,16 @@ def _project_uninstall_all(project_dir: Path | None = None) -> None:
     for platform_name in ("gemini", "cursor"):
         _project_uninstall(platform_name, project_dir)
     print("\nDone.")
-def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
-    """Remove the graphify section from the local AGENTS.md."""
-    target = (project_dir or Path(".")) / "AGENTS.md"
-
+def _agents_section_uninstall(target: Path) -> None:
+    """Delete the graphify section from ``target``, tolerating a missing file."""
     if not target.exists():
         print("No AGENTS.md found in current directory - nothing to do")
-        if platform == "opencode":
-            _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
-        elif platform == "kilo":
-            _uninstall_kilo_plugin(project_dir or Path("."))
         return
 
     content, newline = _read_keep_newline(target)
     cleaned = _remove_marker_section(content, _AGENTS_MD_MARKER)
     if cleaned is None:
         print("graphify section not found in AGENTS.md - nothing to do")
-        if platform == "opencode":
-            _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
-        elif platform == "kilo":
-            _uninstall_kilo_plugin(project_dir or Path("."))
         return
 
     # A symlink stays: writing through it cleans the file it points to.
@@ -2657,10 +2672,33 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         target.unlink()
         print(f"AGENTS.md was empty after removal - deleted {target.resolve()}")
 
+
+def _agents_uninstall(
+    project_dir: Path, platform: str = "", *, project: bool = False
+) -> None:
+    """Remove the graphify section from the local AGENTS.md.
+
+    Releases ``platform``'s section claim first, then keeps the section while any
+    other installed platform records writing it. Per-platform sidecars (opencode
+    plugin, kilo plugin) are removed either way: they belong to the platform that
+    is uninstalling, not to the section.
+    """
+    target = _agents_md_target(project_dir)
+    if platform:
+        _release_section_claim(
+            _section_claim_dir(platform, project=project, project_dir=project_dir),
+            platform,
+            target,
+        )
+    if not (platform and _agents_md_claimers(target)):
+        _agents_section_uninstall(target)
+
     if platform == "opencode":
         _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
     elif platform == "kilo":
         _uninstall_kilo_plugin(project_dir or Path("."))
+
+
 def _kilo_uninstall_global() -> list[str]:
     removed = []
     command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"

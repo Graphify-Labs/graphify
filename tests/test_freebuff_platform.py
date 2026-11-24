@@ -492,6 +492,41 @@ def test_uninstalling_one_project_leaves_no_section_in_it(tmp_path, capsys):
     assert "## graphify" in _agents_md_text(project_b)
 
 
+def test_freebuff_project_uninstall_keeps_the_section_codex_wrote(tmp_path, capsys):
+    """The claim that keeps a section alive is per platform, and codex records it
+    in .codex, not in the shared .agents directory freebuff uninstalls from."""
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+
+    _run(project, ["codex", "install", "--project"], home)
+    _run(project, ["freebuff", "install", "--project"], home)
+    capsys.readouterr()
+
+    _run(project, ["freebuff", "uninstall", "--project"], home)
+
+    assert "## graphify" in _agents_md_text(project)
+    assert (project / ".codex" / "skills" / "graphify").exists()
+
+    _run(project, ["codex", "uninstall", "--project"], home)
+    assert "## graphify" not in _agents_md_text(project)
+
+
+def test_codex_uninstall_keeps_the_section_freebuff_wrote(tmp_path, capsys):
+    """The reverse direction: codex leaving must not strip freebuff's rules."""
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+
+    _run(project, ["freebuff", "install", "--project"], home)
+    _run(project, ["codex", "install", "--project"], home)
+    capsys.readouterr()
+
+    _run(project, ["codex", "uninstall", "--project"], home)
+
+    assert "## graphify" in _agents_md_text(project)
+
+
 def test_full_uninstall_removes_a_doubly_claimed_directory(tmp_path, capsys):
     """A full teardown ignores the claims it is about to drop: no "skill kept"
     line for a directory the same command goes on to delete."""
