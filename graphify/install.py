@@ -2150,9 +2150,10 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
 # bridge - and printing the activation command is what makes them live.
 _DSH_BRIDGE_PACKAGE = "@deepseek-ai/dsh-hooks-claude-code"
 # Pinned, never `latest`: the published latest dist-tag lags the repository
-# (0.0.1-rc.5 vs 0.2.2-rc.5), and the old bridge predates the event contract
-# these hooks rely on.
-_DSH_BRIDGE_VERSION = "0.2.2-rc.5"
+# (0.0.1-rc.5 vs 0.2.3-alpha.2), and the old bridge predates the event contract
+# these hooks rely on. A bridge older than the running dsh is refused by
+# `dsh plugin add`, so this must track dsh's current line.
+_DSH_BRIDGE_VERSION = "0.2.3-alpha.2"
 # dsh's hook parser reads `timeout` as SECONDS (it maps to timeoutSec), unlike
 # Claude Code's milliseconds.
 _DSH_HOOK_TIMEOUT_SECONDS = 10
