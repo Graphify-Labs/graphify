@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.9.114"
+version = "0.9.119"
 description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = "Apache-2.0"
@@ -160,6 +160,7 @@ dev = [
     "pyright>=1.1.409",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.6.0",
     "ruff>=0.15.13",
     "setuptools>=83.0.0",
     "wheel>=0.47.0",
@@ -189,6 +190,13 @@ graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", 
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `serial` marks tests that must not run under xdist parallelism: they assert
+# wall-clock timing (serve/reload latency) or drive their own process pools, so
+# concurrent CPU load from sibling workers makes them flaky. The fast path runs
+# `-n auto -m "not serial"`; a quick second pass runs `-m serial` serially.
+markers = [
+    "serial: run outside xdist parallelism (timing- or concurrency-sensitive)",
+]
 norecursedirs = [
     "graphify-benchmark", "graphify_eval", "graphify_test",
     "worked", "llm-stack-corpus", "llm-stack-demo", "product-site",

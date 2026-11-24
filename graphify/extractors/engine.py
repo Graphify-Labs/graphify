@@ -6,6 +6,7 @@ import importlib
 import json
 import re
 import threading
+from unicodedata import normalize
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -15,6 +16,7 @@ from graphify.extractors.base import (
 )
 from graphify.ids import DeclIdRegistry, normalize_id
 from graphify.extractors.models import LanguageConfig
+from graphify.extractors.python_scope import _python_param_names, _python_param_shadow_checker
 from graphify.extractors.resolution import _resolve_js_import_target
 from graphify.security import sanitize_metadata
 from pathlib import Path
@@ -2862,36 +2864,6 @@ def _python_collect_param_refs(params_node, source: bytes) -> list[tuple[str, st
             _python_collect_type_refs(type_node, source, False, out)
     return out
 
-def _python_param_names(params_node, source: bytes) -> set[str]:
-    """Plain parameter identifiers declared on a Python `parameters` node.
-
-    Covers positional/keyword params plus `*args` / `**kwargs` and typed or
-    default forms — anything that binds a local name the function body can shadow
-    a module-level definition with.
-    """
-    out: set[str] = set()
-    if params_node is None:
-        return out
-    for child in params_node.children:
-        if child.type == "identifier":
-            out.add(_read_text(child, source))
-        elif child.type in (
-            "typed_parameter",
-            "default_parameter",
-            "typed_default_parameter",
-            "list_splat_pattern",
-            "dictionary_splat_pattern",
-        ):
-            # The bound name is the first identifier child (the rest is type/default).
-            name_n = child.child_by_field_name("name")
-            if name_n is None:
-                name_n = next(
-                    (c for c in child.children if c.type == "identifier"), None
-                )
-            if name_n is not None:
-                out.add(_read_text(name_n, source))
-    return out
-
 # pytest fixtures (#ISSUE). A test or fixture names a fixture as a parameter:
 # `def test_x(runner): runner.invoke(cli)`, with `runner` defined in the same
 # file or a conftest.py above it. The parameter has no annotation, so it is
@@ -4867,6 +4839,23 @@ def _csharp_return_info(method_node, source: bytes) -> list:
     return [ret, len(tparams)]
 
 
+def _csharp_deferred_member(access, source: bytes) -> list | None:
+    """``["member", receiver, name, []]`` for ``var x = T.P`` (#5376).
+
+    The variable's type is the declared type of the property or field ``P`` on
+    ``T``, which may be declared in another file, so the cross-file pass
+    resolves it. Only a plain ``identifier.identifier`` access qualifies.
+    """
+    inner = access.child_by_field_name("expression")
+    name = access.child_by_field_name("name")
+    if (
+        inner is None or name is None
+        or inner.type != "identifier" or name.type != "identifier"
+    ):
+        return None
+    return ["member", _read_text(inner, source), _read_text(name, source), []]
+
+
 def _csharp_deferred_call(invocation, source: bytes) -> list | None:
     """``[receiver, method, type args]`` for ``var x = R.M<A>(...)`` (#4266).
 
@@ -5043,6 +5032,11 @@ def _csharp_method_receiver_types(
                                 # `var v = R.M<A>()` — typed cross-file from
                                 # M's declared return type (#4266).
                                 type_name = _csharp_deferred_call(g, source)
+                                break
+                            if g.type == "member_access_expression":
+                                # `var a = T.P` — typed cross-file from P's
+                                # declared type (#5376).
+                                type_name = _csharp_deferred_member(g, source)
                                 break
                     bind(_read_text(name_node, source), type_name, scope, declared_elem)
         elif node.type == "foreach_statement":
@@ -8002,6 +7996,10 @@ def _extract_generic(
     )
     python_receiver_shadowed = (
         _python_receiver_shadow_checker(root, source)
+        if config.ts_module == "tree_sitter_python" else None
+    )
+    python_param_shadowed = (
+        _python_param_shadow_checker(source)
         if config.ts_module == "tree_sitter_python" else None
     )
     python_module_instances = (
@@ -11415,6 +11413,45 @@ def _extract_generic(
             "weight": 1.0,
         })
 
+    python_lambda_bindings: dict[int, tuple[str, set[str]]] = {}
+
+    def _python_private_prefix(node) -> str:
+        # A nested class's bases and decorators still use the outer class's
+        # private names. A class supplies its own prefix inside its body.
+        while (parent := node.parent) is not None:
+            if parent.type == "class_definition" and node == parent.child_by_field_name("body"):
+                class_name = parent.child_by_field_name("name")
+                if class_name is None:
+                    return ""
+                name = normalize("NFKC", _read_text(class_name, source)).lstrip("_")
+                return f"_{name}" if name else ""
+            node = parent
+        return ""
+
+    def _python_binding_name(name: str, private_prefix: str) -> str:
+        name = normalize("NFKC", name)
+        if name.startswith("__") and not name.endswith("__"):
+            return private_prefix + name
+        return name
+
+    def _python_lambda_param_shadows(node, name: str) -> bool:
+        """Check lambda body bindings. Defaults cannot see that lambda's own parameters."""
+        while (parent := node.parent) is not None:
+            if parent.type in ("function_definition", "class_definition", "module"):
+                break
+            if parent.type == "lambda" and node == parent.child_by_field_name("body"):
+                if parent.id not in python_lambda_bindings:
+                    prefix = _python_private_prefix(parent)
+                    parameters = _python_param_names(parent.child_by_field_name("parameters"), source)
+                    python_lambda_bindings[parent.id] = (
+                        prefix, {_python_binding_name(param, prefix) for param in parameters},
+                    )
+                prefix, parameters = python_lambda_bindings[parent.id]
+                if _python_binding_name(name, prefix) in parameters:
+                    return True
+            node = parent
+        return False
+
     def _emit_indirect_ref(ident, scope_nid: str, enclosing_locals, context: str) -> None:
         """A function referenced BY NAME — passed as a call argument, or listed as a
         value in a dispatch table — is an indirect dependency of ``scope_nid``. Emit
@@ -11435,6 +11472,8 @@ def _extract_generic(
         # it shadows in every scope — no unique same-named definition elsewhere in
         # the corpus is what this identifier refers to.
         if ident_name in js_external_imports:
+            return
+        if config.ts_module == "tree_sitter_python" and _python_lambda_param_shadows(ident, ident_name):
             return
         _emit_indirect_by_name(ident_name, ident, scope_nid, context)
 
@@ -11872,6 +11911,23 @@ def _extract_generic(
                                     csharp_receiver_chain = [
                                         root_type, _read_text(fname, source)
                                     ]
+                                elif (
+                                    root_type is None
+                                    and csharp_table is not None
+                                    and not _csharp_receiver_is_declared(
+                                        csharp_table, _read_text(inner, source),
+                                        node.start_byte,
+                                    )
+                                ):
+                                    # `T.P.M()` / `T.P?.M()` (#5376): no local,
+                                    # parameter, field or property named `T` is in
+                                    # scope, so `T` names a type and `P` is a
+                                    # static member of it -- the singleton idiom
+                                    # `Audio.Instance.Click()`. The resolver types
+                                    # `P` from its declaration, like `x.F.M()`.
+                                    csharp_receiver_chain = [
+                                        _read_text(inner, source), _read_text(fname, source)
+                                    ]
                         elif recv is not None and recv.type == "element_access_expression":
                             # xs[i].M() on a `T[]` / `List<T>`: an element is a T
                             # (#4246).
@@ -12157,6 +12213,10 @@ def _extract_generic(
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
+                    elif config.ts_module == "tree_sitter_c" and func_node.type == "field_expression":
+                        # A C field callee is an indirect function-pointer call.
+                        # Its field name gives no evidence for a free function.
+                        callee_name = None
                     elif func_node.type in config.call_accessor_node_types:
                         is_member_call = True
                         if config.call_accessor_field:
@@ -12251,8 +12311,24 @@ def _extract_generic(
             # A known PHP $this receiver resolves against its owning class's methods.
             _builtin_member_call = is_member_call and callee_name in _LANGUAGE_BUILTIN_GLOBALS
             php_builtin_self_call = config.ts_module == "tree_sitter_php" and self_receiver == "this"
-            if callee_name and (
-                callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call
+            # A bare Python call through a parameter, own or captured, has an
+            # unknown target: neither the same-file nor the cross-file lookup
+            # may name one (#5418).
+            _python_param_call = (
+                python_param_shadowed is not None
+                and not is_member_call
+                and bool(callee_name)
+                and python_param_shadowed(node, callee_name)
+            )
+            if (
+                callee_name
+                and not _python_param_call
+                and (callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call)
+                and not (
+                    config.ts_module == "tree_sitter_python"
+                    and not is_member_call
+                    and _python_lambda_param_shadows(node, callee_name)
+                )
             ):
                 # Python member calls defer to receiver-based resolution unless the
                 # receiver is known to stay in the current class. Falling back to a
@@ -12621,7 +12697,29 @@ def _extract_generic(
                             receiver_type = _csharp_scoped_receiver_type(
                                 receiver_types, member_receiver, node.start_byte
                             )
-                            if isinstance(receiver_type, list):
+                            if isinstance(receiver_type, list) and receiver_type[0] == "member":
+                                # `var a = T.P; a.M()` (#5376): `a` has P's declared
+                                # type, resolved cross-file like `T.P.M()`. T is a
+                                # typed value here, else a type name when nothing
+                                # named T is in scope.
+                                _, recv, member, _unused = receiver_type
+                                csharp_scope = (
+                                    receiver_types if isinstance(receiver_types, tuple) else None
+                                )
+                                recv_t = _csharp_scoped_receiver_type(
+                                    csharp_scope, recv, node.start_byte
+                                )
+                                if isinstance(recv_t, str):
+                                    rc_entry["receiver_var_chain"] = [recv_t, member]
+                                elif (
+                                    recv_t is None
+                                    and csharp_scope is not None
+                                    and not _csharp_receiver_is_declared(
+                                        csharp_scope, recv, node.start_byte
+                                    )
+                                ):
+                                    rc_entry["receiver_var_chain"] = [recv, member]
+                            elif isinstance(receiver_type, list):
                                 # `var v = R.M<A>(); v.X()` (#4266): R is typed
                                 # here, M's return type in the cross-file pass.
                                 _, recv, method, targs = receiver_type

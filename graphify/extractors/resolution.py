@@ -12,6 +12,7 @@ from graphify.extractors.base import (  # noqa: F401
     _read_source_text,
     _read_text,
 )
+from graphify.extractors.python_scope import _python_param_shadow_checker
 from graphify.ids import normalize_id
 from graphify.rcfile import effective_suffix, get_language_overrides
 import functools
@@ -1029,6 +1030,48 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+
+_HTML_SCRIPT_TAG_RE = re.compile(
+    r"<script\b((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>([\s\S]*?)</script\s*>",
+    re.IGNORECASE,
+)
+_NON_JS_SCRIPT_TYPE_RE = re.compile(
+    r"""\btype\s*=\s*["']?(?!module\b|text/javascript\b|application/javascript\b)""",
+    re.IGNORECASE,
+)
+
+
+def _svelte_mask_non_script(src: str) -> tuple[str, str | None]:
+    """Blank everything in a ``.svelte`` file except JS ``<script>`` bodies.
+
+    Every character outside those bodies becomes a space (``\\r``/``\\n`` are
+    kept), so AST locations match the original file. Scripts with a non-JS
+    ``type`` (``application/ld+json`` and the like) are blanked too: their
+    bodies are not statements and would only add parse errors. Returns
+    ``(masked_source, lang)``; ``lang`` is the first JS block's declared
+    ``lang``. Mirrors :func:`_astro_mask_non_script`.
+    """
+    chars = [c if c in "\r\n" else " " for c in src]
+    lang: str | None = None
+    for m in _HTML_SCRIPT_TAG_RE.finditer(src):
+        if _NON_JS_SCRIPT_TYPE_RE.search(m.group(1)):
+            continue
+        start, end = m.start(2), m.end(2)
+        chars[start:end] = src[start:end]
+        # Terminate the region in place of the closing `</script`, so two scripts
+        # on one line don't run together. U+2028 is a JS line terminator, so it
+        # ends a trailing `//` comment that would otherwise swallow the next
+        # block; the `;` after it then ends the statement (inside the comment it
+        # would be inert). U+2028 is not a newline, so line numbers hold, and its
+        # 3 UTF-8 bytes replace 3 ASCII ones, so byte offsets do too.
+        chars[end:end + 4] = ["\u2028", ";", "", ""]
+        if lang is None:
+            lang_m = _VUE_SCRIPT_LANG_RE.search(m.group(1))
+            if lang_m:
+                lang = lang_m.group(1).lower()
+    return "".join(chars), lang
+
+
 def _memo_cwd(path_str: str) -> str:
     """The cwd part of a path-memo key: empty for an absolute path (#perf).
 
@@ -1088,7 +1131,14 @@ def _disambiguate_colliding_node_ids(
     scatter a single module across N file-qualified duplicates.
     """
     by_id: dict[str, list[dict]] = {}
+    # Files whose copy of a node an earlier merge folded into it (Go, #5304). Their
+    # edges still name the shared pre-salt id keyed by their OWN path, so they must
+    # follow the node they were folded into. Transient: always consumed here.
+    folded_files: dict[int, list[str]] = {}
     for node in nodes:
+        folded = node.pop("_go_folded_files", None)
+        if folded:
+            folded_files[id(node)] = folded
         if node.get("type") in ("module", "namespace"):
             continue
         nid = node.get("id")
@@ -1133,6 +1183,11 @@ def _disambiguate_colliding_node_ids(
             remap[(old_id, source_key)] = new_id
             if new_id != old_id:
                 node["id"] = new_id
+        for node in group:
+            for folded_file in folded_files.get(id(node), ()):
+                folded_key = _source_key(folded_file, root)
+                if folded_key and folded_key not in source_keys:
+                    remap.setdefault((old_id, folded_key), node["id"])
 
     if not remap:
         # No colliding ids to salt apart, but the transient `target_file` hint an
@@ -2026,20 +2081,17 @@ def _apply_symbol_resolution_facts(
 def _parse_js_tree(path: Path):
     try:
         from tree_sitter import Language, Parser
-        # .vue embeds the script in non-JS markup; mask it out and parse the
-        # <script> with TS.
-        vue_lang: str | None = None
-        if effective_suffix(path) == ".vue":
-            masked, vue_lang = _vue_mask_non_script(
-                _read_source_text(path, warn=False)
-            )
+        suffix = effective_suffix(path)
+        if suffix in (".vue", ".svelte"):
+            # Blank component markup before parsing the script bodies.
+            mask = _vue_mask_non_script if suffix == ".vue" else _svelte_mask_non_script
+            masked, lang = mask(_read_source_text(path, warn=False))
             source = masked.encode("utf-8")
+            use_ts = lang not in ("js", "jsx")
         else:
             source = _read_source_bytes(path, warn=False)
-        use_ts = effective_suffix(path) in (".ts", ".mts", ".cts") or (
-            effective_suffix(path) == ".vue" and vue_lang not in ("js", "jsx")
-        )
-        if effective_suffix(path) == ".tsx":
+            use_ts = suffix in (".ts", ".mts", ".cts")
+        if suffix == ".tsx":
             # .tsx must use the JSX-aware TSX grammar, mirroring the engine's
             # _TSX_CONFIG (ts_language_fn="language_tsx"). Parsing .tsx with
             # language_typescript misparses JSX, and tree-sitter's error
@@ -3016,7 +3068,7 @@ def _python_imported_names(node, source: bytes) -> list[tuple[str, str]]:
             continue
         if child.type == "dotted_name":
             name = _read_text(child, source)
-            names.append((name, name.split(".")[-1]))
+            names.append((name, name.split(".")[0 if node.type == "import_statement" else -1]))
         elif child.type == "aliased_import":
             name_node = child.child_by_field_name("name")
             alias_node = child.child_by_field_name("alias")
@@ -3380,11 +3432,18 @@ def _collect_python_symbol_resolution_facts(
     root: Path,
     facts: _SymbolResolutionFacts,
     ambiguous_python_modules: set[str] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     ambiguous_python_modules = ambiguous_python_modules or set()
     py_paths = [path for path in paths if effective_suffix(path) == ".py"]
     if not py_paths:
         return
+
+    calls_by_file: dict[Path, list[dict]] = {}
+    for call in raw_calls or []:
+        source_file = call.get("source_file")
+        if source_file and not call.get("is_member_call") and not call.get("indirect"):
+            calls_by_file.setdefault(_resolve_cached(source_file), []).append(call)
 
     # One parse per file, dropped before the next (the same reason as the JS facts above).
     for path in py_paths:
@@ -3392,8 +3451,19 @@ def _collect_python_symbol_resolution_facts(
         if parsed is None:
             continue
         source, root_node = parsed
+        imported_names: dict[str, tuple[str, str, str | None]] = {}
+        local_import_scopes: dict[str, list[tuple[int, int]]] = {}
 
         for node in _walk_python_tree(root_node):
+            if node.type in ("import_statement", "import_from_statement"):
+                scope = node.parent
+                while scope is not None and scope.type not in (
+                    "module", "function_definition", "class_definition", "lambda",
+                ):
+                    scope = scope.parent
+                if scope is not None and scope.type == "function_definition":
+                    for _, local in _python_imported_names(node, source):
+                        local_import_scopes.setdefault(local, []).append((scope.start_byte, scope.end_byte))
             if node.type != "import_from_statement":
                 continue
             module = _python_import_from_module(node, source)
@@ -3403,6 +3473,12 @@ def _collect_python_symbol_resolution_facts(
             if level == 0 and _make_id(module_name) in ambiguous_python_modules:
                 continue
             target_path = _resolve_python_module_path(module_name, path, root, level)
+            if node.parent is not None and node.parent.type == "module":
+                for imported, local in _python_imported_names(node, source):
+                    imported_names[local] = (
+                        imported, module_name if level == 0 else "",
+                        str(target_path) if target_path is not None else None,
+                    )
             if target_path is not None:
                 # #1146: `from pkg import submod` — if the target is a package
                 # (__init__.py) and an imported name matches a submodule file on
@@ -3458,10 +3534,28 @@ def _collect_python_symbol_resolution_facts(
                         )
                     )
 
+        # Constrain direct-call fallback to the explicitly imported name and
+        # module, including imports the fact resolver could not resolve (#5229).
+        # Only unconditional top-level imports apply file-wide. For explicitly
+        # supplied files outside the scan root, failure to resolve a module does
+        # not establish that it is external; retain their existing fallback.
+        if _resolve_cached(path).is_relative_to(_resolve_cached(root)):
+            for call in calls_by_file.get(_resolve_cached(path), []):
+                if call.get("callee") in imported_names:
+                    scopes = local_import_scopes.get(call["callee"], ())
+                    site = call.get("_python_call_site")
+                    if scopes and (not site or any(start <= site[0] < end for start, end in scopes)):
+                        continue  # A nearer import shadows the module binding.
+                    call["_python_import_binding"] = imported_names[call["callee"]]
+
+        param_shadowed = _python_param_shadow_checker(source)
         for source_id, body in _python_top_level_function_bodies(path, root_node, source):
             for node in _walk_python_tree(body):
                 imported_name = _python_call_identifier(node, source)
                 if imported_name is None:
+                    continue
+                # A parameter named like an import hides it (#5418).
+                if param_shadowed(node, imported_name):
                     continue
                 facts.uses.append(
                     _SymbolUseFact(
@@ -3488,6 +3582,7 @@ def _augment_symbol_resolution_edges(
     _collect_python_symbol_resolution_facts(
         paths, root, facts,
         ambiguous_python_modules=ambiguous_python_modules,
+        raw_calls=raw_calls,
     )
     if resolution_context_nodes:
         _apply_symbol_resolution_facts(
@@ -4191,6 +4286,9 @@ def _merge_decl_def_classes(
         if src == tgt:
             continue
         k = (src, tgt, e.get("relation"), e.get("context"))
+        if e.get("relation") == "calls":
+            # A repeat call site is not a merge twin; keep it for the build's `also_seen`.
+            k += (e.get("source_file"), e.get("source_location"))
         if k in seen_keys:
             continue
         seen_keys.add(k)
@@ -4230,9 +4328,10 @@ def _merge_go_package_types(
 
     GOD-NODE GUARDS:
 
-      * Every node in the id-collision must be a ``.go`` file in ONE directory — Go's
-        package unit. The id folds in only the directory's NAME, so ``a/svc`` and
-        ``b/svc`` collide on id while being different packages; those stay split.
+      * Only ``.go`` nodes in ONE directory — Go's package unit — fold together. The
+        id folds in only the directory's NAME, so ``a/svc`` and ``b/svc`` collide on
+        id while being different packages; those stay split from each other, and
+        each directory's own copies fold separately (#5304).
       * A ``_test.go`` member folds only when its package clause names the same
         package as the group's other files (#5209). An internal test file
         (``package svc``) commonly adds test-only methods to a package type, while an
@@ -4240,10 +4339,17 @@ def _merge_go_package_types(
         types of its own; same-directory is not evidence of same package there, so a
         clause that differs or cannot be read keeps the group split.
 
-    No edge re-pointing is needed: the group already shares one id, so every edge
+    No edge re-pointing is needed here: the group already shares one id, so every edge
     already points at the survivor. The declaration site wins — the file holding
     ``type X``, the only one with a ``contains`` edge to it — and the dropped nodes'
     methods keep their own ``source_file``, so no location is lost with them.
+
+    When the id still collides afterwards (another directory's package declares the
+    same name), ``_disambiguate_colliding_node_ids`` salts each survivor by its own
+    path and re-points edges by the path that EMITTED them, which for a dropped
+    sibling's ``method`` edges is in no salt. The survivor therefore lists the files
+    it absorbed in a transient ``_go_folded_files``, which that pass consumes so those
+    edges follow it instead of staying on the dead bare id (#5304).
     """
     by_id: dict[str, list[dict]] = {}
     for n in all_nodes:
@@ -4269,22 +4375,31 @@ def _merge_go_package_types(
     for nid, group in by_id.items():
         if len(group) < 2:
             continue
-        files = [Path(str(n.get("source_file", ""))) for n in group]
-        if len({f.parent for f in files}) != 1:
-            continue
-        if any(f.name.endswith("_test.go") for f in files):
-            clauses = {_go_package_clause(f) for f in files}
-            if len(clauses) != 1 or None in clauses:
+        # Fold each directory on its own: `alpha/` and `other/alpha/` share the id but
+        # are two packages, and each may spread its own type over sibling files.
+        by_dir: dict[Path, list[dict]] = {}
+        for n in group:
+            by_dir.setdefault(Path(str(n.get("source_file", ""))).parent, []).append(n)
+        for members in by_dir.values():
+            if len(members) < 2:
                 continue
-        # A type whose declaring file is outside the corpus leaves the whole group
-        # method-only; one node is still the answer, so fold on the lowest path.
-        declared = declaring_files.get(nid, set())
-        candidates = [n for n in group if str(n.get("source_file", "")) in declared] or group
-        keeper = min(candidates, key=lambda n: (str(n.get("source_file", "")),
-                                                str(n.get("source_location", ""))))
-        for node in group:
-            if node is not keeper:
-                drop_objs.add(id(node))
+            files = [Path(str(n.get("source_file", ""))) for n in members]
+            if any(f.name.endswith("_test.go") for f in files):
+                clauses = {_go_package_clause(f) for f in files}
+                if len(clauses) != 1 or None in clauses:
+                    continue
+            # A type whose declaring file is outside the corpus leaves the whole group
+            # method-only; one node is still the answer, so fold on the lowest path.
+            declared = declaring_files.get(nid, set())
+            candidates = [n for n in members
+                          if str(n.get("source_file", "")) in declared] or members
+            keeper = min(candidates, key=lambda n: (str(n.get("source_file", "")),
+                                                    str(n.get("source_location", ""))))
+            folded = keeper.setdefault("_go_folded_files", [])
+            for node in members:
+                if node is not keeper:
+                    drop_objs.add(id(node))
+                    folded.append(str(node.get("source_file", "")))
 
     if drop_objs:
         all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]

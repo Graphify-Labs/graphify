@@ -67,6 +67,23 @@ When an import target ID collides with a C-family header, an explicit target
 path takes priority. Unhinted native includes keep the header fallback. Other
 languages require a unique compatible file candidate before remapping.
 
+Hook rebuilds reconcile persisted sources against the current corpus even
+when no changed file is eligible for extraction. Changes to in-scope ignore
+files also refresh the eligible AST corpus so newly included files can enter
+the graph.
+
+Wiki community audits and relationships on directed graphs include incoming
+and outgoing edges. Each incident edge contributes once per community,
+including distinct reciprocal and parallel edges.
+
+C calls through struct function-pointer fields stay unresolved unless evidence
+identifies the target. A bare name match is insufficient for field callees.
+AST cache schema 53 retires older call facts.
+
+Go resolves a selector against its visible lexical binding before considering
+a same-named import. An unknown local receiver does not resolve as a package.
+AST cache schema 54 retires older call facts.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
@@ -119,6 +136,28 @@ AST cache schema 47 retires flat nested IDs and incomplete scope facts.
 Unchanged type metadata is preserved by CLI/watch incremental resolution.
 Existing persisted graphs and source-evidence artifacts with old IDs require
 a full code rebuild: `graphify extract . --code-only --force`.
+
+Unresolved Python direct calls through unconditional top-level `from ... import ...`
+statements constrain name-based fallback to the imported name and module. An
+external import does not bind to an unrelated same-named corpus symbol, and an
+alias cannot acquire a second target named after the alias. This guard runs after
+per-file cache loading, including on changed-file extractions with unchanged
+resolution context; it does not change callback or function-local import handling.
+Explicitly supplied callers outside the scan root retain their existing fallback.
+Previously emitted false edges are removed when their caller is re-extracted.
+The binding is constrained to the module the import names directly; a call through
+a plain (non-package) module that re-exports a same-named symbol from elsewhere is
+left unresolved rather than chased one hop further, so a genuinely ambiguous
+re-export is dropped instead of guessed (package `__init__` re-exports still
+resolve through the symbol-resolution pass).
+
+A Python lambda parameter shadows same-named callables in its body. Bare calls
+through that parameter and references to it as a callback skip both in-file
+lookup and corpus fallback. The binding check applies Python's Unicode
+identifier normalization and class-private name mangling. A lambda's own
+parameters do not shadow names in its default expressions.
+AST cache schema 54 invalidates fragments built before this rule. For an
+existing graph, run `graphify update . --force` to refresh unchanged callers.
 
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
