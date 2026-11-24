@@ -597,6 +597,33 @@ def _node_qualified(G: nx.Graph, nid: str, norm_label: str):
     return value
 
 
+def _degree_data(G: nx.Graph) -> tuple[dict[str, int], int]:
+    """Per-node degree and the BFS/DFS hub threshold, computed once per graph.
+
+    Every query used to materialize `[G.degree(n) for n in G.nodes()]` and sort
+    it just to pick the p99 hub threshold, then call `G.degree(n)` again per
+    visited node (and again per rendered node in the sort key). The values
+    depend only on the graph, so cache them like the trigram index. The
+    node-count guard keeps a graph that grew after the cache was built from
+    serving stale degrees; serve itself never mutates a loaded graph. (The
+    guard deliberately does not call `number_of_edges()`: networkx computes it
+    in O(N), and a guard must not cost a scan.)
+    """
+    cached = G.graph.get("_degree_cache")
+    n = G.number_of_nodes()
+    if cached is not None and cached[0] == n:
+        return cached[1], cached[2]
+    degrees = dict(G.degree())
+    values = list(degrees.values())
+    if values:
+        values.sort()
+        hub_threshold = max(50, values[int(len(values) * 0.99)])
+    else:
+        hub_threshold = 50
+    G.graph["_degree_cache"] = (n, degrees, hub_threshold)
+    return degrees, hub_threshold
+
+
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     """IDF weights for query terms, cached in G.graph['_idf_cache'].
 
@@ -940,6 +967,7 @@ def _score_query(
         {} if collect_per_term_seeds else None
     )
     node_fields = _node_fields(G)
+    degrees, _hub = _degree_data(G)
     for nid, data in node_iter:
         f = node_fields[nid]
         norm_label = f.norm_label
@@ -1063,7 +1091,7 @@ def _score_query(
                     # (-singleton, -degree, label_len, nid) — the minimum
                     # tuple wins, exactly matching max(tied, key=degree)
                     # over (label_len asc, nid asc)-sorted ties.
-                    key = (-singleton, -G.degree(nid), f.label_len, nid)
+                    key = (-singleton, -degrees[nid], f.label_len, nid)
                     cur = best_by_term.get(t)
                     if cur is None or key < cur[0]:
                         best_by_term[t] = (key, nid)
@@ -1431,15 +1459,9 @@ def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tup
 
 
 def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
-    # Compute hub threshold: nodes above this degree are not expanded as transit.
+    # Hub threshold: nodes above this degree are not expanded as transit.
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
-    degrees = [G.degree(n) for n in G.nodes()]
-    if degrees:
-        degrees_sorted = sorted(degrees)
-        p99_idx = int(len(degrees_sorted) * 0.99)
-        hub_threshold = max(50, degrees_sorted[p99_idx])
-    else:
-        hub_threshold = 50
+    degrees, hub_threshold = _degree_data(G)
     seed_set = set(start_nodes)
     visited: set[str] = set(start_nodes)
     # Ordered, not sets: iterating a set of node ids follows the per-process
@@ -1453,7 +1475,7 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
         for n in frontier:
             # Don't expand through high-degree hubs (except seeds - a hub that
             # is the starting node should still be explored).
-            if n not in seed_set and G.degree(n) >= hub_threshold:
+            if n not in seed_set and degrees[n] >= hub_threshold:
                 continue
             for neighbor in G.neighbors(n):
                 if neighbor not in visited:
@@ -1466,13 +1488,7 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
 
 
 def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
-    degrees = [G.degree(n) for n in G.nodes()]
-    if degrees:
-        degrees_sorted = sorted(degrees)
-        p99_idx = int(len(degrees_sorted) * 0.99)
-        hub_threshold = max(50, degrees_sorted[p99_idx])
-    else:
-        hub_threshold = 50
+    degrees, hub_threshold = _degree_data(G)
     seed_set = set(start_nodes)
     visited: set[str] = set()
     edges_seen: list[tuple] = []
@@ -1482,7 +1498,7 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
         if node in visited or d > depth:
             continue
         visited.add(node)
-        if node not in seed_set and G.degree(node) >= hub_threshold:
+        if node not in seed_set and degrees[node] >= hub_threshold:
             continue
         for neighbor in G.neighbors(node):
             if neighbor not in visited:
@@ -1503,6 +1519,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     """
     char_budget = token_budget * 3
     lines = []
+    degrees, _hub = _degree_data(G)
     # Work-memory overlay (derived sidecar) stashed on the graph at load time.
     # Empty when no sidecar exists, so un-annotated output stays byte-identical.
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
@@ -1551,14 +1568,14 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f = str(G.nodes[n].get("source_file") or "")
             sc = scores.get(n, 0.0)
             fr = file_rank.get(f, unranked) if sc > 0 else unranked
-            return (fr, -sc, dist.get(n, 1 << 30), -G.degree(n), str(n))
+            return (fr, -sc, dist.get(n, 1 << 30), -degrees[n], str(n))
 
         seed_hits = sorted(seed_hits, key=_order)
         ordered = seed_hits + sorted(nodes - seed_set, key=_order)
     else:
         ordered = seed_hits + sorted(
             nodes - seed_set,
-            key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
+            key=lambda n: (dist.get(n, 1 << 30), -degrees[n], str(n)),
         )
     for nid in ordered:
         d = G.nodes[nid]
