@@ -312,3 +312,119 @@ def test_malformed_payload_is_silent(tmp_path, monkeypatch):
 def test_missing_graph_is_silent(tmp_path, monkeypatch):
     payload = {"session_id": "dsh-1", "tool_name": "read", "tool_input": {"file_path": "a.py"}}
     assert _invoke("read", payload, tmp_path, monkeypatch) == ""
+
+
+# --- the payload the pinned bridge actually sends -------------------------
+
+def _captured_read(rel, tmp_path, sid="dsh-live-1"):
+    """PreToolUse JSON exactly as captured from dsh 0.2.3-alpha.2 + bridge 0.2.3-alpha.2.
+
+    The bridge forwards the call's parsed arguments, and the model writes paths
+    relative to the session workspace (``src/mod.py``), not absolute ones - the
+    shape every other test in this file does not use.
+    """
+    return {
+        "session_id": sid,
+        "transcript_path": "",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "read",
+        "tool_input": {"file_path": rel},
+        "tool_use_id": "call_00_captured",
+        "cwd": str(tmp_path),
+    }
+
+
+def test_captured_payload_denies_with_a_workspace_relative_path(tmp_path, monkeypatch):
+    _project(tmp_path)
+    # A real graph has nodes for the file, so the deny names the exact command to
+    # run next; the hint resolves a workspace-relative path, not an absolute one.
+    (tmp_path / "graphify-out" / "graph.json").write_text(
+        json.dumps({"nodes": [{"label": "x", "source_file": "src/mod.py", "source_location": "L1"}],
+                    "links": []}),
+        encoding="utf-8",
+    )
+    out = _invoke("read", _captured_read("src/mod.py", tmp_path), tmp_path, monkeypatch, strict=True)
+    assert _is_deny(out), out
+    reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert 'graphify explain "mod.py"' in reason
+
+
+def test_captured_payload_downgrades_after_one_query(tmp_path, monkeypatch):
+    """The one-shot policy on the real shape: deny, then advise, never twice."""
+    _project(tmp_path)
+    payload = _captured_read("src/mod.py", tmp_path)
+    assert _is_deny(_invoke("read", payload, tmp_path, monkeypatch, strict=True))
+    second = _invoke("read", payload, tmp_path, monkeypatch, strict=True)
+    assert _is_nudge(second), second
+
+
+def test_grep_of_one_indexed_file_denies_once_in_strict_mode(tmp_path, monkeypatch):
+    """dsh's `grep` sends a workspace-relative `path`; a single-file target needs
+    the same index evidence Read does, and shares the same one-shot budget."""
+    _project(tmp_path)
+    payload = {
+        "session_id": "dsh-grep-1",
+        "tool_name": "grep",
+        "tool_input": {"pattern": "def x", "path": "src/mod.py"},
+        "cwd": str(tmp_path),
+    }
+    first = _invoke("search", payload, tmp_path, monkeypatch, strict=True)
+    assert _is_deny(first), first
+    second = _invoke("search", payload, tmp_path, monkeypatch, strict=True)
+    assert not _is_deny(second), second
+
+
+def test_deny_cap_zero_turns_the_repeat_mode_off(tmp_path, monkeypatch):
+    """GRAPHIFY_HOOK_DENY_CAP=0 must mean "never deny", not "deny once"."""
+    f = _project(tmp_path)
+    env = {"GRAPHIFY_HOOK_DENY_CAP": "0"}
+    out = _invoke(
+        "read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query", env=env
+    )
+    assert not _is_deny(out), out
+    assert _is_nudge(out), out
+
+
+def test_the_installed_hook_command_produces_the_deny(tmp_path, monkeypatch):
+    """End to end: the command `graphify dsh install` writes, run as dsh runs it.
+
+    Every other test calls `_run_hook_guard` directly, so a hook command that
+    cannot be parsed (a wrong subcommand, an unquoted path) would still pass.
+    """
+    import json as jsonlib
+    import shutil
+    import subprocess
+    import sys
+
+    from graphify.install import install
+
+    dsh_home = tmp_path / "dsh-home"
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setenv("DSH_HOME", str(dsh_home))
+    monkeypatch.chdir(project)
+    _project(project)
+    install("dsh", project=False, strict=True)
+
+    hooks = jsonlib.loads((dsh_home / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    read_group = next(g for g in hooks["PreToolUse"] if g["matcher"] == "read|glob")
+    command = read_group["hooks"][0]["command"]
+    exe = command.split(" ", 1)[0]
+    if shutil.which(exe) is None:
+        import pytest
+
+        pytest.skip(f"installed command names an unresolvable executable: {exe}")
+
+    payload = _captured_read("src/mod.py", project)
+    result = subprocess.run(
+        command,
+        shell=True,
+        cwd=project,
+        input=jsonlib.dumps(payload).encode(),
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    decision = jsonlib.loads(result.stdout)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert "graphify query" in decision["permissionDecisionReason"]

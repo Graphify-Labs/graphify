@@ -282,3 +282,93 @@ def test_install_without_platform_reaches_dsh(scratch):
     assert (project / ".dsh" / "hooks.json").is_file()
     assert (project / ".dsh" / "graphify.cordis.yml").is_file()
     assert (project / ".dsh" / "skills" / "graphify" / "SKILL.md").is_file()
+
+
+# --- clean-machine installs and round trips -------------------------------
+
+def test_dsh_home_defaults_to_home_when_the_env_var_is_unset(tmp_path, monkeypatch, capsys):
+    """$DSH_HOME relocates dsh's home; unset, the install must use ~/.dsh.
+
+    Every other test pins DSH_HOME, so the default path - the one every real
+    user gets - was never exercised. HOME is the suite's sandbox (conftest
+    patches Path.home), so ask for it rather than setting a second one.
+    """
+    monkeypatch.delenv("DSH_HOME", raising=False)
+    home = Path.home()
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    install("dsh", project=False)
+    assert (home / ".dsh" / "hooks.json").is_file()
+    assert (home / ".dsh" / "skills" / "graphify" / "SKILL.md").is_file()
+    patch = (home / ".dsh" / "cordis.patch.yml").read_text(encoding="utf-8")
+    assert f'configPath: "{(home / ".dsh" / "hooks.json").as_posix()}"' in patch
+
+
+def test_install_uninstall_install_restores_one_fence_and_two_groups(scratch, capsys):
+    """A second install after an uninstall must not stack a second fence."""
+    _, dsh_home = scratch
+    install("dsh", project=False)
+    first_patch = (dsh_home / "cordis.patch.yml").read_text(encoding="utf-8")
+
+    from graphify.install import _dsh_uninstall
+
+    _dsh_uninstall(project=False)
+    install("dsh", project=False)
+    second_patch = (dsh_home / "cordis.patch.yml").read_text(encoding="utf-8")
+
+    assert second_patch == first_patch
+    assert second_patch.count("# >>> graphify") == 1
+    assert second_patch.count("# <<< graphify") == 1
+    assert len(_graphify_groups(_hooks(dsh_home / "hooks.json")["PreToolUse"])) == 2
+    assert len(_hooks(dsh_home / "hooks.json")["SessionStart"]) == 1
+
+
+def test_uninstall_on_a_machine_that_never_installed_writes_nothing(scratch, capsys):
+    """The all-platforms `graphify uninstall` sweep must stay silent and inert."""
+    from graphify.install import _dsh_uninstall
+
+    _, dsh_home = scratch
+    _dsh_uninstall(project=False, report_missing=False)
+    assert not dsh_home.exists() or not any(dsh_home.iterdir())
+    assert capsys.readouterr().out == ""
+
+
+def test_install_refuses_to_clobber_a_hooks_json_it_cannot_merge(scratch, capsys):
+    """`hooks` that is not an object means the file is not Claude-shaped: stop."""
+    project, _ = scratch
+    hooks_path = project / ".dsh" / "hooks.json"
+    hooks_path.parent.mkdir(parents=True)
+    original = json.dumps({"hooks": ["not", "a", "dict"]}, indent=2)
+    hooks_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as error:
+        install("dsh", project=True, project_dir=project)
+    assert error.value.code == 1
+    assert hooks_path.read_text(encoding="utf-8") == original
+
+
+def test_install_platform_dsh_strict_does_not_print_the_claude_only_note(scratch, monkeypatch, capsys):
+    """`graphify install --platform dsh --strict` is documented as valid at either scope."""
+    _, dsh_home = scratch
+    monkeypatch.setattr(sys, "argv", ["graphify", "install", "--platform", "dsh", "--strict"])
+    dispatch_install_cli("install")
+    captured = capsys.readouterr()
+    assert "--strict applies to the project PreToolUse hook" not in captured.err
+    commands = _commands(_hooks(dsh_home / "hooks.json")["PreToolUse"])
+    assert commands and all(command.endswith("--strict") for command in commands)
+
+
+def test_a_user_scope_exe_path_with_spaces_is_quoted(scratch, monkeypatch):
+    """The home patch is committed nowhere, so it names an absolute path; a space
+    in that path word-splits the command unless it is quoted."""
+    import graphify.install as install_mod
+
+    _, dsh_home = scratch
+    monkeypatch.setattr(
+        install_mod, "_resolve_graphify_exe", lambda project=False: "/tmp/Application Support/graphify"
+    )
+    install("dsh", project=False)
+    commands = _commands(_hooks(dsh_home / "hooks.json")["PreToolUse"])
+    assert all(command.startswith('"/tmp/Application Support/graphify" hook-guard ') for command in commands)
