@@ -1580,11 +1580,10 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     and then the other nodes are grouped by file, best-scoring file first.
     """
     char_budget = token_budget * 3
-    lines = []
     degrees, _hub = _degree_data(G)
     # Work-memory overlay (derived sidecar) stashed on the graph at load time.
     # Empty when no sidecar exists, so un-annotated output stays byte-identical.
-    overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
+    overlay = getattr(G, "graph", {}).get("_learning_overlay") or None
     seed_set = set(seeds or [])
     seed_hits = [n for n in (seeds or []) if n in nodes]
     # Rank non-seed nodes by hop distance from the seeds so the node that answers
@@ -1639,7 +1638,30 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             nodes - seed_set,
             key=lambda n: (dist.get(n, 1 << 30), -degrees[n], str(n)),
         )
-    for nid in ordered:
+    # NODE lines depend only on the node (and the static learning overlay), never
+    # on the query, so render each once per graph generation and reuse it. A
+    # truncated query used to build a line for every visited node and discard
+    # all but the first few dozen; on the 70k-node grafana graph that was most of
+    # a warm query. The node-count guard mirrors the other per-graph caches.
+    n_nodes = G.number_of_nodes()
+    cached_lines = G.graph.get("_node_line_cache")
+    # Keyed to the overlay object as well: the sidecar is attached to G.graph
+    # after load (and tests reassign it), so a line rendered with no overlay must
+    # not be reused once one appears.
+    if (
+        cached_lines is not None
+        and cached_lines[0] == n_nodes
+        and cached_lines[1] is overlay
+    ):
+        line_cache = cached_lines[2]
+    else:
+        line_cache = {}
+        G.graph["_node_line_cache"] = (n_nodes, overlay, line_cache)
+
+    def _node_line(nid: str) -> str:
+        cached = line_cache.get(nid)
+        if cached is not None:
+            return cached
         d = G.nodes[nid]
         # Every LLM-derived field passes through sanitize_label before being
         # concatenated into MCP tool output (F-010): an attacker who controls a
@@ -1648,7 +1670,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # source_file / source_location / community.
         # The learning= suffix is appended INSIDE the bracket and BEFORE the
         # budget check below, so it counts in char_budget accounting.
-        entry = overlay.get(str(nid))
+        entry = overlay.get(str(nid)) if overlay else None
         learning_suffix = ""
         if entry:
             status = sanitize_label(str(entry.get("status", "")))
@@ -1687,45 +1709,95 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"{learning_suffix}"
             f"{attrs_suffix}]"
         )
-        lines.append(line)
-    for u, v in edges:
-        if u in nodes and v in nodes:
-            # One EDGE line per relationship: on a multigraph a pair can
-            # carry several edges (e.g. contains + calls), each with its
-            # own metadata (#4500). The traversal records one entry per
-            # pair; expanding here keeps every relationship visible.
-            for d in edge_datas(G, u, v):
-                # (u, v) is BFS/DFS visit order, not necessarily the true edge
-                # direction: on an undirected graph G.neighbors() walks callers
-                # and callees alike, so a caller->callee edge renders backwards
-                # whenever the callee is visited first. _src/_tgt (stashed on the
-                # edge data by the `query` CLI loader) carry the real direction;
-                # fall back to (u, v) for graphs/edges that don't set them.
-                src = d.get("_src", u)
-                tgt = d.get("_tgt", v)
-                # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
-                # graph.json): only trust them when they name exactly this edge's
-                # endpoints, else fall back to (u, v). Without this, G.nodes[src]
-                # would KeyError on an unknown id (#2080 review).
-                if {src, tgt} != {u, v}:
-                    src, tgt = u, v
-                context = d.get("context")
-                context_suffix = f" context={sanitize_label(str(context))}" if context else ""
-                # The relation SITE (call/import/reference line in the source's
-                # file), not a def line — so "who calls X" cites a clickable call
-                # location, not the caller's def (#BUG1).
-                _loc = str(d.get("source_location") or "")
-                at_suffix = (
-                    f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
-                    if _loc else ""
-                )
-                line = (
-                    f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                    f"--{sanitize_label(str(d.get('relation', '')))} "
-                    f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                    f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
-                )
-                lines.append(line)
+        line_cache[nid] = line
+        return line
+
+    node_lines = [_node_line(nid) for nid in ordered]
+    node_chars = sum(len(l) + 1 for l in node_lines)
+    total_nodes = len(node_lines)
+
+    def _edge_lines() -> list[str]:
+        out: list[str] = []
+        for u, v in edges:
+            if u in nodes and v in nodes:
+                # One EDGE line per relationship: on a multigraph a pair can
+                # carry several edges (e.g. contains + calls), each with its
+                # own metadata (#4500). The traversal records one entry per
+                # pair; expanding here keeps every relationship visible.
+                for d in edge_datas(G, u, v):
+                    # (u, v) is BFS/DFS visit order, not necessarily the true edge
+                    # direction: on an undirected graph G.neighbors() walks callers
+                    # and callees alike, so a caller->callee edge renders backwards
+                    # whenever the callee is visited first. _src/_tgt (stashed on the
+                    # edge data by the `query` CLI loader) carry the real direction;
+                    # fall back to (u, v) for graphs/edges that don't set them.
+                    src = d.get("_src", u)
+                    tgt = d.get("_tgt", v)
+                    # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
+                    # graph.json): only trust them when they name exactly this edge's
+                    # endpoints, else fall back to (u, v). Without this, G.nodes[src]
+                    # would KeyError on an unknown id (#2080 review).
+                    if {src, tgt} != {u, v}:
+                        src, tgt = u, v
+                    context = d.get("context")
+                    context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+                    # The relation SITE (call/import/reference line in the source's
+                    # file), not a def line — so "who calls X" cites a clickable call
+                    # location, not the caller's def (#BUG1).
+                    _loc = str(d.get("source_location") or "")
+                    at_suffix = (
+                        f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+                        if _loc else ""
+                    )
+                    line = (
+                        f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+                        f"--{sanitize_label(str(d.get('relation', '')))} "
+                        f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
+                        f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+                    )
+                    out.append(line)
+        return out
+
+    if node_chars - 1 > char_budget and total_nodes:
+        # The char budget runs out inside the node block, so no EDGE line can
+        # reach the output or the shown-node count. Decide truncation from the
+        # node block alone instead of rendering every edge first (the old path
+        # built them all and then cut above them).
+        node_block = "\n".join(node_lines)
+        cut_at = node_block[:char_budget].rfind("\n")
+        cut_at = cut_at if cut_at > 0 else char_budget
+        # Never cut the seed nodes: they render first, so if the budget lands
+        # inside the seed block, extend the cut to cover it. The symbol the
+        # question named must always be in the answer (#BUG2). Seeds are bounded
+        # (_pick_seeds max_k + one per term), so the overshoot is a few lines.
+        # `min(seed_block_end, len(output))` is provably `seed_block_end` here:
+        # every seed is a node line and the node block is already longer than
+        # the budget.
+        if seed_hits:
+            seed_block_end = sum(len(node_lines[i]) + 1 for i in range(len(seed_hits))) - 1
+            cut_at = max(cut_at, seed_block_end)
+        shown_nodes = node_block[:cut_at].count("\nNODE ") + (1 if node_block.startswith("NODE ") else 0)
+        cut_count = total_nodes - shown_nodes
+        if cut_count > 0:
+            # Same notice the general path below emits, with the same numbers:
+            # `len(output)` is `node_chars - 1` when no edge line exists and at
+            # least `node_chars` otherwise, which is all `min()` needs.
+            edge_present = any(u in nodes and v in nodes for u, v in edges)
+            output_len = node_chars if edge_present else node_chars - 1
+            full_budget = (min(node_chars, output_len) + 2) // 3
+            return (
+                f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
+                f"(~{token_budget}-token budget). The answer may be among the "
+                f"{cut_count} cut nodes — raise the token budget to {full_budget} to get "
+                f"all {total_nodes} (CLI: --budget {full_budget}, MCP: "
+                f"token_budget={full_budget}) or narrow the query (e.g. "
+                f"context_filter=['call'], or get_node for a specific symbol).\n\n"
+                + node_block[:cut_at]
+                + f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token budget."
+                f" Narrow with context_filter=['call'] or use get_node for a specific symbol)"
+            )
+
+    lines = node_lines + _edge_lines()
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -1737,7 +1809,6 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         if seed_hits:
             seed_block_end = sum(len(lines[i]) + 1 for i in range(len(seed_hits))) - 1
             cut_at = max(cut_at, min(seed_block_end, len(output)))
-        total_nodes = sum(1 for l in lines if l.startswith("NODE "))
         shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
         cut_count = total_nodes - shown_nodes
         # Nodes render before edges, so a char-budget overflow whose cut lands
@@ -1774,7 +1845,6 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
         # wrapper lines, like the existing end marker).
         # Smallest budget whose cut keeps every NODE line; past that, edges are never dropped.
-        node_chars = sum(len(l) + 1 for l in lines if l.startswith("NODE "))
         full_budget = (min(node_chars, len(output)) + 2) // 3
         output = (
             f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
