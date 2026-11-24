@@ -391,9 +391,13 @@ def affected_nodes(
         if hasattr(graph, "out_edges"):
             member_edges = graph.out_edges(parent, data=True)
         else:
-            member_edges = (
-                (s, t, d) for s, t, d in graph.edges(data=True) if s == parent
-            )
+            member_edges = []
+            for _, neighbor, data in graph.edges(parent, data=True):
+                if "_src" in data and "_tgt" in data:
+                    if data["_src"] == parent:
+                        member_edges.append((parent, data["_tgt"], data))
+                else:
+                    member_edges.append((parent, neighbor, data))
         for _s, member, data in member_edges:
             if str(data.get("relation", "")) not in ("method", "contains"):
                 continue
@@ -427,11 +431,13 @@ def affected_nodes(
         if hasattr(graph, "in_edges"):
             incoming = graph.in_edges(current, data=True)
         else:
-            incoming = (
-                (source, target, data)
-                for source, target, data in graph.edges(data=True)
-                if target == current
-            )
+            incoming = []
+            for _, neighbor, data in graph.edges(current, data=True):
+                if "_src" in data and "_tgt" in data:
+                    if data["_tgt"] == current:
+                        incoming.append((data["_src"], current, data))
+                else:
+                    incoming.append((neighbor, current, data))
         for source, _target, data in incoming:
             relation = str(data.get("relation", ""))
             if relation not in relation_set:
