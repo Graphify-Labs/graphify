@@ -2527,7 +2527,7 @@ def test_detect_skips_every_file_graphify_install_writes(tmp_path, monkeypatch):
     assert found - {"app.py"} <= _USER_FILES_GRAPHIFY_EDITS, sorted(found)
 
     ignored = detect_mod.ignored_predicate(proj)
-    for parts in detect_mod._GRAPHIFY_INSTALLED_FILES:
+    for parts in [*detect_mod._GRAPHIFY_INSTALLED_FILES, *detect_mod._GRAPHIFY_INSTALLED_ROOT_FILES]:
         written = proj.joinpath(*parts)
         assert written.is_file(), f"no installer writes {written} any more"
         assert ignored(written), written

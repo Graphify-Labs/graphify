@@ -24,8 +24,20 @@ def test_nudges_state_facts_not_commands(name):
 
 
 def test_strict_deny_does_not_ask_to_spread_itself_to_subagents():
-    reason = json.loads(cli._READ_DENY)["hookSpecificOutput"]["permissionDecisionReason"]
+    reason = json.loads(cli._deny_payload("read", "once"))["hookSpecificOutput"]["permissionDecisionReason"]
     assert "subagent" not in reason.lower()
+
+
+def test_until_query_deny_does_not_promise_a_single_block():
+    """The firing sentence must match the mode: an agent told "at most once"
+    re-issues the read and burns the second `until-query` denial instead of
+    querying the graph."""
+    for kind in ("read", "search"):
+        reason = json.loads(cli._deny_payload(kind, "until-query"))["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "at most once per session" not in reason
+        assert "repeats until you query the graph" in reason
+        once = json.loads(cli._deny_payload(kind, "once"))["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "fires at most once per session" in once
 
 
 @pytest.mark.parametrize("kind, tool_input", [

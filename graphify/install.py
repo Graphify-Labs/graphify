@@ -259,6 +259,15 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
         # Global Antigravity skill dir (all workspaces): ~/.gemini/config/skills/
         return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "dsh":
+        # dsh discovers project skills at ./.dsh/skills and user skills under its
+        # own home, which $DSH_HOME relocates (default ~/.dsh). Reading the env
+        # var here keeps the skill, the hook config and the patch layer in the
+        # same dsh home.
+        if project:
+            return (project_dir or Path(".")) / ".dsh" / "skills" / "graphify" / "SKILL.md"
+        return _dsh_home() / "skills" / "graphify" / "SKILL.md"
+
     cfg = _PLATFORM_CONFIG[platform_name]
     if project:
         return (project_dir or Path(".")) / cfg["skill_dst"]
@@ -880,6 +889,17 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "agents",
     },
+    "dsh": {
+        # DeepSeek Harness (dsh). Skills are discovered at <root>/.dsh/skills
+        # (project) and ~/.dsh/skills (user); _platform_skill_destination honours
+        # $DSH_HOME for the user scope. The skill alone is inert on dsh: the
+        # guard arrives through a mounted hook bridge, so `graphify dsh install`
+        # also writes .dsh/hooks.json and a cordis overlay (see _dsh_install).
+        "skill_file": "skill-dsh.md",
+        "skill_dst": Path(".dsh") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "dsh",
+    },
     "devin": {
         # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
         "skill_file": "skill-devin.md",
@@ -1057,7 +1077,13 @@ def _print_banner() -> None:
         print("\n" + "\n".join(lines) + "\n")
     except Exception:
         pass
-def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
+def install(
+    platform: str = "claude",
+    *,
+    project: bool = False,
+    project_dir: Path | None = None,
+    strict: bool = False,
+) -> None:
     _print_banner()
     platform = _canonical_platform(platform)
     if platform == "gemini":
@@ -1128,6 +1154,13 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "opencode":
         _install_opencode_plugin(_opencode_dir(project=project, project_dir=project_dir))
 
+    if platform == "dsh":
+        # A dsh install is skill + hook config + composition overlay, or it is
+        # inert: dsh reads no hook file on its own, so the wiring here is what
+        # makes the guard fire (see _dsh_wiring). Blocking follows the same
+        # `--strict` opt-in Claude Code uses, never automatic.
+        _dsh_wiring(project_dir, project=project, strict=strict)
+
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
 
@@ -1145,7 +1178,9 @@ def _print_install_usage() -> None:
     print(f"Platforms: {platforms}")
     print("  --strict  block the first raw Read or dedicated Grep per session "
           "unless recently oriented with `graphify query` "
-          "(Claude Code project hooks only; needs --project; Bash/Glob stay advisory)")
+          "(Claude Code project hooks only; needs --project; Bash/Glob stay advisory). "
+          "DeepSeek Harness accepts it at either scope, with the same one-shot "
+          "policy; a plain dsh install only advises.")
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
@@ -2106,6 +2141,348 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     _write_settings_with_backup(hooks_path, existing)
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
+# --- DeepSeek Harness (dsh) ---------------------------------------------------
+#
+# dsh reads no hook file on its own. Its Claude-Code bridge
+# (@deepseek-ai/dsh-hooks-claude-code) must be mounted as a composition row whose
+# `configPath` points at a Claude-shaped hooks.json, so a dsh install writes three
+# things - the skill, that hooks.json, and a cordis overlay that mounts the
+# bridge - and printing the activation command is what makes them live.
+_DSH_BRIDGE_PACKAGE = "@deepseek-ai/dsh-hooks-claude-code"
+# Pinned, never `latest`: the published latest dist-tag lags the repository
+# (0.0.1-rc.5 vs 0.2.2-rc.5), and the old bridge predates the event contract
+# these hooks rely on.
+_DSH_BRIDGE_VERSION = "0.2.2-rc.5"
+# dsh's hook parser reads `timeout` as SECONDS (it maps to timeoutSec), unlike
+# Claude Code's milliseconds.
+_DSH_HOOK_TIMEOUT_SECONDS = 10
+_DSH_DENY_MODES = ("once", "until-query")
+# `once` is the policy a plain install records on BOTH hosts: a deny is a
+# redirect, not a gate, so one block per session can never strand a task. The
+# repeat mode is an explicit opt-in, never this default (#dsh-support).
+_DSH_DEFAULT_DENY_MODE = "once"
+_DSH_OVERLAY_NAME = "graphify.cordis.yml"
+# Stable composition row id: `dsh --dump-config` and uninstall both address the
+# bridge by this id, so it must never change.
+_DSH_OVERLAY_ID = "graphify-hooks"
+_DSH_FENCE_START = "# >>> graphify"
+_DSH_FENCE_END = "# <<< graphify"
+
+
+def _dsh_home() -> Path:
+    """dsh's home (skills, sessions, machine-wide patch layer); $DSH_HOME relocates it."""
+    return Path(os.environ.get("DSH_HOME") or (Path.home() / ".dsh"))
+
+
+def _dsh_hooks_path(project: bool = False, project_dir: Path | None = None) -> Path:
+    """Where this install scope's Claude-shaped hook config lives."""
+    if project:
+        return (project_dir or Path(".")) / ".dsh" / "hooks.json"
+    return _dsh_home() / "hooks.json"
+
+
+def _dsh_deny_mode(value: str | None) -> str:
+    """Resolve a deny-mode argument for validation; an unknown value falls back.
+
+    Only used to *validate* an explicit ``--deny-mode``; the default is never
+    written into a hook command, so an install with no mode records `once` by
+    carrying no flag at all and mirrors a Claude Code install exactly.
+    """
+    mode = (value or "").strip().lower()
+    return mode if mode in _DSH_DENY_MODES else _DSH_DEFAULT_DENY_MODE
+
+
+def _dsh_exe(project: bool) -> str:
+    """The command prefix the hook config spells, quoted when it holds a space.
+
+    A project-scoped config is committed, so it names the bare `graphify` command
+    and PATH resolves it per machine; a user-scoped one names the resolved path.
+    """
+    exe = _resolve_graphify_exe(project=project)
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    return exe
+
+
+def _dsh_pretooluse_hooks(strict: bool, deny_mode: str | None, project: bool) -> "list[dict]":
+    """dsh's guard hooks: lowercase matchers, seconds timeout, opt-in blocking.
+
+    Matchers are literal, case-sensitive pipe alternatives in the Claude dialect
+    (`pattern.split('|').includes(query)`), and dsh registers its tools as
+    `read`/`grep`/`glob`/`bash` - a capitalized matcher fires on nothing.
+
+    The flags mirror Claude Code's scoping exactly: a plain install writes no
+    blocking flag (advisory only), `--strict` appends `--strict`, and a
+    `--deny-mode` flag is written only when the user selected a mode. A default
+    install therefore records the one-shot `once` policy by carrying no flag at
+    all, which is what keeps the two hosts' behaviour identical.
+    """
+    exe = _dsh_exe(project)
+    flags = (" --strict" if strict else "") + (f" --deny-mode {deny_mode}" if deny_mode else "")
+
+    def _group(matcher: str, kind: str) -> dict:
+        return {"matcher": matcher,
+                "hooks": [{"type": "command", "command": f"{exe} hook-guard {kind}{flags}",
+                           "timeout": _DSH_HOOK_TIMEOUT_SECONDS}]}
+
+    return [_group("bash|grep", "search"), _group("read|glob", "read")]
+
+
+def _dsh_sessionstart_hooks(project: bool = False) -> "list[dict]":
+    """dsh's SessionStart hook: orient every start source, reset after a compaction.
+
+    `hook-guard session` is host-neutral - it states the graph for any source and
+    clears the nudge/deny budget only when the source is `compact` - so dsh gets
+    the one line on startup/resume/clear as well, which Claude Code's
+    compact-only hook cannot do.
+    """
+    return [{
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [{"type": "command", "command": f"{_dsh_exe(project)} hook-guard session",
+                   "timeout": _DSH_HOOK_TIMEOUT_SECONDS}],
+    }]
+
+
+def _install_dsh_hooks(hooks_path: Path, *, strict: bool, deny_mode: str | None, project: bool) -> None:
+    """Merge graphify's guard hooks into a dsh hooks.json, keeping user entries."""
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = _read_settings_for_merge(hooks_path)
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        _refuse_to_modify(hooks_path)
+    pre_tool = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre_tool, list):
+        _refuse_to_modify(hooks_path)
+    session_start = hooks.setdefault("SessionStart", [])
+    if not isinstance(session_start, list):
+        _refuse_to_modify(hooks_path)
+    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool) + _dsh_pretooluse_hooks(
+        strict, deny_mode, project
+    )
+    hooks["SessionStart"] = _strip_graphify_hooks(session_start) + _dsh_sessionstart_hooks(project)
+    _write_settings_with_backup(hooks_path, settings)
+    mode = f", deny-mode {deny_mode}" if (strict and deny_mode) else ""
+    state = f"strict{mode}" if strict else "advisory only"
+    print(f"  {hooks_path}  ->  PreToolUse hooks registered (bash|grep, read|glob; {state})")
+    print(f"  {hooks_path}  ->  SessionStart hook registered (startup|resume|clear|compact)")
+    if not strict:
+        # "No enforcement" must be a visible choice, not a surprise: name the flag
+        # that switches this install to the same one-shot deny Claude Code gets.
+        print("  advisory install: re-run with --strict to block the first raw read or grep per session")
+
+
+def _uninstall_dsh_hooks(hooks_path: Path) -> bool:
+    """Drop graphify's own hook entries from a dsh hooks.json, keeping the rest."""
+    if not hooks_path.exists():
+        return False
+    try:
+        settings = json.loads(hooks_path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return False
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    removed = False
+    for event in ("PreToolUse", "SessionStart"):
+        groups = hooks.get(event)
+        if not isinstance(groups, list):
+            continue
+        filtered = _strip_graphify_hooks(groups)
+        if filtered != groups:
+            hooks[event] = filtered
+            removed = True
+    if removed:
+        _write_settings_with_backup(hooks_path, settings)
+        print(f"  {hooks_path}  ->  graphify hooks removed")
+    return removed
+
+
+def _dsh_overlay_rows(hooks_path: Path, *, project: bool) -> str:
+    """The cordis patch row that mounts the hook bridge over *hooks_path*.
+
+    `configPath` is process-level in the bridge and resolves against the launch
+    cwd, so a committed project overlay keeps it relative (it must work from a
+    clone), while a home-layer fence names the absolute path, since dsh may be
+    started anywhere. `projectDir` is set only for the project overlay: the home
+    layer leaves it unset so the bridge falls back to each session's own cwd and
+    the guard answers for whichever repo is open.
+    """
+    if project:
+        config_path = "./.dsh/hooks.json"
+    else:
+        config_path = hooks_path.as_posix()
+    lines = [
+        "- insert:",
+        f"  - id: {_DSH_OVERLAY_ID}",
+        f"    name: '{_DSH_BRIDGE_PACKAGE}'",
+        "    config:",
+        f'      configPath: "{config_path}"',
+    ]
+    if project:
+        lines.append("      projectDir: .")
+    return "\n".join(lines) + "\n"
+
+
+def _install_dsh_overlay(project_dir: Path, *, project: bool, hooks_path: Path) -> Path:
+    """Write the project overlay whole, or fence graphify's block into the home layer."""
+    rows = _dsh_overlay_rows(hooks_path, project=project)
+    if project:
+        overlay = project_dir / ".dsh" / _DSH_OVERLAY_NAME
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        _write_text_atomic(overlay, rows)
+        print(f"  overlay          ->  {overlay}")
+        return overlay
+    patch_path = _dsh_home() / "cordis.patch.yml"
+    _write_dsh_fence(patch_path, rows)
+    print(f"  overlay          ->  {patch_path} (graphify fence)")
+    return patch_path
+
+
+def _write_dsh_fence(patch_path: Path, rows: str) -> None:
+    """Replace or append only graphify's fenced block in a shared patch layer.
+
+    The home patch is the user's own configuration, free to carry comments and
+    formatting a YAML round-trip would destroy, so the block is edited as text and
+    nothing outside the fence is touched. A partial or hand-mangled fence is left
+    alone and the block printed for the user to place: guessing where it ends
+    would rewrite someone's file.
+    """
+    block = f"{_DSH_FENCE_START}\n{rows}{_DSH_FENCE_END}\n"
+    try:
+        existing = patch_path.read_text(encoding="utf-8") if patch_path.exists() else ""
+    except OSError:
+        existing = ""
+    lines = existing.splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if line.strip() == _DSH_FENCE_START]
+    ends = [i for i, line in enumerate(lines) if line.strip() == _DSH_FENCE_END]
+    if len(starts) == 1 and len(ends) == 1 and ends[0] > starts[0]:
+        content = "".join(lines[: starts[0]] + [block] + lines[ends[0] + 1:])
+    elif starts or ends:
+        print(f"note: {patch_path} carries an incomplete graphify fence; leaving it untouched.")
+        print("Add this block to that file by hand:")
+        print(block)
+        return
+    else:
+        content = existing
+        if content and not content.endswith("\n"):
+            content += "\n"
+        content += block
+    patch_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_atomic(patch_path, content)
+
+
+def _remove_dsh_fence(patch_path: Path) -> bool:
+    """Remove graphify's fenced block from a shared patch layer, if well-formed."""
+    if not patch_path.exists():
+        return False
+    try:
+        existing = patch_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    lines = existing.splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if line.strip() == _DSH_FENCE_START]
+    ends = [i for i, line in enumerate(lines) if line.strip() == _DSH_FENCE_END]
+    if len(starts) != 1 or len(ends) != 1 or ends[0] < starts[0]:
+        return False
+    content = "".join(lines[: starts[0]] + lines[ends[0] + 1:])
+    if content == existing:
+        return False
+    _write_text_atomic(patch_path, content)
+    print(f"  overlay          ->  {patch_path} (graphify fence removed)")
+    return True
+
+
+def _dsh_profiles_mounting_bridge() -> "list[str]":
+    """Names of dsh profiles whose package.json already declares the hook bridge."""
+    found: list[str] = []
+    for manifest in sorted((_dsh_home() / "profiles").glob("*/package.json")):
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key in ("dependencies", "optionalDependencies", "devDependencies"):
+            deps = data.get(key)
+            if isinstance(deps, dict) and _DSH_BRIDGE_PACKAGE in deps:
+                found.append(manifest.parent.name)
+                break
+    return found
+
+
+def _print_dsh_activation(*, project: bool, overlay: Path) -> None:
+    """State the pinned bridge, and activate the overlay only if it can resolve."""
+    profiles = _dsh_profiles_mounting_bridge()
+    print()
+    print(f"  hook bridge      ->  {_DSH_BRIDGE_PACKAGE}@{_DSH_BRIDGE_VERSION} (pinned)")
+    if profiles:
+        print(f"  bridge resolved  ->  dsh profile(s): {', '.join(profiles)}")
+    else:
+        print("  the bridge is not installed in any dsh profile - add it first:")
+        print(f"    dsh plugin --profile <name> add {_DSH_BRIDGE_PACKAGE}@{_DSH_BRIDGE_VERSION}")
+        print("  a bare `latest` is older and predates the event contract these hooks use.")
+    print()
+    if project:
+        print("Mount the overlay from the repo root, then restart dsh:")
+        print(f"    dsh --patch {overlay.as_posix()}")
+        print("(the overlay is process-level: a session launched elsewhere will not see it).")
+    else:
+        print("The home patch layer applies to every dsh profile - restart dsh to load it.")
+
+
+def _dsh_wiring(
+    project_dir: Path, *, project: bool = False, strict: bool = False, deny_mode: str | None = None
+) -> Path:
+    """Write dsh's hook config and composition overlay; the skill is copied separately.
+
+    ``strict`` and ``deny_mode`` are passed through verbatim: unset means the
+    advisory install, and an unset deny mode means the one-shot `once` policy the
+    hook command records by omission — the same shape a Claude Code install has.
+    """
+    hooks_path = _dsh_hooks_path(project=project, project_dir=project_dir)
+    _install_dsh_hooks(hooks_path, strict=strict, deny_mode=deny_mode, project=project)
+    overlay = _install_dsh_overlay(project_dir, project=project, hooks_path=hooks_path)
+    _print_dsh_activation(project=project, overlay=overlay)
+    return overlay
+
+
+def _dsh_install(
+    project_dir: Path | None = None, *, project: bool = False, strict: bool = False, deny_mode: str | None = None
+) -> None:
+    """`graphify dsh install`: skill, hook config and overlay in one run."""
+    project_dir = project_dir or Path(".")
+    _copy_skill_file("dsh", project=project, project_dir=project_dir)
+    _dsh_wiring(project_dir, project=project, strict=strict, deny_mode=deny_mode)
+    print()
+    if strict:
+        print("dsh will redirect the first raw source read or grep per session to the knowledge graph.")
+    else:
+        print("dsh will point the agent at the knowledge graph before source reads (advisory).")
+
+
+def _dsh_uninstall(
+    project_dir: Path | None = None, *, project: bool = False, report_missing: bool = True
+) -> None:
+    """Remove the skill, graphify's hook entries and the overlay for this scope.
+
+    `report_missing=False` (``graphify uninstall``) stays silent on a machine that
+    never installed dsh, so the all-platforms sweep does not nag about it.
+    """
+    project_dir = project_dir or Path(".")
+    removed = _remove_skill_file("dsh", project=project, project_dir=project_dir)
+    removed = _uninstall_dsh_hooks(_dsh_hooks_path(project=project, project_dir=project_dir)) or removed
+    if project:
+        overlay = project_dir / ".dsh" / _DSH_OVERLAY_NAME
+        if overlay.exists():
+            overlay.unlink()
+            print(f"  overlay          ->  {overlay} removed")
+            removed = True
+    else:
+        removed = _remove_dsh_fence(_dsh_home() / "cordis.patch.yml") or removed
+    if not removed and report_missing:
+        print("nothing to remove")
+
+
 def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     target = (project_dir or Path(".")) / "AGENTS.md"
@@ -2196,6 +2573,13 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         _print_project_git_add_hint([project_dir / ".claude", target])
     elif platform_name == "gemini":
         gemini_install(project_dir, project=True)
+    elif platform_name == "dsh":
+        # Blocking is opt-in here exactly as it is for Claude Code: `--strict`
+        # turns on the one-shot deny, and without it the guard only advises. The
+        # install itself still wires skill + hooks + overlay, so an advisory
+        # install is oriented by the SessionStart line rather than silent.
+        _dsh_install(project_dir, project=True, strict=strict)
+        _print_project_git_add_hint([project_dir / ".dsh"])
     elif platform_name == "cursor":
         _cursor_install(project_dir)
         _print_project_git_add_hint([project_dir / ".cursor"])
@@ -2238,6 +2622,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         claude_uninstall(project_dir, project=True)
     elif platform_name == "gemini":
         gemini_uninstall(project_dir, project=True)
+    elif platform_name == "dsh":
+        _dsh_uninstall(project_dir, project=True)
     elif platform_name == "cursor":
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
@@ -2542,6 +2928,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # `graphify install --platform opencode` writes the plugin here (#3398).
     _uninstall_opencode_plugin(_opencode_dir(project=False))
     _uninstall_codex_hook(pd)
+    # dsh's hook config and patch-layer fence sit outside the skill dir, so the
+    # skill loop above does not reach them.
+    _dsh_uninstall(report_missing=False)
 
     # Git hook
     try:
@@ -2770,6 +3159,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "cursor",
     "devin",
     "droid",
+    "dsh",
     "gemini",
     "hermes",
     "install",
@@ -2842,13 +3232,16 @@ def dispatch_install_cli(cmd: str) -> bool:
         if project_scope:
             _project_install(chosen_platform, Path("."), strict=strict)
         else:
-            if strict:
+            if strict and chosen_platform != "dsh":
+                # dsh's hooks honour --strict at either scope (its install has no
+                # project-only restriction), so the Claude-only advice does not
+                # apply to it; every other platform needs --project for blocking.
                 print(
                     "note: --strict applies to the project PreToolUse hook; run "
                     "`graphify install --project --strict` or `graphify claude install --strict`.",
                     file=sys.stderr,
                 )
-            install(platform=chosen_platform)
+            install(platform=chosen_platform, strict=strict)
     elif cmd == "uninstall":
         args = sys.argv[2:]
         purge = "--purge" in args
@@ -2914,6 +3307,42 @@ def dispatch_install_cli(cmd: str) -> bool:
             gemini_uninstall(project=("--project" in sys.argv[3:]))
         else:
             print("Usage: graphify gemini [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "dsh":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        args = sys.argv[3:]
+        project_scope = "--project" in args
+        deny_mode = None
+        for i, arg in enumerate(args):
+            if arg.startswith("--deny-mode="):
+                deny_mode = arg.split("=", 1)[1]
+            elif arg == "--deny-mode" and i + 1 < len(args):
+                deny_mode = args[i + 1]
+        if deny_mode is not None and _dsh_deny_mode(deny_mode) != deny_mode.strip().lower():
+            print(
+                f"error: unknown --deny-mode '{deny_mode}'. Choose from: {', '.join(_DSH_DENY_MODES)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if subcmd == "install":
+            # Blocking is opt-in, exactly as it is for Claude Code: without
+            # `--strict` the guard only advises, and the install output names the
+            # flag. `--deny-mode` is written only when the user picked one, so the
+            # default records the one-shot `once` policy by omission.
+            _dsh_install(
+                Path("."),
+                project=project_scope,
+                strict=("--strict" in args),
+                deny_mode=deny_mode,
+            )
+        elif subcmd == "uninstall":
+            _dsh_uninstall(Path("."), project=project_scope)
+        else:
+            print(
+                "Usage: graphify dsh [install|uninstall] [--project] [--strict] "
+                "[--deny-mode once|until-query]",
+                file=sys.stderr,
+            )
             sys.exit(1)
     elif cmd == "cursor":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

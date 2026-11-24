@@ -1064,11 +1064,20 @@ _GRAPHIFY_INSTALLED_FILES = frozenset({
     (".opencode", "plugins", "graphify.js"),  # opencode
     (".windsurf", "rules", "graphify.md"),    # devin
 })
+# Two-component files graphify writes whole. They cannot match the three-part
+# tail test below, so they get their own set: `.dsh/hooks.json` is the merged
+# Claude-shaped hook config and `graphify.cordis.yml` the bridge overlay, and
+# neither is source a graph should ever describe.
+_GRAPHIFY_INSTALLED_ROOT_FILES = frozenset({
+    (".dsh", "hooks.json"),
+    (".dsh", "graphify.cordis.yml"),
+})
 
 
 def _is_installed_graphify_file(path: "Path") -> bool:
     """True for a single file `graphify install` wrote into the project (#4057)."""
-    return path.parts[-3:] in _GRAPHIFY_INSTALLED_FILES
+    parts = path.parts
+    return parts[-3:] in _GRAPHIFY_INSTALLED_FILES or parts[-2:] in _GRAPHIFY_INSTALLED_ROOT_FILES
 
 # Files a coverage tool writes into its own output dir. Any one of them is proof
 # the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
