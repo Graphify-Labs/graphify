@@ -512,6 +512,91 @@ def _node_attributes_text(data: dict) -> tuple[str, str]:
 
 
 
+class _NodeFields(NamedTuple):
+    """Every per-node normalized string the query path derives, computed once.
+
+    `_score_query` used to rebuild the label's token form, the diacritic fold,
+    the rationale and the attribute token form for *every visited node on every
+    query*, and `_find_node_tiers` did a second, overlapping pass. None of those
+    values depend on the query, so they are computed once per graph generation
+    and read from here. Values are identical to the per-call helpers
+    (`_strip_diacritics`, `_search_tokens`, `_node_rationale_text`,
+    `_node_attributes_text`) by construction; only the recomputation is gone.
+    The qualified-name split is *not* here: the trigram index never needs it and
+    the scorer needs it only for the nodes it visits, so it is memoized lazily
+    by `_node_qualified`.
+    """
+    norm_label: str
+    bare_label: str
+    label_tokens: str
+    source: str
+    source_tokens: str
+    nid_lower: str
+    nid_norm: str
+    rationale: str
+    attr_norm: str
+    attr_tokens: str
+    label_len: int
+
+
+def _node_fields(G: nx.Graph) -> dict[str, _NodeFields]:
+    """Per-node query fields, memoized on the graph object.
+
+    Cached exactly like `_trigram_index` / `_idf_cache`, so a hot reload that
+    swaps in a fresh graph object drops it automatically. The node-count guard
+    keeps a graph that grew after the cache was built from serving stale rows
+    (serve never mutates a loaded graph, but tests and embedders can).
+    """
+    cached = G.graph.get("_node_fields_cache")
+    n = G.number_of_nodes()
+    if cached is not None and cached[0] == n:
+        return cached[1]
+    fields: dict[str, _NodeFields] = {}
+    for nid, data in G.nodes(data=True):
+        label = data.get("label") or ""
+        norm_label = data.get("norm_label") or _strip_diacritics(label).lower()
+        source_file = data.get("source_file") or ""
+        nid_lower = nid.lower()
+        attr_norm, attr_tokens = _node_attributes_text(data)
+        fields[nid] = _NodeFields(
+            norm_label=norm_label,
+            bare_label=norm_label.rstrip("()"),
+            label_tokens=" ".join(_search_tokens(label)),
+            source=source_file.lower(),
+            source_tokens=" ".join(_search_tokens(source_file)),
+            nid_lower=nid_lower,
+            nid_norm=nid_lower if nid.isascii() else _strip_diacritics(nid).lower(),
+            rationale=_node_rationale_text(data),
+            attr_norm=attr_norm,
+            attr_tokens=attr_tokens,
+            label_len=len(label or nid),
+        )
+    G.graph["_node_fields_cache"] = (n, fields)
+    return fields
+
+
+_QUALIFIED_UNSET = object()
+
+
+def _node_qualified(G: nx.Graph, nid: str, norm_label: str):
+    """`_qualified_tail(norm_label)`, memoized per node on the graph.
+
+    Only `_score_query`'s qualified-name tier reads this, and only for the nodes
+    it actually visits. Computing it for the whole graph during `_node_fields`
+    made a cold first query slower than v8 (the trigram index never uses it), so
+    it is filled on demand instead.
+    """
+    cache = G.graph.get("_qualified_cache")
+    if cache is None:
+        cache = {}
+        G.graph["_qualified_cache"] = cache
+    value = cache.get(nid, _QUALIFIED_UNSET)
+    if value is _QUALIFIED_UNSET:
+        value = _qualified_tail(norm_label)
+        cache[nid] = value
+    return value
+
+
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     """IDF weights for query terms, cached in G.graph['_idf_cache'].
 
@@ -605,6 +690,19 @@ def _node_search_text(data: dict, nid: str) -> str:
     return "\x00".join(fields)
 
 
+def _node_search_text_from_fields(f: "_NodeFields", nid: str) -> str:
+    """`_node_search_text` fed from the per-node cache (same string, same order)."""
+    parts = [f.norm_label, f.label_tokens, f.nid_lower, f.source, f.source_tokens]
+    if f.nid_norm != f.nid_lower:
+        parts.append(f.nid_norm)
+    if f.rationale:
+        parts.append(f.rationale)
+    if f.attr_norm:
+        parts.append(f.attr_norm)
+        parts.append(f.attr_tokens)
+    return "\x00".join(parts)
+
+
 def _get_trigram_index(G: nx.Graph) -> dict:
     """Lazily build and cache a trigram -> node-position postings map on the graph.
 
@@ -616,9 +714,10 @@ def _get_trigram_index(G: nx.Graph) -> dict:
     if idx is not None:
         return idx
     ids = list(G.nodes())
+    fields = _node_fields(G)
     postings: dict[str, array] = {}
     for i, nid in enumerate(ids):
-        for g in _trigrams(_node_search_text(G.nodes[nid], nid)):
+        for g in _trigrams(_node_search_text_from_fields(fields[nid], nid)):
             bucket = postings.get(g)
             if bucket is None:
                 bucket = array("i")
@@ -720,18 +819,32 @@ def _query_path_weight(terms: list[str], demote_docs: bool = True):
     words = {tok for t in terms for tok in _search_tokens(t)}
     keep_tests = bool(words & _QUERY_TEST_WORDS)
     keep_docs = (not demote_docs) or bool(words & _QUERY_DOC_WORDS)
+    # Test/doc classification depends only on (path, file_type), and a corpus has
+    # far fewer files than nodes (`_is_test_path` builds a Path object each call).
+    # Memoize per file, not per node, inside this query's closure.
+    class_cache: dict[tuple[str, str], tuple[bool, bool]] = {}
 
     def weight(data: dict) -> float:
         path = str(data.get("source_file") or "").replace("\\", "/")
-        parts = path.lower().split("/")
-        if not keep_tests and (_is_test_path(path) or "testing" in parts[:-1] or parts[-1] == "conftest.py"):
+        file_type = data.get("file_type")
+        cls = class_cache.get((path, str(file_type or "")))
+        if cls is None:
+            parts = path.lower().split("/")
+            test_like = (
+                _is_test_path(path) or "testing" in parts[:-1] or parts[-1] == "conftest.py"
+            )
+            doc_like = (
+                not path
+                or file_type in ("document", "paper", "image")
+                or parts[-1].endswith(_QUERY_DOC_SUFFIXES)
+                or any(p in _QUERY_DOC_DIRS for p in parts[:-1])
+            )
+            cls = (test_like, doc_like)
+            class_cache[(path, str(file_type or ""))] = cls
+        test_like, doc_like = cls
+        if not keep_tests and test_like:
             return _QUERY_DEMOTE_WEIGHT
-        if not keep_docs and (
-            not path
-            or data.get("file_type") in ("document", "paper", "image")
-            or parts[-1].endswith(_QUERY_DOC_SUFFIXES)
-            or any(p in _QUERY_DOC_DIRS for p in parts[:-1])
-        ):
+        if not keep_docs and doc_like:
             return _QUERY_DEMOTE_WEIGHT
         return 1.0
 
@@ -826,23 +939,25 @@ def _score_query(
     best_by_term: dict[str, tuple[tuple, str]] | None = (
         {} if collect_per_term_seeds else None
     )
+    node_fields = _node_fields(G)
     for nid, data in node_iter:
-        norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
-        bare_label = norm_label.rstrip("()")
+        f = node_fields[nid]
+        norm_label = f.norm_label
+        bare_label = f.bare_label
         # Tokenized form of the label (punctuation stripped, same transform as the
         # query). norm_label may still carry punctuation like ':' or '-', which a
         # tokenized query can never equal; comparing token-joined forms on both
         # sides makes "uoce: dehumidifier driver" match query "uoce dehumidifier
         # driver".
-        label_tokens = " ".join(_search_tokens(data.get("label") or ""))
-        source = (data.get("source_file") or "").lower()
-        rationale = _node_rationale_text(data)
-        attr_norm, attr_tokens = _node_attributes_text(data)
+        label_tokens = f.label_tokens
+        source = f.source
+        rationale = f.rationale
+        attr_norm, attr_tokens = f.attr_norm, f.attr_tokens
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
-        # neither runs (`joined` empty AND not collecting seeds) skip the call;
-        # this preserves the single-query-time perf where nid_lower was lazy.
-        nid_lower = nid.lower() if (joined or collect_per_term_seeds) else ""
+        # neither runs (`joined` empty AND not collecting seeds) the cached value
+        # is still free — it was computed once for the index, not per query.
+        nid_lower = f.nid_lower if (joined or collect_per_term_seeds) else ""
         # `query` passes a per-node multiplier (tests/docs below source); it scales
         # the combined score and the per-term singleton alike, so the per-term
         # seed guarantee still holds but prefers a source node for each term.
@@ -869,7 +984,7 @@ def _score_query(
                 # below the exact tier — the label is not what was typed — but
                 # above what the per-token tiers can add up to for a node whose
                 # whole label is one query token (#5080).
-                qualified = _qualified_tail(norm_label)
+                qualified = _node_qualified(G, nid, norm_label)
                 if qualified is not None and qualified[0] <= _QUALIFIED_MAX_TOKENS:
                     qualifier_tokens, tail_key = qualified
                     if tail_key and tail_key == joined:
@@ -948,7 +1063,7 @@ def _score_query(
                     # (-singleton, -degree, label_len, nid) — the minimum
                     # tuple wins, exactly matching max(tied, key=degree)
                     # over (label_len asc, nid asc)-sorted ties.
-                    key = (-singleton, -G.degree(nid), len(data.get("label") or nid), nid)
+                    key = (-singleton, -G.degree(nid), f.label_len, nid)
                     cur = best_by_term.get(t)
                     if cur is None or key < cur[0]:
                         best_by_term[t] = (key, nid)
@@ -959,7 +1074,7 @@ def _score_query(
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
     # match beats a longer superset that happens to share the same score.
-    scored.sort(key=lambda s: (-s[0], len(G.nodes[s[1]].get("label") or s[1]), s[1]))
+    scored.sort(key=lambda s: (-s[0], node_fields[s[1]].label_len, s[1]))
     best_seed_by_term: dict[str, str] = {}
     term_order: tuple[str, ...] = ()
     if collect_per_term_seeds and best_by_term:
@@ -2149,15 +2264,17 @@ def _find_node_tiers(
         G.nodes(data=True) if candidate_ids is None
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
     )
+    node_fields = _node_fields(G)
     for nid, d in node_iter:
-        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
-        bare_label = norm_label.rstrip("()")
-        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
-        source_tokens = " ".join(_search_tokens(d.get("source_file") or ""))
-        nid_lower = nid.lower()
+        f = node_fields[nid]
+        norm_label = f.norm_label
+        bare_label = f.bare_label
+        label_tokens = f.label_tokens
+        source_tokens = f.source_tokens
+        nid_lower = f.nid_lower
         # `_strip_diacritics` is the identity on ASCII, so the NFKD fold is only
         # paid for ids that actually carry non-ASCII text.
-        nid_norm = nid_lower if nid.isascii() else _strip_diacritics(nid).lower()
+        nid_norm = f.nid_norm
         if term == source_tokens:
             source_exact.append(nid)
         elif (
