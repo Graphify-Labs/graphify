@@ -1,6 +1,8 @@
 """Language declarations must invalidate incremental state and reach watch events."""
 import hashlib
 import json
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -182,6 +184,29 @@ def test_watch_declared_code_updates_graph_on_observer_thread(tmp_path, monkeypa
     drive_watch(tmp_path, monkeypatch, [change])
     assert "watched()" in graph_labels(tmp_path)
     assert not (tmp_path / "graphify-out" / "needs_update").exists()
+
+
+def test_drive_watch_clock_does_not_reach_subprocess_waits(tmp_path, monkeypatch):
+    """A child that outlives its pipes makes subprocess sleep during the rebuild."""
+    events = pytest.importorskip("watchdog.events")
+    source = tmp_path / "page.py"
+    waited = []
+
+    def slow_git_head(*_args, **_kwargs):
+        # Closing both pipes ends communicate(); the child then keeps wait() polling.
+        waited.append(subprocess.run(
+            [sys.executable, "-c", "import os, time; os.close(1); os.close(2); time.sleep(0.3)"],
+            capture_output=True, timeout=30,
+        ).returncode)
+
+    def change():
+        source.write_text("def watched(): pass\n")
+        return events.FileModifiedEvent(str(source))
+
+    monkeypatch.setattr(watch_mod, "_git_head", slow_git_head)
+    drive_watch(tmp_path, monkeypatch, [change])
+    assert waited
+    assert "watched()" in graph_labels(tmp_path)
 
 
 def test_watch_document_override_marks_semantic_work_instead_of_rebuilding(tmp_path, monkeypatch):
