@@ -344,3 +344,31 @@ def test_objc_interface_and_implementation_in_one_file_keep_one_contains_edge(tm
     contains = [e for e in result["edges"] if e["relation"] == "contains" and e["target"] == box["id"]]
     assert len(contains) == 1
     assert box["definition_location"] == "L4"
+
+
+def test_declarations_sharing_one_line_each_end_on_it(tmp_path):
+    path = tmp_path / "bundle.min.js"
+    path.write_text("function a(){return 1}function b(){return 2}const c=()=>3;\n")
+    result = _extract_file(path)
+    for label in ("a()", "b()", "c()"):
+        node = _node(result, label)
+        assert (node["source_location"], node["source_end_location"]) == ("L1", "L1")
+
+
+@pytest.mark.parametrize("name, source, ranges", [
+    ("A.java",
+     "interface Greeter {\n    void greet(\n        String name);\n    int count();\n}\n"
+     "abstract class Base {\n    abstract void run(\n        int x);\n}\n",
+     {".greet()": ("L2", "L3"), ".count()": ("L4", "L4"), ".run()": ("L7", "L8")}),
+    ("A.cs",
+     "interface IGreeter {\n    void Greet(\n        string name);\n}\n"
+     "abstract class Base {\n    public abstract void Run(\n        int x);\n}\n",
+     {".Greet()": ("L2", "L3"), ".Run()": ("L6", "L7")}),
+])
+def test_bodiless_declarations_end_at_their_signature(tmp_path, name, source, ranges):
+    path = tmp_path / name
+    path.write_text(source)
+    result = _extract_file(path)
+    for label, expected in ranges.items():
+        node = _node(result, label)
+        assert (node["source_location"], node["source_end_location"]) == expected
