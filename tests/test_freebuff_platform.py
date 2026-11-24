@@ -527,6 +527,63 @@ def test_codex_uninstall_keeps_the_section_freebuff_wrote(tmp_path, capsys):
     assert "## graphify" in _agents_md_text(project)
 
 
+def test_skill_only_project_install_does_not_keep_the_section(tmp_path, capsys):
+    """Only platforms that write the AGENTS.md section count as holders: a claude
+    or copilot skill installed beside AGENTS.md never touched it."""
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+
+    _run(project, ["claude", "install", "--project"], home)
+    _run(project, ["freebuff", "install", "--project"], home)
+    capsys.readouterr()
+
+    _run(project, ["freebuff", "uninstall", "--project"], home)
+
+    assert "## graphify" not in _agents_md_text(project)
+    assert "section kept" not in capsys.readouterr().out
+
+
+def test_legacy_holders_do_not_keep_a_section_that_is_absent(tmp_path, capsys):
+    """No section in the file means nothing to keep, whatever skill dirs exist."""
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    legacy = project / ".codex" / "skills" / "graphify"
+    legacy.mkdir(parents=True)
+    (legacy / "SKILL.md").write_text("---\nname: graphify\n---\n", encoding="utf-8")
+    (project / "AGENTS.md").write_text("# My Project\n", encoding="utf-8")
+
+    _run(project, ["freebuff", "uninstall", "--project"], home)
+
+    out = capsys.readouterr().out
+    assert "section kept" not in out
+    assert (project / "AGENTS.md").read_text(encoding="utf-8") == "# My Project\n"
+
+
+def test_uninstall_keeps_the_section_for_a_pre_tracking_install(tmp_path, capsys):
+    """A skill installed before section claims existed is the only evidence that
+    this project's AGENTS.md was wired; deleting its rules would turn that
+    host's always-on mechanism off."""
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    legacy = project / ".codex" / "skills" / "graphify"
+    legacy.mkdir(parents=True)
+    (legacy / "SKILL.md").write_text("---\nname: graphify\n---\n", encoding="utf-8")
+
+    _run(project, ["freebuff", "install", "--project"], home)
+    capsys.readouterr()
+    _run(project, ["freebuff", "uninstall", "--project"], home)
+
+    assert "## graphify" in _agents_md_text(project)
+    assert "section kept" in capsys.readouterr().out
+
+    # Removing that legacy install is what relinquishes the section.
+    _run(project, ["codex", "uninstall", "--project"], home)
+    assert "## graphify" not in _agents_md_text(project)
+
+
 def test_full_uninstall_removes_a_doubly_claimed_directory(tmp_path, capsys):
     """A full teardown ignores the claims it is about to drop: no "skill kept"
     line for a directory the same command goes on to delete."""

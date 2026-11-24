@@ -596,7 +596,7 @@ def _agents_md_claimers(agents_md: Path) -> list[str]:
     """
     project_dir = agents_md.parent
     names: set[str] = set()
-    for name in _PLATFORM_CONFIG:
+    for name in _AGENTS_MD_SECTION_PLATFORMS:
         for project in (False, True):
             try:
                 skill_dir = _section_claim_dir(
@@ -606,6 +606,41 @@ def _agents_md_claimers(agents_md: Path) -> list[str]:
                 continue
             names.update(_section_claimers(skill_dir, agents_md))
     return sorted(names)
+
+
+def _legacy_section_holders(agents_md: Path, own_platform: str) -> list[str]:
+    """Platforms whose install predates section claims and may have wired this file.
+
+    A skill directory with no claim file of any kind was installed before claims
+    existed, so it cannot say whether it wrote the section; keeping the section
+    is the reversible choice (a stale generic block) against deleting rules a
+    working install relies on. Project scope only: a user-global skill is not
+    evidence that this project's AGENTS.md was wired.
+    """
+    try:
+        content = agents_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if _AGENTS_MD_MARKER not in content:
+        return []
+
+    project_dir = agents_md.parent
+    holders: list[str] = []
+    for name in _AGENTS_MD_SECTION_PLATFORMS:
+        if name == own_platform:
+            continue
+        try:
+            skill_dir = _section_claim_dir(name, project=True, project_dir=project_dir)
+        except (KeyError, OSError):
+            continue
+        if not (skill_dir / "SKILL.md").exists():
+            continue
+        if (skill_dir / _SKILL_CLAIM_FILE).exists() or (
+            skill_dir / _SECTION_CLAIM_FILE
+        ).exists():
+            continue
+        holders.append(name)
+    return sorted(holders)
 
 
 def _release_section_claim(skill_dir: Path, platform_name: str, agents_md: Path) -> None:
@@ -1451,6 +1486,24 @@ def _print_install_usage() -> None:
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
+
+# Platforms whose install writes the graphify section into AGENTS.md (via
+# _agents_install). Skill-only targets such as claude and copilot install beside
+# AGENTS.md without touching it, so they say nothing about who owns the section.
+_AGENTS_MD_SECTION_PLATFORMS = (
+    "aider",
+    "agents",
+    "amp",
+    "claw",
+    "codex",
+    "droid",
+    "freebuff",
+    "hermes",
+    "kilo",
+    "opencode",
+    "trae",
+    "trae-cn",
+)
 _GEMINI_MD_MARKER = "## graphify"
 # Deliberately H1, not H2 like the markers above: this one anchors the SKILL
 # registration block _register_always_on_block writes into .claude/CLAUDE.md
@@ -2690,8 +2743,17 @@ def _agents_uninstall(
             platform,
             target,
         )
-    if not (platform and _agents_md_claimers(target)):
-        _agents_section_uninstall(target)
+        if _agents_md_claimers(target):
+            return
+        legacy = _legacy_section_holders(target, platform)
+        if legacy:
+            named = ", ".join(f"`{name}`" for name in legacy)
+            print(
+                f"  section kept     ->  a pre-tracking {named} install may also own "
+                f"the section in {target.resolve()}"
+            )
+            return
+    _agents_section_uninstall(target)
 
     if platform == "opencode":
         _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
