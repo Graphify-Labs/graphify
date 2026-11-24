@@ -1369,12 +1369,14 @@ def _apply_symbol_resolution_facts(
     # and never let a member shadow a same-named top-level symbol.
     member_symbol_keys: set[tuple[Path, str]] = set()
 
+    # Structural alias signatures are only members, never module bindings.
     if resolution_context_nodes:
         _fresh_node_ids = {n.get("id") for n in nodes if n.get("id")}
         _fresh_paths = {_resolve_cached(p) for p in paths}
         for node in resolution_context_nodes:
             nid = node.get("id")
-            if not nid or nid in _fresh_node_ids:
+            if (not nid or nid in _fresh_node_ids
+                    or (node.get("metadata") or {}).get("kind") == "type_alias_method"):
                 continue
             source_path = _js_source_path(str(node.get("source_file", "")), root)
             if source_path is None or source_path in _fresh_paths:
@@ -1393,6 +1395,8 @@ def _apply_symbol_resolution_facts(
             symbol_nodes[key] = str(nid)
 
     for node in nodes:
+        if (node.get("metadata") or {}).get("kind") == "type_alias_method":
+            continue
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
             continue

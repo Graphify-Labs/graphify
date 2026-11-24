@@ -6731,6 +6731,8 @@ def _resolve_typescript_member_calls(
         # declares a public `foo` (the node is marked); otherwise its `foo` comes
         # from elsewhere and the private method is not the target.
         method_node = node_by_id.get(method_nid, {})
+        if type_qualified and (method_node.get("metadata") or {}).get("kind") == "type_alias_method":
+            continue
         if (not exact and str(method_node.get("label", "")).lstrip(".").startswith("#")
                 and not str(callee).startswith("#")
                 and not method_node.get("_ts_public_twin")):
@@ -13347,7 +13349,9 @@ def extract(
             continue
         # A C# constructor is named like its type but never called by name;
         # an explicit interface implementation is called only through the interface.
-        if is_csharp_constructor_node(n) or is_csharp_explicit_interface_node(n):
+        # TypeScript alias signatures require a typed receiver.
+        if (is_csharp_constructor_node(n) or is_csharp_explicit_interface_node(n)
+                or (n.get("metadata") or {}).get("kind") == "type_alias_method"):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")

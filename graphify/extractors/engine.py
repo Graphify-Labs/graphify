@@ -15,7 +15,7 @@ from graphify.extractors.base import (
 )
 from graphify.ids import DeclIdRegistry, normalize_id
 from graphify.extractors.models import LanguageConfig
-from graphify.extractors.resolution import _resolve_js_import_target
+from graphify.extractors.resolution import _resolve_js_import_target, _walk_js_tree
 from graphify.security import sanitize_metadata
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -3940,6 +3940,38 @@ def _find_body(node, config: LanguageConfig):
         if child.type in config.body_fallback_child_types:
             return child
     return None
+
+
+def _ts_alias_object_type(node, source: bytes):
+    """Find the object literal in a direct alias or an unqualified Readonly alias."""
+    value = node.child_by_field_name("value")
+    if value is None or value.type != "generic_type":
+        return value if value is not None and value.type == "object_type" else None
+    name = value.child_by_field_name("name")
+    arguments = value.child_by_field_name("type_arguments")
+    if (name is None or name.type != "type_identifier"
+            or _read_text(name, source) != "Readonly" or arguments is None):
+        return None
+    types = [child for child in arguments.named_children if not child.is_extra]
+    return types[0] if len(types) == 1 and types[0].type == "object_type" else None
+
+
+def _ts_has_readonly_binding(root, source: bytes, config: LanguageConfig) -> bool:
+    """Conservatively skip Readonly unwrapping if the file binds that name."""
+    for node in _walk_js_tree(root):
+        if node.type in config.class_types or node.type in (
+            "type_parameter", "internal_module", "module",
+        ):
+            name = node.child_by_field_name("name")
+        elif node.type == "import_specifier":
+            name = node.child_by_field_name("alias") or node.child_by_field_name("name")
+        elif node.type in ("import_clause", "namespace_import", "import_require_clause", "import_alias"):
+            name = next((child for child in node.named_children if child.type == "identifier"), None)
+        else:
+            continue
+        if name is not None and _read_text(name, source) == "Readonly":
+            return True
+    return False
 
 
 def _js_import_is_type_only(node) -> bool:
@@ -8385,8 +8417,10 @@ def _extract_generic(
             csharp_method_scopes[id(body)] = (decl, class_nid)
             function_bodies.append((member_nid, body))
 
+    ts_readonly_shadowed: bool | None = None
+
     def walk(node, parent_class_nid: str | None = None) -> None:
-        nonlocal ruby_singleton_context_depth
+        nonlocal ruby_singleton_context_depth, ts_readonly_shadowed
         t = node.type
 
         # Lua: `require("mod")` used as a bare statement (no assignment) is
@@ -9346,6 +9380,31 @@ def _extract_generic(
                                 if target_nid != class_nid:
                                     add_edge(class_nid, target_nid, "references",
                                              line, context="generic_arg")
+
+            if config.ts_module == "tree_sitter_typescript" and t == "type_alias_declaration":
+                body = _ts_alias_object_type(node, source)
+                if body is None:
+                    return
+                if body.parent is not None and body.parent.type == "type_arguments":
+                    if ts_readonly_shadowed is None:
+                        ts_readonly_shadowed = _ts_has_readonly_binding(root, source, config)
+                    if ts_readonly_shadowed:
+                        return
+                # Only direct signatures belong to the alias. Leave methods of
+                # nested object properties and other type expressions alone.
+                for member in body.named_children:
+                    if member.type != "method_signature":
+                        continue
+                    member_name = member.child_by_field_name("name")
+                    name = _read_text(member_name, source) if member_name is not None else ""
+                    if not normalize_id(name):
+                        continue
+                    member_nid = _js_member_nid(class_nid, member, name, source, js_member_groups)
+                    member_line = member.start_point[0] + 1
+                    add_node(member_nid, f".{name}()", member_line,
+                             metadata={"kind": "type_alias_method"})
+                    add_edge(class_nid, member_nid, "method", member_line)
+                return
 
             # Find body and recurse. Ruby pushes its scope segments so nested
             # declarations qualify against the enclosing module/class (#2302);
@@ -11162,6 +11221,9 @@ def _extract_generic(
     for n in nodes:
         nid_to_sf[n["id"]] = str(n.get("source_file") or "")
         if n.get("type") == "namespace":
+            continue
+        # Alias signatures are reachable through a typed receiver, not by bare name.
+        if (n.get("metadata") or {}).get("kind") == "type_alias_method":
             continue
         if n["id"] in _case_of_targets:
             continue
