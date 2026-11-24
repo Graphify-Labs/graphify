@@ -5,9 +5,8 @@ guard through its Claude-Code hook bridge, so the guard must recognise the
 lowercase vocabulary or a functioning install silently never fires. These tests
 drive the guard with DSH's real payload shape.
 
-They also pin the deny-mode contract: ``once`` (the Claude Code default) is
-unchanged, and ``until-query`` keeps redirecting while no recent graph query
-exists, bounded by a cap so a session can never be stranded.
+They also pin the deny contract: the same one-shot block Claude Code gets, then
+advice - dsh is deliberately never stricter than the reference host.
 """
 import io
 import json
@@ -34,7 +33,7 @@ def _project(tmp_path, *, indexed=True):
     return f
 
 
-def _invoke(kind, payload, tmp_path, monkeypatch, *, strict=False, deny_mode=None, env=None):
+def _invoke(kind, payload, tmp_path, monkeypatch, *, strict=False, env=None):
     monkeypatch.chdir(tmp_path)
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
@@ -46,7 +45,7 @@ def _invoke(kind, payload, tmp_path, monkeypatch, *, strict=False, deny_mode=Non
     monkeypatch.setattr(sys, "stdin", _Stdin())
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
-    cli._run_hook_guard(kind, strict=strict, deny_mode=deny_mode)
+    cli._run_hook_guard(kind, strict=strict)
     return buf.getvalue()
 
 
@@ -169,94 +168,44 @@ def test_claude_cased_names_still_work(tmp_path, monkeypatch):
     assert _is_deny(out), out
 
 
-# --- deny modes -----------------------------------------------------------
+# --- the one-shot deny contract -------------------------------------------
 
-def test_once_mode_denies_exactly_once(tmp_path, monkeypatch):
+def test_strict_denies_exactly_once_per_session(tmp_path, monkeypatch):
+    """The whole policy, identical to Claude Code's: one deny, then advice."""
     f = _project(tmp_path)
-    first = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="once")
-    second = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="once")
+    first = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True)
+    second = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True)
     assert _is_deny(first), first
     assert not _is_deny(second), second
     assert _is_nudge(second), second
 
 
-def test_until_query_denies_up_to_the_cap_then_advises(tmp_path, monkeypatch):
+def test_a_graph_query_releases_the_next_read(tmp_path, monkeypatch):
     f = _project(tmp_path)
-    outs = [
-        _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query")
-        for _ in range(3)
-    ]
-    assert _is_deny(outs[0]), outs[0]
-    assert _is_deny(outs[1]), outs[1]
-    assert not _is_deny(outs[2]), outs[2]
-    assert _is_nudge(outs[2]), outs[2]
-
-
-def test_until_query_releases_after_a_graph_query(tmp_path, monkeypatch):
-    f = _project(tmp_path)
-    first = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query")
-    assert _is_deny(first), first
+    assert _is_deny(_invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True))
     _stamp_query(tmp_path)
-    second = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query")
-    assert not _is_deny(second), second
+    assert not _is_deny(_invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True))
 
 
-def test_deny_cap_environment_override(tmp_path, monkeypatch):
-    f = _project(tmp_path)
-    env = {"GRAPHIFY_HOOK_DENY_CAP": "1"}
-    first = _invoke(
-        "read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query", env=env
-    )
-    second = _invoke(
-        "read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query", env=env
-    )
-    assert _is_deny(first), first
-    assert not _is_deny(second), second
-
-
-def test_deny_mode_environment_override_wins(tmp_path, monkeypatch):
-    f = _project(tmp_path)
-    # Installed as `until-query`, but the environment forces the one-shot policy.
-    env = {"GRAPHIFY_HOOK_DENY_MODE": "once"}
-    first = _invoke(
-        "read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query", env=env
-    )
-    second = _invoke(
-        "read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query", env=env
-    )
-    assert _is_deny(first), first
-    assert not _is_deny(second), second
-
-
-def test_unknown_deny_mode_falls_back_to_once(tmp_path, monkeypatch):
-    f = _project(tmp_path)
-    first = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="nonsense")
-    second = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="nonsense")
-    assert _is_deny(first), first
-    assert not _is_deny(second), second
-
-
-def test_unindexed_file_is_never_denied_in_until_query_mode(tmp_path, monkeypatch):
+def test_unindexed_file_is_never_denied(tmp_path, monkeypatch):
     f = _project(tmp_path, indexed=False)
-    out = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query")
+    out = _invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True)
     assert not _is_deny(out), out
 
 
-def test_out_of_project_target_is_never_denied_in_either_mode(tmp_path, monkeypatch):
+def test_out_of_project_target_is_never_denied(tmp_path, monkeypatch):
     _project(tmp_path)
     outside = tmp_path.parent / "elsewhere.py"
-    for mode in ("once", "until-query"):
-        out = _invoke("read", _dsh_read(outside), tmp_path, monkeypatch, strict=True, deny_mode=mode)
-        assert not _is_deny(out), (mode, out)
+    out = _invoke("read", _dsh_read(outside), tmp_path, monkeypatch, strict=True)
+    assert not _is_deny(out), out
 
 
-def test_graph_output_target_is_never_denied_in_either_mode(tmp_path, monkeypatch):
+def test_graph_output_target_is_never_denied(tmp_path, monkeypatch):
     _project(tmp_path)
     inside_out = tmp_path / "graphify-out" / "report.py"
     inside_out.write_text("x = 1\n", encoding="utf-8")
-    for mode in ("once", "until-query"):
-        out = _invoke("read", _dsh_read(inside_out), tmp_path, monkeypatch, strict=True, deny_mode=mode)
-        assert not _is_deny(out), (mode, out)
+    out = _invoke("read", _dsh_read(inside_out), tmp_path, monkeypatch, strict=True)
+    assert not _is_deny(out), out
 
 
 # --- session start --------------------------------------------------------
@@ -280,19 +229,13 @@ def test_session_kind_restores_the_budget_after_compaction(tmp_path, monkeypatch
     f = _project(tmp_path)
 
     def _read_denied():
-        return _is_deny(
-            _invoke(
-                "read", _dsh_read(f), tmp_path, monkeypatch,
-                strict=True, deny_mode="until-query",
-            )
-        )
+        return _is_deny(_invoke("read", _dsh_read(f), tmp_path, monkeypatch, strict=True))
 
     assert _read_denied()
-    assert _read_denied()
-    assert not _read_denied()
+    assert not _read_denied()          # the one shot is spent
     payload = {"session_id": "dsh-1", "hook_event_name": "SessionStart", "source": "compact"}
     _invoke("session", payload, tmp_path, monkeypatch)
-    assert _read_denied()
+    assert _read_denied()              # a compaction restores the budget
 
 
 def test_compact_kind_is_unchanged_for_other_sources(tmp_path, monkeypatch):
@@ -372,17 +315,6 @@ def test_grep_of_one_indexed_file_denies_once_in_strict_mode(tmp_path, monkeypat
     assert _is_deny(first), first
     second = _invoke("search", payload, tmp_path, monkeypatch, strict=True)
     assert not _is_deny(second), second
-
-
-def test_deny_cap_zero_turns_the_repeat_mode_off(tmp_path, monkeypatch):
-    """GRAPHIFY_HOOK_DENY_CAP=0 must mean "never deny", not "deny once"."""
-    f = _project(tmp_path)
-    env = {"GRAPHIFY_HOOK_DENY_CAP": "0"}
-    out = _invoke(
-        "read", _dsh_read(f), tmp_path, monkeypatch, strict=True, deny_mode="until-query", env=env
-    )
-    assert not _is_deny(out), out
-    assert _is_nudge(out), out
 
 
 def test_the_installed_hook_command_produces_the_deny(tmp_path, monkeypatch):

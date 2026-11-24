@@ -91,41 +91,16 @@ def test_plain_install_is_advisory(scratch, capsys):
     out = capsys.readouterr().out
     commands = _commands(_hooks(project / ".dsh" / "hooks.json")["PreToolUse"])
     assert all("--strict" not in command for command in commands)
-    assert all("--deny-mode" not in command for command in commands)
     assert "--strict" in out  # "no enforcement" is a visible choice, not a surprise
 
 
-def test_strict_install_blocks_once_and_records_no_mode_flag(scratch, monkeypatch):
+def test_strict_install_blocks_once(scratch, monkeypatch):
+    """`--strict` writes exactly the flag a strict Claude Code install writes."""
     project, _ = scratch
     monkeypatch.setattr(sys, "argv", ["graphify", "dsh", "install", "--project", "--strict"])
     dispatch_install_cli("dsh")
     guarded = _commands(_hooks(project / ".dsh" / "hooks.json")["PreToolUse"])
     assert all(command.endswith("--strict") for command in guarded)
-    # `once` is recorded by omission, exactly as a strict Claude Code install does.
-    assert all("--deny-mode" not in command for command in guarded)
-
-
-def test_deny_mode_flag_selects_once(scratch, monkeypatch):
-    project, _ = scratch
-    monkeypatch.setattr(
-        sys, "argv", ["graphify", "dsh", "install", "--project", "--deny-mode", "once"]
-    )
-    dispatch_install_cli("dsh")
-    commands = _commands(_hooks(project / ".dsh" / "hooks.json")["PreToolUse"])
-    assert all("--deny-mode once" in command for command in commands)
-
-
-def test_deny_mode_until_query_is_written_verbatim(scratch, monkeypatch):
-    """The repeat mode stays selectable; it is recorded exactly as chosen."""
-    project, _ = scratch
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["graphify", "dsh", "install", "--project", "--strict", "--deny-mode", "until-query"],
-    )
-    dispatch_install_cli("dsh")
-    commands = _commands(_hooks(project / ".dsh" / "hooks.json")["PreToolUse"])
-    assert all(command.endswith("--strict --deny-mode until-query") for command in commands)
 
 
 def test_plain_user_scope_install_carries_no_policy_flags(scratch):
@@ -133,16 +108,6 @@ def test_plain_user_scope_install_carries_no_policy_flags(scratch):
     install("dsh", project=False)
     commands = _commands(_hooks(dsh_home / "hooks.json")["PreToolUse"])
     assert all("--strict" not in command for command in commands)
-    assert all("--deny-mode" not in command for command in commands)
-
-
-def test_unknown_deny_mode_is_refused(scratch, monkeypatch):
-    monkeypatch.setattr(
-        sys, "argv", ["graphify", "dsh", "install", "--project", "--deny-mode", "forever"]
-    )
-    with pytest.raises(SystemExit) as error:
-        dispatch_install_cli("dsh")
-    assert error.value.code == 1
 
 
 def test_reinstall_keeps_user_hooks_and_is_byte_stable(scratch):

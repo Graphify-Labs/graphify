@@ -92,11 +92,8 @@ _COMPACT_CONTEXT = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
-# Strict-mode block (opt-in). Claude Code and dsh both honor
-# hookSpecificOutput.permissionDecision == "deny" and show permissionDecisionReason
-# to the model. The payloads are built by _deny_payload() below, because the
-# closing sentence depends on the deny mode: `once` fires a single block, while
-# `until-query` repeats up to the cap.
+# (the strict-mode deny payloads live further down, next to the tool-name
+# vocabulary the guard branches on)
 _HOOK_SOURCE_EXTS = (
     '.py', '.js', '.cjs', '.ts', '.tsx', '.jsx', '.astro', '.vue', '.svelte', '.ejs', '.go',
     '.rs', '.java', '.rb', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.kt',
@@ -1136,107 +1133,35 @@ def _tool_is(payload: dict, names: "frozenset[str]") -> bool:
     return name is None or name in names
 
 
-# Deny policy. `once` is the Claude Code contract: at most one block per session,
-# ever. `until-query` keeps blocking qualifying calls until a query, path or
-# explain command has refreshed the query stamp, bounded by a cap so a model that
-# ignores the redirect can never be refused indefinitely.
-_DENY_MODE_ONCE = "once"
-_DENY_MODE_UNTIL_QUERY = "until-query"
-_DENY_MODES = (_DENY_MODE_ONCE, _DENY_MODE_UNTIL_QUERY)
-_DENY_CAP_DEFAULTS = {_DENY_MODE_ONCE: 1, _DENY_MODE_UNTIL_QUERY: 2}
-
-# Deny-block text, split into the orient-yourself body and a per-kind firing
-# sentence. The firing sentence is the model's only signal about how hard the
-# block is, so `until-query` must not reuse the "at most once" wording: an agent
-# told one retry suffices re-issues the read and burns the second denial instead
-# of querying the graph. `once` keeps each kind's original sentence verbatim.
-_DENY_BODY = {
-    "read": (
-        'graphify strict mode: this project has a fresh knowledge graph that covers '
-        'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
-        '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
-        'will be allowed. '
-    ),
-    "search": (
-        'graphify strict mode: this project has a knowledge graph. Run '
-        '`graphify query "<your question>"` (or `graphify explain` / '
-        '`graphify path`) FIRST to orient yourself, then re-issue this Grep — '
-        'it will be allowed. '
-    ),
-}
-_DENY_FIRING = {
-    "read": (
-        "This block fires at most once per session; after one query, read raw files "
-        "for the exact lines the graph pointed you to."
-    ),
-    "search": "This block fires at most once per session.",
-}
-
-
-def _deny_payload(kind: str, mode: str) -> str:
-    """The PreToolUse deny JSON for *kind* (`read`/`search`) under *mode*."""
-    firing = _DENY_FIRING[kind]
-    if mode == _DENY_MODE_UNTIL_QUERY:
-        firing = firing.replace(
-            "fires at most once per session",
-            f"repeats until you query the graph (at most {_deny_cap(mode)} times per session)",
-        )
-    return json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": _DENY_BODY[kind] + firing,
-        }
-    }, ensure_ascii=False, separators=(",", ":")) + "\n"
-
-
-def _deny_mode(flag: "str | None") -> str:
-    """Resolve the deny mode: GRAPHIFY_HOOK_DENY_MODE overrides the installed flag.
-    An unknown or missing value falls back to `once`, so a typo can only ever make
-    the policy stricter-by-default, never silently repeat-denying."""
-    value = (os.environ.get("GRAPHIFY_HOOK_DENY_MODE") or flag or "").strip().lower()
-    return value if value in _DENY_MODES else _DENY_MODE_ONCE
-
-
-def _deny_cap(mode: str) -> int:
-    """Denials allowed per session under *mode*, from GRAPHIFY_HOOK_DENY_CAP."""
-    try:
-        return max(0, int(os.environ.get("GRAPHIFY_HOOK_DENY_CAP", "")))
-    except ValueError:
-        return _DENY_CAP_DEFAULTS[_DENY_MODE_ONCE if mode == _DENY_MODE_ONCE else _DENY_MODE_UNTIL_QUERY]
-
-
-def _claim_denial(session_id: str, mode: str) -> bool:
-    """Claim one blocking denial for this session under *mode*, else return False.
-
-    `once` keeps `_mark_session_denied`'s O_EXCL contract unchanged, so every
-    existing Claude Code install behaves exactly as before. `until-query` counts
-    denials in a marker file and refuses past the cap; together with the
-    indexed-file gate in the caller, that bounds the worst case at a handful of
-    refusals instead of stranding a task whose answer is not in the graph.
-    """
-    from graphify.paths import out_path, write_text_atomic
-    if mode == _DENY_MODE_ONCE:
-        return _mark_session_denied(session_id)
-    cap = _deny_cap(mode)
-    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or ""))[:64]
-    if not sid or cap <= 0:
-        return False
-    try:
-        d = out_path("cache", "hook_sessions")
-        d.mkdir(parents=True, exist_ok=True)
-        marker = d / f"{sid}.denials"
-        try:
-            count = int(marker.read_text(encoding="utf-8").strip() or "0")
-        except (OSError, ValueError):
-            count = 0
-        if count >= cap:
-            return False
-        write_text_atomic(marker, str(count + 1))
-        _gc_hook_session_markers(d)
-        return True
-    except Exception:
-        return False
+# Strict-mode deny, one payload per kind. The text is unchanged from before dsh
+# support: Claude Code and dsh both honour permissionDecision == "deny" and show
+# permissionDecisionReason to the model, and both get the same one block per
+# session (see _mark_session_denied) so a deny can never strand an agent.
+_READ_DENY = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            'graphify strict mode: this project has a fresh knowledge graph that covers '
+            'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
+            '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
+            'will be allowed. This block fires at most once per session; after one '
+            'query, read raw files for the exact lines the graph pointed you to.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+_SEARCH_DENY = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            'graphify strict mode: this project has a knowledge graph. Run '
+            '`graphify query "<your question>"` (or `graphify explain` / '
+            '`graphify path`) FIRST to orient yourself, then re-issue this Grep — '
+            'it will be allowed. This block fires at most once per session.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
 def _touch_query_stamp(graph_path: "Path") -> None:
@@ -1350,11 +1275,7 @@ def _reset_hook_session(session_id: str) -> None:
     d = out_path("cache", "hook_sessions")
     if not d.is_dir():
         return
-    own = re.compile(
-        re.escape(key) + r"(?:-[0-9a-f]{16})?\.nudges|"
-        + re.escape(key) + r"\.denied|"
-        + re.escape(key) + r"\.denials"
-    )
+    own = re.compile(re.escape(key) + r"(?:-[0-9a-f]{16})?\.nudges|" + re.escape(key) + r"\.denied")
     for entry in os.scandir(d):
         if own.fullmatch(entry.name):
             try:
@@ -1657,7 +1578,7 @@ def _search_is_outside_project(tool_input: dict) -> bool:
         return False
 
 
-def _run_hook_guard(kind: str, strict: bool = False, deny_mode: "str | None" = None) -> None:
+def _run_hook_guard(kind: str, strict: bool = False) -> None:
     """Shell-agnostic PreToolUse guard (#522).
 
     Reads the tool-call JSON from stdin and, when a fresh in-project knowledge graph
@@ -1669,17 +1590,13 @@ def _run_hook_guard(kind: str, strict: bool = False, deny_mode: "str | None" = N
 
     In strict mode (opt-in), the FIRST raw Read of indexed, fresh code or dedicated
     Grep in the project is DENIED with a redirect to `graphify query`, then
-    downgrades to the soft nudge. That is the `once` deny mode, the default and
-    the only behaviour Claude Code installs ever get. The `until-query` mode
-    (installed for hosts that need a verifiable graph-first ordering) keeps
-    denying qualifying calls while no recent graph query exists, up to
-    GRAPHIFY_HOOK_DENY_CAP (default 2), then degrades to the soft nudge exactly
-    like `once`. A Bash command that prints an in-project code file is routed
-    through the read policy and is never denied.
+    downgrades to the soft nudge. Claude Code and dsh share that one-shot
+    contract; neither host gets a second, stricter policy. A Bash command that
+    prints an in-project code file is routed through the read policy and is never
+    denied.
     Out-of-project and graph-output targets are ignored; stale graphs never block.
     """
     from graphify.paths import out_path
-    mode = _deny_mode(deny_mode)
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
     # the tool is never blocked; the graph nudge is appended only when a graph
     # exists. Handled before the stdin read below (which the search/read guards need).
@@ -1803,8 +1720,8 @@ def _run_hook_guard(kind: str, strict: bool = False, deny_mode: "str | None" = N
                 indexed = not target.is_file() or _target_is_indexed(str(target), root)
                 if indexed and _hook_strict_enabled(strict) and not out_path("needs_update").exists() \
                         and not _query_stamp_fresh() \
-                        and _claim_denial(str(d.get("session_id") or ""), mode):
-                    sys.stdout.write(_with_hint(_deny_payload("search", mode), terms=_search_hint_terms(t)))
+                        and _mark_session_denied(str(d.get("session_id") or "")):
+                    sys.stdout.write(_with_hint(_SEARCH_DENY, terms=_search_hint_terms(t)))
                     return
                 if not search_stale and target.is_file() and indexed:
                     try:
@@ -1935,8 +1852,8 @@ def _run_hook_guard(kind: str, strict: bool = False, deny_mode: "str | None" = N
             if not bash_read and _hook_strict_enabled(strict) and _tool_is(d, _TOOL_READ_NAMES) \
                     and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
-                    and _claim_denial(str(d.get("session_id") or ""), mode):
-                sys.stdout.write(_with_hint(_deny_payload("read", mode), rel_file=_rel_to_root(fp, root)))
+                    and _mark_session_denied(str(d.get("session_id") or "")):
+                sys.stdout.write(_with_hint(_READ_DENY, rel_file=_rel_to_root(fp, root)))
                 return
             if _nudge_allowed(d):
                 sys.stdout.write(_with_hint(_nudge_for_out(_READ_NUDGE), rel_file=_rel_to_root(fp, root)))
@@ -3721,22 +3638,12 @@ def dispatch_command(cmd: str) -> None:
         # mode (opt-in, `hook-guard <read|search> --strict`) it blocks the first
         # raw Read or dedicated Grep per session via the JSON permissionDecision
         # payload — never via exit code — and downgrades to the nudge thereafter.
-        # `--deny-mode until-query` (with the same `--strict`) keeps blocking while
-        # no recent graph query exists, up to GRAPHIFY_HOOK_DENY_CAP denials.
         # `hook-guard compact` is the Claude Code SessionStart (matcher "compact")
         # hook; `hook-guard session` is the host-neutral SessionStart hook that
         # also fires on startup/resume/clear.
-        _guard_args = sys.argv[3:]
-        _guard_mode = None
-        for _i, _arg in enumerate(_guard_args):
-            if _arg.startswith("--deny-mode="):
-                _guard_mode = _arg.split("=", 1)[1]
-            elif _arg == "--deny-mode" and _i + 1 < len(_guard_args):
-                _guard_mode = _guard_args[_i + 1]
         _run_hook_guard(
             sys.argv[2] if len(sys.argv) > 2 else "",
-            strict="--strict" in _guard_args,
-            deny_mode=_guard_mode,
+            strict="--strict" in sys.argv[3:],
         )
         sys.exit(0)
     elif cmd == "check-update":

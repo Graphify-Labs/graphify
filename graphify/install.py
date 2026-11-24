@@ -2157,11 +2157,6 @@ _DSH_BRIDGE_VERSION = "0.2.3-alpha.2"
 # dsh's hook parser reads `timeout` as SECONDS (it maps to timeoutSec), unlike
 # Claude Code's milliseconds.
 _DSH_HOOK_TIMEOUT_SECONDS = 10
-_DSH_DENY_MODES = ("once", "until-query")
-# `once` is the policy a plain install records on BOTH hosts: a deny is a
-# redirect, not a gate, so one block per session can never strand a task. The
-# repeat mode is an explicit opt-in, never this default (#dsh-support).
-_DSH_DEFAULT_DENY_MODE = "once"
 _DSH_OVERLAY_NAME = "graphify.cordis.yml"
 # Stable composition row id: `dsh --dump-config` and uninstall both address the
 # bridge by this id, so it must never change.
@@ -2182,17 +2177,6 @@ def _dsh_hooks_path(project: bool = False, project_dir: Path | None = None) -> P
     return _dsh_home() / "hooks.json"
 
 
-def _dsh_deny_mode(value: str | None) -> str:
-    """Resolve a deny-mode argument for validation; an unknown value falls back.
-
-    Only used to *validate* an explicit ``--deny-mode``; the default is never
-    written into a hook command, so an install with no mode records `once` by
-    carrying no flag at all and mirrors a Claude Code install exactly.
-    """
-    mode = (value or "").strip().lower()
-    return mode if mode in _DSH_DENY_MODES else _DSH_DEFAULT_DENY_MODE
-
-
 def _dsh_exe(project: bool) -> str:
     """The command prefix the hook config spells, quoted when it holds a space.
 
@@ -2205,21 +2189,20 @@ def _dsh_exe(project: bool) -> str:
     return exe
 
 
-def _dsh_pretooluse_hooks(strict: bool, deny_mode: str | None, project: bool) -> "list[dict]":
+def _dsh_pretooluse_hooks(strict: bool, project: bool) -> "list[dict]":
     """dsh's guard hooks: lowercase matchers, seconds timeout, opt-in blocking.
 
     Matchers are literal, case-sensitive pipe alternatives in the Claude dialect
     (`pattern.split('|').includes(query)`), and dsh registers its tools as
     `read`/`grep`/`glob`/`bash` - a capitalized matcher fires on nothing.
 
-    The flags mirror Claude Code's scoping exactly: a plain install writes no
-    blocking flag (advisory only), `--strict` appends `--strict`, and a
-    `--deny-mode` flag is written only when the user selected a mode. A default
-    install therefore records the one-shot `once` policy by carrying no flag at
-    all, which is what keeps the two hosts' behaviour identical.
+    The flags mirror Claude Code exactly: a plain install writes no blocking flag
+    (advisory only) and `--strict` appends `--strict`. There is no second policy
+    for the second host, so the one-shot deny behind that flag is the whole of
+    both hosts' enforcement.
     """
     exe = _dsh_exe(project)
-    flags = (" --strict" if strict else "") + (f" --deny-mode {deny_mode}" if deny_mode else "")
+    flags = " --strict" if strict else ""
 
     def _group(matcher: str, kind: str) -> dict:
         return {"matcher": matcher,
@@ -2244,7 +2227,7 @@ def _dsh_sessionstart_hooks(project: bool = False) -> "list[dict]":
     }]
 
 
-def _install_dsh_hooks(hooks_path: Path, *, strict: bool, deny_mode: str | None, project: bool) -> None:
+def _install_dsh_hooks(hooks_path: Path, *, strict: bool, project: bool) -> None:
     """Merge graphify's guard hooks into a dsh hooks.json, keeping user entries."""
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
     settings = _read_settings_for_merge(hooks_path)
@@ -2257,13 +2240,10 @@ def _install_dsh_hooks(hooks_path: Path, *, strict: bool, deny_mode: str | None,
     session_start = hooks.setdefault("SessionStart", [])
     if not isinstance(session_start, list):
         _refuse_to_modify(hooks_path)
-    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool) + _dsh_pretooluse_hooks(
-        strict, deny_mode, project
-    )
+    hooks["PreToolUse"] = _strip_graphify_hooks(pre_tool) + _dsh_pretooluse_hooks(strict, project)
     hooks["SessionStart"] = _strip_graphify_hooks(session_start) + _dsh_sessionstart_hooks(project)
     _write_settings_with_backup(hooks_path, settings)
-    mode = f", deny-mode {deny_mode}" if (strict and deny_mode) else ""
-    state = f"strict{mode}" if strict else "advisory only"
+    state = "strict (one deny per session)" if strict else "advisory only"
     print(f"  {hooks_path}  ->  PreToolUse hooks registered (bash|grep, read|glob; {state})")
     print(f"  {hooks_path}  ->  SessionStart hook registered (startup|resume|clear|compact)")
     if not strict:
@@ -2432,28 +2412,27 @@ def _print_dsh_activation(*, project: bool, overlay: Path) -> None:
 
 
 def _dsh_wiring(
-    project_dir: Path, *, project: bool = False, strict: bool = False, deny_mode: str | None = None
+    project_dir: Path, *, project: bool = False, strict: bool = False
 ) -> Path:
     """Write dsh's hook config and composition overlay; the skill is copied separately.
 
-    ``strict`` and ``deny_mode`` are passed through verbatim: unset means the
-    advisory install, and an unset deny mode means the one-shot `once` policy the
-    hook command records by omission — the same shape a Claude Code install has.
+    ``strict`` is passed through verbatim: unset means the advisory install, and a
+    strict dsh install is the same one-shot deny a strict Claude Code install gets.
     """
     hooks_path = _dsh_hooks_path(project=project, project_dir=project_dir)
-    _install_dsh_hooks(hooks_path, strict=strict, deny_mode=deny_mode, project=project)
+    _install_dsh_hooks(hooks_path, strict=strict, project=project)
     overlay = _install_dsh_overlay(project_dir, project=project, hooks_path=hooks_path)
     _print_dsh_activation(project=project, overlay=overlay)
     return overlay
 
 
 def _dsh_install(
-    project_dir: Path | None = None, *, project: bool = False, strict: bool = False, deny_mode: str | None = None
+    project_dir: Path | None = None, *, project: bool = False, strict: bool = False
 ) -> None:
     """`graphify dsh install`: skill, hook config and overlay in one run."""
     project_dir = project_dir or Path(".")
     _copy_skill_file("dsh", project=project, project_dir=project_dir)
-    _dsh_wiring(project_dir, project=project, strict=strict, deny_mode=deny_mode)
+    _dsh_wiring(project_dir, project=project, strict=strict)
     print()
     if strict:
         print("dsh will redirect the first raw source read or grep per session to the knowledge graph.")
@@ -3313,35 +3292,16 @@ def dispatch_install_cli(cmd: str) -> bool:
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         args = sys.argv[3:]
         project_scope = "--project" in args
-        deny_mode = None
-        for i, arg in enumerate(args):
-            if arg.startswith("--deny-mode="):
-                deny_mode = arg.split("=", 1)[1]
-            elif arg == "--deny-mode" and i + 1 < len(args):
-                deny_mode = args[i + 1]
-        if deny_mode is not None and _dsh_deny_mode(deny_mode) != deny_mode.strip().lower():
-            print(
-                f"error: unknown --deny-mode '{deny_mode}'. Choose from: {', '.join(_DSH_DENY_MODES)}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
         if subcmd == "install":
             # Blocking is opt-in, exactly as it is for Claude Code: without
             # `--strict` the guard only advises, and the install output names the
-            # flag. `--deny-mode` is written only when the user picked one, so the
-            # default records the one-shot `once` policy by omission.
-            _dsh_install(
-                Path("."),
-                project=project_scope,
-                strict=("--strict" in args),
-                deny_mode=deny_mode,
-            )
+            # flag.
+            _dsh_install(Path("."), project=project_scope, strict=("--strict" in args))
         elif subcmd == "uninstall":
             _dsh_uninstall(Path("."), project=project_scope)
         else:
             print(
-                "Usage: graphify dsh [install|uninstall] [--project] [--strict] "
-                "[--deny-mode once|until-query]",
+                "Usage: graphify dsh [install|uninstall] [--project] [--strict]",
                 file=sys.stderr,
             )
             sys.exit(1)
