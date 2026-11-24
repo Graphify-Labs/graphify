@@ -4,7 +4,9 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -163,7 +165,10 @@ def drive_watch(root, monkeypatch, actions, *, observed_roots=None):
     monkeypatch.setattr(observers, "Observer", Observer)
     monkeypatch.setattr(polling, "PollingObserver", Observer)
     monkeypatch.setattr(watch_mod, "_rebuild_code", rebuild)
-    monkeypatch.setattr(watch_mod.time, "sleep", pump)
+    # Replace the name in watch.py only: time.sleep is shared with the whole
+    # process, and subprocess waits call it during a rebuild.
+    monkeypatch.setattr(watch_mod, "time",
+                        SimpleNamespace(sleep=pump, monotonic=time.monotonic))
     watch_mod.watch(root, debounce=0)
 
 
