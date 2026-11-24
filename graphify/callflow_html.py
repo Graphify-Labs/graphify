@@ -806,6 +806,10 @@ SECTION_ARCHETYPES = [
 ]
 
 
+_ARCHETYPE_KEYWORDS = frozenset().union(*(keywords for _, _, _, keywords in SECTION_ARCHETYPES))
+_MAX_KEYWORD_LENGTH = max(map(len, _ARCHETYPE_KEYWORDS))
+
+
 def _community_text(nodes: list, label: str = "") -> str:
     parts = [label]
     for node in nodes[:80]:
@@ -814,13 +818,6 @@ def _community_text(nodes: list, label: str = "") -> str:
         parts.append(str(node.get("node_type", "")))
         parts.append(str(node.get("file_type", "")))
     return " ".join(parts).lower()
-
-
-def _keyword_score(text: str, keywords: set[str]) -> int:
-    score = 0
-    for keyword in keywords:
-        score += len(re.findall(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text))
-    return score
 
 
 def _rank_grouped_sections(grouped: dict, max_sections: int) -> tuple[list, list]:
@@ -847,11 +844,17 @@ def derive_sections_from_communities(nodes: list, labels: dict, lang: str, max_s
 
     for cid, community_nodes in sorted(comm_idx.items(), key=lambda item: (-len(item[1]), str(item[0]))):
         label = label_for_community(cid, labels, community_nodes, lang)
-        text = _community_text(community_nodes, label)
+        # Archetype keywords are whole ASCII alphanumeric words.
+        words = Counter()
+        for match in re.finditer(r"[a-z0-9]+", _community_text(community_nodes, label)):
+            if match.end() - match.start() <= _MAX_KEYWORD_LENGTH:
+                word = match.group()
+                if word in _ARCHETYPE_KEYWORDS:
+                    words[word] += 1
         best = None
         best_score = 0
         for priority, (sid, zh_name, en_name, keywords) in enumerate(SECTION_ARCHETYPES):
-            score = _keyword_score(text, keywords)
+            score = sum(words[keyword] for keyword in keywords)
             if score > best_score:
                 best = (priority, sid, zh_name, en_name)
                 best_score = score
