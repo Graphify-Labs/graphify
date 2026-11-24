@@ -13910,10 +13910,13 @@ def extract(
             continue
         if tgt != caller and (caller, tgt) not in existing_pairs:
             existing_pairs.add((caller, tgt))
-            # A module import does not bind a bare Python name. Keep a
-            # name-only match inferred even when only one definition exists
-            # in the corpus (#2945).
-            if has_import_evidence and (caller_family != "python" or tgt in imported_symbols):
+            # A module import alone does not bind a bare Python name (#2945).
+            # The call's explicit from-import can also prove the symbol when
+            # the target was resolved through a namespace-package alias.
+            python_symbol_import = tgt in imported_symbols or (
+                python_import_files is not None and len(python_import_files) == 1
+            )
+            if has_import_evidence and (caller_family != "python" or python_symbol_import):
                 confidence = "EXTRACTED"
                 confidence_score = 1.0
             else:
