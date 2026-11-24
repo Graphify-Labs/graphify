@@ -21,6 +21,7 @@ import platform
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -636,23 +637,43 @@ def _claude_sessionstart_hooks(project: bool = False) -> "list[dict]":
 # always gated on graphify's own output dir, so that marker identifies it too.
 _GRAPHIFY_HOOK_SUBCOMMANDS = ("hook-guard", "hook-check")
 _GRAPHIFY_LEGACY_HOOK_MARKER = "graphify-out/"
+# The kinds `graphify hook-guard` actually dispatches on (`_run_hook_guard` in
+# cli.py) - the tail match below accepts exactly these words and nothing else.
+_GRAPHIFY_HOOK_KINDS = ("read", "search", "compact", "session", "gemini")
+
+# graphify's hook commands are `<executable> hook-guard <kind>` (optionally with
+# `--strict`) or `<executable> hook-check`, so the argv TAIL identifies the entry
+# on its own. The executable cannot: it is an absolute path at user scope and may
+# be a wrapper, a renamed binary, or a directory that moved between installs
+# (`pipx` -> `uv tool` -> homebrew), and identifying by the leading path meant a
+# re-install appended a second full set of hooks instead of replacing the first
+# (PR #5443 review, finding 2). A foreign command ending in exactly this private
+# subcommand shape is not something users write; a stale duplicate graphify guard
+# running twice on every tool call is what people do end up with.
+_GRAPHIFY_HOOK_TAIL = re.compile(
+    r"\b(?:hook-guard\s+(?:" + "|".join(_GRAPHIFY_HOOK_KINDS) + r")|hook-check)"
+    r"(?:\s+--?[^\s]+)*\s*$"
+)
 
 
 def _is_graphify_hook_command(command: str) -> bool:
     """True when a hook ``command`` string is one graphify installed.
 
-    Matches graphify's own guard/check subcommands (current installs) or the
-    ``graphify-out/`` path its pre-#522 inline bash guard gated on (legacy
-    installs). Deliberately command-scoped: the old ``"graphify" in str(group)``
-    match also caught an unrelated group whose command path merely contained the
-    word "graphify" (#4359).
+    Matches graphify's own guard/check subcommands (current installs) by their
+    argv tail, whatever the executable is called, or the ``graphify-out/`` path
+    its pre-#522 inline bash guard gated on (legacy installs). Deliberately
+    command-scoped: the old ``"graphify" in str(group)`` match also caught an
+    unrelated group whose command path merely contained the word "graphify"
+    (#4359).
     """
-    lowered = command.lower()
+    lowered = command.lower().strip()
+    if _GRAPHIFY_HOOK_TAIL.search(lowered):
+        return True
+    if _GRAPHIFY_LEGACY_HOOK_MARKER in lowered:
+        return True
     if "graphify" not in lowered:
         return False
-    if any(sub in lowered for sub in _GRAPHIFY_HOOK_SUBCOMMANDS):
-        return True
-    return _GRAPHIFY_LEGACY_HOOK_MARKER in lowered
+    return any(sub in lowered for sub in _GRAPHIFY_HOOK_SUBCOMMANDS)
 
 
 def _is_graphify_hook_entry(entry: object) -> bool:
@@ -2042,6 +2063,69 @@ def _uninstall_opencode_plugin(opencode_dir: Path) -> None:
 
     if _drop_opencode_config_entry(opencode_dir):
         print(f"  {opencode_dir / _OPENCODE_CONFIG_PATH.name}  ->  plugin deregistered")
+
+
+_HOOK_EXE_VERSION_RE = re.compile(r"\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)")
+# One probe and one warning per executable path per process: an install resolves
+# the exe once per artifact it writes, and a probe costs a whole interpreter start.
+_HOOK_EXE_VERSIONS: "dict[str, str | None]" = {}
+_HOOK_EXE_WARNED: "set[str]" = set()
+
+
+def _reported_exe_version(exe: str) -> str | None:
+    """The version *exe* reports for itself, or None when it cannot be asked."""
+    if exe in _HOOK_EXE_VERSIONS:
+        return _HOOK_EXE_VERSIONS[exe]
+    reported: str | None = None
+    try:
+        done = subprocess.run(
+            [exe, "--version"], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        done = None
+    if done is not None and done.returncode == 0:
+        match = _HOOK_EXE_VERSION_RE.search(done.stdout or "") or _HOOK_EXE_VERSION_RE.search(
+            done.stderr or ""
+        )
+        if match:
+            reported = match.group(1)
+    _HOOK_EXE_VERSIONS[exe] = reported
+    return reported
+
+
+def _warn_if_hook_exe_is_stale(exe: str) -> None:
+    """Warn when the hooks would run a graphify other than this one.
+
+    `_resolve_graphify_exe` prefers whatever `graphify` PATH resolves to, which
+    need not be the package running this install: a stale pip copy, an older
+    pipx/uv tool, or a wrapper script earlier on PATH. Such a copy predates
+    whatever this install writes, so its guard answers the way it always did -
+    or prints nothing at all for a subcommand it does not have - while the
+    install reports success. The result is a guard that fires and does nothing,
+    which is worse than no guard, because nothing tells the user.
+
+    Only a *mismatch* is reported, and only once per path: an unreachable or
+    unparsable executable, and a package whose own version is unknown, say
+    nothing, since no claim can be made about them with confidence.
+    """
+    if not exe or exe == "graphify" or exe in _HOOK_EXE_WARNED:
+        return
+    if not os.path.isabs(exe) or __version__ == "unknown":
+        return
+    reported = _reported_exe_version(exe)
+    if reported is None or reported == __version__:
+        return
+    _HOOK_EXE_WARNED.add(exe)
+    print(
+        f"  warning: hooks point at {exe} (graphify {reported}), not this install "
+        f"(graphify {__version__}). That copy predates the hooks being written, so "
+        "its guard may answer nothing - or only advise - where these hooks expect it "
+        "to act; put the directory of this graphify first on PATH, or re-run the "
+        "install from the copy you want wired.",
+        file=sys.stderr,
+    )
+
+
 def _resolve_graphify_exe(project: bool = False) -> str:
     """Return the absolute path to the graphify executable, with forward slashes.
 
@@ -2067,6 +2151,12 @@ def _resolve_graphify_exe(project: bool = False) -> str:
     """
     import shutil
     if project:
+        # The committed config spells the bare `graphify` command, which resolves
+        # through PATH when the hook fires - the same trap as user scope, so name
+        # the mismatch here too rather than ship a silently inert guard.
+        offered = shutil.which("graphify")
+        if offered:
+            _warn_if_hook_exe_is_stale(offered.replace("\\", "/"))
         return "graphify"
     found = shutil.which("graphify")
     if not found:
@@ -2077,7 +2167,14 @@ def _resolve_graphify_exe(project: bool = False) -> str:
             if candidate.exists():
                 found = str(candidate)
                 break
-    return (found or "graphify").replace("\\", "/")
+    exe = (found or "graphify").replace("\\", "/")
+    if found:
+        # Whatever PATH offered is what every written hook will run; if it is not
+        # this install, say so now rather than let a silently inert guard ship.
+        _warn_if_hook_exe_is_stale(exe)
+    return exe
+
+
 def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json.
 
@@ -2411,6 +2508,28 @@ def _print_dsh_activation(*, project: bool, overlay: Path) -> None:
         print("The home patch layer applies to every dsh profile - restart dsh to load it.")
 
 
+def _dsh_other_scope_mount(project: bool, project_dir: Path) -> Path | None:
+    """The other scope's overlay, when it already mounts the same bridge row.
+
+    dsh applies the home patch layer to every profile, and a ``--patch`` overlay
+    composes on top of it - so installing both scopes mounts TWO bridge instances
+    with the same row id (``--dump-config`` lists both, which is also what a
+    duplicate id looks like). The guard then runs twice per tool call and the
+    orienting line is injected twice. The scopes are alternatives, not layers, so
+    a second one is worth naming.
+    """
+    if project:
+        home_patch = _dsh_home() / "cordis.patch.yml"
+        try:
+            if home_patch.exists() and _DSH_FENCE_START in home_patch.read_text(encoding="utf-8"):
+                return home_patch
+        except OSError:
+            return None
+        return None
+    overlay = (project_dir or Path(".")) / ".dsh" / _DSH_OVERLAY_NAME
+    return overlay if overlay.exists() else None
+
+
 def _dsh_wiring(
     project_dir: Path, *, project: bool = False, strict: bool = False
 ) -> Path:
@@ -2423,6 +2542,15 @@ def _dsh_wiring(
     _install_dsh_hooks(hooks_path, strict=strict, project=project)
     overlay = _install_dsh_overlay(project_dir, project=project, hooks_path=hooks_path)
     _print_dsh_activation(project=project, overlay=overlay)
+    other = _dsh_other_scope_mount(project, project_dir)
+    if other:
+        print(
+            f"  note: {other} already mounts {_DSH_OVERLAY_ID} for the other scope, and "
+            "dsh composes a --patch overlay on top of the home layer: the guard would "
+            "run twice per tool call. Keep one scope - remove that mount, or uninstall "
+            "the other.",
+            file=sys.stderr,
+        )
     return overlay
 
 

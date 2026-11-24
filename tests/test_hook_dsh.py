@@ -324,9 +324,11 @@ def test_the_installed_hook_command_produces_the_deny(tmp_path, monkeypatch):
     cannot be parsed (a wrong subcommand, an unquoted path) would still pass.
     """
     import json as jsonlib
+    import os
     import shutil
     import subprocess
     import sys
+    from pathlib import Path
 
     from graphify.install import install
 
@@ -336,6 +338,13 @@ def test_the_installed_hook_command_produces_the_deny(tmp_path, monkeypatch):
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
     monkeypatch.chdir(project)
     _project(project)
+    # The install bakes in whichever `graphify` PATH offers, so pin PATH to THIS
+    # build: an older copy earlier on PATH has no dsh support and answers `pass`,
+    # which made this test pass or fail depending on the machine rather than on
+    # the code (#5443 review, finding 1).
+    monkeypatch.setenv(
+        "PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
+    )
     install("dsh", project=False, strict=True)
 
     hooks = jsonlib.loads((dsh_home / "hooks.json").read_text(encoding="utf-8"))["hooks"]

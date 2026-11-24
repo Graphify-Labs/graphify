@@ -337,3 +337,49 @@ def test_a_user_scope_exe_path_with_spaces_is_quoted(scratch, monkeypatch):
     install("dsh", project=False)
     commands = _commands(_hooks(dsh_home / "hooks.json")["PreToolUse"])
     assert all(command.startswith('"/tmp/Application Support/graphify" hook-guard ') for command in commands)
+
+
+def test_installing_the_second_scope_names_the_duplicate_mount(scratch, capsys):
+    """Both scopes mount the same row id, and dsh composes them: say so.
+
+    A `--patch` overlay is applied on top of the home layer, so a machine with
+    both installs runs two bridge instances and therefore two guards per tool
+    call. The scopes are alternatives; the install must not let that be silent.
+    """
+    project, _ = scratch
+    install("dsh", project=False)
+    capsys.readouterr()
+
+    install("dsh", project=True, project_dir=project)
+    err = capsys.readouterr().err
+    assert "cordis.patch.yml" in err and "run twice" in err
+
+    capsys.readouterr()
+    install("dsh", project=False)  # the project overlay now sits in cwd
+    err = capsys.readouterr().err
+    assert "graphify.cordis.yml" in err and "run twice" in err
+
+
+def test_the_install_names_a_stale_graphify_on_path(scratch, monkeypatch, capsys):
+    """A hook wired to whatever PATH offers can run a graphify without dsh support.
+
+    That copy answers `pass` to every guard call while this install reports
+    success, so the guard is silently inert - the exact failure a dsh install
+    exists to prevent. The install must say which binary it wired.
+    """
+    import graphify.install as install_mod
+
+    _, dsh_home = scratch
+    monkeypatch.setattr(install_mod, "_HOOK_EXE_WARNED", set())
+    monkeypatch.setattr(install_mod.shutil, "which", lambda name: "/opt/stale/bin/graphify")
+    monkeypatch.setattr(install_mod, "_reported_exe_version", lambda exe: "0.0.1")
+
+    install("dsh", project=False)
+
+    err = capsys.readouterr().err
+    assert "/opt/stale/bin/graphify" in err and "0.0.1" in err
+    # ...and the hooks really do name that binary, so the warning describes them.
+    assert all(
+        "/opt/stale/bin/graphify" in command
+        for command in _commands(_hooks(dsh_home / "hooks.json")["PreToolUse"])
+    )
