@@ -72,9 +72,12 @@ def _load_global_graph() -> nx.Graph:
         if "links" not in data and "edges" in data:
             data = dict(data, links=data["edges"])
         try:
-            return _jg.node_link_graph(data, edges="links")
+            G = _jg.node_link_graph(data, edges="links")
         except TypeError:
-            return _jg.node_link_graph(data)
+            G = _jg.node_link_graph(data)
+        if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
+            G.graph["hyperedges"] = data["hyperedges"]
+        return G
     return nx.Graph()
 
 
@@ -84,6 +87,8 @@ def _save_global_graph(G: nx.Graph) -> None:
         data = _jg.node_link_data(G, edges="links")
     except TypeError:
         data = _jg.node_link_data(G)
+    if "hyperedges" in G.graph and "hyperedges" not in data:
+        data["hyperedges"] = G.graph["hyperedges"]
     from graphify.paths import write_json_atomic
     write_json_atomic(_GLOBAL_GRAPH, data, compact=True)
 
@@ -134,6 +139,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         src_G = _jg.node_link_graph(data, edges="links")
     except TypeError:
         src_G = _jg.node_link_graph(data)
+    if "hyperedges" not in src_G.graph and isinstance(data.get("hyperedges"), list):
+        src_G.graph["hyperedges"] = data["hyperedges"]
 
     # Prefix IDs for cross-project isolation
     prefixed = prefix_graph_for_global(src_G, repo_tag)
@@ -169,6 +176,17 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
                 data = {**data, key: remap[data[key]]}
         if u != v:  # don't introduce self-loops via remapping
             G.add_edge(u, v, **data)
+
+    if prefixed.graph.get("hyperedges"):
+        existing_hes = G.graph.setdefault("hyperedges", [])
+        for he in prefixed.graph["hyperedges"]:
+            if isinstance(he, dict):
+                he = dict(he)
+                if isinstance(he.get("nodes"), list):
+                    he["nodes"] = [remap.get(m, m) for m in he["nodes"]]
+                existing_hes.append(he)
+            else:
+                existing_hes.append(he)
 
     added = prefixed.number_of_nodes() - len(remap)
     # A member call parked on a caller node (#3152) may be answered by a repo

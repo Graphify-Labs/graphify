@@ -3547,4 +3547,21 @@ def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
     """Remove all nodes tagged with repo_tag from G in-place. Returns count removed."""
     to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
     G.remove_nodes_from(to_remove)
+    hyperedges = G.graph.get("hyperedges")
+    if isinstance(hyperedges, list):
+        pruned_hyperedges = []
+        for he in hyperedges:
+            if not isinstance(he, dict):
+                pruned_hyperedges.append(he)
+                continue
+            members = he.get("nodes")
+            if isinstance(members, list):
+                live = [m for m in members if _hashable(m) and m in G]
+                if not live:
+                    continue
+                if live != members:
+                    he = dict(he)
+                    he["nodes"] = live
+            pruned_hyperedges.append(he)
+        G.graph["hyperedges"] = pruned_hyperedges
     return len(to_remove)
