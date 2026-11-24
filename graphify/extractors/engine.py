@@ -4839,21 +4839,45 @@ def _csharp_return_info(method_node, source: bytes) -> list:
     return [ret, len(tparams)]
 
 
+def _csharp_identifier_path(node, source: bytes) -> list[str] | None:
+    """``["A", "B", "C"]`` for a C# expression written ``A.B.C``, else None.
+
+    Only a chain of plain identifiers joined by ``.`` qualifies: a call, an
+    index, ``this``, a generic name or ``global::`` anywhere in it is not a
+    name the type resolver can read.
+    """
+    parts: list[str] = []
+    while node is not None and node.type == "member_access_expression":
+        name = node.child_by_field_name("name")
+        if name is None or name.type != "identifier":
+            return None
+        parts.append(_read_text(name, source))
+        node = node.child_by_field_name("expression")
+    if node is None or node.type != "identifier":
+        return None
+    parts.append(_read_text(node, source))
+    parts.reverse()
+    return parts
+
+
 def _csharp_deferred_member(access, source: bytes) -> list | None:
     """``["member", receiver, name, []]`` for ``var x = T.P`` (#5376).
 
     The variable's type is the declared type of the property or field ``P`` on
     ``T``, which may be declared in another file, so the cross-file pass
-    resolves it. Only a plain ``identifier.identifier`` access qualifies.
+    resolves it. Only a plain ``identifier.identifier`` access qualifies, or a
+    qualified ``N.T.P`` whose receiver is a dotted chain of identifiers: the
+    receiver is then kept dotted (``"N.T"``) for the call site to resolve as a
+    type path.
     """
     inner = access.child_by_field_name("expression")
     name = access.child_by_field_name("name")
-    if (
-        inner is None or name is None
-        or inner.type != "identifier" or name.type != "identifier"
-    ):
+    if name is None or name.type != "identifier":
         return None
-    return ["member", _read_text(inner, source), _read_text(name, source), []]
+    path = _csharp_identifier_path(inner, source)
+    if not path:
+        return None
+    return ["member", ".".join(path), _read_text(name, source), []]
 
 
 def _csharp_deferred_call(invocation, source: bytes) -> list | None:
@@ -11693,6 +11717,9 @@ def _extract_generic(
             kotlin_receiver_type: str | None = None
             csharp_qualified_prefix: str | None = None
             csharp_receiver_chain: list[str] | None = None
+            # `N.T.M()` / `N.T.P.M()`: the receiver as a dotted type path,
+            # optionally ending in one static member, resolved cross-file.
+            csharp_receiver_path: list[str] | None = None
             java_receiver_chain: list | None = None
             lua_self_qualified: bool = False  # Lua self:m() rewritten to Table:m
 
@@ -11928,6 +11955,27 @@ def _extract_generic(
                                     csharp_receiver_chain = [
                                         _read_text(inner, source), _read_text(fname, source)
                                     ]
+                                    # `N.T.M()`: the same two names may instead
+                                    # be a qualified type; tried only when `T.P`
+                                    # does not type the receiver.
+                                    csharp_receiver_path = list(csharp_receiver_chain)
+                            elif (
+                                inner is not None
+                                and inner.type == "member_access_expression"
+                                and fname is not None
+                                and fname.type == "identifier"
+                                and csharp_table is not None
+                            ):
+                                # `Acme.Audio.Mixer.Reset()` and
+                                # `Acme.Audio.Mixer.Instance.Play()`: a dotted
+                                # receiver whose head no local, parameter, field
+                                # or property names is a qualified type path,
+                                # resolved cross-file by the namespace rules.
+                                recv_path = _csharp_identifier_path(recv, source)
+                                if recv_path and not _csharp_receiver_is_declared(
+                                    csharp_table, recv_path[0], node.start_byte,
+                                ):
+                                    csharp_receiver_path = recv_path
                         elif recv is not None and recv.type == "element_access_expression":
                             # xs[i].M() on a `T[]` / `List<T>`: an element is a T
                             # (#4246).
@@ -12694,6 +12742,8 @@ def _extract_generic(
                                 rc_entry["qualified_prefix"] = csharp_qualified_prefix
                             if csharp_receiver_chain:
                                 rc_entry["receiver_chain"] = csharp_receiver_chain
+                            if csharp_receiver_path:
+                                rc_entry["receiver_path"] = csharp_receiver_path
                             receiver_type = _csharp_scoped_receiver_type(
                                 receiver_types, member_receiver, node.start_byte
                             )
@@ -12709,7 +12759,16 @@ def _extract_generic(
                                 recv_t = _csharp_scoped_receiver_type(
                                     csharp_scope, recv, node.start_byte
                                 )
-                                if isinstance(recv_t, str):
+                                if "." in recv:
+                                    # `var a = N.T.P; a.M()`: `N.T` is a
+                                    # qualified type path unless a value
+                                    # named like its head is in scope.
+                                    recv_path = recv.split(".")
+                                    if csharp_scope is not None and not _csharp_receiver_is_declared(
+                                        csharp_scope, recv_path[0], node.start_byte
+                                    ):
+                                        rc_entry["receiver_var_path"] = recv_path + [member]
+                                elif isinstance(recv_t, str):
                                     rc_entry["receiver_var_chain"] = [recv_t, member]
                                 elif (
                                     recv_t is None
