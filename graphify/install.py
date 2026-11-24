@@ -1105,7 +1105,13 @@ def install(
     project_dir: Path | None = None,
     strict: bool = False,
 ) -> None:
+    """Install the graphify integration for *platform*.
+
+    A dsh install that cannot resolve a mountable bridge exits 2 rather than
+    claiming success; `graphify dsh doctor` is the command that adds it.
+    """
     _print_banner()
+    dsh_active = True
     platform = _canonical_platform(platform)
     if platform == "gemini":
         gemini_install(project_dir=project_dir, project=project)
@@ -1180,10 +1186,15 @@ def install(
         # inert: dsh reads no hook file on its own, so the wiring here is what
         # makes the guard fire (see _dsh_wiring). Blocking follows the same
         # `--strict` opt-in Claude Code uses, never automatic.
-        _dsh_wiring(project_dir, project=project, strict=strict)
+        dsh_active = _dsh_wiring(project_dir, project=project, strict=strict)
 
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
+
+    if not dsh_active:
+        print("dsh install is NOT active yet: run `graphify dsh doctor` to add the bridge, "
+              "then relaunch dsh", file=sys.stderr)
+        sys.exit(2)
 
     print()
     print("Done. Open your AI coding assistant and type:")
@@ -2251,6 +2262,7 @@ _DSH_BRIDGE_PACKAGE = "@deepseek-ai/dsh-hooks-claude-code"
 # these hooks rely on. A bridge older than the running dsh is refused by
 # `dsh plugin add`, so this must track dsh's current line.
 _DSH_BRIDGE_VERSION = "0.2.3-alpha.2"
+_DSH_BRIDGE_SPEC = f"{_DSH_BRIDGE_PACKAGE}@{_DSH_BRIDGE_VERSION}"
 # dsh's hook parser reads `timeout` as SECONDS (it maps to timeoutSec), unlike
 # Claude Code's milliseconds.
 _DSH_HOOK_TIMEOUT_SECONDS = 10
@@ -2470,35 +2482,146 @@ def _remove_dsh_fence(patch_path: Path) -> bool:
     return True
 
 
-def _dsh_profiles_mounting_bridge() -> "list[str]":
-    """Names of dsh profiles whose package.json already declares the hook bridge."""
-    found: list[str] = []
+# A profile can name the bridge and still be unable to mount it: `declared` means
+# package.json has the dependency but node_modules carries no copy, and only `ok`
+# is a version dsh can actually load. `stale` is a copy older than the pin, which
+# predates the event contract these hooks rely on.
+_DSH_BRIDGE_OK = "ok"
+_DSH_BRIDGE_STALE = "stale"
+_DSH_BRIDGE_DECLARED = "declared"
+_DSH_BRIDGE_MISSING = "missing"
+
+
+def _dsh_version_key(version: str) -> tuple[int, int, int, int, tuple[str, ...]] | None:
+    """Sortable semver key, or None when *version* is not a comparable release.
+
+    Only releases and prereleases of the form `MAJOR.MINOR.PATCH[-pre]` compare;
+    a dist-tag, git spec or garbage returns None so the caller reports the bridge
+    as unverified instead of inventing an ordering for it.
+    """
+    match = re.fullmatch(
+        r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?",
+        version.strip(),
+    )
+    if not match:
+        return None
+    major, minor, patch, prerelease = match.groups()
+    if prerelease is None:
+        # A release outranks every prerelease of the same core (0.2.3 > 0.2.3-rc.1).
+        return (int(major), int(minor), int(patch), 1, ())
+    parts = tuple(
+        f"{int(part):010d}" if part.isdigit() else part for part in prerelease.split(".")
+    )
+    return (int(major), int(minor), int(patch), 0, parts)
+
+
+def _dsh_declared_bridge_spec(manifest: Path) -> str | None:
+    """The spec a profile's package.json declares for the bridge, if any."""
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("dependencies", "optionalDependencies", "devDependencies"):
+        deps = data.get(key)
+        if isinstance(deps, dict) and _DSH_BRIDGE_PACKAGE in deps:
+            spec = deps[_DSH_BRIDGE_PACKAGE]
+            return spec if isinstance(spec, str) else ""
+    return None
+
+
+def _dsh_installed_bridge_version(profile_dir: Path) -> str | None:
+    """The bridge version actually present in a profile's node_modules."""
+    manifest = (
+        profile_dir
+        / "node_modules"
+        / "@deepseek-ai"
+        / "dsh-hooks-claude-code"
+        / "package.json"
+    )
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) and version else None
+
+
+def _dsh_bridge_report() -> dict[str, tuple[str, str]]:
+    """Per dsh profile: (state, version) for the hook bridge.
+
+    A declared dependency is not a mounted plugin, so this reads the installed
+    `package.json` rather than trusting the declaration: an old or half-installed
+    bridge is exactly the state that makes the guard silently inert.
+    """
+    report: dict[str, tuple[str, str]] = {}
     for manifest in sorted((_dsh_home() / "profiles").glob("*/package.json")):
-        try:
-            data = json.loads(manifest.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        name = manifest.parent.name
+        spec = _dsh_declared_bridge_spec(manifest)
+        if spec is None:
+            report[name] = (_DSH_BRIDGE_MISSING, "")
             continue
-        if not isinstance(data, dict):
+        installed = _dsh_installed_bridge_version(manifest.parent)
+        if installed is None:
+            report[name] = (_DSH_BRIDGE_DECLARED, spec)
             continue
-        for key in ("dependencies", "optionalDependencies", "devDependencies"):
-            deps = data.get(key)
-            if isinstance(deps, dict) and _DSH_BRIDGE_PACKAGE in deps:
-                found.append(manifest.parent.name)
-                break
-    return found
+        installed_key = _dsh_version_key(installed)
+        pinned_key = _dsh_version_key(_DSH_BRIDGE_VERSION)
+        if installed_key is None or pinned_key is None:
+            report[name] = (_DSH_BRIDGE_DECLARED, installed)
+        elif installed_key < pinned_key:
+            report[name] = (_DSH_BRIDGE_STALE, installed)
+        else:
+            report[name] = (_DSH_BRIDGE_OK, installed)
+    return report
 
 
-def _print_dsh_activation(*, project: bool, overlay: Path) -> None:
-    """State the pinned bridge, and activate the overlay only if it can resolve."""
-    profiles = _dsh_profiles_mounting_bridge()
+def _dsh_activation_hint(profile: str | None = None) -> str:
+    """The exact command that adds the pinned bridge to a profile."""
+    return f"dsh plugin --profile {profile or '<name>'} add {_DSH_BRIDGE_SPEC}"
+
+
+def _print_dsh_activation(*, project: bool, overlay: Path) -> bool:
+    """Report bridge state and how to activate; True when the overlay can mount.
+
+    Profiles are named rather than left as `<name>`: dsh boots one profile per
+    run, and adding the bridge to a different one leaves the guard absent with no
+    visible error.
+    """
+    def _line(label: str, value: str) -> None:
+        print(f"  {label:<17} ->  {value}")
+
+    report = _dsh_bridge_report()
+    usable = [(name, version) for name, (state, version) in report.items()
+              if state == _DSH_BRIDGE_OK]
     print()
-    print(f"  hook bridge      ->  {_DSH_BRIDGE_PACKAGE}@{_DSH_BRIDGE_VERSION} (pinned)")
-    if profiles:
-        print(f"  bridge resolved  ->  dsh profile(s): {', '.join(profiles)}")
-    else:
-        print("  the bridge is not installed in any dsh profile - add it first:")
-        print(f"    dsh plugin --profile <name> add {_DSH_BRIDGE_PACKAGE}@{_DSH_BRIDGE_VERSION}")
+    _line("hook bridge", f"{_DSH_BRIDGE_SPEC} (pinned)")
+    for name, version in usable:
+        _line("bridge resolved", f"dsh profile '{name}' (installed {version})")
+    if not usable:
+        _line("NOT ACTIVE", "no dsh profile resolves a mountable bridge")
+    for name, (state, version) in report.items():
+        if state == _DSH_BRIDGE_STALE:
+            _line("bridge stale", f"dsh profile '{name}' has {version}, older than the "
+                  f"pinned {_DSH_BRIDGE_VERSION}")
+            print(f"  {'':<21}run: {_dsh_activation_hint(name)}")
+        elif state == _DSH_BRIDGE_DECLARED:
+            _line("bridge unverified", f"dsh profile '{name}' declares "
+                  f"{version or 'the bridge'} but has no installed copy")
+            print(f"  {'':<21}run: dsh plugin --profile {name} install")
+    if not usable:
+        missing = [name for name, (state, _version) in report.items()
+                   if state == _DSH_BRIDGE_MISSING]
+        if missing:
+            print("  add it to the profile you launch (`dsh --profile <name>`):")
+            for name in missing:
+                print(f"    {_dsh_activation_hint(name)}")
+        elif not report:
+            print("  no dsh profile exists yet; run `dsh` once to create one, then add the")
+            print(f"  bridge to it: {_dsh_activation_hint()}")
         print("  a bare `latest` is older and predates the event contract these hooks use.")
+        print("  or run `graphify dsh doctor` to add it and repair the rest of the wiring.")
     print()
     if project:
         print("Mount the overlay from the repo root, then restart dsh:")
@@ -2506,6 +2629,280 @@ def _print_dsh_activation(*, project: bool, overlay: Path) -> None:
         print("(the overlay is process-level: a session launched elsewhere will not see it).")
     else:
         print("The home patch layer applies to every dsh profile - restart dsh to load it.")
+    return bool(usable)
+
+
+def _dsh_read_text(path: Path) -> str:
+    """Best-effort text read for the doctor; unreadable reads as empty."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _dsh_hook_state(hooks_path: Path) -> "tuple[int, bool]":
+    """(graphify PreToolUse groups, graphify SessionStart group present)."""
+    try:
+        settings = json.loads(_dsh_read_text(hooks_path))
+    except json.JSONDecodeError:
+        return 0, False
+    if not isinstance(settings, dict):
+        return 0, False
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return 0, False
+
+    def _has_guard(entries: object, needle: str) -> bool:
+        return isinstance(entries, list) and any(
+            isinstance(entry, dict) and needle in str(entry.get("command", ""))
+            for entry in entries
+        )
+
+    groups = 0
+    pre_tool = hooks.get("PreToolUse")
+    if isinstance(pre_tool, list):
+        groups = sum(
+            1
+            for group in pre_tool
+            if isinstance(group, dict) and _has_guard(group.get("hooks"), "hook-guard")
+        )
+    session_start = hooks.get("SessionStart")
+    has_session = isinstance(session_start, list) and any(
+        isinstance(group, dict) and _has_guard(group.get("hooks"), "hook-guard session")
+        for group in session_start
+    )
+    return groups, has_session
+
+
+def _dsh_strict_state(hooks_path: Path) -> bool:
+    """Whether an existing graphify hook setup enables the one-shot deny."""
+    try:
+        settings = json.loads(_dsh_read_text(hooks_path))
+    except json.JSONDecodeError:
+        return False
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    for groups in hooks.values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            entries = group.get("hooks") if isinstance(group, dict) else None
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                command = str(entry.get("command", "")) if isinstance(entry, dict) else ""
+                if "hook-guard" in command and command.rstrip().endswith("--strict"):
+                    return True
+    return False
+
+
+def _dsh_repair_bridge() -> bool:
+    """Add the pinned bridge to every profile that cannot mount it.
+
+    The doctor's core fix. dsh boots exactly one profile per run and graphify
+    cannot know which, so every profile present is repaired rather than guessing
+    the launched one. Returns whether every profile now resolves a mountable
+    bridge (False when no profile exists or `dsh` is unavailable).
+    """
+    report = _dsh_bridge_report()
+    if not report:
+        print("  cannot repair    ->  no dsh profile exists yet; run `dsh` once, then "
+              "re-run `graphify dsh doctor`")
+        return False
+    blocking = [name for name, (state, _version) in report.items() if state != _DSH_BRIDGE_OK]
+    if not blocking:
+        return True
+    exe = shutil.which("dsh")
+    if exe is None:
+        print("  cannot repair    ->  `dsh` is not on PATH; run:")
+        for name in blocking:
+            print(f"    {_dsh_activation_hint(name)}")
+        return False
+    repaired = True
+    for name, (state, version) in report.items():
+        if state == _DSH_BRIDGE_OK:
+            continue
+        reason = {
+            _DSH_BRIDGE_STALE: f"{version} is older than the pinned {_DSH_BRIDGE_VERSION}",
+            _DSH_BRIDGE_DECLARED: "declared but not installed on disk",
+            _DSH_BRIDGE_MISSING: "not declared",
+        }[state]
+        label = f"repair '{name}'"
+        print(f"  {label:<21} ->  {reason}; dsh plugin --profile {name} add "
+              f"{_DSH_BRIDGE_SPEC}")
+        command = [exe, "plugin", "--profile", name, "add", _DSH_BRIDGE_SPEC]
+        if sys.platform == "win32" and exe.lower().endswith((".cmd", ".bat")):
+            # CreateProcess cannot launch a batch shim; go through the command shell.
+            command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", *command]
+        if subprocess.run(command).returncode != 0:
+            print(f"  repair failed    ->  `dsh plugin add` failed for profile '{name}'",
+                  file=sys.stderr)
+            repaired = False
+    return repaired
+
+
+def _dsh_repair_wiring(project_dir: Path, *, project: bool) -> None:
+    """Rewrite one scope's skill, hook config and overlay from the install writers.
+
+    Merges rather than replaces, so a user's own hook entries survive, and keeps
+    the existing `--strict` choice instead of silently changing the policy.
+    """
+    hooks_path = _dsh_hooks_path(project=project, project_dir=project_dir)
+    strict = _dsh_strict_state(hooks_path)
+    _copy_skill_file("dsh", project=project, project_dir=project_dir)
+    _install_dsh_hooks(hooks_path, strict=strict, project=project)
+    _install_dsh_overlay(project_dir, project=project, hooks_path=hooks_path)
+
+
+def _dsh_diagnose(project_dir: Path) -> dict:
+    """Collect the doctor's observations without writing anything."""
+    rows: list[tuple[str, str]] = []
+    problems: list[str] = []
+    warnings: list[str] = []
+    mounts: list[str] = []
+    incomplete = False
+    report = _dsh_bridge_report()
+    usable = [(name, version) for name, (state, version) in report.items()
+              if state == _DSH_BRIDGE_OK]
+
+    rows.append(("dsh home", str(_dsh_home())))
+    rows.append(("profiles", ", ".join(sorted(report)) if report
+                 else "none under $DSH_HOME/profiles"))
+    if not report:
+        problems.append("no dsh profile exists yet; run `dsh` once to create one")
+    for name, (state, version) in report.items():
+        if state == _DSH_BRIDGE_OK:
+            rows.append((f"bridge '{name}'", f"{version} (ok)"))
+        elif state == _DSH_BRIDGE_STALE:
+            rows.append((f"bridge '{name}'", f"{version} (stale: older than pinned "
+                         f"{_DSH_BRIDGE_VERSION})"))
+        elif state == _DSH_BRIDGE_DECLARED:
+            rows.append((f"bridge '{name}'", "declared in package.json, not installed on disk"))
+        else:
+            rows.append((f"bridge '{name}'", f"not declared; {_dsh_activation_hint(name)}"))
+
+    project_overlay = project_dir / ".dsh" / _DSH_OVERLAY_NAME
+    home_patch = _dsh_home() / "cordis.patch.yml"
+    overlay_text = _dsh_read_text(project_overlay) if project_overlay.exists() else ""
+    if f"id: {_DSH_OVERLAY_ID}" in overlay_text and _DSH_BRIDGE_PACKAGE in overlay_text:
+        mounts.append("project")
+        rows.append(("project overlay", f"{project_overlay.as_posix()} (mounts "
+                     f"{_DSH_OVERLAY_ID})"))
+    elif project_overlay.exists():
+        rows.append(("project overlay", f"{project_overlay.as_posix()} (no "
+                     f"{_DSH_OVERLAY_ID} row)"))
+    else:
+        rows.append(("project overlay", "absent"))
+    patch_text = _dsh_read_text(home_patch) if home_patch.exists() else ""
+    if (_DSH_FENCE_START in patch_text and f"id: {_DSH_OVERLAY_ID}" in patch_text
+            and _DSH_BRIDGE_PACKAGE in patch_text):
+        mounts.append("home")
+        rows.append(("home patch", f"{home_patch.as_posix()} (mounts {_DSH_OVERLAY_ID})"))
+    else:
+        rows.append(("home patch", "no graphify fence" if home_patch.exists()
+                     else "not mounted"))
+
+    for scope in mounts:
+        project = scope == "project"
+        hooks_path = _dsh_hooks_path(project=project, project_dir=project_dir)
+        skill = (project_dir / ".dsh" / "skills" / "graphify" / "SKILL.md") if project else (
+            _dsh_home() / "skills" / "graphify" / "SKILL.md"
+        )
+        groups, has_session = _dsh_hook_state(hooks_path)
+        rows.append((f"{scope} hooks", f"{groups} PreToolUse group(s), SessionStart "
+                     f"{'wired' if has_session else 'missing'}"))
+        if groups < 2 or not has_session or not skill.exists():
+            incomplete = True
+        if groups < 2:
+            problems.append(f"{scope} hooks at {hooks_path} lack both graphify PreToolUse groups")
+        if not has_session:
+            problems.append(f"{scope} hooks at {hooks_path} lack the graphify SessionStart hook")
+        if not skill.exists():
+            warnings.append(f"{scope} skill absent at {skill}")
+
+    exe = shutil.which("graphify")
+    rows.append(("graphify on PATH", exe or "not found"))
+    if "project" in mounts and exe is None:
+        problems.append("project hooks name a bare `graphify`, which resolves nowhere on PATH")
+
+    for name, (state, _version) in report.items():
+        if state in (_DSH_BRIDGE_OK, _DSH_BRIDGE_MISSING):
+            continue
+        detail = "stale" if state == _DSH_BRIDGE_STALE else "declared but not installed"
+        if usable:
+            warnings.append(f"profile '{name}' has a {detail} bridge; launching it gets no guard")
+        else:
+            problems.append(f"profile '{name}' has a {detail} bridge")
+    if not usable and report:
+        problems.append("no dsh profile resolves a mountable bridge")
+    if not mounts:
+        problems.append("nothing mounts graphify-hooks")
+    elif len(mounts) > 1:
+        problems.append("both scopes mount graphify-hooks, so the guard runs twice per tool call")
+
+    return {"rows": rows, "problems": problems, "warnings": warnings,
+            "mounts": mounts, "incomplete": incomplete, "usable": bool(usable)}
+
+
+def _print_dsh_verdict(diagnosis: dict, project_dir: Path) -> None:
+    print()
+    if not diagnosis["problems"]:
+        if diagnosis["mounts"] == ["project"]:
+            overlay = project_dir / ".dsh" / _DSH_OVERLAY_NAME
+            print(f"  verdict          ->  ACTIVE; launch `dsh --patch "
+                  f"{overlay.as_posix()}` and restart")
+        else:
+            print("  verdict          ->  ACTIVE via the home layer; restart dsh")
+    else:
+        print("  verdict          ->  NOT ACTIVE")
+        for problem in diagnosis["problems"]:
+            print(f"                      - {problem}")
+    for warning in diagnosis["warnings"]:
+        print(f"  warning          ->  {warning}")
+
+
+def _dsh_doctor(project_dir: Path | None = None, *, check: bool = False) -> int:
+    """Diagnose the dsh wiring, and by default repair it.
+
+    Repairs are additive and idempotent: the pinned bridge is added to every
+    profile that cannot mount it, and the active scope's skill, hook config and
+    overlay are rewritten by the same writers `graphify dsh install` uses (user
+    hook entries and the existing --strict choice survive). A double mount is
+    reported but never silently removed: which scope to keep is the user's call.
+    `check=True` diagnoses without writing, for CI and post-upgrade audits.
+    """
+    project_dir = project_dir or Path(".")
+    diagnosis = _dsh_diagnose(project_dir)
+    print("graphify dsh doctor" + (" (read-only)" if check else ""))
+    for label, value in diagnosis["rows"]:
+        print(f"  {label:<21} ->  {value}")
+
+    if check:
+        _print_dsh_verdict(diagnosis, project_dir)
+        return 0 if not diagnosis["problems"] else 1
+
+    repaired = False
+    if not diagnosis["usable"]:
+        repaired = _dsh_repair_bridge() or repaired
+    if not diagnosis["mounts"]:
+        print(f"  {'repair wiring':<21} ->  writing the project scope (.dsh/)")
+        _dsh_repair_wiring(project_dir, project=True)
+        repaired = True
+    elif len(diagnosis["mounts"]) == 1 and diagnosis["incomplete"]:
+        scope = diagnosis["mounts"][0]
+        print(f"  {'repair wiring':<21} ->  rewriting the {scope} scope")
+        _dsh_repair_wiring(project_dir, project=scope == "project")
+        repaired = True
+
+    if repaired:
+        print()
+        print("  re-checking after repair ...")
+        diagnosis = _dsh_diagnose(project_dir)
+        for label, value in diagnosis["rows"]:
+            print(f"  {label:<21} ->  {value}")
+    _print_dsh_verdict(diagnosis, project_dir)
+    return 0 if not diagnosis["problems"] else 1
 
 
 def _dsh_other_scope_mount(project: bool, project_dir: Path) -> Path | None:
@@ -2532,16 +2929,18 @@ def _dsh_other_scope_mount(project: bool, project_dir: Path) -> Path | None:
 
 def _dsh_wiring(
     project_dir: Path, *, project: bool = False, strict: bool = False
-) -> Path:
+) -> bool:
     """Write dsh's hook config and composition overlay; the skill is copied separately.
 
     ``strict`` is passed through verbatim: unset means the advisory install, and a
     strict dsh install is the same one-shot deny a strict Claude Code install gets.
+    Returns whether a dsh profile resolves a mountable bridge, so the caller can
+    fail the install instead of reporting success over an inert guard.
     """
     hooks_path = _dsh_hooks_path(project=project, project_dir=project_dir)
     _install_dsh_hooks(hooks_path, strict=strict, project=project)
     overlay = _install_dsh_overlay(project_dir, project=project, hooks_path=hooks_path)
-    _print_dsh_activation(project=project, overlay=overlay)
+    active = _print_dsh_activation(project=project, overlay=overlay)
     other = _dsh_other_scope_mount(project, project_dir)
     if other:
         print(
@@ -2551,17 +2950,26 @@ def _dsh_wiring(
             "the other.",
             file=sys.stderr,
         )
-    return overlay
+    return active
 
 
 def _dsh_install(
     project_dir: Path | None = None, *, project: bool = False, strict: bool = False
 ) -> None:
-    """`graphify dsh install`: skill, hook config and overlay in one run."""
+    """`graphify dsh install`: skill, hook config and overlay in one run.
+
+    Exits 2 when no profile can mount the bridge: the files are written, but the
+    guard is inert, and a success status would hide that from scripts and users.
+    `graphify dsh doctor` is the command that repairs it.
+    """
     project_dir = project_dir or Path(".")
     _copy_skill_file("dsh", project=project, project_dir=project_dir)
-    _dsh_wiring(project_dir, project=project, strict=strict)
+    active = _dsh_wiring(project_dir, project=project, strict=strict)
     print()
+    if not active:
+        print("dsh install is NOT active yet: run `graphify dsh doctor` to add the bridge, "
+              "then relaunch dsh", file=sys.stderr)
+        sys.exit(2)
     if strict:
         print("dsh will redirect the first raw source read or grep per session to the knowledge graph.")
     else:
@@ -2669,7 +3077,9 @@ def _agents_platform_uninstall(project_dir: Path | None = None) -> None:
     if removed:
         print("skill removed")
     _agents_uninstall(project_dir or Path("."), platform="agents")
-def _project_install(platform_name: str, project_dir: Path | None = None, strict: bool = False) -> None:
+def _project_install(
+    platform_name: str, project_dir: Path | None = None, strict: bool = False
+) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
     platform_name = _canonical_platform(platform_name)
@@ -3420,16 +3830,35 @@ def dispatch_install_cli(cmd: str) -> bool:
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         args = sys.argv[3:]
         project_scope = "--project" in args
+        check = "--check" in args
+        for arg in args:
+            if arg in ("--project", "--strict", "--check"):
+                continue
+            if arg.startswith("-"):
+                print(f"error: unknown dsh option '{arg}'", file=sys.stderr)
+                sys.exit(1)
+            print(f"error: unexpected dsh argument '{arg}'", file=sys.stderr)
+            sys.exit(1)
+        if check and subcmd != "doctor":
+            print("error: --check is only used by `graphify dsh doctor`", file=sys.stderr)
+            sys.exit(1)
+        if "--strict" in args and subcmd != "install":
+            print("error: --strict is only used by `graphify dsh install`", file=sys.stderr)
+            sys.exit(1)
         if subcmd == "install":
             # Blocking is opt-in, exactly as it is for Claude Code: without
             # `--strict` the guard only advises, and the install output names the
-            # flag.
+            # flag. Adding the bridge is doctor's job.
             _dsh_install(Path("."), project=project_scope, strict=("--strict" in args))
         elif subcmd == "uninstall":
             _dsh_uninstall(Path("."), project=project_scope)
+        elif subcmd == "doctor":
+            # Diagnose and repair; --check keeps it read-only for CI.
+            sys.exit(_dsh_doctor(Path("."), check=check))
         else:
             print(
-                "Usage: graphify dsh [install|uninstall] [--project] [--strict]",
+                "Usage: graphify dsh [install|uninstall|doctor] [--project] "
+                "[--strict] [--check]",
                 file=sys.stderr,
             )
             sys.exit(1)

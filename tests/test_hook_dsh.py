@@ -330,7 +330,7 @@ def test_the_installed_hook_command_produces_the_deny(tmp_path, monkeypatch):
     import sys
     from pathlib import Path
 
-    from graphify.install import install
+    from graphify.install import _DSH_BRIDGE_PACKAGE, _DSH_BRIDGE_VERSION, install
 
     dsh_home = tmp_path / "dsh-home"
     project = tmp_path / "proj"
@@ -338,6 +338,18 @@ def test_the_installed_hook_command_produces_the_deny(tmp_path, monkeypatch):
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
     monkeypatch.chdir(project)
     _project(project)
+    # A successful install now needs a profile that can mount the bridge, so give
+    # this machine the shape a real one has.
+    profile = dsh_home / "profiles" / "web"
+    package = profile / "node_modules" / "@deepseek-ai" / "dsh-hooks-claude-code"
+    package.mkdir(parents=True)
+    (profile / "package.json").write_text(
+        jsonlib.dumps({"dependencies": {_DSH_BRIDGE_PACKAGE: _DSH_BRIDGE_VERSION}}),
+        encoding="utf-8",
+    )
+    (package / "package.json").write_text(
+        jsonlib.dumps({"version": _DSH_BRIDGE_VERSION}), encoding="utf-8"
+    )
     # The install bakes in whichever `graphify` PATH offers, so pin PATH to THIS
     # build: an older copy earlier on PATH has no dsh support and answers `pass`,
     # which made this test pass or fail depending on the machine rather than on

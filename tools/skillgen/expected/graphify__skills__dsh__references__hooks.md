@@ -38,11 +38,15 @@ dsh reads no hook file on its own, so launch it with the overlay and restart dsh
 dsh --patch .dsh/graphify.cordis.yml
 ```
 
-The bridge is pinned to `@deepseek-ai/dsh-hooks-claude-code@0.2.3-alpha.2`. When the profile cannot resolve it, the install prints the exact command that adds it (`dsh plugin --profile <name> add ...@0.2.3-alpha.2`); never use a bare `latest`, whose published tag predates the event contract these hooks rely on. If the running dsh is on a different line, install the bridge version that matches it: `dsh plugin add` refuses a bridge older than the runtime. A user-scope install (`graphify dsh install`, no `--project`) writes the skill and hook config under `$DSH_HOME` (default `~/.dsh`) and fences the same overlay row into `$DSH_HOME/cordis.patch.yml`, the layer every profile applies.
+The bridge is pinned to `@deepseek-ai/dsh-hooks-claude-code@0.2.3-alpha.2`. The install checks each profile's installed copy, not just its `package.json`: a profile that only declares the bridge, or carries an older copy, is named and the install exits 2, because dsh cannot mount the overlay without a usable bridge. Run `graphify dsh doctor` to fix that. It adds the pinned bridge to every profile under `$DSH_HOME/profiles` through `dsh plugin --profile <p> add @deepseek-ai/dsh-hooks-claude-code@0.2.3-alpha.2`, writes any missing skill, hook config or overlay for the active scope (keeping your own hook entries and the existing `--strict` choice), then re-checks the result. It exits 0 only when exactly one scope mounts a complete, usable wiring; a double mount is reported rather than silently resolved, since which scope to keep is your call. Never use a bare `latest`, whose published tag predates the event contract these hooks rely on. If the running dsh is on a different line, install the bridge version that matches it: `dsh plugin add` refuses a bridge older than the runtime. A user-scope install (`graphify dsh install`, no `--project`) writes the skill and hook config under `$DSH_HOME` (default `~/.dsh`) and fences the same overlay row into `$DSH_HOME/cordis.patch.yml`, the layer every profile applies.
+
+`graphify dsh doctor --check` is the read-only form: it prints each profile's bridge state, the project overlay and home fence, the hook groups and whether `graphify` is on PATH without writing anything, for CI or a post-upgrade audit.
 
 A plain install is advisory: every qualifying read or grep gets one budgeted nudge. Add `--strict` to register the same one-shot deny a strict Claude Code install gets - the first indexed read or dedicated grep of a session is redirected to `graphify query` and every later call only advises. Anything the extraction manifest does not index - an unindexed file, a path outside the project, a file under the graph's own output directory - is never blocked.
 
 ```bash
+graphify dsh doctor               # repair: bridge, wiring, then re-check
+graphify dsh doctor --check       # read-only diagnosis
 graphify dsh uninstall            # remove the skill, graphify's hook entries and the overlay fence
 graphify dsh uninstall --project  # project scope
 ```

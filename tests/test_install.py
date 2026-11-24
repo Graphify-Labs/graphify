@@ -1,4 +1,5 @@
 """Tests for graphify install --platform routing."""
+import json
 import os
 from pathlib import Path
 import sys
@@ -775,6 +776,22 @@ def test_uninstall_removes_every_platform_user_skill(tmp_path, monkeypatch, plat
     home = tmp_path / "home"
     monkeypatch.chdir(tmp_path)
     with patch("graphify.__main__.Path.home", return_value=home):
+        if platform == "dsh":
+            # A dsh install reports failure (exit 2) when no profile can mount
+            # the hook bridge, so this machine needs a usable one.
+            from graphify.install import _DSH_BRIDGE_PACKAGE, _DSH_BRIDGE_VERSION
+
+            monkeypatch.setenv("DSH_HOME", str(home / ".dsh"))
+            profile = home / ".dsh" / "profiles" / "web"
+            package = profile / "node_modules" / "@deepseek-ai" / "dsh-hooks-claude-code"
+            package.mkdir(parents=True)
+            (profile / "package.json").write_text(
+                json.dumps({"dependencies": {_DSH_BRIDGE_PACKAGE: _DSH_BRIDGE_VERSION}}),
+                encoding="utf-8",
+            )
+            (package / "package.json").write_text(
+                json.dumps({"version": _DSH_BRIDGE_VERSION}), encoding="utf-8"
+            )
         monkeypatch.setattr(sys, "argv", ["graphify", "install", "--platform", platform])
         main()
         skill = _platform_skill_destination(platform)
