@@ -15,7 +15,12 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from graphify.serve import _GraphContextCache
+
+# Concurrency/timing tests (threads racing a reload); flaky under xdist CPU load.
+pytestmark = pytest.mark.serial
 
 GRAPH = {
     "directed": True,

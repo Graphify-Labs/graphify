@@ -72,6 +72,14 @@ when no changed file is eligible for extraction. Changes to in-scope ignore
 files also refresh the eligible AST corpus so newly included files can enter
 the graph.
 
+Wiki community audits and relationships on directed graphs include incoming
+and outgoing edges. Each incident edge contributes once per community,
+including distinct reciprocal and parallel edges.
+
+C calls through struct function-pointer fields stay unresolved unless evidence
+identifies the target. A bare name match is insufficient for field callees.
+AST cache schema 53 retires older call facts.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions

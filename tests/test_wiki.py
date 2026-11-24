@@ -1,4 +1,5 @@
 """Tests for graphify.wiki — Wikipedia-style article generation."""
+import os
 import re
 import pytest
 from pathlib import Path
@@ -68,6 +69,28 @@ def test_to_wiki_god_node_article_created(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
     assert (tmp_path / "parse.md").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="NAME_MAX budget is the POSIX branch")
+def test_to_wiki_respects_target_filesystem_name_max(tmp_path, monkeypatch):
+    """#2109: article filenames honor a lower runtime NAME_MAX such as eCryptfs."""
+    monkeypatch.setattr(os, "pathconf", lambda _path, _name: 143)
+    gods = [{"id": "n1", "label": "g" * 170, "degree": 2}]
+
+    to_wiki(
+        _make_graph(),
+        COMMUNITIES,
+        tmp_path,
+        community_labels={0: "c" * 170, 1: "Rendering Layer"},
+        god_nodes_data=gods,
+    )
+
+    article_names = [p.name for p in tmp_path.glob("*.md")]
+    assert article_names
+    assert max(len(name.encode("utf-8")) for name in article_names) <= 143
+    for article in tmp_path.glob("*.md"):
+        for _, target in _inline_links(article.read_text()):
+            assert (tmp_path / target).exists(), (article.name, target)
 
 
 def test_index_links_all_communities(tmp_path):
@@ -630,3 +653,54 @@ def test_index_links_every_article_written(tmp_path):
     assert len(articles) == n == 4, sorted(articles)
     linked = {t for _, t in _inline_links((tmp_path / "index.md").read_text())}
     assert articles <= linked, sorted(articles - linked)  # no orphaned article
+
+
+def test_directed_wiki_preserves_incoming_and_parallel_evidence(tmp_path):
+    graph = nx.MultiDiGraph()
+    for node in ("hub", "caller", "peer"):
+        graph.add_node(node, label=node, file_type="code", source_file=f"{node}.py")
+    graph.add_edge("caller", "hub", relation="calls", confidence="AMBIGUOUS")
+    graph.add_edge("caller", "hub", relation="references", confidence="INFERRED")
+    graph.add_edge("hub", "caller", relation="references", confidence="EXTRACTED")
+    graph.add_edge("peer", "hub", relation="calls", confidence="EXTRACTED")
+
+    to_wiki(graph, {0: ["hub", "peer"], 1: ["caller"]}, tmp_path,
+            community_labels={0: "Hub Group", 1: "Callers"},
+            god_nodes_data=[{"id": "hub", "label": "hub", "degree": 4}])
+
+    hub = (tmp_path / "hub.md").read_text(encoding="utf-8")
+    assert "4 connections" in hub
+    assert "- caller `AMBIGUOUS`" in hub
+    assert "- caller `INFERRED`" in hub
+    assert "- caller `EXTRACTED`" in hub
+    community = (tmp_path / "Hub_Group.md").read_text(encoding="utf-8")
+    assert "3 shared connections" in community
+    assert "- AMBIGUOUS: 1 (25%)" in community
+    assert "- INFERRED: 1 (25%)" in community
+    assert "- EXTRACTED: 2 (50%)" in community
+
+
+def test_god_node_article_marks_incoming_edges_on_directed_graph():
+    """On a directed graph, an incident edge where the god node is the target is
+    marked `(incoming)` so a relation like `calls` is not read backwards (#5369)."""
+    G = nx.DiGraph()
+    for n, lbl in [("hub", "hub()"), ("callee", "callee()"), ("caller", "caller()")]:
+        G.add_node(n, label=lbl, source_file=f"{n}.py")
+    G.add_edge("hub", "callee", relation="calls", confidence="EXTRACTED")  # outgoing
+    G.add_edge("caller", "hub", relation="calls", confidence="EXTRACTED")  # incoming
+    article = _god_node_article(G, "hub", {})
+    callee_line = next(line for line in article.splitlines() if "callee()" in line)
+    caller_line = next(line for line in article.splitlines() if "caller()" in line)
+    assert "(incoming)" not in callee_line  # outgoing stays unmarked
+    assert "(incoming)" in caller_line      # incoming is marked
+
+
+def test_god_node_article_no_direction_marker_on_undirected_graph():
+    """Undirected exports have no edge direction, so no marker is added."""
+    G = nx.Graph()
+    for n, lbl in [("hub", "hub()"), ("a", "a()"), ("b", "b()")]:
+        G.add_node(n, label=lbl, source_file=f"{n}.py")
+    G.add_edge("hub", "a", relation="calls")
+    G.add_edge("b", "hub", relation="calls")
+    article = _god_node_article(G, "hub", {})
+    assert "(incoming)" not in article
