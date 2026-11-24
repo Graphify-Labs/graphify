@@ -134,8 +134,10 @@ Existing persisted graphs and source-evidence artifacts with old IDs require
 a full code rebuild: `graphify extract . --code-only --force`.
 
 Unresolved Python direct calls through unconditional top-level `from ... import ...`
-statements constrain name-based fallback to the imported name and module. An
-external import does not bind to an unrelated same-named corpus symbol, and an
+statements constrain name-based fallback to the imported name and module. A bare
+call to a different symbol stays inferred when the module import is its only
+evidence, even with one matching definition. An external import does not bind
+to an unrelated same-named corpus symbol, and an
 alias cannot acquire a second target named after the alias. This guard runs after
 per-file cache loading, including on changed-file extractions with unchanged
 resolution context; it does not change callback or function-local import handling.

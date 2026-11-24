@@ -13910,10 +13910,10 @@ def extract(
             continue
         if tgt != caller and (caller, tgt) not in existing_pairs:
             existing_pairs.add((caller, tgt))
-            # Promote to EXTRACTED when there's a direct import edge from the
-            # caller's file pointing at either the callee symbol itself or the
-            # file the callee lives in.
-            if has_import_evidence:
+            # A module import does not bind a bare Python name. Keep a
+            # name-only match inferred even when only one definition exists
+            # in the corpus (#2945).
+            if has_import_evidence and (caller_family != "python" or tgt in imported_symbols):
                 confidence = "EXTRACTED"
                 confidence_score = 1.0
             else:
