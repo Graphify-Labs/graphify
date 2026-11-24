@@ -2,25 +2,20 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
-## 0.9.120 (2026-11-24)
-
-Resolution, export and performance fixes. The Python change alters call edges, so the AST cache schema bumps (54 to 55) and Python files re-extract on the first build after upgrading; the other fixes need no rebuild.
-
-- Fix: **python** a call made through a function parameter (the enclosing function's own parameter, or one captured from an outer function) is no longer bound to a module-level definition of that name; the parameter is a runtime callback whose target is unknown. A genuine call to an outer function from a non-shadowing scope still resolves (#5418, thanks @Deepjyoti-Sarmah). Complements the 0.9.119 lambda-parameter fix.
-- Fix: **go** a type declared across sibling files in a package folds to one node per directory even when a same-named package exists elsewhere, so its member calls resolve instead of being dropped as ambiguous; the two same-named packages stay distinct (#5304 follow-up, thanks @PravalVerma).
-- Fix: **wiki** article bodies link cross-references by node ID rather than label, so two nodes sharing a label link to their own articles instead of collapsing onto the first-registered one; the link text stays the human-readable label (thanks @azizur100389).
-- Fix: **affected** the reverse traversal on an undirected graph walks incident edges instead of scanning the whole edge list, fixing a dropped-orientation bug (it returned nothing on an annotated undirected graph) and turning an O(edges) step into O(degree); the directed path that the CLI always uses is unchanged (#5437, thanks @Gaurav-meena95).
-- Perf: **build** file-label disambiguation for shared basenames is computed with a suffix counter instead of per-file all-pairs comparison, turning an O(files²) step into a near-linear one (~260x on a 2,000-file collision) with byte-identical labels (thanks @Gaurav-meena95).
-
 ## 0.9.119 (2026-11-24)
 
-A fix for a core-install regression in 0.9.118, plus extractor and query fixes. The Python, Go and COBOL changes alter node/edge output, so the AST cache schema bumps (53 to 54) and those languages re-extract on the first build after upgrading; the other fixes need no rebuild.
+A fix for a core-install regression in 0.9.118, plus a batch of resolution, extractor, export and performance fixes across ten community pull requests. The Python, Go and COBOL changes alter node/edge output, so the AST cache schema bumps (53 to 55) and those languages re-extract on the first build after upgrading; the other fixes need no rebuild.
 
 - Fix: **serve** graph commands (`query`, `path`, `explain`, `affected`, `benchmark`) run again on a core install without the `[mcp]` extra. 0.9.118 imported `anyio` (an mcp-extra-only dependency) at the top of `graphify/serve.py`, so loading it raised `ModuleNotFoundError` for those commands; the import is moved back inside the MCP server path where `anyio` is always present (#5320, thanks @Deepjyoti-Sarmah).
 - Fix: **python** a call to a name that a lambda parameter shadows no longer binds to a module-level definition inside the lambda body; the shadow is scoped to the lambda body only, so a genuine outer call elsewhere still resolves (#5417, thanks @melhusl-hs).
+- Fix: **python** a call made through a function parameter (the enclosing function's own parameter, or one captured from an outer function) is likewise no longer bound to a module-level definition of that name; the parameter is a runtime callback whose target is unknown (#5418, thanks @Deepjyoti-Sarmah).
 - Fix: **go** a local variable that shadows an imported package name resolves as a local receiver, not the package, so its member calls bind to the local's type; the shadow is lexically scoped and an unknown local fails closed rather than falling back to a package call (#5409, thanks @sdivyanshu90).
+- Fix: **go** a type declared across sibling files in a package folds to one node per directory even when a same-named package exists elsewhere, so its member calls resolve instead of being dropped as ambiguous; the two same-named packages stay distinct (#5304 follow-up, thanks @PravalVerma).
 - Fix: **cobol** a `GO TO` now emits a `calls` edge to the paragraph it jumps to (including each target of `GO TO ... DEPENDING ON`), so a paragraph reached only by a jump is no longer orphaned; an unknown target fails closed (#5423, thanks @pavansystems).
+- Fix: **wiki** article bodies link cross-references by node ID rather than label, so two nodes sharing a label link to their own articles instead of collapsing onto the first-registered one; the link text stays the human-readable label (thanks @azizur100389).
+- Fix: **affected** the reverse traversal on an undirected graph walks incident edges instead of scanning the whole edge list, fixing a dropped-orientation bug (it returned nothing on an annotated undirected graph) and turning an O(edges) step into O(degree); the directed path that the CLI always uses is unchanged (#5437, thanks @Gaurav-meena95).
 - Perf: **query** a CLI full-graph scan skips query terms that are provably absent from the corpus (no trigram present), so a long question no longer wastes time scoring terms that can match nothing; query results are byte-identical (#5429, thanks @Max17190).
+- Perf: **build** file-label disambiguation for shared basenames is computed with a suffix counter instead of per-file all-pairs comparison, turning an O(files²) step into a near-linear one (~260x on a 2,000-file collision) with byte-identical labels (thanks @Gaurav-meena95).
 
 ## 0.9.118 (2026-11-23)
 
