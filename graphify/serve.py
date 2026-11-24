@@ -1458,54 +1458,116 @@ def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tup
         edges_seen.append((u, v))
 
 
+def _traversal_index(G: nx.Graph):
+    """Integer-indexed adjacency for BFS/DFS, cached once per graph object.
+
+    `adj[i]` is the position list for `G.neighbors(ids[i])`, in the exact order
+    networkx yields neighbours (insertion order), so traversal order — and thus
+    the rendered edge order — is unchanged. Walking ints instead of string ids
+    through networkx views removes a dict lookup and a view construction per
+    visited neighbour, which dominated BFS on the large graph. Cached like the
+    trigram index, guarded by the node count (`number_of_edges()` is O(N) in
+    networkx, so it must never appear in a cache guard).
+    """
+    cached = G.graph.get("_adj_index")
+    n = G.number_of_nodes()
+    if cached is not None and cached[0] == n:
+        return cached[1]
+    ids = list(G.nodes())
+    pos = {nid: i for i, nid in enumerate(ids)}
+    adj = [[pos[nb] for nb in G.neighbors(nid)] for nid in ids]
+    degrees, _hub = _degree_data(G)
+    deg_list = [degrees[nid] for nid in ids]
+    index = (ids, pos, adj, deg_list)
+    G.graph["_adj_index"] = (n, index)
+    return index
+
+
+def _complete_induced_edges_indexed(
+    ids: list[str],
+    adj: list[list[int]],
+    directed: bool,
+    visited: set[int],
+    edges_seen: list[tuple[int, int]],
+) -> None:
+    """`_complete_induced_edges` over integer positions.
+
+    Same scan, same order, same dedupe: nodes in `sorted(visited)` string order,
+    neighbours in insertion order, and the same ordered/unordered key set the
+    string version builds (`G.edges(nbunch)` itself does not dedupe — the key
+    set is the only filter, which is why a directed mutual edge keeps both
+    directions). Only the data structure walked is different.
+    """
+    seen: set[tuple[int, int]] = set()
+    if directed:
+        for u, v in edges_seen:
+            seen.add((u, v))
+    else:
+        for u, v in edges_seen:
+            seen.add((u, v) if u < v else (v, u))
+    for ui in sorted(visited, key=ids.__getitem__):
+        for vi in adj[ui]:
+            if vi == ui or vi not in visited:
+                continue
+            key = (ui, vi) if directed else ((ui, vi) if ui < vi else (vi, ui))
+            if key in seen:
+                continue
+            seen.add(key)
+            edges_seen.append((ui, vi))
+
+
 def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
     # Hub threshold: nodes above this degree are not expanded as transit.
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
-    degrees, hub_threshold = _degree_data(G)
-    seed_set = set(start_nodes)
-    visited: set[str] = set(start_nodes)
+    hub_threshold = _degree_data(G)[1]
+    ids, pos, adj, deg_list = _traversal_index(G)
+    start_idx = [pos[n] for n in start_nodes]
+    seed_set = set(start_idx)
+    visited: set[int] = set(start_idx)
     # Ordered, not sets: iterating a set of node ids follows the per-process
     # string-hash seed, so the EDGE lines (and which of them survive the token
     # budget) changed from run to run. Seeds go in ranked order, and each
     # level in the order it was discovered.
-    frontier = list(dict.fromkeys(start_nodes))
-    edges_seen: list[tuple] = []
+    frontier = list(dict.fromkeys(start_idx))
+    edges_seen: list[tuple[int, int]] = []
     for _ in range(depth):
-        next_frontier: dict[str, None] = {}
+        next_frontier: dict[int, None] = {}
         for n in frontier:
             # Don't expand through high-degree hubs (except seeds - a hub that
             # is the starting node should still be explored).
-            if n not in seed_set and degrees[n] >= hub_threshold:
+            if n not in seed_set and deg_list[n] >= hub_threshold:
                 continue
-            for neighbor in G.neighbors(n):
+            for neighbor in adj[n]:
                 if neighbor not in visited:
                     next_frontier[neighbor] = None
                     edges_seen.append((n, neighbor))
         visited.update(next_frontier)
         frontier = list(next_frontier)
-    _complete_induced_edges(G, visited, edges_seen)
-    return visited, edges_seen
+    _complete_induced_edges_indexed(ids, adj, G.is_directed(), visited, edges_seen)
+    return {ids[i] for i in visited}, [(ids[u], ids[v]) for u, v in edges_seen]
 
 
 def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
-    degrees, hub_threshold = _degree_data(G)
-    seed_set = set(start_nodes)
-    visited: set[str] = set()
-    edges_seen: list[tuple] = []
-    stack = [(n, 0) for n in reversed(start_nodes)]
+    hub_threshold = _degree_data(G)[1]
+    ids, pos, adj, deg_list = _traversal_index(G)
+    start_idx = [pos[n] for n in start_nodes]
+    seed_set = set(start_idx)
+    visited: set[int] = set()
+    edges_seen: list[tuple[int, int]] = []
+    stack = [(n, 0) for n in reversed(start_idx)]
     while stack:
         node, d = stack.pop()
         if node in visited or d > depth:
             continue
         visited.add(node)
-        if node not in seed_set and degrees[node] >= hub_threshold:
+        if node not in seed_set and deg_list[node] >= hub_threshold:
             continue
-        for neighbor in G.neighbors(node):
+        for neighbor in adj[node]:
             if neighbor not in visited:
                 stack.append((neighbor, d + 1))
                 edges_seen.append((node, neighbor))
-    _complete_induced_edges(G, visited, edges_seen)
-    return visited, edges_seen
+    _complete_induced_edges_indexed(ids, adj, G.is_directed(), visited, edges_seen)
+    return {ids[i] for i in visited}, [(ids[u], ids[v]) for u, v in edges_seen]
 
 
 def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None, scores: dict[str, float] | None = None) -> str:
