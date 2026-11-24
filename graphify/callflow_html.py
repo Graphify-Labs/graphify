@@ -820,6 +820,17 @@ def _community_text(nodes: list, label: str = "") -> str:
     return " ".join(parts).lower()
 
 
+def _count_archetype_keywords(text: str) -> Counter[str]:
+    # Archetype keywords are whole ASCII alphanumeric words.
+    counts: Counter[str] = Counter()
+    for match in re.finditer(r"[a-z0-9]+", text):
+        if match.end() - match.start() <= _MAX_KEYWORD_LENGTH:
+            word = match.group()
+            if word in _ARCHETYPE_KEYWORDS:
+                counts[word] += 1
+    return counts
+
+
 def _rank_grouped_sections(grouped: dict, max_sections: int) -> tuple[list, list]:
     """Return selected grouped sections and overflow communities."""
     ranked = sorted(
@@ -844,13 +855,7 @@ def derive_sections_from_communities(nodes: list, labels: dict, lang: str, max_s
 
     for cid, community_nodes in sorted(comm_idx.items(), key=lambda item: (-len(item[1]), str(item[0]))):
         label = label_for_community(cid, labels, community_nodes, lang)
-        # Archetype keywords are whole ASCII alphanumeric words.
-        words = Counter()
-        for match in re.finditer(r"[a-z0-9]+", _community_text(community_nodes, label)):
-            if match.end() - match.start() <= _MAX_KEYWORD_LENGTH:
-                word = match.group()
-                if word in _ARCHETYPE_KEYWORDS:
-                    words[word] += 1
+        words = _count_archetype_keywords(_community_text(community_nodes, label))
         best = None
         best_score = 0
         for priority, (sid, zh_name, en_name, keywords) in enumerate(SECTION_ARCHETYPES):

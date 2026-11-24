@@ -1,7 +1,9 @@
+import gc
 import json
 import re
 import subprocess
 import sys
+import weakref
 from pathlib import Path
 
 from graphify.callflow_html import SECTION_ARCHETYPES, derive_sections_from_communities, write_callflow_html
@@ -190,6 +192,29 @@ def test_derive_sections_preserves_keyword_boundaries_and_ties():
     # "tree" occurs twice and scores for both extraction and output. Extraction
     # wins their tie by priority. Only whole ASCII words contribute.
     assert assigned == {"1": "extract-pipeline", "2": "Second", "3": "serve-api", "4": "outputs-docs"}
+
+
+def test_derive_sections_releases_previous_community_text(monkeypatch):
+    class CommunityText(str):
+        pass
+
+    texts = []
+
+    def community_text(nodes, label):
+        if len(texts) == 2:
+            gc.collect()
+            assert texts[0]() is None
+        text = CommunityText(nodes[0]["label"])
+        texts.append(weakref.ref(text))
+        return text
+
+    monkeypatch.setattr("graphify.callflow_html._community_text", community_text)
+    nodes = [
+        {"id": "a", "label": "parse", "community": 1},
+        {"id": "b", "label": "!", "community": 2},
+        {"id": "c", "label": "last", "community": 3},
+    ]
+    derive_sections_from_communities(nodes, {}, "en", 6)
 
 
 def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path):
