@@ -2318,14 +2318,26 @@ def dispatch_command(cmd: str) -> None:
         if evidence_target is not None:
             from graphify.query_evidence import format_caller_evidence, resolve_caller_target
 
+            started = time.perf_counter()
             target, refusal = resolve_caller_target(G, evidence_target)
             if target is None:
-                if refusal:
-                    print(refusal, file=sys.stderr)
-                    sys.exit(EXIT_AMBIGUOUS)
-                print(f"No unique node match for {sanitize_label(evidence_target)}", file=sys.stderr)
-                sys.exit(EXIT_NOT_FOUND)
-            result = format_caller_evidence(G, target, graph_root, gp, effective_budget)
+                result = refusal or f"No unique node match for {sanitize_label(evidence_target)}"
+            else:
+                result = format_caller_evidence(G, target, graph_root, gp, effective_budget)
+            querylog.log_query(
+                kind="query",
+                question=question,
+                corpus=str(gp),
+                result=result,
+                mode="evidence",
+                depth=1,
+                token_budget=effective_budget,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                seeds=seeds or None,
+            )
+            if target is None:
+                print(result, file=sys.stderr)
+                sys.exit(EXIT_AMBIGUOUS if refusal else EXIT_NOT_FOUND)
             _touch_query_stamp(gp)
             print(result)
             return

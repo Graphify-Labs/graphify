@@ -11,13 +11,14 @@ import sys
 import pytest
 
 
-def _graphify(cwd, *args):
+def _graphify(cwd, *args, **env_overrides):
     env = {
         **os.environ,
         "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
         "PYTHONIOENCODING": "utf-8",
         "GRAPHIFY_OUT": "graphify-out",
         "GRAPHIFY_QUERY_LOG_DISABLE": "1",
+        **env_overrides,
     }
     return subprocess.run(
         [sys.executable, "-m", "graphify", *args],
@@ -76,6 +77,30 @@ def test_evidence_keeps_citations_before_spending_budget_on_excerpts(project):
     assert "at entry.py:5" in result.stdout
     assert "at entry.py:10" in result.stdout
     assert "Source excerpt" not in result.stdout
+
+
+@pytest.mark.parametrize("log_responses", [False, True])
+def test_evidence_honors_opt_in_query_logging(project, log_responses):
+    log = project / "queries.jsonl"
+    question = "who calls handle_request?"
+    result = _graphify(
+        project, "query", question, "--evidence",
+        GRAPHIFY_QUERY_LOG=str(log),
+        GRAPHIFY_QUERY_LOG_DISABLE="0",
+        GRAPHIFY_QUERY_LOG_RESPONSES=str(int(log_responses)),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "if enabled:" in result.stdout
+    record, = map(json.loads, log.read_text(encoding="utf-8").splitlines())
+    assert record["kind"] == "query"
+    assert record["question"] == question
+    assert record["mode"] == "evidence"
+    assert record["depth"] == 1
+    assert record["result_chars"] == len(result.stdout.rstrip("\n"))
+    if log_responses:
+        assert record["response"] == result.stdout.rstrip("\n")
+    else:
+        assert "response" not in record
 
 
 def test_evidence_keeps_a_fitting_citation_under_a_tight_budget(project):
