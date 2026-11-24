@@ -1249,6 +1249,65 @@ def test_to_html_handles_null_source_file_and_label(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_to_obsidian_handles_null_label(tmp_path):
+    """A node with label=None must not crash to_obsidian during stem cleaning,
+    neighbor sorting, or member listing."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label=None, source_file="a.py")
+    G.add_node("n2", label="auth", source_file="b.py")
+    G.add_edge("n1", "n2", relation="imports")
+    out_dir = tmp_path / "vault"
+    count = to_obsidian(G, {0: ["n1", "n2"]}, str(out_dir))
+    assert count == 3
+    assert (out_dir / "n1.md").exists()
+    assert (out_dir / "auth.md").exists()
+    n1_content = (out_dir / "n1.md").read_text(encoding="utf-8")
+    assert "# n1" in n1_content
+    assert "[[auth]]" in n1_content
+
+
+def test_to_canvas_handles_null_label(tmp_path):
+    """A node with label=None must not crash to_canvas card placement or member sorting."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label=None, source_file="a.py")
+    G.add_node("n2", label="auth", source_file="b.py")
+    G.add_edge("n1", "n2", relation="calls")
+    canvas_file = tmp_path / "graph.canvas"
+    to_canvas(G, {0: ["n1", "n2"]}, str(canvas_file))
+    assert canvas_file.exists()
+    data = json.loads(canvas_file.read_text(encoding="utf-8"))
+    files = {node.get("file") for node in data.get("nodes", []) if node.get("type") == "file"}
+    assert "n1.md" in files
+    assert "auth.md" in files
+
+
+def test_obsidian_safe_stem_handles_none_and_non_string():
+    from graphify.export import _obsidian_safe_stem
+    assert _obsidian_safe_stem(None) == "unnamed"
+    assert _obsidian_safe_stem(123) == "123"
+    assert _obsidian_safe_stem("") == "unnamed"
+
+
+def test_to_cypher_and_svg_handle_null_label(tmp_path):
+    import networkx as nx
+    from graphify.export import to_svg
+    G = nx.Graph()
+    G.add_node("n1", label=None)
+    G.add_node("n2", label="auth")
+    G.add_edge("n1", "n2")
+
+    cypher_file = tmp_path / "graph.cypher"
+    to_cypher(G, str(cypher_file))
+    cypher_text = cypher_file.read_text(encoding="utf-8")
+    assert "SET n.label = 'n1';" in cypher_text
+
+    svg_file = tmp_path / "graph.svg"
+    to_svg(G, {0: ["n1", "n2"]}, str(svg_file))
+    assert svg_file.exists() and svg_file.stat().st_size > 0
+
+
 def test_existing_graph_node_count(tmp_path):
     from graphify.export import existing_graph_node_count, MALFORMED_GRAPH
     p = tmp_path / "graph.json"
