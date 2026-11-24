@@ -215,6 +215,7 @@ def test_derive_sections_releases_previous_community_text(monkeypatch):
         {"id": "c", "label": "last", "community": 3},
     ]
     derive_sections_from_communities(nodes, {}, "en", 6)
+    assert len(texts) == len(nodes)
 
 
 def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path):
