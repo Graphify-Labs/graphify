@@ -334,3 +334,13 @@ def test_query_and_get_node_print_the_declaration_range(tmp_path):
     assert "loc=L6 " in text
     assert serve._node_location({"source_location": "L4", "source_end_location": 9}) == "L4"
     assert serve._node_location({"source_location": "L4", "source_end_location": "L2"}) == "L4"
+
+
+def test_objc_interface_and_implementation_in_one_file_keep_one_contains_edge(tmp_path):
+    path = tmp_path / "Box.m"
+    path.write_text("@interface Box : NSObject\n- (void)run;\n@end\n@implementation Box\n- (void)run {}\n@end\n")
+    result = _extract_file(path)
+    box = _node(result, "Box")
+    contains = [e for e in result["edges"] if e["relation"] == "contains" and e["target"] == box["id"]]
+    assert len(contains) == 1
+    assert box["definition_location"] == "L4"

@@ -634,8 +634,12 @@ def extract_objc(path: Path) -> dict:
                 return
             impl_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
             impl_nid = _make_id(impl_stem, name)
+            # An @interface earlier in this file already added the node and its edge;
+            # add_node still records this @implementation as the definition site.
+            declared_here = impl_nid in seen_ids
             add_node(impl_nid, name, line, _CALLABLE_CLASS, ast_node=node)
-            add_edge(file_nid, impl_nid, "contains", line)
+            if not declared_here:
+                add_edge(file_nid, impl_nid, "contains", line)
             for child in node.children:
                 if child.type == "instance_variables":
                     _collect_instance_variables(child, impl_nid)
