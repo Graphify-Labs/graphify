@@ -156,7 +156,8 @@ def _procedure_copybook_start(code_lines: list[tuple[int, str]]) -> int | None:
     # stands on a later line than `EXEC SQL` and decides what the block is.
     sql_undecided = False
     for line, code in code_lines:
-        upper = code.upper().strip()
+        # Quoted text is blanked: a VALUE can read `'EXEC SQL COMMIT'`.
+        upper = _mask_strings(code.upper()).strip()
         if in_exec:
             if sql_undecided and upper:
                 sql_undecided = False
