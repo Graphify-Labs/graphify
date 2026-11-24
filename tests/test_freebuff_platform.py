@@ -561,6 +561,43 @@ def test_legacy_holders_do_not_keep_a_section_that_is_absent(tmp_path, capsys):
     assert (project / "AGENTS.md").read_text(encoding="utf-8") == "# My Project\n"
 
 
+def test_opencode_uninstall_removes_its_plugin_while_the_section_stays(tmp_path, capsys):
+    """Keeping the shared section must not keep the uninstalling platform's own
+    sidecars: the OpenCode plugin belongs to OpenCode, not to AGENTS.md."""
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+
+    _run(project, ["freebuff", "install", "--project"], home)
+    _run(project, ["opencode", "install", "--project"], home)
+    plugin = project / ".opencode" / "plugins" / "graphify.js"
+    assert plugin.exists()
+    capsys.readouterr()
+
+    _run(project, ["opencode", "uninstall", "--project"], home)
+
+    assert not plugin.exists()
+    assert "## graphify" in _agents_md_text(project)
+
+
+def test_kilo_uninstall_removes_its_plugin_while_the_section_stays(tmp_path, capsys):
+    """Same for Kilo, whose plugin is written next to AGENTS.md as well."""
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+
+    _run(project, ["freebuff", "install", "--project"], home)
+    _run(project, ["kilo", "install"], home)
+    plugin = project / ".kilo" / "plugins" / "graphify.js"
+    assert plugin.exists()
+    capsys.readouterr()
+
+    _run(project, ["kilo", "uninstall"], home)
+
+    assert not plugin.exists()
+    assert "## graphify" in _agents_md_text(project)
+
+
 def test_uninstall_keeps_the_section_for_a_pre_tracking_install(tmp_path, capsys):
     """A skill installed before section claims existed is the only evidence that
     this project's AGENTS.md was wired; deleting its rules would turn that

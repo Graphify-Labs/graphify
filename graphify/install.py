@@ -2737,6 +2737,7 @@ def _agents_uninstall(
     is uninstalling, not to the section.
     """
     target = _agents_md_target(project_dir)
+    keep_section = False
     if platform:
         _release_section_claim(
             _section_claim_dir(platform, project=project, project_dir=project_dir),
@@ -2744,16 +2745,18 @@ def _agents_uninstall(
             target,
         )
         if _agents_md_claimers(target):
-            return
-        legacy = _legacy_section_holders(target, platform)
-        if legacy:
-            named = ", ".join(f"`{name}`" for name in legacy)
-            print(
-                f"  section kept     ->  a pre-tracking {named} install may also own "
-                f"the section in {target.resolve()}"
-            )
-            return
-    _agents_section_uninstall(target)
+            keep_section = True
+        else:
+            legacy = _legacy_section_holders(target, platform)
+            if legacy:
+                named = ", ".join(f"`{name}`" for name in legacy)
+                print(
+                    f"  section kept     ->  a pre-tracking {named} install may also own "
+                    f"the section in {target.resolve()}"
+                )
+                keep_section = True
+    if not keep_section:
+        _agents_section_uninstall(target)
 
     if platform == "opencode":
         _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
