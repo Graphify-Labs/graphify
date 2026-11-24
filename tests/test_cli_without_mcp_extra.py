@@ -60,4 +60,7 @@ def test_graph_command_runs_without_mcp_extra(graph_path, args):
     )
     assert result.returncode == 0, result.stderr
     if args[0] != "benchmark":
-        assert "load_orders" in result.stdout
+        # The command's own target node (the last positional arg) must appear in
+        # its output. Asserting on a *caller* instead is cwd-fragile for `query`,
+        # whose downstream BFS from the node need not reach its callers.
+        assert args[-1] in result.stdout

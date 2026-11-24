@@ -2,6 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.119 (2026-11-24)
+
+A fix for a core-install regression in 0.9.118, plus extractor and query fixes. The Python, Go and COBOL changes alter node/edge output, so the AST cache schema bumps (53 to 54) and those languages re-extract on the first build after upgrading; the other fixes need no rebuild.
+
+- Fix: **serve** graph commands (`query`, `path`, `explain`, `affected`, `benchmark`) run again on a core install without the `[mcp]` extra. 0.9.118 imported `anyio` (an mcp-extra-only dependency) at the top of `graphify/serve.py`, so loading it raised `ModuleNotFoundError` for those commands; the import is moved back inside the MCP server path where `anyio` is always present (#5320, thanks @Deepjyoti-Sarmah).
+- Fix: **python** a call to a name that a lambda parameter shadows no longer binds to a module-level definition inside the lambda body; the shadow is scoped to the lambda body only, so a genuine outer call elsewhere still resolves (#5417, thanks @melhusl-hs).
+- Fix: **go** a local variable that shadows an imported package name resolves as a local receiver, not the package, so its member calls bind to the local's type; the shadow is lexically scoped and an unknown local fails closed rather than falling back to a package call (#5409, thanks @sdivyanshu90).
+- Fix: **cobol** a `GO TO` now emits a `calls` edge to the paragraph it jumps to (including each target of `GO TO ... DEPENDING ON`), so a paragraph reached only by a jump is no longer orphaned; an unknown target fails closed (#5423, thanks @pavansystems).
+- Perf: **query** a CLI full-graph scan skips query terms that are provably absent from the corpus (no trigram present), so a long question no longer wastes time scoring terms that can match nothing; query results are byte-identical (#5429, thanks @Max17190).
+
 ## 0.9.118 (2026-11-23)
 
 A batch of extractor, resolution, serve, export, clustering and reporting fixes across fourteen community pull requests. The Objective-C, C and C# changes alter node/edge output, so the AST cache schema bumps (51 to 53) and the first build after upgrading re-extracts the affected languages; the other fixes need no rebuild.
