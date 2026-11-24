@@ -5117,6 +5117,22 @@ def dispatch_command(cmd: str) -> None:
                         available_paths=[Path(p) for p in files_by_type.get("code", [])],
                         changed_paths=[Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
                     )
+                    # Files whose ids collide with a changed or deleted one are
+                    # salted apart only when extracted in one batch.
+                    from graphify.watch import _id_collision_partners
+                    code_files = list(code_files) + _id_collision_partners(
+                        list(code_files),
+                        {
+                            _i for _i in (
+                                _ctx_identity(p) for p in [*deleted_files, *excluded_files]
+                            ) if _i
+                        },
+                        [Path(p) for p in files_by_type.get("code", [])],
+                        _ctx_graph.get("nodes", []),
+                        _ctx_identity,
+                        _ctx_root,
+                        set(),
+                    )
                     _ctx_live.difference_update(_ctx_identity(p) for p in code_files)
                     for _node in _ctx_graph.get("nodes", []):
                         if not _node.get("id") or not _ctx_is_ast_tier(_node):
