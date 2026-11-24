@@ -1953,6 +1953,12 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
         return cached
     H = nx.MultiGraph() if G.is_multigraph() else nx.Graph()
     H.graph.update(G.graph)
+    # Structure-dependent caches are keyed to the graph they were built from.
+    # `H` folds arc pairs into undirected edges, so its degree sequence and
+    # neighbour lists are not G's; drop the inherited ones instead of trusting
+    # the (node, edge) guard, which could match by coincidence.
+    H.graph.pop("_degree_cache", None)
+    H.graph.pop("_adj_index", None)
     H.add_nodes_from(G.nodes(data=True))
     for u, v, d in G.edges(data=True):
         H.add_edge(u, v, **{**d, "_src": d.get("_src", u), "_tgt": d.get("_tgt", v)})
