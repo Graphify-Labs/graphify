@@ -4028,12 +4028,79 @@ def _ts_alias_object_type(node, source: bytes):
     return types[0] if len(types) == 1 and types[0].type == "object_type" else None
 
 
-def _ts_has_readonly_binding(root, source: bytes, config: LanguageConfig) -> bool:
-    """Conservatively skip Readonly unwrapping if the file binds that name."""
+_TS_LEXICAL_SCOPES = {"program", "statement_block", "switch_body"}
+_TS_NAMESPACE_TYPES = {"internal_module", "module"}
+_TsNamespaceScope = tuple["Node", tuple[str, ...]]
+
+
+def _ts_enclosing_scope(node: Node) -> Node | None:
+    scope = node.parent
+    while scope is not None and scope.type not in _TS_LEXICAL_SCOPES:
+        scope = scope.parent
+    return scope
+
+
+def _ts_namespace_exports(node: Node, body: Node, declaration_file: bool) -> bool:
+    parent = node.parent
+    if parent is not None and parent.type == "ambient_declaration":
+        parent = parent.parent
+    if parent is not None and parent.type == "export_statement":
+        return True
+    if node.type.startswith("import_"):
+        return False
+
+    # Ambient namespaces export their members implicitly unless the body
+    # contains an export declaration such as `export {}` or `export = name`.
+    context: Node | None = body
+    while not declaration_file and context is not None:
+        if context.type == "ambient_declaration":
+            break
+        context = context.parent
+    if context is None:
+        return False
+    return not any(child.type == "export_statement" and
+                   child.child_by_field_name("declaration") is None
+                   for child in body.named_children)
+
+
+def _ts_namespace_scope(
+    body: Node, source: bytes, declaration_file: bool,
+) -> _TsNamespaceScope | None:
+    """Identify namespace bodies that share exported members within this file."""
+    namespace = body.parent
+    if namespace is None or namespace.type not in _TS_NAMESPACE_TYPES:
+        return None
+    name = namespace.child_by_field_name("name")
+    if name is None:
+        name = next((child for child in namespace.named_children
+                     if child.type in {"identifier", "nested_identifier", "string"}), None)
+    scope = _ts_enclosing_scope(namespace)
+    if name is None or scope is None:
+        return None
+    if name.type == "string":
+        parts = (f'"{_read_text(name, source)[1:-1]}"',)
+    else:
+        parts = tuple(
+            _read_text(part, source) for part in _walk_js_tree(name)
+            if part is not None and part.type in {"identifier", "property_identifier"}
+        )
+    if _ts_namespace_exports(namespace, scope, declaration_file):
+        enclosing = _ts_namespace_scope(scope, source, declaration_file)
+        if enclosing is not None:
+            return enclosing[0], (*enclosing[1], *parts)
+    return scope, parts
+
+
+def _ts_readonly_binding_scopes(
+    root: Node, source: bytes, config: LanguageConfig, declaration_file: bool,
+) -> tuple[set[Node], set[_TsNamespaceScope]]:
+    """Index local type bindings named Readonly and namespace exports of that name."""
+    scopes: set[Node] = set()
+    exports: set[_TsNamespaceScope] = set()
     for node in _walk_js_tree(root):
-        if node.type in config.class_types or node.type in (
-            "type_parameter", "internal_module", "module",
-        ):
+        if node is None:
+            continue
+        if node.type in config.class_types or node.type == "type_parameter":
             name = node.child_by_field_name("name")
         elif node.type == "import_specifier":
             name = node.child_by_field_name("alias") or node.child_by_field_name("name")
@@ -4041,8 +4108,38 @@ def _ts_has_readonly_binding(root, source: bytes, config: LanguageConfig) -> boo
             name = next((child for child in node.named_children if child.type == "identifier"), None)
         else:
             continue
-        if name is not None and _read_text(name, source) == "Readonly":
+        parent = node.parent
+        if name is None or _read_text(name, source) != "Readonly" or parent is None:
+            continue
+        if node.type == "type_parameter":
+            scope = parent.parent
+        else:
+            scope = _ts_enclosing_scope(node)
+        if scope is None:
+            continue
+        scopes.add(scope)
+        if node.type != "type_parameter" and _ts_namespace_exports(node, scope, declaration_file):
+            namespace = _ts_namespace_scope(scope, source, declaration_file)
+            if namespace is not None:
+                exports.add(namespace)
+    return scopes, exports
+
+
+def _ts_has_readonly_binding(
+    alias: Node, source: bytes, declaration_file: bool,
+    scopes: set[Node], exports: set[_TsNamespaceScope],
+) -> bool:
+    scope: Node | None = alias
+    while scope is not None:
+        if scope in scopes:
             return True
+        if exports and scope.type == "statement_block":
+            namespace = _ts_namespace_scope(scope, source, declaration_file)
+            if namespace is not None:
+                owner, parts = namespace
+                if any((owner, parts[:n]) in exports for n in range(1, len(parts) + 1)):
+                    return True
+        scope = scope.parent
     return False
 
 
@@ -8517,10 +8614,11 @@ def _extract_generic(
             csharp_method_scopes[id(body)] = (decl, class_nid)
             function_bodies.append((member_nid, body))
 
-    ts_readonly_shadowed: bool | None = None
+    ts_readonly_bindings: tuple[set[Node], set[_TsNamespaceScope]] | None = None
+    ts_declaration_file = str_path.endswith((".d.ts", ".d.mts", ".d.cts"))
 
     def walk(node, parent_class_nid: str | None = None) -> None:
-        nonlocal ruby_singleton_context_depth, ts_readonly_shadowed
+        nonlocal ruby_singleton_context_depth, ts_readonly_bindings
         t = node.type
 
         # Lua: `require("mod")` used as a bare statement (no assignment) is
@@ -9486,9 +9584,11 @@ def _extract_generic(
                 if body is None:
                     return
                 if body.parent is not None and body.parent.type == "type_arguments":
-                    if ts_readonly_shadowed is None:
-                        ts_readonly_shadowed = _ts_has_readonly_binding(root, source, config)
-                    if ts_readonly_shadowed:
+                    if ts_readonly_bindings is None:
+                        ts_readonly_bindings = _ts_readonly_binding_scopes(
+                            root, source, config, ts_declaration_file,
+                        )
+                    if _ts_has_readonly_binding(node, source, ts_declaration_file, *ts_readonly_bindings):
                         return
                 # Only direct signatures belong to the alias. Leave methods of
                 # nested object properties and other type expressions alone.

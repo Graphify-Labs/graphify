@@ -111,8 +111,8 @@ C# generic arity. Exported field tables use this path and namespace, not raw
 node IDs, to survive cache relocation and corpus ID remapping.
 
 TypeScript object type aliases own nodes for their direct method signatures,
-including inline objects wrapped in an unqualified `Readonly` when the file
-does not bind that name. The extractor retains each method's source location.
+including inline objects wrapped in an unqualified `Readonly` when the alias's
+scope does not shadow that name. The extractor retains each method's source location.
 It skips nested objects and other wrappers. These declarations can be reached
 through a resolved typed receiver and are excluded from bare call lookup.
 AST cache schema 54 refreshes existing graphs for these new declarations.
