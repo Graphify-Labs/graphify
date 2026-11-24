@@ -1729,6 +1729,16 @@ def _run_hook_guard(kind: str, strict: bool = False, deny_mode: "str | None" = N
             pass
         return
     t = d.get("tool_input", d)
+    if isinstance(t, str):
+        # Some hosts hand the tool arguments through as the JSON text the model
+        # emitted instead of a parsed object (DeepSeek Harness's Claude-Code
+        # bridge does exactly this: `tool_input` is the raw argument string).
+        # Parsing it here is what keeps the read/search policy applying there;
+        # an unparseable string still fails open below.
+        try:
+            t = json.loads(t) if t.strip() else {}
+        except (ValueError, TypeError):
+            return
     if not isinstance(t, dict):
         return
     try:

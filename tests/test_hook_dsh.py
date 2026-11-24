@@ -124,6 +124,44 @@ def test_dsh_bash_file_reader_is_routed_through_the_read_policy(tmp_path, monkey
     assert not _is_deny(out), out
 
 
+def test_dsh_string_tool_input_still_denies_in_strict_mode(tmp_path, monkeypatch):
+    """The bridge passes `tool_input` as the model's raw JSON argument text.
+
+    Reading only dicts made every DSH call look targetless, so a strict install
+    fired its hooks and silently did nothing (caught by a live session, not by
+    the dict-shaped fixtures above).
+    """
+    f = _project(tmp_path)
+    payload = {
+        "session_id": "dsh-str-1",
+        "tool_name": "read",
+        "tool_input": json.dumps({"file_path": str(f), "limit": 200}),
+    }
+    out = _invoke("read", payload, tmp_path, monkeypatch, strict=True)
+    assert _is_deny(out), out
+
+    advised = _invoke("read", {**payload, "session_id": "dsh-str-2"}, tmp_path, monkeypatch)
+    assert _is_nudge(advised), advised
+
+
+def test_dsh_string_tool_input_drives_the_search_policy(tmp_path, monkeypatch):
+    _project(tmp_path)
+    payload = {
+        "session_id": "dsh-str-3",
+        "tool_name": "grep",
+        "tool_input": json.dumps({"pattern": "def x", "path": "."}),
+    }
+    out = _invoke("search", payload, tmp_path, monkeypatch)
+    assert _is_nudge(out), out
+
+
+def test_unparseable_string_tool_input_fails_open(tmp_path, monkeypatch):
+    _project(tmp_path)
+    for broken in ("{not json", ""):
+        payload = {"session_id": "dsh-str-4", "tool_name": "read", "tool_input": broken}
+        assert _invoke("read", payload, tmp_path, monkeypatch, strict=True) == ""
+
+
 def test_claude_cased_names_still_work(tmp_path, monkeypatch):
     f = _project(tmp_path)
     payload = {"session_id": "cc-1", "tool_name": "Read", "tool_input": {"file_path": str(f)}}
