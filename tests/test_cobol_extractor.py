@@ -442,6 +442,9 @@ def test_cobol_procedure_copybook_is_known_by_any_statement(tmp_path, statement)
     # A declaration, which the DATA DIVISION has as well.
     "           EXEC SQL INCLUDE SQLCA END-EXEC.",
     "           EXEC SQL\n               INCLUDE SQLCA\n           END-EXEC.",
+    # A quoted value is text, whatever it says.
+    "               'EXEC SQL COMMIT END-EXEC'.",
+    "               'MOVE A TO B'.",
 ])
 def test_cobol_data_copybook_with_a_statement_lookalike_stays_data(tmp_path, line):
     """After a lone `SPACES.` line, a data copybook was read as procedure code
