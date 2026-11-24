@@ -73,11 +73,76 @@ def test_shadowed_readonly_does_not_expose_methods_of_its_type_argument(tmp_path
     assert methods == {("DirectPort", ".direct()", "L3")}
 
 
+def test_unrelated_generic_parameter_does_not_hide_readonly_alias(tmp_path):
+    methods = _method_edges(
+        tmp_path / "ports.ts",
+        "function identity<Readonly>(item: Readonly): Readonly { return item; }\n"
+        "type WrappedPort = Readonly<{ read(): number }>;\n"
+        "type GenericPort<Readonly> = Readonly<{ hidden(): number }>;\n",
+    )
+    assert methods == {("WrappedPort", ".read()", "L2")}
+
+
+def test_readonly_declaration_only_shadows_its_lexical_scope(tmp_path):
+    methods = _method_edges(
+        tmp_path / "ports.ts",
+        "namespace Local {\n"
+        "  type Shadowed = Readonly<{ hidden(): number }>;\n"
+        "  type Readonly<T> = { inner: T };\n"
+        "}\n"
+        "namespace Local { type Reopened = Readonly<{ write(): number }>; }\n"
+        "namespace Other { type Visible = Readonly<{ read(): number }>; }\n"
+        "type Outside = Readonly<{ open(): number }>;\n",
+    )
+    assert methods == {
+        ("Reopened", ".write()", "L5"),
+        ("Visible", ".read()", "L6"),
+        ("Outside", ".open()", "L7"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (
+            "namespace API./* nested */Ports { export type Wrapped = Readonly<{ hidden(): number }>; }",
+            "namespace API { export type Readonly<T> = { inner: T }; }",
+        ),
+        (
+            "namespace API { export type Wrapped = Readonly<{ hidden(): number }>; }",
+            "namespace API { export declare class Readonly<T> { inner: T; } }",
+        ),
+        (
+            "declare namespace API { namespace Ports { type Wrapped = Readonly<{ hidden(): number }>; } }",
+            "declare namespace API { namespace Ports { type Readonly<T> = { inner: T }; } }",
+        ),
+    ],
+)
+def test_exported_readonly_shadows_across_reopened_namespaces(tmp_path, first, second):
+    methods = _method_edges(
+        tmp_path / "ports.ts",
+        f"{first}\n{second}\ntype Outside = Readonly<{{ open(): number }}>;\n",
+    )
+    assert methods == {("Outside", ".open()", "L3")}
+
+
+def test_ambient_import_only_shadows_its_own_module_body(tmp_path):
+    methods = _method_edges(
+        tmp_path / "ports.ts",
+        "declare module 'base' { type Readonly<T> = { inner: T }; }\n"
+        "declare module 'pkg' { import type { Readonly } from 'base';\n"
+        "  type Hidden = Readonly<{ hidden(): number }>; }\n"
+        "declare module 'pkg' { type Visible = Readonly<{ open(): number }>; }\n",
+    )
+    assert methods == {("Visible", ".open()", "L4")}
+
+
 def test_alias_method_calls_require_a_typed_receiver(tmp_path):
     ports = tmp_path / "ports.ts"
     ports.write_text(
+        "function identity<Readonly>(item: Readonly): Readonly { return item; }\n"
         "function read(): number { return 0; }\n"
-        "type AliasPort = { read(): number };\n"
+        "export type AliasPort = { read(): number };\n"
         "type ReadonlyPort = Readonly<{ read(): number }>;\n"
         "type OtherPort = { onlyOnPort(): number };\n"
         "function useBare() { return read(); }\n"
@@ -89,7 +154,9 @@ def test_alias_method_calls_require_a_typed_receiver(tmp_path):
     )
     caller = tmp_path / "caller.ts"
     caller.write_text(
-        "import './ports';\nfunction useUnresolved() { return onlyOnPort(); }\n",
+        "import type { AliasPort } from './ports';\n"
+        "function useImported(imported: AliasPort) { return imported.read(); }\n"
+        "function useUnresolved() { return onlyOnPort(); }\n",
         encoding="utf-8",
     )
     result = extract([ports, caller], root=tmp_path, cache_root=tmp_path / "cache")
@@ -103,6 +170,7 @@ def test_alias_method_calls_require_a_typed_receiver(tmp_path):
             "useBare()",
             "useAlias()",
             "useReadonly()",
+            "useImported()",
             "useStatic()",
             "useUnknown()",
             "useUnresolved()",
@@ -117,21 +185,29 @@ def test_alias_method_calls_require_a_typed_receiver(tmp_path):
         (nodes["useBare()"], nodes["read()"]),
         (nodes["useAlias()"], methods[nodes["AliasPort"]]),
         (nodes["useReadonly()"], methods[nodes["ReadonlyPort"]]),
+        (nodes["useImported()"], methods[nodes["AliasPort"]]),
     }
 
 
-def test_alias_methods_are_not_same_file_base_types(tmp_path):
-    (tmp_path / "base.d.ts").write_text("declare class Base {}\n", encoding="utf-8")
+@pytest.mark.parametrize("include_base", [False, True])
+def test_alias_methods_do_not_supply_a_base_class(tmp_path, include_base):
     ports = tmp_path / "ports.ts"
+    if include_base:
+        base_declaration = "class Base {}\n"
+    else:
+        # The declaration exists in TypeScript but is outside the extraction.
+        (tmp_path / "base.d.ts").write_text("declare class Base {}\n", encoding="utf-8")
+        base_declaration = '/// <reference path="./base.d.ts" />\n'
     ports.write_text(
-        '/// <reference path="./base.d.ts" />\n'
-        "export type AliasPort = { Base(): number };\n"
+        base_declaration + "export type AliasPort = { Base(): number };\n"
         "class Derived extends Base {}\n",
         encoding="utf-8",
     )
     result = extract([ports], root=tmp_path, cache_root=tmp_path / "cache")
-    method = next(node for node in result["nodes"] if node["label"] == ".Base()")
-    assert not any(
-        edge["relation"] == "inherits" and edge["target"] == method["id"]
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    assert ".Base()" in labels.values()
+    assert {
+        labels[edge["target"]]
         for edge in result["edges"]
-    )
+        if edge["relation"] == "inherits" and labels[edge["source"]] == "Derived"
+    } == ({"Base"} if include_base else set())
