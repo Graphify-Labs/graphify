@@ -84,6 +84,9 @@ Go resolves a selector against its visible lexical binding before considering
 a same-named import. An unknown local receiver does not resolve as a package.
 AST cache schema 54 retires older call facts.
 
+Markdown AST cache keys include frontmatter because extraction records
+page metadata and wikilinks. Semantic keys retain the body-only digest.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
