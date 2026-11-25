@@ -13109,7 +13109,8 @@ def extract(
     # canonical half; it would miss and leave them on a dead id. Run first, it
     # splits only genuinely distinct nodes; the merge then joins the halves by
     # type path, whatever their (salted) ids.
-    _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
+    _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root,
+                                     context_nodes=resolution_context_nodes)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _canonicalize_csharp_namespace_nodes(all_nodes, all_edges)
     # PHP namespace/use disambiguation must run BEFORE the unique-stub rewire:

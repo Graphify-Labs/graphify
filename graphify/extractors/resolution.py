@@ -1121,8 +1121,15 @@ def _disambiguate_colliding_node_ids(
     edges: list[dict],
     raw_calls: list[dict],
     root: Path,
+    context_nodes: list[dict] | None = None,
 ) -> None:
     """Rewrite only colliding node IDs, using source path as the disambiguator.
+
+    ``context_nodes`` are the persisted nodes of files a changed-files rebuild is
+    not re-extracting. A batch that holds only ``foo.c`` cannot see that
+    ``foo.h`` shares its id, so without them the edited file keeps the bare id
+    and the graph stops matching a full build. A context node whose id is the
+    salted form of a batch id, or of an edge target, counts as a collider.
 
     Module anchor nodes (#1327) are exempt: ``import CoreKit`` from three files
     yields three ``type=module`` nodes with the same id but different
@@ -1145,11 +1152,31 @@ def _disambiguate_colliding_node_ids(
         if isinstance(nid, str) and nid:
             by_id.setdefault(nid, []).append(node)
 
+    # Unchanged files' salted ids, keyed by the pre-salt id they came from. Only
+    # ids this batch defines or points at matter; the rest stay untouched.
+    wanted = set(by_id) | {str(e.get("target", "")) for e in edges}
+    partners: dict[str, list[dict]] = {}
+    for cn in context_nodes or ():
+        cid = cn.get("id")
+        csk = _node_disambiguation_source_key(cn, root)
+        if not (isinstance(cid, str) and csk):
+            continue
+        prefix = _make_id(csk) + "_"
+        old = cid[len(prefix):] if cid.startswith(prefix) else ""
+        if old and old in wanted:
+            partners.setdefault(old, []).append({"id": cid, "source_key": csk, "label": cn.get("label")})
+
     remap: dict[tuple[str, str], str] = {}
     ambiguous_ids: set[str] = set()
+    for old_id, part in partners.items():
+        for p in part:
+            remap[(old_id, p["source_key"])] = p["id"]
+        if old_id not in by_id:
+            ambiguous_ids.add(old_id)  # only an edge target: route edges to the salted sibling
     for old_id, group in by_id.items():
         source_keys = {_node_disambiguation_source_key(node, root) for node in group}
-        if len(group) < 2 or len(source_keys) < 2:
+        partner_keys = {p["source_key"] for p in partners.get(old_id, ())} - source_keys
+        if len(source_keys) + len(partner_keys) < 2:
             continue
         ambiguous_ids.add(old_id)
         # Salt the colliding id with the *path* it came from. The naive salt is
@@ -1216,16 +1243,22 @@ def _disambiguate_colliding_node_ids(
     header_suffixes = {".h", ".hpp", ".hh", ".hxx"}
     header_remaps: dict[str, str] = {}
     file_remaps: dict[tuple[str, str], set[str]] = {}
+    def _colliders(old_id: str):
+        """(source_key, label) of every node behind an ambiguous id, batch and context."""
+        for node in by_id.get(old_id, ()):
+            yield _node_disambiguation_source_key(node, root), node.get("label")
+        for p in partners.get(old_id, ()):
+            yield p["source_key"], p["label"]
+
     for old_id in ambiguous_ids:
-        for node in by_id[old_id]:
-            source = _node_disambiguation_source_key(node, root)
+        for source, label in _colliders(old_id):
             new_id = remap.get((old_id, source))
             if not source or not new_id:
                 continue
             if Path(source).suffix.lower() in header_suffixes:
                 header_remaps.setdefault(old_id, new_id)
             family = _lang_family(source)
-            if family and node.get("label") == Path(source).name:
+            if family and label == Path(source).name:
                 file_remaps.setdefault((old_id, family), set()).add(new_id)
 
     for edge in edges:
