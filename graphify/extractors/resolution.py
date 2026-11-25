@@ -95,6 +95,15 @@ def _resolve_js_import_path(candidate: Path) -> Path:
             if index_candidate.is_file():
                 return index_candidate
 
+    # Tried last so a path that resolves to an implementation keeps its target.
+    declaration = candidate.parent / f"{candidate.name}.d.ts"
+    if declaration.is_file() and effective_suffix(declaration) in _JS_CACHE_BYPASS_SUFFIXES:
+        return declaration
+    if candidate.is_dir():
+        declaration_index = candidate / "index.d.ts"
+        if declaration_index.is_file() and effective_suffix(declaration_index) in _JS_CACHE_BYPASS_SUFFIXES:
+            return declaration_index
+
     return candidate
 
 def _strip_jsonc(text: str) -> str:
