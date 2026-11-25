@@ -3077,28 +3077,47 @@ def _python_local_import_names(func_def_node, source: bytes) -> set[str]:
 
 
 def _python_call_shadowed_by_local_import(node, callee_name: str, source: bytes) -> bool:
-    """Does the nearest enclosing Python function/class body bind `callee_name`
-    via its OWN `import`/`from ... import` statement?
+    """Does an enclosing Python function body, or a directly enclosing class
+    body, bind `callee_name` via its OWN `import`/`from ... import` statement?
 
     A function-local import is only valid in its own lexical scope: `from m
     import x` inside `caller()` binds `x` there, so a bare `x()` call in that
     body names the imported symbol, not a same-named module-level function or
-    class elsewhere in the file (#5421). Checked against the nearest enclosing
-    function or class body only, matching Python's own scoping: a sibling
-    nested `def`'s own import is a different scope and must not shadow this
-    call. Stops at the first function/class ancestor and requires the walk to
-    have arrived through that scope's own body, not its parameters/decorators
-    or a default/annotation value (which evaluate in the scope around it): a
-    call reached that way is left unshadowed rather than walked further out,
-    a narrow gap this conservative check accepts rather than risk suppressing
-    a real edge.
+    class elsewhere in the file (#5421). A closure keeps this binding visible
+    to a nested `def` too, so a miss at the nearest enclosing function climbs
+    to the next enclosing function, same as a captured parameter would be
+    (#5421's deep, nested closure case). A class body is not part of that
+    chain: its own bindings are invisible to its methods without `self`/the
+    class name, so a class is checked only when `node` sits directly in its
+    body (not inside one of its methods), and climbing past a class (from a
+    nested method, or from the class's own decorator/base list, evaluated
+    before the class exists) never counts that class's own imports, though it
+    still continues on to whatever scope encloses the class. Requires the
+    walk to have arrived through a function's own body, not its
+    parameters/decorators or a default/annotation value (which evaluate in
+    the scope around it): a call reached that way is left unshadowed and the
+    walk stops there rather than climbing further, a narrow gap this
+    conservative check accepts rather than risk suppressing a real edge.
     """
     n = node
+    own_scope = True
     while (parent := n.parent) is not None:
+        if parent.type == "class_definition" and not own_scope:
+            # A class scope never propagates its own bindings to a nested
+            # method or a nested class, whether climbing up from one or
+            # reached through this class's own decorator/base list: skip it
+            # and keep climbing to whatever encloses it, which a nested
+            # method CAN still close over.
+            n = parent
+            continue
         if parent.type in ("function_definition", "class_definition"):
             body = parent.child_by_field_name("body")
             if body is not None and n == body:
-                return callee_name in _python_local_import_names(parent, source)
+                if callee_name in _python_local_import_names(parent, source):
+                    return True
+                own_scope = False
+                n = parent
+                continue
             return False
         n = parent
     return False
