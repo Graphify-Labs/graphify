@@ -465,6 +465,615 @@ LEGEND.forEach(c => {{
 </script>"""
 
 
+# ---------------------------------------------------------------------------
+# 3D viewer (default). Same RAW_NODES / RAW_EDGES / LEGEND data as the 2D page,
+# rendered with 3d-force-graph (three.js) plus a floating node card that shows
+# each node's kind, signature, source comment and grouped relationships.
+# ---------------------------------------------------------------------------
+
+# Bumping the version MUST update both the URL and the hash (verified against
+# unpkg and jsdelivr copies of the published npm file).
+_FORCE_GRAPH_3D_URL = "https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"
+_FORCE_GRAPH_3D_SRI = "sha384-GNPicn8pBA2/PGSyPTpxIlPurgLUYcNYJ2zskIq782dE9+gp5E32WSyuxZqA7J+u"
+
+VIZ_MODES = ("3d", "2d")
+
+
+def _viz_mode(mode: str | None) -> str:
+    """Resolve the renderer: explicit *mode*, else GRAPHIFY_VIZ_MODE, else 3d."""
+    import os
+    raw = (mode or os.environ.get("GRAPHIFY_VIZ_MODE") or "3d").strip().lower()
+    return raw if raw in VIZ_MODES else "3d"
+
+
+def _html3d_styles() -> str:
+    # Shared chrome (theme variables, sidebar, legend, search) comes from the 2D
+    # stylesheet so both viewers look alike and theme the same way.
+    base = _html_styles().replace("</style>", "")
+    return base + """  #graph-wrap { flex: 1; position: relative; min-width: 0; }
+  #graph { position: absolute; inset: 0; }
+  #toolbar { position: absolute; top: 12px; left: 12px; z-index: 5; display: flex; gap: 6px; }
+  #toolbar button { background: var(--panel); color: var(--text-2); border: 1px solid var(--input-border); border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+  #toolbar button:hover { color: var(--text); }
+  #toolbar button[aria-pressed="true"] { background: #4E79A7; border-color: #4E79A7; color: #fff; }
+  #viewer-error { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--text-2); font-size: 14px; line-height: 1.6; }
+  .g3-sidebar-tip { position: fixed; visibility: hidden; z-index: 100; white-space: normal; max-width: 360px; overflow-wrap: break-word; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); pointer-events: none; }
+  .scene-tooltip { background: rgba(20,20,35,0.92); padding: 6px 9px; border-radius: 6px; color: #eee !important; font-size: 12px; }
+  .kind-chip { display: inline-block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 8px; background: var(--border); color: var(--text-2); vertical-align: middle; }
+  #info-content .desc { margin: 6px 0 8px; color: var(--text); line-height: 1.5; }
+  #info-content .desc.auto { color: var(--text-2); font-size: 12px; }
+  #info-content .sig { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin: 6px 0 8px; white-space: pre-wrap; word-break: break-word; color: var(--text-3); }
+  #info-content .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  #info-content .lesson { font-size: 11px; margin: 4px 0; padding-left: 6px; border-left: 3px solid var(--muted); color: var(--text-2); }
+  #neighbors-list { margin-top: 4px; max-height: none; overflow: visible; }
+  .rel-head { margin-top: 8px; color: var(--text-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  #node-card { position: absolute; z-index: 6; left: 0; top: 0; width: max-content; max-width: 320px; max-height: 55%;
+    overflow-y: auto; padding: 10px 12px; border-radius: 10px; font-size: 12px;
+    background: rgba(22, 22, 40, 0.68); border: 1px solid rgba(255,255,255,0.10);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+    opacity: 0; transform: translateY(4px); transition: opacity .18s ease, transform .18s ease;
+    pointer-events: none; }
+  [data-theme="light"] #node-card { background: rgba(255,255,255,0.78); border-color: rgba(0,0,0,0.10); box-shadow: 0 6px 24px rgba(0,0,0,0.12); }
+  #node-card.show { opacity: 1; transform: none; }
+  #node-card.pinned { pointer-events: auto; }
+  #node-card .card-close { position: sticky; top: 0; float: right; margin: -4px -4px 0 6px; background: none; border: none;
+    color: var(--text-2); font-size: 16px; line-height: 1; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+  #node-card .card-close:hover { color: var(--text); background: var(--border); }
+  #node-card #info-content { font-size: 12px; line-height: 1.5; color: var(--text-3); }
+  #node-card .desc { margin: 4px 0 6px; }
+  #node-card .sig { margin: 4px 0 6px; background: rgba(0,0,0,0.18); }
+  [data-theme="light"] #node-card .sig { background: rgba(0,0,0,0.04); }
+  #node-card .field { margin-bottom: 2px; }
+  #node-card .meta { color: var(--text-2); font-size: 11px; }
+</style>"""
+
+
+def _html3d_data_script(nodes_json: str, edges_json: str, legend_json: str,
+                        hyperedges_json: str, node_info_json: str) -> str:
+    return f"""<script>
+const RAW_NODES = {nodes_json};
+const RAW_EDGES = {edges_json};
+const LEGEND = {legend_json};
+const HYPEREDGES = {hyperedges_json};
+const NODE_INFO = {node_info_json};
+</script>"""
+
+
+# Plain string (not an f-string): no data is interpolated into the viewer code.
+_HTML3D_SCRIPT = r"""<script>
+// HTML-escape helper: every graph-derived string goes through esc() before
+// reaching innerHTML (labels, comments and paths come from source files).
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ---- Graph data -------------------------------------------------------------
+const nodeById = new Map();
+const NODES = RAW_NODES.map(n => {
+  const node = {
+    id: n.id, label: n.label, color: n.color.background, size: n.size, title: n.title,
+    community: n.community, community_name: n.community_name,
+    source_file: n.source_file, file_type: n.file_type, degree: n.degree,
+    member_count: n.member_count,
+    // Work-memory overlay: annotated nodes carry a "Lesson: ..." line after the
+    // label in their title, and a status colour as their border.
+    lesson: String(n.title || '').split('\n').slice(1).join(' '),
+    ring: n.color.border !== n.color.background ? n.color.border : null,
+  };
+  nodeById.set(n.id, node);
+  return node;
+});
+const LINKS = RAW_EDGES
+  .filter(e => nodeById.has(e.from) && nodeById.has(e.to))
+  .map(e => ({ source: e.from, target: e.to, relation: e.label, title: e.title,
+               width: e.width, confidence: e.confidence }));
+
+const neighbors = new Map(NODES.map(n => [n.id, new Set()]));
+const relOut = new Map(NODES.map(n => [n.id, []]));
+const relIn = new Map(NODES.map(n => [n.id, []]));
+LINKS.forEach(l => {
+  neighbors.get(l.source).add(l.target); neighbors.get(l.target).add(l.source);
+  relOut.get(l.source).push([l.relation, l.target]);
+  relIn.get(l.target).push([l.relation, l.source]);
+});
+// How each relation reads from the selected node's side: [outgoing, incoming]
+const REL_TEXT = {
+  calls: ['Calls', 'Called by'],
+  references: ['Uses', 'Used by'],
+  uses: ['Uses', 'Used by'],
+  contains: ['Contains', 'Defined in'],
+  method: ['Methods', 'Method of'],
+  imports: ['Imports', 'Imported by'],
+  imports_from: ['Imports', 'Imported by'],
+  case_of: ['Variants', 'Variant of'],
+  defines: ['Defines', 'Defined in'],
+  implements: ['Implements', 'Implemented by'],
+  inherits: ['Inherits from', 'Inherited by'],
+  extends: ['Extends', 'Extended by'],
+  depends_on: ['Depends on', 'Depended on by'],
+  shares_data_with: ['Shares data with', 'Shares data with'],
+  rationale_for: ['Explains', 'Explained by'],
+  conceptually_related_to: ['Related to', 'Related to'],
+  semantically_similar_to: ['Similar to', 'Similar to'],
+};
+const REL_ORDER = ['Defined in', 'Method of', 'Variant of', 'Explained by', 'Methods', 'Variants', 'Contains',
+  'Calls', 'Called by', 'Uses', 'Used by', 'Imports', 'Imported by'];
+
+// Hyperedges (shaded regions in 2D) are listed as "Group:" on member cards.
+const hyperMember = new Map();
+HYPEREDGES.forEach(h => (h.nodes || []).forEach(id => {
+  if (!hyperMember.has(id)) hyperMember.set(id, []);
+  hyperMember.get(id).push(h);
+}));
+
+const INFO = NODE_INFO || {};
+const hiddenCommunities = new Set();
+let selectedId = null;
+const highlightNodes = new Set();
+const highlightLinks = new Set();
+
+function isDark() { return document.documentElement.getAttribute('data-theme') !== 'light'; }
+function endId(x) { return typeof x === 'object' ? x.id : x; }
+function linkKey(l) { return endId(l.source) + '\u0000' + endId(l.target); }
+function endNode(x) { return typeof x === 'object' ? x : nodeById.get(x); }
+function firstSentence(t, max) {
+  const m = String(t).match(/^.*?[.!?](\s|$)/);
+  let s = (m ? m[0] : String(t)).trim();
+  if (s.length > max) s = s.slice(0, max - 1) + '…';
+  return s;
+}
+
+// ---- 3D scene ---------------------------------------------------------------
+const container = document.getElementById('graph');
+const Graph = (typeof ForceGraph3D === 'function') ? ForceGraph3D({ controlType: 'orbit' })(container) : null;
+if (!Graph) {
+  const err = document.getElementById('viewer-error');
+  err.textContent = 'The 3D viewer could not load (it needs WebGL and an internet connection for ' +
+    'the 3d-force-graph library). Re-render with GRAPHIFY_VIZ_MODE=2d for the flat viewer.';
+  err.style.display = 'flex';
+} else {
+  Graph
+    .graphData({ nodes: NODES, links: LINKS })
+    .nodeId('id')
+    .nodeLabel(() => '')
+    .nodeVal(n => Math.max(1, n.size / 3))
+    .nodeRelSize(4)
+    .nodeResolution(16)
+    .nodeOpacity(0.95)
+    .nodeColor(n => {
+      if (highlightNodes.size && !highlightNodes.has(n.id)) return isDark() ? '#2a2a40' : '#d4d8de';
+      if (n.id === selectedId) return isDark() ? '#ffffff' : '#111111';
+      return n.color;
+    })
+    .nodeVisibility(n => !hiddenCommunities.has(n.community))
+    .linkVisibility(l => {
+      const s = endNode(l.source), t = endNode(l.target);
+      return !hiddenCommunities.has(s.community) && !hiddenCommunities.has(t.community);
+    })
+    .linkLabel(l => esc(l.title || l.relation || ''))
+    .linkColor(l => {
+      if (highlightLinks.has(linkKey(l))) return isDark() ? '#ffd166' : '#d97706';
+      return isDark() ? '#8890b0' : '#7a8494';
+    })
+    .linkOpacity(0.25)
+    .linkWidth(l => highlightLinks.has(linkKey(l)) ? 1.5 : (l.confidence === 'EXTRACTED' ? 0.3 : 0))
+    .linkDirectionalArrowLength(l => highlightLinks.has(linkKey(l)) ? 4 : 2)
+    .linkDirectionalArrowRelPos(1)
+    .linkDirectionalParticles(l => highlightLinks.has(linkKey(l)) ? 3 : 0)
+    .linkDirectionalParticleWidth(1.8)
+    .linkDirectionalParticleSpeed(0.006)
+    .warmupTicks(60)
+    .cooldownTicks(300)
+    .onNodeHover(n => {
+      container.style.cursor = n ? 'pointer' : 'default';
+      if (selectedId !== null) return;          // a pinned card stays put
+      if (n) openCard(n.id, false); else closeCard();
+    })
+    .onNodeClick(n => focusNode(n.id))
+    .onBackgroundClick(() => clearSelection());
+
+  // Same-community links are shorter than cross-community ones so clusters separate.
+  Graph.d3Force('charge').strength(-40);
+  Graph.d3Force('link').distance(l => endNode(l.source).community === endNode(l.target).community ? 25 : 70);
+
+  let fittedOnce = false;
+  Graph.onEngineStop(() => {
+    if (!fittedOnce) { fittedOnce = true; Graph.zoomToFit(800, 40, n => !hiddenCommunities.has(n.community)); }
+  });
+  const resize = () => Graph.width(container.clientWidth).height(container.clientHeight);
+  window.addEventListener('resize', resize);
+  resize();
+}
+
+function refreshStyles() {
+  if (!Graph) return;
+  Graph.nodeColor(Graph.nodeColor())
+       .linkColor(Graph.linkColor())
+       .linkWidth(Graph.linkWidth())
+       .linkDirectionalArrowLength(Graph.linkDirectionalArrowLength())
+       .linkDirectionalParticles(Graph.linkDirectionalParticles());
+}
+
+function setHighlight(nodeId) {
+  highlightNodes.clear();
+  highlightLinks.clear();
+  if (nodeId !== null) {
+    highlightNodes.add(nodeId);
+    neighbors.get(nodeId).forEach(nid => highlightNodes.add(nid));
+    LINKS.forEach(l => {
+      if (endId(l.source) === nodeId || endId(l.target) === nodeId) highlightLinks.add(linkKey(l));
+    });
+  }
+  refreshStyles();
+}
+
+function clearSelection() {
+  selectedId = null;
+  setHighlight(null);
+  closeCard();
+}
+
+// ---- Theme toggle: Light / Dark / System, persisted in localStorage ----------
+const THEME_KEY = 'graphify-theme';
+const themeMQ = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+function themePref() {
+  let p = null;
+  try { p = localStorage.getItem(THEME_KEY); } catch (e) {}
+  return (p === 'light' || p === 'dark' || p === 'system') ? p : null;
+}
+function applyTheme(pref) {
+  const t = pref === 'light' ? 'light' : (pref === 'system' && themeMQ && themeMQ.matches) ? 'light' : 'dark';
+  const root = document.documentElement;
+  if (!root) return;
+  root.setAttribute('data-theme', t);
+  document.querySelectorAll('[data-theme-choice]').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.dataset.themeChoice === (pref || 'dark')));
+  });
+  if (Graph) Graph.backgroundColor(getComputedStyle(root).getPropertyValue('--bg').trim() || '#0f0f1a');
+  refreshStyles();
+}
+document.querySelectorAll('[data-theme-choice]').forEach(b => {
+  b.addEventListener('click', () => {
+    const pref = b.dataset.themeChoice;
+    try { localStorage.setItem(THEME_KEY, pref); } catch (e) {}
+    applyTheme(pref);
+  });
+});
+if (themeMQ) {
+  const onSchemeChange = () => { if (themePref() === 'system') applyTheme('system'); };
+  if (themeMQ.addEventListener) themeMQ.addEventListener('change', onSchemeChange);
+  else if (themeMQ.addListener) themeMQ.addListener(onSchemeChange);
+}
+applyTheme(themePref());
+
+// ---- Node card contents -------------------------------------------------------
+function relationGroups(nodeId) {
+  const g = new Map();
+  const add = (title, id) => { if (!g.has(title)) g.set(title, new Set()); g.get(title).add(id); };
+  const pretty = r => String(r || 'related').replace(/_/g, ' ');
+  relOut.get(nodeId).forEach(([r, id]) => add((REL_TEXT[r] || [pretty(r)])[0], id));
+  relIn.get(nodeId).forEach(([r, id]) => add((REL_TEXT[r] || [, pretty(r) + ' (from)'])[1], id));
+  const rank = t => { const i = REL_ORDER.indexOf(t); return i < 0 ? 99 : i; };
+  return [...g.entries()].sort((a, b) => rank(a[0]) - rank(b[0])).map(([t, ids]) => [t, [...ids]]);
+}
+
+// Plain-language fallback when the source has no comment for this node.
+function autoSummary(nodeId, inf) {
+  const n = nodeById.get(nodeId);
+  if (n.member_count != null && !n.source_file) {
+    return `A community of ${n.member_count} nodes. Links show how many edges cross to other communities.`;
+  }
+  const kind = (inf.k || 'node').toLowerCase();
+  const groups = new Map(relationGroups(nodeId));
+  const names = t => (groups.get(t) || []).map(id => (nodeById.get(id) || {}).label).filter(Boolean);
+  const list = (arr, max) => arr.slice(0, max).join(', ') + (arr.length > max ? ` and ${arr.length - max} more` : '');
+  const parts = [];
+  const owner = names('Method of')[0] || names('Variant of')[0];
+  const file = inf.l ? inf.l.split(':')[0].split('/').pop() : '';
+  if (kind.startsWith('external')) {
+    const users = names('Used by').concat(names('Imported by'), names('Called by'));
+    parts.push('Comes from outside this project (standard library or a dependency).');
+    if (users.length) parts.push(`Used here by ${list(users, 4)}.`);
+    return parts.join(' ');
+  }
+  const article = /^[aeiou]/.test(kind) ? 'An' : 'A';
+  parts.push(owner ? `${article} ${kind} of ${owner}${file ? ' in ' + file : ''}.`
+                   : `${article} ${kind}${file ? ' in ' + file : ''}.`);
+  const calls = names('Calls'), callers = names('Called by'), users = names('Used by'), uses = names('Uses');
+  if (calls.length) parts.push(`It calls ${list(calls, 4)}.`);
+  if (uses.length) parts.push(`It uses ${list(uses, 4)}.`);
+  if (callers.length) parts.push(`Called from ${list(callers, 4)}.`);
+  if (users.length) parts.push(`Used by ${list(users, 4)}.`);
+  const methods = names('Methods'), variants = names('Variants');
+  if (methods.length) parts.push(`Has ${methods.length} method${methods.length > 1 ? 's' : ''}: ${list(methods, 5)}.`);
+  if (variants.length) parts.push(`Variants: ${list(variants, 6)}.`);
+  parts.push('(No comment in the source; summary built from the code graph.)');
+  return parts.join(' ');
+}
+
+function showInfo(nodeId, full = true) {
+  const n = nodeById.get(nodeId);
+  if (!n) return;
+  const inf = INFO[nodeId] || {};
+  let html = full ? `<button class="card-close" type="button" title="Close (Esc)" aria-label="Close">×</button>` : '';
+  html += `<div class="field"><b>${esc(n.label)}</b>` +
+          (inf.k ? ` <span class="kind-chip">${esc(inf.k)}</span>` : '') + `</div>`;
+  if (inf.d) html += `<div class="desc">${esc(full ? inf.d : firstSentence(inf.d, 220))}</div>`;
+  if (inf.s) html += `<pre class="sig">${esc(inf.s)}</pre>`;
+  if (!inf.d) html += `<div class="desc auto">${esc(autoSummary(nodeId, inf))}</div>`;
+  if (n.lesson) {
+    html += `<div class="lesson" style="border-left-color:${esc(n.ring || '#9ca3af')}">${esc(n.lesson)}</div>`;
+  }
+  const src = inf.l || n.source_file;
+  if (src) html += `<div class="field meta mono">${esc(src)}</div>`;
+  if (!full) {
+    html += `<div class="field meta">${esc(n.community_name || '')} · click for details</div>`;
+  } else {
+    html += `<div class="field meta">${esc(n.community_name || '')} · degree ${esc(n.degree)}` +
+            (n.member_count != null && !src ? ` · ${esc(n.member_count)} members` : '') + `</div>`;
+    if (hyperMember.has(nodeId)) {
+      html += `<div class="field meta">Group: ${hyperMember.get(nodeId).map(h => esc(h.label || h.relation || h.id || '')).join('; ')}</div>`;
+    }
+    const groups = relationGroups(nodeId);
+    if (groups.length) {
+      html += `<div id="neighbors-list">` + groups.map(([title, ids]) =>
+        `<div class="rel-head">${esc(title)} (${ids.length})</div>` + ids.map(nid => {
+          const nb = nodeById.get(nid);
+          return `<span class="neighbor-link" style="border-left-color:${esc(nb ? nb.color : '#555')}" data-nid="${esc(nid)}">${esc(nb ? nb.label : nid)}</span>`;
+        }).join('')).join('') + `</div>`;
+    }
+  }
+  document.getElementById('info-content').innerHTML = html;
+}
+
+// ---- Floating card: follows its node on screen --------------------------------
+const card = document.getElementById('node-card');
+const wrap = document.getElementById('graph-wrap');
+let cardNodeId = null, cardRaf = null;
+
+function openCard(nodeId, pinned) {
+  cardNodeId = nodeId;
+  showInfo(nodeId, pinned);
+  card.classList.toggle('pinned', pinned);
+  card.scrollTop = 0;
+  positionCard();
+  card.classList.add('show');
+  if (!cardRaf) cardRaf = requestAnimationFrame(trackCard);
+}
+function closeCard() {
+  card.classList.remove('show', 'pinned');
+  cancelAnimationFrame(cardRaf); cardRaf = null;
+}
+function trackCard() {
+  positionCard();
+  cardRaf = card.classList.contains('show') ? requestAnimationFrame(trackCard) : null;
+}
+function positionCard() {
+  const n = cardNodeId !== null && nodeById.get(cardNodeId);
+  if (!Graph || !n || n.x === undefined) return;
+  // Hide the card while its node is behind the camera.
+  const e = Graph.camera().matrixWorldInverse.elements;
+  const behind = e[2] * n.x + e[6] * n.y + e[10] * n.z + e[14] > 0;
+  card.style.visibility = behind ? 'hidden' : 'visible';
+  if (behind) return;
+  const p = Graph.graph2ScreenCoords(n.x, n.y, n.z);
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  const w = card.offsetWidth, h = card.offsetHeight, gap = 18;
+  let x = p.x + gap, y = p.y - h / 2;
+  if (x + w > W - 8) x = p.x - gap - w;                  // flip to the left side
+  x = Math.max(8, Math.min(x, W - w - 8));
+  y = Math.max(8, Math.min(y, H - h - 8));
+  card.style.left = x + 'px';
+  card.style.top = y + 'px';
+}
+card.addEventListener('click', e => { if (e.target.closest('.card-close')) clearSelection(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && card.classList.contains('show')) clearSelection(); });
+
+// Fly the camera to a node and highlight it with its neighbourhood.
+function focusNode(nodeId) {
+  const n = nodeById.get(nodeId);
+  if (!n || hiddenCommunities.has(n.community)) return;
+  selectedId = nodeId;
+  setHighlight(nodeId);
+  openCard(nodeId, true);
+  if (!Graph) return;
+  const x = n.x || 0, y = n.y || 0, z = n.z || 0;
+  const dist = 120;
+  const r = Math.hypot(x, y, z);
+  const ratio = r > 0 ? 1 + dist / r : 1;
+  const camPos = r > 0 ? { x: x * ratio, y: y * ratio, z: z * ratio } : { x: 0, y: 0, z: dist };
+  Graph.cameraPosition(camPos, { x, y, z }, 1200);
+}
+
+// Neighbour links: escaped data attribute + one delegated listener, never an
+// inline onclick (labels and ids are untrusted, #1838).
+document.addEventListener('click', e => {
+  const el = e.target.closest('.neighbor-link');
+  if (el && el.dataset.nid !== undefined) focusNode(el.dataset.nid);
+});
+
+// ---- Sidebar tooltips (truncated names, and node counts) ---------------------
+const sidebarTip = document.createElement('div');
+sidebarTip.className = 'g3-sidebar-tip';
+document.body.appendChild(sidebarTip);
+let sidebarTipTimer = null, sidebarTipEl = null, sidebarTipZone = null;
+function hideSidebarTip() {
+  clearTimeout(sidebarTipTimer);
+  sidebarTip.style.visibility = 'hidden';
+  sidebarTip.textContent = '';
+  sidebarTipEl = sidebarTipZone = null;
+}
+document.addEventListener('mouseover', e => {
+  const zone = e.target.closest && e.target.closest('.legend-count, .legend-item, .search-item, .neighbor-link');
+  const el = zone && zone.classList.contains('legend-item') ? zone.querySelector('.legend-label') : zone;
+  if (!el || el === sidebarTipEl) return;
+  hideSidebarTip();
+  const isCount = el.classList.contains('legend-count');
+  if (!isCount && el.scrollWidth <= el.clientWidth) return;
+  const text = isCount ? `${el.textContent} ${el.textContent === '1' ? 'node' : 'nodes'}` : el.textContent;
+  sidebarTipEl = el; sidebarTipZone = zone;
+  const x = e.clientX, y = e.clientY;
+  sidebarTipTimer = setTimeout(() => {
+    sidebarTip.textContent = text;
+    sidebarTip.style.left = sidebarTip.style.top = '0px';
+    sidebarTip.style.visibility = 'visible';
+    const w = sidebarTip.offsetWidth, h = sidebarTip.offsetHeight;
+    sidebarTip.style.left = Math.max(4, Math.min(x + 12, window.innerWidth - w - 4)) + 'px';
+    sidebarTip.style.top = (y + 16 + h > window.innerHeight ? Math.max(4, y - h - 8) : y + 16) + 'px';
+  }, 100);
+});
+document.addEventListener('mouseout', e => {
+  if (sidebarTipZone && !sidebarTipZone.contains(e.relatedTarget)) hideSidebarTip();
+});
+document.addEventListener('mousedown', hideSidebarTip);
+
+// ---- Search -------------------------------------------------------------------
+const searchInput = document.getElementById('search');
+const searchResults = document.getElementById('search-results');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.toLowerCase().trim();
+  searchResults.innerHTML = '';
+  if (!q) { searchResults.style.display = 'none'; return; }
+  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
+  if (!matches.length) { searchResults.style.display = 'none'; return; }
+  searchResults.style.display = 'block';
+  matches.forEach(n => {
+    const el = document.createElement('div');
+    el.className = 'search-item';
+    el.textContent = n.label;
+    el.style.borderLeft = `3px solid ${n.color.background}`;
+    el.style.paddingLeft = '8px';
+    el.onclick = () => {
+      focusNode(n.id);
+      searchResults.style.display = 'none';
+      searchInput.value = '';
+    };
+    searchResults.appendChild(el);
+  });
+});
+document.addEventListener('click', e => {
+  if (!searchResults.contains(e.target) && e.target !== searchInput)
+    searchResults.style.display = 'none';
+});
+
+// ---- Community legend / visibility ------------------------------------------
+const selectAllCb = document.getElementById('select-all-cb');
+function updateSelectAllState() {
+  const total = LEGEND.length, hidden = hiddenCommunities.size;
+  selectAllCb.checked = hidden === 0;
+  selectAllCb.indeterminate = hidden > 0 && hidden < total;
+}
+function refreshVisibility() {
+  if (selectedId === null && cardNodeId !== null && hiddenCommunities.has(nodeById.get(cardNodeId).community)) closeCard();
+  if (selectedId !== null && hiddenCommunities.has(nodeById.get(selectedId).community)) clearSelection();
+  if (Graph) Graph.nodeVisibility(Graph.nodeVisibility()).linkVisibility(Graph.linkVisibility());
+}
+function toggleAllCommunities(hide) {
+  document.querySelectorAll('.legend-item').forEach(item => item.classList.toggle('dimmed', hide));
+  document.querySelectorAll('.legend-cb').forEach(cb => { cb.checked = !hide; });
+  LEGEND.forEach(c => { if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid); });
+  refreshVisibility();
+  updateSelectAllState();
+}
+
+const legendEl = document.getElementById('legend');
+LEGEND.forEach(c => {
+  const item = document.createElement('div');
+  item.className = 'legend-item';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'legend-cb';
+  cb.checked = true;
+  cb.addEventListener('change', (e) => {
+    e.stopPropagation();
+    if (cb.checked) { hiddenCommunities.delete(c.cid); item.classList.remove('dimmed'); }
+    else { hiddenCommunities.add(c.cid); item.classList.add('dimmed'); }
+    refreshVisibility();
+    updateSelectAllState();
+  });
+  // c.label is already HTML-escaped once in Python; c.color comes from the fixed palette.
+  item.innerHTML = `<div class="legend-dot" style="background:${esc(c.color)}"></div>
+    <span class="legend-label">${c.label}</span>
+    <span class="legend-count">${esc(c.count)}</span>`;
+  item.prepend(cb);
+  item.onclick = (e) => {
+    if (e.target === cb) return;
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event('change'));
+  };
+  legendEl.appendChild(item);
+});
+
+// ---- Toolbar: reset view / auto-rotate ----------------------------------------
+let rotating = false, rotAngle = 0, rotTimer = null;
+document.getElementById('btn-fit').onclick = () => {
+  if (Graph) Graph.zoomToFit(800, 40, n => !hiddenCommunities.has(n.community));
+};
+document.getElementById('btn-rotate').onclick = (e) => {
+  if (!Graph) return;
+  rotating = !rotating;
+  e.currentTarget.setAttribute('aria-pressed', String(rotating));
+  if (rotating) {
+    const p = Graph.cameraPosition();
+    const dist = Math.hypot(p.x, p.z) || 600;
+    rotAngle = Math.atan2(p.x, p.z);
+    rotTimer = setInterval(() => {
+      rotAngle += Math.PI / 600;
+      Graph.cameraPosition({ x: dist * Math.sin(rotAngle), z: dist * Math.cos(rotAngle) });
+    }, 16);
+  } else {
+    clearInterval(rotTimer);
+  }
+};
+</script>"""
+
+
+def _html3d_body(stats: str) -> str:
+    return f"""<div id="graph-wrap">
+  <div id="graph"></div>
+  <div id="viewer-error" role="alert"></div>
+  <div id="node-card" aria-live="polite"><div id="info-content"></div></div>
+  <div id="toolbar">
+    <button type="button" id="btn-fit">Reset view</button>
+    <button type="button" id="btn-rotate" aria-pressed="false">Auto-rotate</button>
+  </div>
+</div>
+<div id="sidebar">
+  <div id="theme-wrap" role="group" aria-label="Theme">
+    <button type="button" data-theme-choice="light">Light</button>
+    <button type="button" data-theme-choice="dark">Dark</button>
+    <button type="button" data-theme-choice="system">System</button>
+  </div>
+  <div id="search-wrap">
+    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
+    <div id="search-results"></div>
+  </div>
+  <div id="legend-wrap">
+    <h3>Communities</h3>
+    <div id="legend-controls">
+      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
+    </div>
+    <div id="legend"></div>
+  </div>
+  <div id="stats">{stats}</div>
+</div>"""
+
+
+_THEME_INIT_SCRIPT = """<script id="graphify-theme-init">
+// Apply the saved theme before first paint (#3894). No saved choice keeps the
+// historical dark look; "system" follows prefers-color-scheme.
+(function () {
+  var pref = null;
+  try { pref = localStorage.getItem('graphify-theme'); } catch (e) {}
+  var t = pref === 'light' ? 'light'
+    : pref === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light'
+    : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>"""
+
+
 def _html_document_title(output_path: str) -> str:
     """Return a portable label for the graph.html <title>.
 
@@ -516,8 +1125,20 @@ def to_html(
     member_counts: dict[int, int] | None = None,
     node_limit: int | None = None,
     learning_overlay: dict | None = None,
+    mode: str | None = None,
+    source_root: "str | Path | None" = None,
 ) -> bool:
-    """Generate an interactive vis.js HTML visualization of the graph.
+    """Generate an interactive HTML visualization of the graph.
+
+    *mode* picks the renderer: ``"3d"`` (default) is a three.js force graph
+    (3d-force-graph) with a floating node card showing each node's kind,
+    signature, source comment and grouped relationships; ``"2d"`` is the flat
+    vis-network page. When *mode* is None the ``GRAPHIFY_VIZ_MODE`` env var
+    decides, falling back to 3d.
+
+    In 3D mode node descriptions are read from the project's source files
+    under *source_root* (default: the project recorded for the graph next to
+    *output_path*, see :func:`graphify.paths.graph_root_for`).
 
     Features: node size by degree, click-to-inspect panel, search box,
     community filter, physics clustering by community, confidence-styled edges.
@@ -532,6 +1153,7 @@ def to_html(
     Returns True when the output was written. Returns False when an aggregated
     view would contain fewer than two communities and is intentionally skipped.
     """
+    mode = _viz_mode(mode)
     limit = node_limit if node_limit is not None else _viz_node_limit()
     if G.number_of_nodes() > limit:
         if node_limit is not None:
@@ -581,7 +1203,8 @@ def to_html(
                     })
                 meta.graph["hyperedges"] = remapped
             written = to_html(meta, meta_communities, output_path,
-                              community_labels=community_labels, member_counts=mc)
+                              community_labels=community_labels, member_counts=mc,
+                              mode=mode)
             if not written:
                 return False
             print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
@@ -728,6 +1351,39 @@ def to_html(
     title = _html.escape(sanitize_label(_html_document_title(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
 
+    if mode == "3d":
+        node_info: dict = {}
+        if not member_counts:  # community meta-nodes have no source to describe
+            try:
+                from graphify.exporters.node_info import build_node_info
+                root = source_root
+                if root is None:
+                    from graphify.paths import graph_root_for
+                    root = graph_root_for(Path(output_path).parent / "graph.json")
+                node_info = build_node_info(G, root)
+            except Exception as exc:  # descriptions are a bonus, never fatal
+                print(f"[graphify] node descriptions skipped: {exc}")
+                node_info = {}
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>graphify - {title}</title>
+<script src="{_FORCE_GRAPH_3D_URL}"
+        integrity="{_FORCE_GRAPH_3D_SRI}"
+        crossorigin="anonymous"></script>
+{_html3d_styles()}
+{_THEME_INIT_SCRIPT}
+</head>
+<body>
+{_html3d_body(stats)}
+{_html3d_data_script(nodes_json, edges_json, legend_json, hyperedges_json, _js_safe(node_info))}
+{_HTML3D_SCRIPT}
+</body>
+</html>"""
+        write_text_atomic(output_path, html)
+        return True
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -737,18 +1393,7 @@ def to_html(
         integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
         crossorigin="anonymous"></script>
 {_html_styles()}
-<script id="graphify-theme-init">
-// Apply the saved theme before first paint (#3894). No saved choice keeps the
-// historical dark look; "system" follows prefers-color-scheme.
-(function () {{
-  var pref = null;
-  try {{ pref = localStorage.getItem('graphify-theme'); }} catch (e) {{}}
-  var t = pref === 'light' ? 'light'
-    : pref === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light'
-    : 'dark';
-  document.documentElement.setAttribute('data-theme', t);
-}})();
-</script>
+{_THEME_INIT_SCRIPT}
 </head>
 <body>
 <div id="graph"></div>
