@@ -2403,8 +2403,12 @@ def _names_source_file(G: QueryGraph, label: str) -> bool:
         return _strip_diacritics(text.strip().replace("\\", "/")).lower()
 
     query = fold(label)
-    for _nid, d in G.nodes(data=True):
-        source = fold(str(d.get("source_file") or ""))
+    sources = (
+        G.source_files() if isinstance(G, QuerySnapshot)
+        else (str(d.get("source_file") or "") for _nid, d in G.nodes(data=True))
+    )
+    for raw in sources:
+        source = fold(raw)
         if source and (source == query or source.endswith("/" + query)):
             return True
     return False

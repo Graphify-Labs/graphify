@@ -353,3 +353,22 @@ def test_interrupted_snapshot_build_has_already_printed_the_answer(query_cli, mo
     with pytest.raises(KeyboardInterrupt):
         run(path, "bounded retry", "--snapshot")
     assert capsys.readouterr().out == expected
+
+
+def test_dotted_queries_do_not_read_every_node_row(query_cli, monkeypatch, tmp_path):
+    # `Type.Member` and `file.ext` queries first ask whether the text names a
+    # source file. A warm snapshot answers that without decoding every node.
+    run, _cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    questions = ["Alpha.Gamma", "one.py", "SRC/ONE.PY", "driver.retry"]
+    expected = [run(path, question) for question in questions]
+    assert run(path, questions[0], "--snapshot") == expected[0]
+
+    def full_scan(*_args, **_kwargs):
+        pytest.fail("a warm snapshot query read every node row")
+
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    monkeypatch.setattr(query_snapshot._Nodes, "__call__", full_scan)
+    monkeypatch.setattr(query_snapshot._Nodes, "__iter__", full_scan)
+    assert [run(path, question, "--snapshot") for question in questions] == expected

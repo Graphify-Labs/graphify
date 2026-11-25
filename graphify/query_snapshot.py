@@ -25,7 +25,7 @@ except ImportError:  # A CPython build can omit the optional SQLite module.
 
 
 # Bump when the persisted search text, label normalization, or row format changes.
-_FORMAT = 2
+_FORMAT = 3
 _BATCH = 512
 _GraphIdentity = tuple[int, int, int, int, int, str | None]
 _SCHEMA = """
@@ -38,6 +38,7 @@ CREATE TABLE postings (gram TEXT PRIMARY KEY, positions BLOB NOT NULL) WITHOUT R
 CREATE TABLE edges (position INTEGER PRIMARY KEY, signature INTEGER NOT NULL, payload TEXT NOT NULL);
 CREATE TABLE adjacency (node INTEGER, position INTEGER, neighbor INTEGER, edge INTEGER,
                         PRIMARY KEY(node,position)) WITHOUT ROWID;
+CREATE TABLE sources (path TEXT PRIMARY KEY) WITHOUT ROWID;
 CREATE TABLE context_degrees (signature INTEGER, node INTEGER, degree INTEGER,
                               PRIMARY KEY(signature,node)) WITHOUT ROWID;
 """
@@ -212,6 +213,12 @@ def _write_projection(db, graph, legacy: bool, identity: _GraphIdentity) -> None
             yield i, label.encode(), text.encode()
 
     db.executemany("INSERT INTO search VALUES (?, ?, ?)", search_rows())
+    db.executemany(
+        "INSERT INTO sources VALUES (?)",
+        ((source,) for source in dict.fromkeys(
+            str(graph.nodes[node].get("source_file") or "") for node in ids
+        ) if source),
+    )
     db.executemany(
         "INSERT INTO postings VALUES (?, ?)",
         ((gram, values.tobytes()) for gram, values in postings.items()),
@@ -426,6 +433,10 @@ class QuerySnapshot:
                 count, = next(self._select("SELECT count(*) FROM search WHERE instr(label, ?) > 0", (term.encode(),)))
                 self._idf[term] = math.log(1 + population / (1 + count))
         return {term: self._idf[term] for term in terms}
+
+    def source_files(self) -> Iterator[str]:
+        """Each distinct non-empty `source_file`, as `str()` saw it at build time."""
+        return (source for (source,) in self._select("SELECT path FROM sources"))
 
     def candidates(self, needles: list[str]) -> list[str] | None:
         """Use the same search fields as the in-memory trigram prefilter."""
