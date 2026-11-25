@@ -356,7 +356,8 @@ def _cache_entry(root: Path, path: Path) -> Path:
     from graphify.cache import _resolve_prompt_fp, cache_dir, file_hash
 
     fp = _resolve_prompt_fp(_PROMPT)
-    return cache_dir(root, "semantic", fp) / f"{file_hash(path, root)}.json"
+    digest = file_hash(path, root)
+    return cache_dir(root, "semantic", fp) / digest[:2] / f"{digest}.json"
 
 
 def _clear_partial_flag(entry: Path) -> None:

@@ -268,7 +268,7 @@ def test_semantic_cache_normalizes_absolute_source_file(tmp_path):
     assert saved == 1
     assert node["source_file"] == str(f.resolve()), "caller's dict must not be mutated"
 
-    entries = list((root / "graphify-out" / "cache" / "semantic").glob("*.json"))
+    entries = list((root / "graphify-out" / "cache" / "semantic").rglob("*.json"))
     assert len(entries) == 1
     persisted = json.loads(entries[0].read_text(encoding="utf-8"))
     assert persisted["nodes"][0]["source_file"] == "m.py"
@@ -294,7 +294,7 @@ def test_semantic_cache_normalizes_backslash_poisoned_source_file(tmp_path):
     saved = cache.save_semantic_cache([node], [], root=root)
     assert saved == 1
 
-    entries = list((root / "graphify-out" / "cache" / "semantic").glob("*.json"))
+    entries = list((root / "graphify-out" / "cache" / "semantic").rglob("*.json"))
     assert len(entries) == 1
     persisted = json.loads(entries[0].read_text(encoding="utf-8"))
     assert persisted["nodes"][0]["source_file"] == "sub/n.py"
