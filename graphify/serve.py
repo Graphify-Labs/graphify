@@ -11,7 +11,6 @@ from collections import OrderedDict
 from pathlib import Path
 import threading
 from typing import NamedTuple
-import anyio
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.paths import consumed, read_graph_json
@@ -800,6 +799,19 @@ def _score_query(
     # identical either way — the per-node scoring below is unchanged and a
     # non-candidate node always scores 0. (IDF above stays a whole-graph statistic.)
     candidate_ids = _trigram_candidates(G, norm_terms + ([joined] if joined else []))
+    scoring_terms = norm_terms
+    if candidate_ids is None and getattr(G, "_graphify_one_shot_query", False) and (
+        index := G.graph.get("_trigram_index")
+    ) is not None:
+        # The full scan still honors the stock guard. A term with a missing
+        # trigram cannot contribute to the literal per-term tiers, which only
+        # check fields covered by this index. Keep every term in the coverage
+        # denominator and preserve the separate whole-question score.
+        postings = index["postings"]
+        scoring_terms = [
+            term for term in norm_terms
+            if len(term) < 3 or all(gram in postings for gram in _trigrams(term))
+        ]
     node_iter = (
         G.nodes(data=True) if candidate_ids is None
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
@@ -877,7 +889,7 @@ def _score_query(
         # bonuses and the full-query tier above stay unscaled.
         matched = 0
         tiered = 0.0
-        for t in norm_terms:
+        for t in scoring_terms:
             w = idf.get(t, 1.0)
             # Per-tier contributions for this token, kept separate so the
             # singleton tracking below can reuse them without re-evaluating
@@ -2994,6 +3006,9 @@ def _build_server(graph_path: str):
         run with no await between them, so the shared ``G`` cannot be rebound
         by another call in the middle of a handler.
         """
+        # Imported here: the CLI imports this module without the `mcp` extra.
+        import anyio
+
         await anyio.to_thread.run_sync(_load_ctx, _resolve_graph_path(project_path))
 
     # NOTE: no decorators here — the handlers below are plain coroutines,

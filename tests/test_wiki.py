@@ -587,6 +587,49 @@ def test_wiki_links_use_collision_suffixed_slug(tmp_path):
 # to link each row to the file that row's article was actually written to.
 
 
+def test_relationships_keep_same_labelled_communities_separate(tmp_path):
+    graph = nx.MultiDiGraph()
+    graph.add_edge("entry", "first")
+    graph.add_edge("entry", "second")
+    graph.add_edge("second", "entry")
+
+    to_wiki(
+        graph, {0: ["entry"], 1: ["first"], 2: ["second"]}, tmp_path,
+        community_labels={0: "Entry", 1: "Workers", 2: "Workers"},
+    )
+
+    article = (tmp_path / "Entry.md").read_text(encoding="utf-8")
+    assert "[Workers](Workers.md) (1 shared connections)" in article
+    assert "[Workers](Workers_2.md) (2 shared connections)" in article
+
+
+def test_god_node_links_use_node_and_community_ids(tmp_path):
+    graph = nx.DiGraph()
+    graph.add_nodes_from([
+        ("entry", {"label": "Entry"}),
+        ("first", {"label": "Worker"}),
+        ("second", {"label": "Worker"}),
+        ("unlisted", {"label": "Worker"}),
+    ])
+    graph.add_edge("entry", "second", relation="calls")
+    graph.add_edge("entry", "unlisted", relation="references")
+
+    to_wiki(
+        graph, {1: ["first"], 2: ["entry", "second", "unlisted"]}, tmp_path,
+        community_labels={1: "Workers", 2: "Workers"},
+        god_nodes_data=[
+            {"id": "first", "label": "Worker", "degree": 0},
+            {"id": "second", "label": "Worker", "degree": 1},
+            {"id": "entry", "label": "Entry", "degree": 2},
+        ],
+    )
+
+    article = (tmp_path / "Entry.md").read_text(encoding="utf-8")
+    assert "**Community:** [Workers](Workers_2.md)" in article
+    assert "### calls\n- [Worker](Worker_2.md)" in article
+    assert "### references\n- Worker\n" in article
+
+
 def test_index_links_same_labelled_communities_to_own_articles(tmp_path):
     """Two communities may carry the same label. Each is written to its own file
     (`Core.md`, `Core_2.md`), so the index rows must target one each. Resolving

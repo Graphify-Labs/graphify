@@ -183,6 +183,115 @@ def test_cobol_perform_thru_links_both_range_endpoints(tmp_path):
     assert ("MAIN-PARA", "Z-PARA") in calls
 
 
+def _go_to_edges(result: dict) -> set[tuple[str, str]]:
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    return {
+        (labels.get(edge["source"], edge["source"]), labels.get(edge["target"], edge["target"]))
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and edge.get("context") == "go_to"
+    }
+
+
+def test_cobol_go_to_links_the_paragraph_it_jumps_to(tmp_path):
+    """`GO TO X` transfers control to X. No edge was emitted for it, so a
+    paragraph reached only by a jump had no inbound edge at all."""
+    source = tmp_path / "jump.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. JUMP.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           IF WS-EOF = 'Y'\n"
+        "               GO TO EXIT-PARA.\n"
+        "           PERFORM WORK-PARA.\n"
+        "       WORK-PARA.\n"
+        "           DISPLAY 'GO TO NOWHERE-PARA'.\n"
+        "       NOWHERE-PARA.\n"
+        "           DISPLAY 'not a jump target'.\n"
+        "       EXIT-PARA.\n"
+        "           STOP RUN.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert _go_to_edges(result) == {("MAIN-PARA", "EXIT-PARA")}
+    # The jump is told apart from a PERFORM by its context, not by a new relation.
+    calls = _edge_labels(result, "calls")
+    assert ("MAIN-PARA", "EXIT-PARA") in calls
+    assert ("MAIN-PARA", "WORK-PARA") in calls
+    assert ("MAIN-PARA", "WORK-PARA") not in _go_to_edges(result)
+
+
+def test_cobol_go_to_depending_on_links_every_listed_target_only(tmp_path):
+    """`GO TO A B C DEPENDING ON X` can reach A, B and C. X is a data name, and
+    in `A OF SEC` the section only qualifies A: neither is a target."""
+    source = tmp_path / "switch.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. SWITCH.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           GO TO A-PARA, B-PARA C-PARA DEPENDING ON CHOICE.\n"
+        "       OTHER-PARA.\n"
+        "           GO TO A-PARA OF LAST-SEC.\n"
+        "       QUALIFIED-PARA.\n"
+        "           GO TO B-PARA OF LAST-SEC, C-PARA DEPENDING ON CHOICE.\n"
+        "       A-PARA.\n"
+        "           DISPLAY 'A'.\n"
+        "       B-PARA.\n"
+        "           DISPLAY 'B'.\n"
+        "       C-PARA.\n"
+        "           DISPLAY 'C'.\n"
+        "       CHOICE.\n"
+        "           DISPLAY 'shares its name with the data item'.\n"
+        "       LAST-SEC SECTION.\n"
+        "       LAST-PARA.\n"
+        "           STOP RUN.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert _go_to_edges(result) == {
+        ("MAIN-PARA", "A-PARA"),
+        ("MAIN-PARA", "B-PARA"),
+        ("MAIN-PARA", "C-PARA"),
+        ("OTHER-PARA", "A-PARA"),
+        ("QUALIFIED-PARA", "B-PARA"),
+        ("QUALIFIED-PARA", "C-PARA"),
+    }
+
+
+def test_cobol_go_to_without_depending_has_one_target(tmp_path):
+    """A plain `GO TO A` jumps to A alone. The words after it belong to the
+    next statement, and one of them can be the name of a paragraph: every word
+    up to the end of the line was read as a target."""
+    source = tmp_path / "single.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. SINGLE.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           IF WS-A = 1 GO TO ERR-PARA ELSE SET CHOICE TO TRUE.\n"
+        "           IF WS-A = 2 GO TO ERR-PARA ELSE GO TO LAST-PARA.\n"
+        "       ERR-PARA.\n"
+        "           STOP RUN.\n"
+        "       CHOICE.\n"
+        "           DISPLAY 'shares its name with the data item'.\n"
+        "       LAST-PARA.\n"
+        "           STOP RUN.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert _go_to_edges(result) == {
+        ("MAIN-PARA", "ERR-PARA"),
+        ("MAIN-PARA", "LAST-PARA"),
+    }
+
+
 def test_cobol_nested_program_restores_enclosing_scope_after_end_program(tmp_path):
     """A contained (nested) program's own PROGRAM-ID switches the active
     program with no record of what it switched from, so code physically back
