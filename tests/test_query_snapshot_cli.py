@@ -8,6 +8,8 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import subprocess
+import sys
 from threading import Event
 
 import networkx as nx
@@ -309,3 +311,15 @@ def test_unsupported_graph_shapes_use_existing_cli(query_cli, tmp_path, construc
     _write(path, constructor(_fixture()))
     assert run(path, "bounded retry", "--snapshot") == run(path, "bounded retry")
     assert not list(cache.rglob("*.sqlite3"))
+
+
+@pytest.mark.parametrize("module", ["graphify.build", "graphify.affected"])
+def test_graph_modules_do_not_load_the_snapshot_module(module):
+    # The snapshot is opt-in, so building or walking a graph must not import it
+    # (or SQLite). A fresh interpreter keeps this test's own imports out of it.
+    code = f"import sys, {module}; print('graphify.query_snapshot' in sys.modules)"
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    assert result.stdout.strip() == "False"

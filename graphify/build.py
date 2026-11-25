@@ -29,8 +29,8 @@ import sys
 import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any, Protocol
 import networkx as nx
-from graphify.query_snapshot import QueryGraph
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .paths import is_absolute_any_platform as _is_abs
@@ -1222,7 +1222,13 @@ def edge_data(G: nx.Graph, u: str, v: str) -> dict:
     return raw
 
 
-def edge_datas(G: QueryGraph, u: str, v: str) -> list[dict]:
+class EdgeLookup(Protocol):
+    """A graph read as `G[u][v]`: a networkx graph or a query snapshot."""
+
+    def __getitem__(self, node: str, /) -> Any: ...
+
+
+def edge_datas(G: EdgeLookup, u: str, v: str) -> list[dict]:
     """Return every edge attribute dict for (u, v); always a list."""
     raw = G[u][v]
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):

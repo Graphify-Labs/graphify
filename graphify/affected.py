@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 import unicodedata
 
 import networkx as nx
 
-from graphify.query_snapshot import QueryGraph
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from graphify.query_snapshot import QueryGraph
 
 
 DEFAULT_AFFECTED_RELATIONS = (
