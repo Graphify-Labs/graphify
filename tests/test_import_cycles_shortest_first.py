@@ -82,3 +82,19 @@ def test_cap_still_bounds_the_result():
 
     assert len(cycles) == 5
     assert {c["length"] for c in cycles} == {4}
+
+
+def test_three_file_cycle_survives_many_longer_cycles():
+    G = nx.DiGraph()
+    for source, target in (("a.py", "b.py"), ("b.py", "c.py"), ("c.py", "a.py")):
+        _imp(G, source, target)
+    _dense_ring(G)  # the larger component is enumerated first by NetworkX
+
+    assert find_import_cycles(G, top_n=1)[0]["cycle"] == ["a.py", "b.py", "c.py"]
+
+
+def test_zero_cap_reports_no_cycle():
+    G = nx.DiGraph()
+    _two_file_cycle(G)
+
+    assert find_import_cycles(G, top_n=0) == []
