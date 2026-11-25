@@ -438,9 +438,17 @@ REDACTED_MARKER = "[redacted]"
 
 
 def redact_private_key_blocks(text: str) -> str:
-    """Remove private-key blocks before taking excerpts, preserving line numbers."""
+    """Remove private-key blocks before taking excerpts, preserving line numbers.
+
+    Each non-blank line the block covers keeps a marker, so an excerpt never
+    shows hidden source as an empty line.
+    """
     return _PRIVATE_KEY_BLOCK_RE.sub(
-        lambda match: REDACTED_MARKER + "\n" * match[0].count("\n"), text
+        lambda match: "\n".join(
+            REDACTED_MARKER if index == 0 or line.strip() else ""
+            for index, line in enumerate(match[0].split("\n"))
+        ),
+        text,
     )
 
 

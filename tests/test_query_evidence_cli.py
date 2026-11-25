@@ -321,7 +321,32 @@ def test_evidence_redacts_multiline_private_key_blocks(project):
     assert result.returncode == 0, result.stderr
     assert body not in result.stdout
     assert "10 |     return handle_request(\"\"\"[redacted]" in result.stdout
-    assert '12 | """)' in result.stdout
+    assert '11 | [redacted]' in result.stdout
+    assert '12 | [redacted]""")' in result.stdout
+
+
+@pytest.mark.parametrize("end_marker", ["", 'END = "-----END PRIVATE KEY-----"\n'])
+def test_evidence_marks_source_lines_hidden_by_key_redaction(tmp_path, end_marker):
+    # A PEM header in a string literal redacts the following lines. The excerpt
+    # must say so instead of printing blank lines as the call's source.
+    (tmp_path / "keys.py").write_text(
+        "def load_key(data):\n    return data\n\n\n"
+        "def parse(data):\n"
+        '    if data.startswith("-----BEGIN PRIVATE KEY-----"):\n'
+        "        return load_key(data)\n"
+        "    return None\n"
+        f"{end_marker}",
+        encoding="utf-8",
+    )
+    built = _graphify(tmp_path, "update", ".", "--no-cluster")
+    assert built.returncode == 0, built.stderr
+
+    result = _graphify(tmp_path, "query", "who calls load_key?", "--evidence")
+    assert result.returncode == 0, result.stderr
+    assert "parse() [EXTRACTED] at keys.py:7" in result.stdout
+    assert '6 |     if data.startswith("[redacted]' in result.stdout
+    assert "7 | [redacted]" in result.stdout
+    assert "load_key(data)" not in result.stdout
 
 
 def test_evidence_respects_ambiguous_names_and_qualified_seeds(project):
