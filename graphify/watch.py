@@ -3905,6 +3905,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     root_config_path = watch_root_for_ignore / RC_FILENAME
     override_snapshot: dict[str, str] = activate_language_overrides(watch_root_for_ignore)
     config_changed = False
+    directory_removed = False
     # Only Linux prunes the recursive watch tree. macOS and Windows keep the
     # recursive schedule, so their handler must not require a `watched` entry.
     manual = sys.platform.startswith("linux")
@@ -3912,13 +3913,19 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending, override_snapshot, config_changed
-            nonlocal ignore_patterns, ignored
+            nonlocal ignore_patterns, ignored, directory_removed
             if event.is_directory:
                 if not manual or _is_read_only_event(event):
                     return
                 path = Path(os.fsdecode(event.src_path)).resolve()
                 if path.parent not in watched:
                     return
+                # Files below a moved/deleted directory may have no individual
+                # events. Reconcile only subtrees that were actually watched.
+                if path in watched and event.event_type in {"deleted", "moved"}:
+                    directory_removed = True
+                    last_trigger = time.monotonic()
+                    pending = True
                 if event.event_type == "created":
                     add_tree(path, emit_existing=True)
                 elif event.event_type == "deleted":
@@ -4085,10 +4092,14 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 batch = list(changed)
                 changed.clear()
                 config_event, config_changed = config_changed, False
-                print(f"\n[graphify watch] {len(batch)} file(s) changed")
+                directory_event, directory_removed = directory_removed, False
+                if directory_event:
+                    print("\n[graphify watch] A watched directory moved or was removed")
+                else:
+                    print(f"\n[graphify watch] {len(batch)} file(s) changed")
                 # Reapply the observer's snapshot on the dispatch thread.
                 set_language_overrides(override_snapshot)
-                if config_event or _batch_triggers_rebuild(batch):
+                if config_event or directory_event or _batch_triggers_rebuild(batch):
                     try:
                         with _rebuild_timeout():
                             _rebuild_code(watch_path)
