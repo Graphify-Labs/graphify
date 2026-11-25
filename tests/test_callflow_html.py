@@ -175,6 +175,7 @@ def test_derive_sections_groups_by_architecture_keywords():
 
 def test_archetype_keywords_are_single_ascii_words():
     for _, _, _, keywords in SECTION_ARCHETYPES:
+        assert keywords
         assert all(re.fullmatch(r"[a-z0-9]+", keyword) for keyword in keywords)
 
 
