@@ -200,6 +200,58 @@ def test_goto_cleanup_after_return_keeps_label_calls(tmp_path: Path, suffix: str
 
 
 @pytest.mark.parametrize("suffix", [".c", ".cpp"])
+def test_goto_after_return_inside_if_does_not_revive_label(tmp_path: Path, suffix: str) -> None:
+    """#5338 P2: unreachable goto nested after return must not activate cleanup."""
+    root = _real(tmp_path)
+    main = root / f"main{suffix}"
+    body = root / f"body{suffix}"
+    main.write_text(
+        "void release(void) {}\n"
+        "void alive(void) {}\n",
+        encoding="utf-8",
+    )
+    body.write_text(
+        "void release(void);\n"
+        "void alive(void);\n"
+        "void f(int fail) {\n"
+        "  if (fail) {\n"
+        "    return;\n"
+        "    goto cleanup;\n"
+        "  }\n"
+        "  alive();\n"
+        "  return;\n"
+        "cleanup:\n"
+        "  release();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract([main, body], root=root, cache_root=root)
+    targets = _call_targets(result, "f()")
+    assert "alive()" in targets
+    assert "release()" not in targets
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
+def test_sibling_goto_after_return_does_not_revive_label(tmp_path: Path, suffix: str) -> None:
+    root = _real(tmp_path)
+    main = root / f"main{suffix}"
+    body = root / f"body{suffix}"
+    main.write_text("void release(void) {}\n", encoding="utf-8")
+    body.write_text(
+        "void release(void);\n"
+        "void f(void) {\n"
+        "  return;\n"
+        "  goto cleanup;\n"
+        "cleanup:\n"
+        "  release();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract([main, body], root=root, cache_root=root)
+    assert "release()" not in _call_targets(result, "f()")
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
 def test_label_without_goto_after_return_stays_dead(tmp_path: Path, suffix: str) -> None:
     root = _real(tmp_path)
     main = root / f"main{suffix}"
@@ -234,18 +286,21 @@ def test_switch_case_after_return_in_prior_case_is_kept(tmp_path: Path, suffix: 
     main.write_text(
         "void a(void) {}\n"
         "void b(void) {}\n"
-        "void after(void) {}\n",
+        "void after(void) {}\n"
+        "void dead(void) {}\n",
         encoding="utf-8",
     )
     body.write_text(
         "void a(void);\n"
         "void b(void);\n"
         "void after(void);\n"
+        "void dead(void);\n"
         "void f(int x) {\n"
         "  switch (x) {\n"
         "  case 1:\n"
         "    a();\n"
         "    return;\n"
+        "    dead();\n"
         "  case 2:\n"
         "    b();\n"
         "    break;\n"
@@ -259,6 +314,7 @@ def test_switch_case_after_return_in_prior_case_is_kept(tmp_path: Path, suffix: 
     assert "a()" in targets
     assert "b()" in targets
     assert "after()" in targets
+    assert "dead()" not in targets
 
 
 @pytest.mark.parametrize("suffix", [".c", ".cpp"])

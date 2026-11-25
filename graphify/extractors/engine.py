@@ -7958,6 +7958,8 @@ def _build_parser(ts_module: str, ts_language_fn: str):
 # (`while (1)`, `while (2)`, other nonzero integer literals, `for (;;)`) without
 # a `break` out of that loop also cut sibling fall-through; `return` /
 # `goto` inside do not restore it (goto reopens label targets separately).
+# Goto targets are collected only from fall-through-reachable paths inside a
+# sibling (so `return; goto L;` nested in an if does not revive L).
 #
 # Warnings for skipped unreachable calls default ON. There is no CLI/UI for this;
 # callers may flip the module flag via set_c_cpp_unreachable_warnings().
@@ -7970,7 +7972,14 @@ _C_BLOCK_TYPES = frozenset({
     "preproc_ifdef",
     "preproc_elif",
     "preproc_else",
+    # Brace-less `case 0: return; dead();` keeps return/dead as siblings under
+    # case_statement; walk them with the same fall-through rules as `{}`.
+    "case_statement",
 })
+
+# Blocks / arms whose children are walked with sibling fall-through when
+# collecting reachable gotos (same set as call walking).
+_C_GOTO_SCOPE_TYPES = _C_BLOCK_TYPES
 
 _C_SKIP_SIBLINGS = frozenset({"{", "}", "comment"})
 
@@ -8001,18 +8010,113 @@ def _c_label_name(node) -> str | None:
     return None
 
 
-def _c_collect_goto_targets(node, out: set[str] | None = None) -> set[str]:
+def _c_goto_target_name(node) -> str | None:
+    if node.type != "goto_statement":
+        return None
+    for child in node.children:
+        if child.type == "statement_identifier":
+            raw = child.text
+            if raw is None:
+                return None
+            return raw.decode("utf-8", errors="replace")
+    return None
+
+
+def _c_block_reachable_indices(
+    node,
+    children: list,
+    *,
+    allow_true_keyword: bool = False,
+    seed_override: list[int] | None = None,
+) -> set[int]:
+    """Sibling indices reachable by fall-through / same-block goto / case seeds."""
+    n = len(children)
+    if n == 0:
+        return set()
+
+    label_to_index: dict[str, int] = {}
+    for i, ch in enumerate(children):
+        if ch.type == "labeled_statement":
+            name = _c_label_name(ch)
+            if name:
+                label_to_index[name] = i
+
+    seeds = list(seed_override) if seed_override is not None else _c_block_seed_indices(node, children)
+    reachable: set[int] = set()
+    q: deque[int] = deque(seeds)
+
+    while q:
+        i = q.popleft()
+        if i < 0 or i >= n or i in reachable:
+            continue
+        ch = children[i]
+        reachable.add(i)
+        if ch.type in _C_SKIP_SIBLINGS:
+            q.append(i + 1)
+            continue
+
+        for tgt in _c_collect_reachable_goto_targets(ch, allow_true_keyword=allow_true_keyword):
+            if tgt in label_to_index:
+                q.append(label_to_index[tgt])
+
+        if _c_is_sibling_terminal(ch, allow_true_keyword=allow_true_keyword):
+            continue
+        if i + 1 < n:
+            q.append(i + 1)
+    return reachable
+
+
+def _c_collect_reachable_goto_targets(
+    node,
+    out: set[str] | None = None,
+    *,
+    allow_true_keyword: bool = False,
+) -> set[str]:
+    """Collect goto labels only along fall-through-reachable paths under ``node``.
+
+    A blunt recursive scan would treat ``return; goto L;`` inside a reachable
+    ``if`` body as activating ``L``. Nested compounds / if arms / loop bodies /
+    switch cases use the same sibling terminal rules as call walking.
+    """
     if out is None:
         out = set()
-    if node.type == "goto_statement":
+    t = node.type
+    if t == "goto_statement":
+        name = _c_goto_target_name(node)
+        if name:
+            out.add(name)
+        return out
+    if t in _C_GOTO_SCOPE_TYPES:
+        children = list(node.children)
+        for i in sorted(
+            _c_block_reachable_indices(node, children, allow_true_keyword=allow_true_keyword)
+        ):
+            ch = children[i]
+            if ch.type in _C_SKIP_SIBLINGS:
+                continue
+            _c_collect_reachable_goto_targets(ch, out, allow_true_keyword=allow_true_keyword)
+        return out
+    if t == "if_statement":
+        # Runtime branches are a union (both may exist); within each arm, honor
+        # return / goto / static-infinite terminals.
+        for field in ("consequence", "alternative"):
+            arm = node.child_by_field_name(field)
+            if arm is not None:
+                _c_collect_reachable_goto_targets(arm, out, allow_true_keyword=allow_true_keyword)
+        return out
+    if t in ("while_statement", "for_statement", "do_statement", "switch_statement"):
+        body = node.child_by_field_name("body")
+        if body is not None:
+            _c_collect_reachable_goto_targets(body, out, allow_true_keyword=allow_true_keyword)
+        return out
+    if t == "labeled_statement":
         for child in node.children:
-            if child.type == "statement_identifier":
-                raw = child.text
-                if raw is not None:
-                    out.add(raw.decode("utf-8", errors="replace"))
-                break
+            if child.type in ("statement_identifier", ":"):
+                continue
+            _c_collect_reachable_goto_targets(child, out, allow_true_keyword=allow_true_keyword)
+        return out
     for child in node.children:
-        _c_collect_goto_targets(child, out)
+        _c_collect_reachable_goto_targets(child, out, allow_true_keyword=allow_true_keyword)
     return out
 
 
@@ -8267,33 +8371,19 @@ def _c_cpp_walk_reachable_children(
             if name:
                 label_to_index[name] = i
 
-    seeds = list(seed_override) if seed_override is not None else _c_block_seed_indices(node, children)
-    reachable: set[int] = set()
-    q: deque[int] = deque(seeds)
-
-    while q:
-        i = q.popleft()
-        if i < 0 or i >= n or i in reachable:
-            continue
-        ch = children[i]
-        reachable.add(i)
-        if ch.type in _C_SKIP_SIBLINGS:
-            q.append(i + 1)
-            continue
-
-        for tgt in _c_collect_goto_targets(ch):
-            if tgt in label_to_index:
-                q.append(label_to_index[tgt])
-
-        if _c_is_sibling_terminal(ch, allow_true_keyword=allow_true_keyword):
-            continue
-        if i + 1 < n:
-            q.append(i + 1)
+    reachable = _c_block_reachable_indices(
+        node,
+        children,
+        allow_true_keyword=allow_true_keyword,
+        seed_override=seed_override,
+    )
 
     nested_activated: list = []
     goto_targets: set[str] = set()
     for i in reachable:
-        _c_collect_goto_targets(children[i], goto_targets)
+        _c_collect_reachable_goto_targets(
+            children[i], goto_targets, allow_true_keyword=allow_true_keyword
+        )
     for tgt in goto_targets:
         if tgt in label_to_index:
             continue
