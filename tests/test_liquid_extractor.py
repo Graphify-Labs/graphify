@@ -9,13 +9,19 @@ ancestor) because Jekyll and Eleventy use `.liquid` with different semantics.
 from __future__ import annotations
 
 import json
+import random
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from graphify.extract import _make_id, extract, extract_liquid
 
 FIXTURE = Path(__file__).parent / "fixtures" / "liquid_theme"
+BROKEN = Path(__file__).parent / "fixtures" / "liquid_theme_broken"
 
 
 def _theme(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -37,9 +43,11 @@ def _edges(root: Path, rel: str) -> list[dict]:
 
 
 def _targets(root: Path, rel: str) -> list[tuple[str, str, str]]:
-    """(relation, target path or key node id, location) per edge, in order."""
+    """(relation, target path or key node id, location) per EXTRACTED edge, in order."""
     out = []
     for e in _edges(root, rel):
+        if e["confidence"] != "EXTRACTED":
+            continue
         tf = e.get("target_file")
         label = Path(tf).relative_to(root).as_posix() if tf else e["target"]
         out.append((e["relation"], label, e["source_location"]))
@@ -168,7 +176,10 @@ def test_translation_keys(tmp_path):
     t = _targets(root, "sections/a.liquid")
     assert [(r, loc) for r, _, loc in t] == [("references", "L1"), ("references", "L2"), ("references", "L3")]
     result = extract_liquid(root / "sections/a.liquid")
-    key_nodes = {n["label"]: n for n in result["nodes"] if n["file_type"] == "concept"}
+    key_nodes = {
+        n["label"]: n for n in result["nodes"]
+        if n["file_type"] == "concept" and not n.get("unresolved")
+    }
     assert set(key_nodes) == {"general.cart", "products.count"}
     assert key_nodes["general.cart"]["id"] == _make_id("liquid_t", "general.cart")
 
@@ -274,3 +285,144 @@ def test_pathological_unclosed_openers_are_linear(tmp_path):
     start = time.perf_counter()
     extract_liquid(root / "sections/a.liquid")
     assert time.perf_counter() - start < 5
+
+
+def _unresolved(root: Path, rel: str) -> list[tuple[str, str, str]]:
+    """(ref_kind, label, location) per AMBIGUOUS edge, in order."""
+    result = extract_liquid(root / rel)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    out = []
+    for e in result["edges"]:
+        if e["confidence"] != "AMBIGUOUS":
+            continue
+        node = nodes[e["target"]]
+        assert node["unresolved"] is True
+        assert e["confidence_score"] < 0.5
+        assert "target_file" not in e
+        out.append((node["ref_kind"], node["label"], e["source_location"]))
+    return out
+
+
+def test_broken_fixture_lists_exactly_three_unresolved(tmp_path):
+    theme = tmp_path / "theme"
+    shutil.copytree(BROKEN, theme)
+    assert _unresolved(theme, "sections/main.liquid") == [
+        ("snippet", "snippets/missing-card.liquid", "L1"),
+        ("asset", "assets/missing.css", "L2"),
+        ("t", "missing.key", "L3"),
+    ]
+    kinds = {e["confidence"] for e in _edges(theme, "sections/main.liquid")}
+    assert kinds == {"AMBIGUOUS", "EXTRACTED"}
+
+
+def test_unresolved_survives_build_and_export(tmp_path):
+    from graphify.build import build_from_json
+
+    theme = tmp_path / "theme"
+    shutil.copytree(BROKEN, theme)
+    files = sorted(theme.rglob("*.liquid"))
+    extraction = extract(files, cache_root=theme, root=theme, parallel=False)
+    graph = build_from_json(extraction, directed=True)
+    refs = {n: d for n, d in graph.nodes(data=True) if d.get("unresolved")}
+    assert len(refs) == 3
+    assert all(n.startswith("ref_liquid_") for n in refs)
+    ambiguous = [
+        (u, v) for u, v, d in graph.edges(data=True)
+        if d.get("confidence") == "AMBIGUOUS" and v in refs
+    ]
+    assert len(ambiguous) == 3
+    assert not [
+        1 for _, v, d in graph.edges(data=True)
+        if v in refs and d.get("confidence") == "EXTRACTED"
+    ]
+
+
+def test_other_unresolved_kinds(tmp_path):
+    schema = json.dumps({"blocks": [{"type": "ghost"}]})
+    root = _theme(tmp_path, {
+        "sections/a.liquid": (
+            "{% section 'nope' %}\n{% sections 'nogroup' %}\n"
+            "{% content_for 'block', type: 'noblock' %}\n"
+            "{% schema %}\n" + schema + "\n{% endschema %}\n"
+        ),
+    })
+    kinds = [k for k, _, _ in _unresolved(root, "sections/a.liquid")]
+    assert kinds == ["section", "section_group", "block", "block"]
+
+
+def test_no_locale_no_t_edges_and_no_unresolved_t(tmp_path):
+    root = _theme(tmp_path, {"sections/a.liquid": "{{ 'a.b' | t }}\n"})
+    assert _unresolved(root, "sections/a.liquid") == []
+
+
+def _graph_json(theme: Path) -> dict:
+    proc = subprocess.run(
+        [sys.executable, "-m", "graphify", "update", str(theme)],
+        capture_output=True, text=True, timeout=300, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr[-500:]
+    return json.loads((theme / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+
+
+def _links(graph: dict) -> list[dict]:
+    return graph.get("links") or graph.get("edges") or []
+
+
+def test_extraction_is_deterministic(tmp_path):
+    theme = tmp_path / "theme"
+    shutil.copytree(BROKEN, theme)
+    files = sorted(theme.rglob("*.liquid"))
+    first = json.dumps([extract_liquid(f) for f in files], sort_keys=True)
+    second = json.dumps([extract_liquid(f) for f in files], sort_keys=True)
+    assert first == second
+    shuffled = list(files)
+    random.Random(7).shuffle(shuffled)
+    a = extract(files, cache_root=theme, root=theme, parallel=False)
+    b = extract(shuffled, cache_root=theme, root=theme, parallel=False)
+    key = lambda d: json.dumps(d, sort_keys=True)  # noqa: E731
+    assert sorted(map(key, a["nodes"])) == sorted(map(key, b["nodes"]))
+    assert sorted(map(key, a["edges"])) == sorted(map(key, b["edges"]))
+
+
+def test_two_updates_give_the_same_graph(tmp_path):
+    theme = tmp_path / "theme"
+    shutil.copytree(BROKEN, theme)
+    g1 = _graph_json(theme)
+    g2 = _graph_json(theme)
+    norm = lambda g: (  # noqa: E731
+        sorted(json.dumps(n, sort_keys=True) for n in g["nodes"]),
+        sorted(json.dumps(e, sort_keys=True) for e in _links(g)),
+    )
+    assert norm(g1) == norm(g2)
+    unresolved = [
+        e for e in _links(g1)
+        if e.get("confidence") == "AMBIGUOUS" and str(e["target"]).startswith("ref_liquid_")
+    ]
+    assert len(unresolved) == 3
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="incremental cache keeps the unchanged citing file's AMBIGUOUS edge; a full rebuild clears it",
+)
+def test_update_after_the_missing_file_appears_resolves_the_edge(tmp_path):
+    theme = tmp_path / "theme"
+    shutil.copytree(BROKEN, theme)
+    _graph_json(theme)
+    (theme / "snippets").mkdir()
+    (theme / "snippets" / "missing-card.liquid").write_text("<p></p>\n", encoding="utf-8")
+    after = _graph_json(theme)
+    ambiguous = [
+        e for e in _links(after)
+        if e.get("confidence") == "AMBIGUOUS" and "missing_card" in str(e["target"]).replace("-", "_")
+    ]
+    assert ambiguous == []
+
+
+def test_two_megabyte_file_is_fast(tmp_path):
+    line = "{% render 'x' %}{{ 'a.b' | t }}{%- liquid\n  echo 'c.d' | t\n-%}\n<div>text</div>\n"
+    body = line * (2 * 1024 * 1024 // len(line))
+    root = _theme(tmp_path, {"sections/a.liquid": body})
+    start = time.perf_counter()
+    extract_liquid(root / "sections/a.liquid")
+    assert time.perf_counter() - start < 2

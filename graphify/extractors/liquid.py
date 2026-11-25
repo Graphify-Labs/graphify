@@ -18,9 +18,14 @@ Gates and limits, all fail-closed:
   three levels up) holding ``layout/theme.liquid``. Jekyll and Eleventy also use
   ``.liquid`` with different ``include`` semantics, so elsewhere only the file
   node is emitted.
-* Only statically named targets that exist inside the theme root get an edge.
+* Statically named targets that exist inside the theme root get an ``EXTRACTED``
+  edge. A static name whose file (or locale key) does not exist becomes an
+  ``AMBIGUOUS`` edge to a node flagged ``unresolved`` (id ``ref_liquid_<kind>_...``,
+  kinds snippet, section, section_group, block, asset, t). List them with
+  ``[e for e in links if e["confidence"] == "AMBIGUOUS" and e["target"].startswith("ref_liquid_")]``
+  over graph.json. A full rebuild clears one once the file exists.
   Dynamic names (``render some_var``), names containing ``/``, ``\\`` or ``..``,
-  and absolute asset names get none.
+  and absolute asset names get nothing.
 * Text inside ``comment``, ``doc``, ``raw``, ``stylesheet``, ``javascript`` and
   inline ``{% # %}`` regions is ignored; line numbers still count it.
 * ``| t`` edges need exactly one ``locales/*.default.json``; keys under
@@ -140,6 +145,7 @@ class _Collector:
         }]
         self.edges: list[dict] = []
         self._node_ids = {self.file_id}
+        self._probe: dict[Path, str] = {}
         self._seen: set[tuple[str, str, int]] = set()
         self._locale: tuple[Path, dict] | None | _Unset = _UNSET
 
@@ -148,9 +154,19 @@ class _Collector:
             self._node_ids.add(node["id"])
             self.nodes.append(node)
 
-    def file_edge(self, relation: str, target: Path, line: int) -> None:
-        """Edge to an existing file inside the theme; declares non-Liquid targets."""
-        if not target.is_file() or not _inside(self.root, target):
+    def file_edge(self, relation: str, kind: str, name: str, target: Path, line: int) -> None:
+        """Edge to an existing file inside the theme, else an unresolved reference.
+
+        Non-Liquid targets get a declared file node so the edge never dangles.
+        """
+        state = self._probe.get(target)
+        if state is None:
+            state = "out" if not _inside(self.root, target) else ("file" if target.is_file() else "missing")
+            self._probe[target] = state
+        if state == "out":
+            return
+        if state == "missing":
+            self._unresolved(relation, kind, name, target.relative_to(self.root).as_posix(), line)
             return
         target_id = _make_id(str(target))
         if not self._first(target_id, relation, line):
@@ -166,6 +182,22 @@ class _Collector:
             "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
         })
 
+    def _unresolved(self, relation: str, kind: str, name: str, label: str, line: int) -> None:
+        """AMBIGUOUS edge to a declared ``unresolved`` node for a missing target."""
+        target_id = _make_id("ref", "liquid", kind, name)
+        if not self._first(target_id, relation, line):
+            return
+        self._declare({
+            "id": target_id, "label": label, "file_type": "concept",
+            "source_file": str(self.path), "source_location": f"L{line}",
+            "unresolved": True, "ref_kind": kind,
+        })
+        self.edges.append({
+            "source": self.file_id, "target": target_id, "relation": relation,
+            "confidence": "AMBIGUOUS", "confidence_score": 0.2,
+            "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+        })
+
     def key_edge(self, key: str, line: int) -> None:
         """``references`` edge to a translation key found in the default locale."""
         if key.startswith("shopify."):
@@ -176,6 +208,7 @@ class _Collector:
             return
         locale_path, data = self._locale
         if not _has_key(data, key):
+            self._unresolved("references", "t", key, key, line)
             return
         target_id = _make_id("liquid_t", key)
         if not self._first(target_id, "references", line):
@@ -216,26 +249,31 @@ class _Collector:
             arg = _NAME_ARG.match(rest)
             if arg and _safe_component(arg.group(2)):
                 folder = _COMPOSITION[tag]
-                self.file_edge("imports", self.root / folder / f"{arg.group(2)}.liquid", line)
+                kind = "snippet" if folder == "snippets" else "section"
+                self.file_edge("imports", kind, arg.group(2), self.root / folder / f"{arg.group(2)}.liquid", line)
         elif tag == "sections":
             arg = _NAME_ARG.match(rest)
             if arg and _safe_component(arg.group(2)):
-                self.file_edge("imports", self.root / "sections" / f"{arg.group(2)}.json", line)
+                name = arg.group(2)
+                self.file_edge("imports", "section_group", name, self.root / "sections" / f"{name}.json", line)
         elif tag == "content_for":
             arg = _NAME_ARG.match(rest)
             if arg and arg.group(2) == "block":
                 m = _BLOCK_TYPE.search(rest[arg.end():])
                 if m and _safe_component(m.group(2)):
-                    self.file_edge("imports", self.root / "blocks" / f"{m.group(2)}.liquid", line)
+                    block = m.group(2)
+                    self.file_edge("imports", "block", block, self.root / "blocks" / f"{block}.liquid", line)
 
     def _asset(self, name: str, line: int) -> None:
         if not _safe_asset(name):
             return
         direct = self.root / "assets" / name
         if direct.is_file():
-            self.file_edge("references", direct, line)
+            self.file_edge("references", "asset", name, direct, line)
+        elif (self.root / "assets" / f"{name}.liquid").is_file():
+            self.file_edge("references", "asset", name, self.root / "assets" / f"{name}.liquid", line)
         else:
-            self.file_edge("references", self.root / "assets" / f"{name}.liquid", line)
+            self.file_edge("references", "asset", name, direct, line)
 
     def schema(self, body: str, line: int) -> None:
         """``blocks[]`` entries of a section/block schema that name a theme block file."""
@@ -260,7 +298,7 @@ class _Collector:
                 m = re.compile(r'"type"\s*:\s*"' + re.escape(block_type) + '"').search(body, search_from)
                 if m:
                     entry_line = line + body.count("\n", 0, m.start())
-            self.file_edge("imports", self.root / "blocks" / f"{block_type}.liquid", entry_line)
+            self.file_edge("imports", "block", block_type, self.root / "blocks" / f"{block_type}.liquid", entry_line)
 
 
 class _Unset:
