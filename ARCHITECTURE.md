@@ -80,6 +80,10 @@ C calls through struct function-pointer fields stay unresolved unless evidence
 identifies the target. A bare name match is insufficient for field callees.
 AST cache schema 53 retires older call facts.
 
+Go resolves a selector against its visible lexical binding before considering
+a same-named import. An unknown local receiver does not resolve as a package.
+AST cache schema 54 retires older call facts.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
@@ -147,6 +151,14 @@ left unresolved rather than chased one hop further, so a genuinely ambiguous
 re-export is dropped instead of guessed (package `__init__` re-exports still
 resolve through the symbol-resolution pass).
 
+A Python lambda parameter shadows same-named callables in its body. Bare calls
+through that parameter and references to it as a callback skip both in-file
+lookup and corpus fallback. The binding check applies Python's Unicode
+identifier normalization and class-private name mangling. A lambda's own
+parameters do not shadow names in its default expressions.
+AST cache schema 54 invalidates fragments built before this rule. For an
+existing graph, run `graphify update . --force` to refresh unchanged callers.
+
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
 prefixed declarations share the same package identity; foreign namespaces and
@@ -189,7 +201,7 @@ pairs with the separate `definition_file` / `definition_location` site.
 Objective-C declarations and implementations in one file follow the same rule.
 Duplicate records only backfill an end location when the corresponding file and
 start location match. Build, JSON export and global graphs preserve both fields.
-AST cache schema 54 invalidates results that predate declaration ranges.
+AST cache schema 56 invalidates results that predate declaration ranges.
 
 `graphify section` and the `get_section` MCP tool return the text of a Markdown
 heading's section (`graphify/sections.py`). The section's end is found at read

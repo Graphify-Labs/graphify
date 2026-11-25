@@ -125,3 +125,34 @@ def test_end_to_end_build_and_lookup(tmp_path):
     assert _find_node(G, "process-order/index.ts")
     po = _find_node(G, "process-order/index.ts")[0]
     assert G.nodes[po]["label"] == "process-order/index.ts"
+
+
+def test_large_collision_group_reassignments():
+    """Verify O(M * D) batch reassignment correctly disambiguates large collision groups."""
+    from graphify.build import _file_label_reassignments, _shortest_unique_suffix
+
+    paths = [f"pkg_{i}/sub_{i % 10}/module_{i % 5}/index.ts" for i in range(200)]
+    items = [(f"id_{i}", "index.ts", paths[i]) for i in range(200)]
+
+    reassigned = _file_label_reassignments(items)
+    distinct = set(paths)
+    for i, path in enumerate(paths):
+        key = f"id_{i}"
+        expected = _shortest_unique_suffix(path, distinct)
+        assert reassigned[key] == expected
+
+
+def test_duplicate_source_files_with_distinct_keys():
+    """Multiple nodes pointing to the same source_file (e.g. doc twin / AST twin)
+    must both receive the disambiguated label."""
+    from graphify.build import _file_label_reassignments
+
+    items = [
+        ("ast_po", "index.ts", "fn/process-order/index.ts"),
+        ("doc_po", "index.ts", "fn/process-order/index.ts"),
+        ("ast_sr", "index.ts", "fn/send-receipt/index.ts"),
+    ]
+    reassigned = _file_label_reassignments(items)
+    assert reassigned["ast_po"] == "process-order/index.ts"
+    assert reassigned["doc_po"] == "process-order/index.ts"
+    assert reassigned["ast_sr"] == "send-receipt/index.ts"

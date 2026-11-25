@@ -56,6 +56,20 @@ def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
     assert "build" not in out
 
 
+def test_query_cli_keeps_stock_fallback_with_persisted_trigram_index(monkeypatch, tmp_path, capsys):
+    graph = nx.Graph()
+    graph.add_node("node", label="widget", source_file="main.py")
+    graph.graph["_trigram_index"] = {"ids": ["node"], "postings": {}, "set_cache": {}}
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "query", "42 widget", "--graph", str(graph_path)])
+
+    mainmod.main()
+
+    assert "NODE widget" in capsys.readouterr().out
+
+
 def _write_calls_graph(tmp_path):
     """A single directed `calls` edge on an (on-disk) undirected graph.json,
 

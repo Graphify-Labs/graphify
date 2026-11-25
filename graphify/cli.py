@@ -2292,6 +2292,8 @@ def dispatch_command(cmd: str) -> None:
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
+        # A persisted index may lack postings from the rows just loaded.
+        G._graphify_one_shot_query = not seeds and G.graph.get("_trigram_index") is None
         _result = _query_graph_text(
             G,
             question,
