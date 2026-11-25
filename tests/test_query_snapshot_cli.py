@@ -372,3 +372,50 @@ def test_dotted_queries_do_not_read_every_node_row(query_cli, monkeypatch, tmp_p
     monkeypatch.setattr(query_snapshot._Nodes, "__call__", full_scan)
     monkeypatch.setattr(query_snapshot._Nodes, "__iter__", full_scan)
     assert [run(path, question, "--snapshot") for question in questions] == expected
+
+
+def _ranking_fixture():
+    graph = nx.Graph()
+    graph.add_node("sweep", label="public.sweep_widget_state()", source_file="db/functions.sql")
+    graph.add_node("state", label="state", source_file="src/state.py")
+    graph.add_node("widget", label="widget", source_file="src/widget.py")
+    graph.add_node("println", label="fmt.Println", source_file="vendor/fmt/print.go")
+    graph.add_node("store", label="WidgetStore", source_file="src/widgets/widget_store.py")
+    graph.add_node("store_file", label="widget_store.py", source_file="src/widgets/widget_store.py")
+    # A hub above the p99 degree floor, so traversal must stop at it.
+    graph.add_node("hub", label="Logger", source_file="src/log.py")
+    for i in range(60):
+        graph.add_node(f"leaf{i}", label=f"leaf_{i}()", source_file=f"src/leaves/leaf{i}.py")
+        graph.add_edge("hub", f"leaf{i}", relation="calls", context="call")
+    graph.add_edge("leaf3", "leaf4", relation="calls", context="call")
+    graph.add_edge("store", "hub", relation="calls", context="call")
+    graph.add_edge("sweep", "store", relation="references")
+    graph.add_edge("store_file", "store", relation="contains")
+    graph.add_edge("state", "sweep", relation="calls", context="call")
+    graph.add_edge("widget", "state", relation="calls", context="call")
+    return graph
+
+
+def test_warm_snapshot_matches_qualified_source_and_hub_ranking(query_cli, monkeypatch, tmp_path):
+    run, _cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _ranking_fixture())
+    cases = [
+        ("sweep widget state", ()),
+        ("sweep_widget_state", ("--budget", "120")),
+        ("Println", ()),
+        ("src/widgets/widget_store.py", ("--budget", "120")),
+        ("widget store", ("--dfs",)),
+        ("WidgetStore", ("--context", "call", "--dfs", "--depth", "3")),
+        ("leaf_3", ()),
+        ("leaf_3", ("--context", "call", "--depth", "3")),
+        ("x", ("--seed", "src/widgets/widget_store.py")),
+    ]
+    expected = [run(path, question, *args) for question, args in cases]
+    # The qualified-name tier puts the qualified label ahead of the nodes
+    # whose whole label is one query word, and the hub stops the walk.
+    assert "Start: ['public.sweep_widget_state()', 'state', 'widget']" in expected[0][1]
+    assert "| 3 nodes found" in expected[6][1]
+    assert run(path, *cases[0][:1], "--snapshot") == expected[0]
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert [run(path, question, *args, "--snapshot") for question, args in cases] == expected
