@@ -179,14 +179,13 @@ _SECTION_VIEW_GRAPH_KEYS = frozenset({"_logical_directed"})
 def resolve_section_query(G, query: str) -> "tuple[str | None, str]":
     """Resolve a heading label, node id or ``path::Heading`` to one section node.
 
-    A code symbol that shares a heading's name must not shadow it, so a query
-    that is ambiguous or lands on a non-section node is retried against the
-    section nodes alone.
+    An explicit node id takes precedence. For a name or path query, retry
+    against the section nodes so a code symbol cannot hide a heading match.
     """
-    from graphify.serve import _resolve_single_node
+    from graphify.serve import _is_ambiguity_refusal, _resolve_single_node
 
     nid, err = _resolve_single_node(G, query)
-    if nid is not None and is_section_node(G.nodes[nid]):
+    if nid is not None and (query == nid or is_section_node(G.nodes[nid])):
         return nid, ""
     sections = G.subgraph([n for n, d in G.nodes(data=True) if is_section_node(d)])
     # A subgraph view shares G.graph, so it would reuse the full graph's search
@@ -197,7 +196,9 @@ def resolve_section_query(G, query: str) -> "tuple[str | None, str]":
         k: v for k, v in G.graph.items()
         if not k.startswith("_") or k in _SECTION_VIEW_GRAPH_KEYS
     }
-    sec_nid, _ = _resolve_single_node(sections, query)
+    sec_nid, sec_err = _resolve_single_node(sections, query)
     if sec_nid is not None:
         return sec_nid, ""
+    if sec_err and _is_ambiguity_refusal(sec_err):
+        return None, sec_err
     return nid, err or ""
