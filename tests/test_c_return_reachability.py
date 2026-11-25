@@ -543,6 +543,79 @@ def test_infinite_while_with_break_keeps_following_calls(tmp_path: Path, suffix:
     assert "after()" in targets
 
 
+# Loop-body layouts → whether after-loop calls stay extracted.
+# keep_after=True means a reachable break (or equivalent) reopens fall-through.
+_INFINITE_BREAK_LAYOUTS: dict[str, tuple[str, bool]] = {
+    "break_after_return": (
+        "while (1) {\n    tick();\n    return;\n    break;\n  }",
+        False,
+    ),
+    "break_after_return_for": (
+        "for (;;) {\n    tick();\n    return;\n    break;\n  }",
+        False,
+    ),
+    "plain_break_after_tick": (
+        "while (1) {\n    tick();\n    break;\n  }",
+        True,
+    ),
+    "conditional_break": (
+        "while (1) {\n    tick();\n    if (flag) break;\n  }",
+        True,
+    ),
+    "break_in_else_after_return_then": (
+        "while (1) {\n    if (flag) {\n      return;\n    } else {\n      break;\n    }\n  }",
+        True,
+    ),
+    "break_only_after_return_in_then": (
+        "while (1) {\n    if (flag) {\n      return;\n      break;\n    }\n    tick();\n  }",
+        False,
+    ),
+    "nested_while_break_does_not_leave_outer": (
+        "while (1) {\n    tick();\n    while (1) {\n      break;\n    }\n  }",
+        False,
+    ),
+    "return_only": (
+        "while (1) {\n    tick();\n    return;\n  }",
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
+@pytest.mark.parametrize("layout", list(_INFINITE_BREAK_LAYOUTS))
+def test_infinite_loop_break_reachability_layouts(
+    tmp_path: Path, suffix: str, layout: str
+) -> None:
+    """Permanence uses body reachability: only reachable breaks reopen after-loop calls."""
+    loop_src, keep_after = _INFINITE_BREAK_LAYOUTS[layout]
+    root = _real(tmp_path)
+    main = root / f"main{suffix}"
+    body = root / f"body{suffix}"
+    main.write_text(
+        "void tick(void) {}\n"
+        "void after(void) {}\n",
+        encoding="utf-8",
+    )
+    body.write_text(
+        "void tick(void);\n"
+        "void after(void);\n"
+        "int flag;\n"
+        "void f(void) {\n"
+        f"  {loop_src}\n"
+        "  after();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract([main, body], root=root, cache_root=root)
+    targets = _call_targets(result, "f()")
+    if "tick()" in loop_src:
+        assert "tick()" in targets, (layout, targets)
+    if keep_after:
+        assert "after()" in targets, (layout, targets)
+    else:
+        assert "after()" not in targets, (layout, targets)
+
+
 @pytest.mark.parametrize("suffix", [".c", ".cpp"])
 def test_infinite_while_with_return_skips_following_calls(tmp_path: Path, suffix: str) -> None:
     """return leaves the function; after() is not fall-through-reachable."""

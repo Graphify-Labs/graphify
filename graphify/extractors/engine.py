@@ -8235,12 +8235,12 @@ def _c_node_key(node) -> tuple[int, int, str]:
     return (node.start_byte, node.end_byte, node.type)
 
 
-def _c_body_has_break_leaving_loop(node) -> bool:
-    """True if a ``break`` targets this loop (not a nested loop/switch).
+def _c_body_has_break_leaving_loop(node, *, allow_true_keyword: bool = False) -> bool:
+    """True if a fall-through-reachable ``break`` targets this loop.
 
-    ``return`` / ``goto`` do not restore fall-through to the next sibling after a
-    static infinite loop: return leaves the function, goto is handled by label
-    reachability. Only ``break`` makes the code after the loop fall-through-reachable.
+    Nested loops/switches are opaque: their breaks leave those constructs, not
+    this loop. Unreachable breaks (e.g. after ``return`` in ``while (1)``) must
+    not make after-loop siblings look reachable (#5338 P2).
     """
     if node.type == "break_statement":
         return True
@@ -8258,17 +8258,44 @@ def _c_body_has_break_leaving_loop(node) -> bool:
         "abstract_function_declarator",
     ):
         return False
+    if node.type in _C_GOTO_SCOPE_TYPES:
+        children = list(node.children)
+        for i in sorted(
+            _c_block_reachable_indices(node, children, allow_true_keyword=allow_true_keyword)
+        ):
+            ch = children[i]
+            if ch.type in _C_SKIP_SIBLINGS:
+                continue
+            if _c_body_has_break_leaving_loop(ch, allow_true_keyword=allow_true_keyword):
+                return True
+        return False
+    if node.type == "if_statement":
+        for field in ("consequence", "alternative"):
+            arm = node.child_by_field_name(field)
+            if arm is not None and _c_body_has_break_leaving_loop(
+                arm, allow_true_keyword=allow_true_keyword
+            ):
+                return True
+        return False
+    if node.type == "labeled_statement":
+        for child in node.children:
+            if child.type in ("statement_identifier", ":"):
+                continue
+            if _c_body_has_break_leaving_loop(child, allow_true_keyword=allow_true_keyword):
+                return True
+        return False
     for child in node.children:
-        if _c_body_has_break_leaving_loop(child):
+        if _c_body_has_break_leaving_loop(child, allow_true_keyword=allow_true_keyword):
             return True
     return False
 
 
 def _c_is_static_infinite_loop(node, *, allow_true_keyword: bool = False) -> bool:
-    """Nonzero-constant ``while`` / ``for(;;)`` with no ``break`` — cuts fall-through.
+    """Nonzero-constant ``while`` / ``for(;;)`` with no reachable ``break`` — cuts fall-through.
 
-    The loop body is still walked for calls; ``goto`` targets after the loop are
-    activated separately. A ``break`` means after-loop siblings stay reachable.
+    Decide permanence only after body reachability: an unreachable ``break`` after
+    ``return`` does not reopen after-loop siblings. The loop body is still walked
+    for calls; ``goto`` targets after the loop are activated separately.
     C++ may also treat ``while (true)`` as infinite; C does not (see
     ``_c_is_constant_true_condition``).
     """
@@ -8277,7 +8304,9 @@ def _c_is_static_infinite_loop(node, *, allow_true_keyword: bool = False) -> boo
         body = node.child_by_field_name("body")
         if not _c_is_constant_true_condition(cond, allow_true_keyword=allow_true_keyword):
             return False
-        return body is None or not _c_body_has_break_leaving_loop(body)
+        return body is None or not _c_body_has_break_leaving_loop(
+            body, allow_true_keyword=allow_true_keyword
+        )
     if node.type == "for_statement":
         cond = node.child_by_field_name("condition")
         body = node.child_by_field_name("body")
@@ -8289,7 +8318,9 @@ def _c_is_static_infinite_loop(node, *, allow_true_keyword: bool = False) -> boo
         if cond is None or _c_is_constant_true_condition(
             cond, allow_true_keyword=allow_true_keyword
         ):
-            return body is None or not _c_body_has_break_leaving_loop(body)
+            return body is None or not _c_body_has_break_leaving_loop(
+                body, allow_true_keyword=allow_true_keyword
+            )
     return False
 
 
