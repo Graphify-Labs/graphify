@@ -919,12 +919,20 @@ def to_obsidian(
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
-        confs = []
-        for u, v, edata in G.edges(node_id, data=True):
-            confs.append(edata.get("confidence", "EXTRACTED"))
+        confs = Counter(
+            edata.get("confidence", "EXTRACTED")
+            for _, _, edata in G.edges(node_id, data=True)
+        )
+        if isinstance(G, nx.DiGraph):
+            # Outgoing edges already include this node's self-loops.
+            confs.update(
+                edata.get("confidence", "EXTRACTED")
+                for source, _, edata in G.in_edges(node_id, data=True)
+                if source != node_id
+            )
         if not confs:
             return "EXTRACTED"
-        return Counter(confs).most_common(1)[0][0]
+        return confs.most_common(1)[0][0]
 
     # Map file_type → graphify tag
     _FTYPE_TAG = {
@@ -1019,7 +1027,7 @@ def to_obsidian(
     def _community_reach(node_id: str) -> int:
         neighbor_cids = {
             node_community[nb]
-            for nb in G.neighbors(node_id)
+            for nb in nx.all_neighbors(G, node_id)
             if nb in node_community and node_community[nb] != node_community.get(node_id)
         }
         return len(neighbor_cids)
