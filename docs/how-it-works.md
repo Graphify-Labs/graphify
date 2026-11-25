@@ -5,7 +5,7 @@
 graphify processes your files in three passes:
 
 **Pass 1 — Code structure (free, no API calls)**
-Tree-sitter parses your code files and extracts classes, functions, imports, call graphs, and inline comments. This runs locally with no LLM involved. About 40 languages are supported: 33 are parsed with tree-sitter grammars and 8 (Dart, Apex, COBOL, Razor, Blade, Liquid, Pascal and Robot Framework) use built-in parsers. A few languages need an optional extra, e.g. `pip install "graphifyy[sql]"`; graphify tells you which extra to install if one is missing. SQL files get special treatment: tables, views, foreign keys, and JOIN relationships are extracted deterministically.
+Tree-sitter parses your code files and extracts classes, functions, imports, call graphs, and inline comments. This runs locally with no LLM involved. About 40 languages are supported: 33 are parsed with tree-sitter grammars and 8 (Dart, Apex, COBOL, Razor, Blade, Liquid, Pascal and Robot Framework) use built-in parsers. A few languages need an optional extra, e.g. `pip install "graphifyy[sql]"`; graphify tells you which extra to install if one is missing. SQL files get special treatment: tables, views, foreign keys, and JOIN relationships are extracted deterministically. Inside a Shopify theme (a `layout/theme.liquid` ancestor), the JSON templates and section groups (`templates/*.json`, `sections/*.json`) are linked to the sections and theme blocks they place, and `t:` keys in schemas to `locales/*.default.schema.json`.
 
 Code files are not sent to the LLM semantic extractor in the normal pipeline. If a corpus contains only code files, Pass 3 is skipped entirely; semantic extraction is reserved for docs, papers, images, and transcripts.
 

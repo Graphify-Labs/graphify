@@ -102,9 +102,9 @@ def _strip_json_comments(text: str) -> str:
     return _JSON_COMMENT.sub(lambda m: m.group(0) if m.group(0).startswith('"') else " ", text)
 
 
-def _default_locale(root: Path) -> tuple[Path, dict] | None:
-    """The parsed ``locales/*.default.json`` when exactly one exists, else None."""
-    candidates = sorted((root / "locales").glob("*.default.json")) if (root / "locales").is_dir() else []
+def _default_locale(root: Path, pattern: str = "*.default.json") -> tuple[Path, dict] | None:
+    """The parsed ``locales/<pattern>`` file when exactly one exists, else None."""
+    candidates = sorted((root / "locales").glob(pattern)) if (root / "locales").is_dir() else []
     if len(candidates) != 1:
         return None
     locale_path = candidates[0]
@@ -154,6 +154,7 @@ class _Collector:
         self._probe: dict[Path, str] = {}
         self._seen: set[tuple[str, str, int]] = set()
         self._locale: tuple[Path, dict] | None | _Unset = _UNSET
+        self._schema_locale: tuple[Path, dict] | None | _Unset = _UNSET
 
     def _declare(self, node: dict) -> None:
         if node["id"] not in self._node_ids:
@@ -229,6 +230,54 @@ class _Collector:
             "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
         })
 
+    def schema_key_edge(self, key: str, line: int) -> None:
+        """``references`` edge to a ``t:`` key found in the default ``*.schema.json`` locale."""
+        if self._schema_locale is _UNSET:
+            self._schema_locale = _default_locale(self.root, "*.default.schema.json")
+        if self._schema_locale is None or isinstance(self._schema_locale, _Unset):
+            return
+        locale_path, data = self._schema_locale
+        if not _has_key(data, key):
+            self._unresolved("references", "schema_t", key, f"t:{key}", line)
+            return
+        target_id = _make_id("liquid_t_schema", key)
+        if not self._first(target_id, "references", line):
+            return
+        self._declare({
+            "id": target_id, "label": f"t:{key}", "file_type": "concept",
+            "source_file": str(locale_path), "source_location": None,
+        })
+        self.edges.append({
+            "source": self.file_id, "target": target_id, "relation": "references",
+            "confidence": "EXTRACTED", "confidence_score": 1.0,
+            "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+        })
+
+    def schema_keys(self, data: object, text: str, first_line: int) -> None:
+        """Link every ``t:<key>`` string inside a parsed schema to the schema locale.
+
+        ``text`` is the source the object was parsed from; each quoted occurrence
+        in it gets its own line so the edge points at the setting that uses it.
+        """
+        keys: set[str] = set()
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+            elif isinstance(node, str) and node.startswith("t:") and len(node) > 2:
+                keys.add(node[2:])
+        for key in sorted(keys):
+            needle = json.dumps(f"t:{key}", ensure_ascii=False)
+            pos = text.find(needle)
+            if pos == -1:
+                self.schema_key_edge(key, first_line)
+            while pos != -1:
+                self.schema_key_edge(key, first_line + text.count("\n", 0, pos))
+                pos = text.find(needle, pos + 1)
+
     def _first(self, target_id: str, relation: str, line: int) -> bool:
         key = (target_id, relation, line)
         if key in self._seen:
@@ -289,6 +338,7 @@ class _Collector:
             data = json.loads(body)
         except ValueError:
             return
+        self.schema_keys(data, body, line)
         blocks = data.get("blocks") if isinstance(data, dict) else None
         if not isinstance(blocks, list):
             return

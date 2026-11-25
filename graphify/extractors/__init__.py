@@ -23,6 +23,7 @@ from graphify.extractors.fortran import extract_fortran
 from graphify.extractors.go import extract_go
 from graphify.extractors.json_config import extract_json
 from graphify.extractors.liquid import extract_liquid
+from graphify.extractors.shopify_theme_json import extract_shopify_theme_json
 from graphify.extractors.julia import extract_julia
 from graphify.extractors.markdown import extract_markdown
 from graphify.extractors.objc import extract_objc
@@ -46,6 +47,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "blade": extract_blade,
     "cobol": extract_cobol,
     "liquid": extract_liquid,
+    "shopify_theme_json": extract_shopify_theme_json,
     "commonlisp": extract_commonlisp,
     "dart": extract_dart,
     "delphi_form": extract_delphi_form,
