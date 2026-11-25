@@ -419,3 +419,21 @@ def test_warm_snapshot_matches_qualified_source_and_hub_ranking(query_cli, monke
     assert run(path, *cases[0][:1], "--snapshot") == expected[0]
     monkeypatch.setattr(paths, "read_graph_json", _deny_json)
     assert [run(path, question, *args, "--snapshot") for question, args in cases] == expected
+
+
+def test_next_build_removes_files_left_by_a_killed_builder(query_cli, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    graph = _fixture()
+    _write(path, graph)
+    assert run(path, "bounded retry", "--snapshot")[0] == 0
+    scope, = {file.parent for file in cache.rglob("*.sqlite3")}
+    # Builders hold the build lock, so a temporary file seen by the next
+    # builder belongs to one that died before its own cleanup ran.
+    orphan = scope / ".building-orphan.sqlite3"
+    orphan.write_bytes(b"partial")
+
+    graph.nodes["driver"]["rationale"] = "rebuilt retry"
+    _write(path, graph)
+    assert run(path, "rebuilt retry", "--snapshot") == run(path, "rebuilt retry")
+    assert not orphan.exists()

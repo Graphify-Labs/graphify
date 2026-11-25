@@ -147,6 +147,13 @@ def write_snapshot(graph_path: Path, identity: _GraphIdentity, graph, legacy: bo
         # lock even if the writer exits. Contenders already have a JSON answer.
         lock = sqlite3.connect(target.parent / ".build-lock", timeout=0)
         lock.execute("BEGIN IMMEDIATE")
+        # Only the lock holder builds, so any build file still here belongs
+        # to a builder that was killed before its own cleanup ran.
+        for orphan in target.parent.glob(".building-*.sqlite3"):
+            try:
+                orphan.unlink(missing_ok=True)
+            except OSError:
+                pass
         if not repair:
             existing = open_snapshot(graph_path, identity)
             if existing is not None:
