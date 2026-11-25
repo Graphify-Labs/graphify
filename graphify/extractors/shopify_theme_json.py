@@ -21,7 +21,8 @@ yields only its file node.
 Placement edges follow sorted key order and point at line 1, so reordering the
 keys of a template does not change the extraction.
 
-Not covered: app blocks (``shopify://`` and ``@app`` types), block types with no
+Not covered: app blocks (``shopify://`` and ``@app`` types), the built-in ``_blocks``
+section type (its nested blocks are still linked), block types with no
 ``blocks/<type>.liquid`` (they may be section-local, so nothing is guessed),
 ``config/settings_data.json`` and the ``{% block %}`` / ``{% partial %}`` tags.
 """
@@ -75,6 +76,11 @@ def _is_app(block_type: str) -> bool:
     return block_type.startswith(("shopify://", "@"))
 
 
+def _is_builtin_section(section_type: str) -> bool:
+    """``_blocks`` is a section type Shopify provides; it has no ``sections/`` file."""
+    return section_type == "_blocks"
+
+
 def _walk_blocks(blocks: object, out: _Collector, depth: int) -> None:
     """Edge to ``blocks/<type>.liquid`` for each nested block that has such a file."""
     if depth > _MAX_DEPTH or not isinstance(blocks, dict):
@@ -102,7 +108,8 @@ def _place_sections(data: dict, out: _Collector) -> None:
         section_type = entry.get("type")
         if not isinstance(section_type, str) or _is_app(section_type) or not _safe_component(section_type):
             continue
-        out.file_edge("imports", "section", section_type, out.root / "sections" / f"{section_type}.liquid", 1)
+        if not _is_builtin_section(section_type):
+            out.file_edge("imports", "section", section_type, out.root / "sections" / f"{section_type}.liquid", 1)
         _walk_blocks(entry.get("blocks"), out, 0)
 
 

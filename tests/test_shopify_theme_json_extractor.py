@@ -180,6 +180,17 @@ def test_app_section_ignored_and_missing_section_unresolved(tmp_path):
     assert _unresolved(root, "templates/t.json") == [("section", "sections/ghost.liquid")]
 
 
+def test_builtin_blocks_section_is_not_a_missing_file_but_its_blocks_link(tmp_path):
+    root = _theme(tmp_path, {
+        "blocks/card.liquid": "",
+        "templates/t.json": json.dumps({"sections": {"s": {
+            "type": "_blocks", "blocks": {"b": {"type": "card"}},
+        }}}),
+    })
+    assert _placed(root, "templates/t.json") == ["blocks/card.liquid"]
+    assert _unresolved(root, "templates/t.json") == []
+
+
 def test_unsafe_section_type_gets_nothing(tmp_path):
     root = _theme(tmp_path, {
         "templates/t.json": json.dumps({"sections": {"a": {"type": "../layout/theme"}}}),
