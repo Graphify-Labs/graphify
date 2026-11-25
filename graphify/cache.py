@@ -521,7 +521,10 @@ def _normalize_path(path: Path) -> Path:
     return Path(os.path.normpath(s))
 
 
-def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = None) -> str:
+def file_hash(
+    path: Path, root: Path = Path("."), cache_root: "Path | None" = None,
+    *, include_frontmatter: bool = False,
+) -> str:
     """SHA256 of file contents + path relative to root.
 
     Uses a stat-based fastpath (size + mtime_ns) to skip full reads when the
@@ -535,8 +538,8 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     and checkout directories. Falls back to the resolved path when the walked
     path cannot be expressed relative to root.
 
-    For Markdown files (.md), only the body below the YAML frontmatter is hashed,
-    so metadata-only changes (e.g. reviewed, status, tags) do not invalidate the cache.
+    Markdown hashes omit YAML frontmatter by default for semantic cache
+    compatibility. AST callers include it because it affects page facts.
 
     The path handed to the filesystem comes from os_long_path(); the cache key
     preserves case because case sensitivity belongs to the volume, not the
@@ -599,13 +602,16 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
                 walked_rel = resolved_rel
         salt = walked_rel.as_posix()
 
+    markdown = src.suffix.lower() == ".md"
+    # Keep the two Markdown modes separate in the shared stat fastpath.
+    hash_slot = f"ast-md\x00{salt}" if markdown and include_frontmatter else salt
     st: "os.stat_result | None" = None
     try:
         st = src.stat()
         if _stat_sig_fresh(_stat_index.get(abs_key), st):
             hashes = _stat_index[abs_key].get("hashes")
             if isinstance(hashes, dict):
-                cached = hashes.get(salt)
+                cached = hashes.get(hash_slot)
                 if isinstance(cached, str):
                     return cached
             # Legacy single-digest entries ("hash") don't record which salt
@@ -623,7 +629,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # the extractor; the \\?\ long-path form is for I/O only. The cache key below
     # is still the SHA256 of these same raw bytes, unchanged.
     _stash_preread_bytes(raw_path, raw)
-    content = _body_content(raw) if src.suffix.lower() == ".md" else raw
+    content = _body_content(raw) if markdown and not include_frontmatter else raw
     h = hashlib.sha256()
     h.update(content)
     h.update(b"\x00")
@@ -636,7 +642,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
         if not isinstance(hashes, dict):
             hashes = {}
             entry["hashes"] = hashes
-        hashes[salt] = digest       # preserve a co-located word_count / other salts
+        hashes[hash_slot] = digest       # preserve a co-located word_count / other salts
         entry.pop("hash", None)     # retire the un-salted legacy digest
         _stat_index_dirty = True
 
@@ -1147,7 +1153,7 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     global _legacy_semantic_hits, _corrupt_cache_entries
     location = cache_root if cache_root is not None else root
     try:
-        h = file_hash(path, root, cache_root=cache_root)
+        h = file_hash(path, root, cache_root=cache_root, include_frontmatter=kind == "ast")
     except OSError:
         return None
     h = _salted_key(h, salt)
@@ -1458,7 +1464,10 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     on_disk = result
     if isinstance(result, dict):
         on_disk = _save_cached_on_disk(result, p, root, kind)
-    h = _salted_key(file_hash(p, root, cache_root=cache_root), salt)
+    h = _salted_key(
+        file_hash(p, root, cache_root=cache_root, include_frontmatter=kind == "ast"),
+        salt,
+    )
     location = cache_root if cache_root is not None else root
     # Extended-length form: under a deep root the entry, and its longer temp
     # name, overrun Windows MAX_PATH and the write fails the whole extraction.

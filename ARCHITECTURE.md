@@ -105,6 +105,8 @@ endpoint pair and relationship type, so the same script can be replayed.
 The ordinals apply to that exported snapshot.
 Linux watch reconciles the corpus after a watched subtree moves or is
 removed, even when watchdog sends only a directory event.
+Markdown AST cache keys include frontmatter because extraction records
+page metadata and wikilinks. Semantic keys retain the body-only digest.
 
 ## Extraction output schema
 
