@@ -2158,6 +2158,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
     # and makes the serialized graph churn. Sorting fixes the last-write outcome.
     dropped_schema_edges = 0
+    _ext_cache: dict[str, str] = {"": ""}
+
+    def _sf_ext(sf: object) -> str:
+        s = str(sf) if sf else ""
+        ext = _ext_cache.get(s)
+        if ext is None:
+            ext = Path(s).suffix.lower()
+            _ext_cache[s] = ext
+        return ext
+
     for edge in sorted(
         extraction.get("edges", []),
         key=lambda e: (
@@ -2274,8 +2284,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # Python `import time` must not bind to a `time.ts`, #1749).
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
-            src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
-            tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
+            src_ext = _sf_ext(G.nodes[src].get("source_file"))
+            tgt_ext = _sf_ext(G.nodes[tgt].get("source_file"))
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
             tgt_fam = _EDGE_LANG_FAMILY.get(tgt_ext)
             if _edge_rel == "calls":
