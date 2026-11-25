@@ -819,6 +819,39 @@ def test_find_import_cycles_empty_graph():
     assert find_import_cycles(nx.DiGraph()) == []
 
 
+@pytest.mark.parametrize("directed", [False, True])
+def test_graph_diff_reports_parallel_edge_added_and_removed(directed):
+    graph_type = nx.MultiDiGraph if directed else nx.MultiGraph
+    old = graph_type()
+    old.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED",
+                 _src="caller", _tgt="callee")
+    new = graph_type()
+    new.add_edge("caller", "callee", relation="calls", confidence="INFERRED",
+                 _src="caller", _tgt="callee")
+    new.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED",
+                 _src="caller", _tgt="callee")
+
+    diff = graph_diff(old, new)
+    added = {"source": "caller", "target": "callee", "relation": "calls",
+             "confidence": "INFERRED"}
+    assert diff["new_edges"] == [added]
+    assert diff["removed_edges"] == []
+    assert graph_diff(new, old)["removed_edges"] == [added]
+
+
+def test_graph_diff_matches_parallel_edges_by_stored_direction():
+    old = nx.MultiGraph()
+    new = nx.MultiGraph()
+    for graph in (old, new):
+        graph.add_nodes_from(("a", "b"))
+    for source, target in (("a", "b"), ("b", "a")):
+        old.add_edge(source, target, relation="calls", _src=source, _tgt=target)
+    for source, target in (("b", "a"), ("a", "b")):
+        new.add_edge(source, target, relation="calls", _src=source, _tgt=target)
+
+    assert graph_diff(old, new)["summary"] == "no changes"
+
+
 def test_find_import_cycles_no_cycles():
     G = nx.DiGraph()
     x_id, x = _make_file_node("x.ts")

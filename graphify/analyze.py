@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import random
 import re
+from collections import Counter
 from pathlib import Path
 import networkx as nx
 
@@ -741,57 +742,63 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
         for n in removed_node_ids
     ]
 
-    def edge_key(G: nx.Graph, u: str, v: str, data: dict) -> tuple:
-        if G.is_directed():
-            return (u, v, data.get("relation", ""))
-        return (min(u, v), max(u, v), data.get("relation", ""))
+    def edge_groups(G: nx.Graph) -> dict[tuple, dict[tuple | None, list[tuple]]]:
+        groups: dict[tuple, dict[tuple | None, list[tuple]]] = {}
+        directed = G.is_directed()
+        for u, v, data in G.edges(data=True):
+            endpoints = (u, v) if directed else (min(u, v), max(u, v))
+            relation = data.get("relation", "")
+            direction = (data["_src"], data["_tgt"]) if "_src" in data and "_tgt" in data else None
+            groups.setdefault((*endpoints, relation), {}).setdefault(direction, []).append((u, v, data))
+        return groups
 
-    def edge_dir(data: dict) -> tuple | None:
-        # Stored direction of an undirected edge (build_from_json, load_node_link_graph).
-        if "_src" in data and "_tgt" in data:
-            return (data["_src"], data["_tgt"])
-        return None
+    def excess_edges(groups, other_groups) -> list[dict]:
+        changes = []
+        for key, directions in groups.items():
+            other = other_groups.get(key, {})
+            # Match equal directions first. Any remaining legacy edge without
+            # direction can match either orientation, as in #4067.
+            unmarked = max(0, len(other.get(None, ())) - len(directions.get(None, ())))
+            marked = sum(
+                max(0, len(edges) - len(directions.get(direction, ())))
+                for direction, edges in other.items() if direction is not None
+            )
+            for direction, edges in directions.items():
+                peers = other.get(direction, ())
+                excess = len(edges) - len(peers)
+                if excess <= 0:
+                    continue
+                if direction is None:
+                    excess -= marked
+                else:
+                    matched = min(excess, unmarked)
+                    excess -= matched
+                    unmarked -= matched
+                if excess <= 0:
+                    continue
+                # Confidence is not an edge identity, but prefer to cancel
+                # identical rows when selecting the surplus parallel edges.
+                peer_confidence = Counter(data.get("confidence", "") for _, _, data in peers)
+                for u, v, data in edges:
+                    confidence = data.get("confidence", "")
+                    if peer_confidence[confidence]:
+                        peer_confidence[confidence] -= 1
+                    else:
+                        changes.append({
+                            "source": data.get("_src", u),
+                            "target": data.get("_tgt", v),
+                            "relation": data.get("relation", ""),
+                            "confidence": confidence,
+                        })
+                        excess -= 1
+                        if excess == 0:
+                            break
+        return changes
 
-    old_edge_dirs = {
-        edge_key(G_old, u, v, d): edge_dir(d)
-        for u, v, d in G_old.edges(data=True)
-    }
-    new_edge_dirs = {
-        edge_key(G_new, u, v, d): edge_dir(d)
-        for u, v, d in G_new.edges(data=True)
-    }
-    old_edge_keys = set(old_edge_dirs)
-    new_edge_keys = set(new_edge_dirs)
-
-    # A reversed edge (a->b became b->a) keeps its undirected key. Report it as
-    # removed + added only when both snapshots carry _src/_tgt and they differ,
-    # so graphs without the markers diff exactly as before (#4067).
-    reversed_edge_keys = {
-        k for k in old_edge_keys & new_edge_keys
-        if old_edge_dirs[k] and new_edge_dirs[k] and old_edge_dirs[k] != new_edge_dirs[k]
-    }
-    added_edge_keys = (new_edge_keys - old_edge_keys) | reversed_edge_keys
-    removed_edge_keys = (old_edge_keys - new_edge_keys) | reversed_edge_keys
-
-    new_edges_list = []
-    for u, v, d in G_new.edges(data=True):
-        if edge_key(G_new, u, v, d) in added_edge_keys:
-            new_edges_list.append({
-                "source": d.get("_src", u),
-                "target": d.get("_tgt", v),
-                "relation": d.get("relation", ""),
-                "confidence": d.get("confidence", ""),
-            })
-
-    removed_edges_list = []
-    for u, v, d in G_old.edges(data=True):
-        if edge_key(G_old, u, v, d) in removed_edge_keys:
-            removed_edges_list.append({
-                "source": d.get("_src", u),
-                "target": d.get("_tgt", v),
-                "relation": d.get("relation", ""),
-                "confidence": d.get("confidence", ""),
-            })
+    old_edges = edge_groups(G_old)
+    new_edges = edge_groups(G_new)
+    new_edges_list = excess_edges(new_edges, old_edges)
+    removed_edges_list = excess_edges(old_edges, new_edges)
 
     parts = []
     if new_nodes_list:
