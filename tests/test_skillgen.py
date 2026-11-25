@@ -462,8 +462,8 @@ def test_powershell_translator_rejects_unknown_bash():
     with pytest.raises(ValueError, match="cannot translate rm -f operand"):
         gen._rm_to_remove_item("rm -f $HOME/danger")
     # And the sanctioned pieces translate exactly.
-    assert gen._rm_to_remove_item("rm -f graphify-out/.needs_update 2>/dev/null || true") == (
-        "Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\\.needs_update"
+    assert gen._rm_to_remove_item("rm -f graphify-out/needs_update 2>/dev/null || true") == (
+        "Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\\needs_update"
     )
     assert gen._translate_bash_block([gen._FIND_CHUNKS_POSIX]) == [gen._FIND_CHUNKS_PS]
 
@@ -1619,3 +1619,20 @@ def test_extraction_specs_require_a_coverage_entry_for_every_file():
     assert seen_variants == {"verbose", "compact", "compact-disk"}, (
         "this test must cover every spec variant, not just one"
     )
+
+
+def test_skill_templates_fix_5477_contradictions():
+    """Regression for #5477: no .needs_update, no false API-key claim, no conflicting instructions."""
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms)
+    skill_bodies = [a for a in arts if Path(a.path).name.startswith("skill")]
+    assert skill_bodies
+    for a in skill_bodies:
+        assert ".needs_update" not in a.content, f"{a.path} still references .needs_update"
+        assert "needs_update" in a.content, f"{a.path} missing needs_update cleanup"
+        assert "graphify does **not** read" not in a.content, f"{a.path} still claims graphify reads no keys"
+        assert "Do not skip steps." not in a.content, f"{a.path} still says 'Do not skip steps.'"
+        assert "5-10x slower" not in a.content, f"{a.path} still has all-caps MANDATORY subagent wording"
+        assert 'Run `graphify query "<question>"` immediately.' not in a.content, (
+            f"{a.path} still skips vocabulary expansion on the fast path"
+        )
