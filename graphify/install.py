@@ -245,10 +245,13 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".pi" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / _PLATFORM_CONFIG["pi"]["skill_dst"]
 
-    if platform_name == "agents":
+    if platform_name in ("agents", "freebuff"):
         # The generic Agent-Skills target: project ./.agents/skills, global the
         # spec's user-global ~/.agents/skills (read by `npx skills` and compliant
         # frameworks), NOT amp's ~/.config/agents/skills.
+        # Freebuff reads the same Agent-Skills directories and ships the same
+        # bundle as `agents`, so it resolves here too (guard: a test asserts the
+        # two destinations are identical).
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
@@ -335,7 +338,60 @@ def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
                 staging_root.unlink()
         elif staging_root.exists():
             shutil.rmtree(staging_root, ignore_errors=True)
-def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
+_SKILL_CLAIM_FILE = ".graphify_platforms"
+# Separate from the skill claim: which of the shared names wrote the AGENTS.md
+# section. `agents --project` is skill-only, so the two claims can differ.
+_SECTION_CLAIM_FILE = ".graphify_agents_md"
+
+
+def _claimed_platforms(skill_dir: Path) -> list[str]:
+    """Platform names recorded as installed in this skill directory.
+
+    Freebuff and the generic Agent-Skills target write byte-identical content to
+    one directory, so the files on disk cannot say which name installed it. The
+    claim file answers that, and lets an uninstall keep the skill while another
+    name still wants it. Empty for installs made before the file existed, which
+    keeps their old remove-on-uninstall behavior.
+    """
+    path = skill_dir / _SKILL_CLAIM_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [name for name in data if isinstance(name, str)]
+
+
+def _record_claim_list(path: Path, payload: object) -> None:
+    """Atomically write a claim file (best effort)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _record_claim(skill_dst: Path, platform_name: str) -> None:
+    """Add ``platform_name`` to the directory's claim file (idempotent).
+
+    Best effort: a failed claim write must not fail an install. The directory
+    then looks like a pre-claim install, and uninstall removes it as it always
+    did.
+    """
+    names = sorted({*_claimed_platforms(skill_dst.parent), platform_name})
+    _record_claim_list(skill_dst.parent / _SKILL_CLAIM_FILE, names)
+
+
+def _copy_skill_file(
+    platform_name: str,
+    *,
+    project: bool = False,
+    project_dir: Path | None = None,
+    record_platform: bool = True,
+) -> Path:
     """Copy a packaged skill file and write its version stamp.
 
     For progressive platforms (those with ``skill_refs`` set), the packaged
@@ -384,11 +440,17 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         # while the edits were gone (#3144). Keep one .bak beside it and say so.
         # Every upgrade differs too - the .bak is overwritten each install, so it
         # always holds exactly the previous copy.
+        existing: bytes | None = None
         try:
-            if skill_dst.exists() and skill_dst.read_bytes() != skill_src.read_bytes():
+            if skill_dst.exists():
+                existing = skill_dst.read_bytes()
+            if existing is not None and existing != skill_src.read_bytes():
                 backup = skill_dst.with_suffix(skill_dst.suffix + ".bak")
                 shutil.copy2(skill_dst, backup)
                 print(f"  previous copy    ->  {backup} (differed from the packaged skill)")
+                _report_replaced_platform(
+                    platform_name, skill_dst, existing, project=project, project_dir=project_dir
+                )
         except OSError:
             pass  # a failed backup must not block the install
         # SKILL.md last (crash-safety), via an atomic temp + rename.
@@ -414,13 +476,260 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
                 tmp_dst.unlink(missing_ok=True)
 
         _write_version_stamp(skill_dst, __version__)
+        if record_platform and _platforms_sharing_skill_path(
+            platform_name, skill_dst, project=project, project_dir=project_dir
+        ):
+            # Only a shared destination needs a claim record; a refresh rewrites
+            # the same bytes and is not a new claim.
+            _record_claim(skill_dst, platform_name)
         print(f"  skill installed  ->  {skill_dst}")
     return skill_dst
-def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> bool:
-    """Remove a platform skill file and its version stamp without touching other scopes."""
+def _report_replaced_platform(
+    platform_name: str,
+    skill_dst: Path,
+    existing: bytes,
+    *,
+    project: bool,
+    project_dir: Path | None,
+) -> None:
+    """Say which platform's skill an install is about to overwrite.
+
+    Several platforms share one destination but ship different bundles (``amp``,
+    ``antigravity`` and ``agents`` all write ``./.agents/skills/graphify``), so an
+    install there can replace another host's skill. Name it instead of leaving
+    only the generic "previous copy" line.
+    """
+    try:
+        replaced = [
+            other
+            for other in _platforms_sharing_skill_path(
+                platform_name,
+                skill_dst,
+                project=project,
+                project_dir=project_dir,
+                same_bundle_only=False,
+            )
+            if (Path(__file__).parent / _PLATFORM_CONFIG[other]["skill_file"]).read_bytes() == existing
+        ]
+    except OSError:
+        return
+    if not replaced:
+        return
+    names = ", ".join(f"`{name}`" for name in replaced)
+    print(f"  replacing        ->  the {names} skill at {skill_dst.parent} (shared directory)")
+
+
+def _section_claims(skill_dir: Path) -> dict[str, list[str]]:
+    """AGENTS.md paths each platform is recorded as having written.
+
+    The section claims live beside a *user-scoped* skill but the file they
+    describe is per-project, so the claim records the path it belongs to. An
+    empty path is a legacy claim from the first version of this file, which
+    recorded names only; it is treated as claiming every AGENTS.md.
+    """
+    try:
+        data = json.loads((skill_dir / _SECTION_CLAIM_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if isinstance(data, list):
+        return {name: [""] for name in data if isinstance(name, str)}
+    if not isinstance(data, dict):
+        return {}
+    claims: dict[str, list[str]] = {}
+    for name, paths in data.items():
+        if not isinstance(name, str):
+            continue
+        if isinstance(paths, str):
+            claims[name] = [paths]
+        elif isinstance(paths, list):
+            claims[name] = [path for path in paths if isinstance(path, str)]
+    return claims
+
+
+def _section_claim_key(agents_md: Path) -> str:
+    """Identity of a project's AGENTS.md across installs and uninstalls."""
+    try:
+        return str(agents_md.resolve())
+    except OSError:
+        return str(agents_md)
+
+
+def _section_claimers(skill_dir: Path, agents_md: Path) -> list[str]:
+    """Platforms recorded as having written the section in ``agents_md``."""
+    key = _section_claim_key(agents_md)
+    return sorted(
+        name
+        for name, paths in _section_claims(skill_dir).items()
+        if "" in paths or key in paths
+    )
+
+
+def _record_section_claim(skill_dir: Path, platform_name: str, agents_md: Path) -> None:
+    """Record ``platform_name`` as a writer of ``agents_md``'s section (best effort)."""
+    claims = _section_claims(skill_dir)
+    paths = claims.setdefault(platform_name, [])
+    key = _section_claim_key(agents_md)
+    paths = [path for path in paths if path != ""]
+    if key not in paths:
+        paths.append(key)
+    claims[platform_name] = sorted(paths)
+    _record_claim_list(skill_dir / _SECTION_CLAIM_FILE, claims)
+
+
+def _section_claim_dir(
+    platform_name: str, *, project: bool, project_dir: Path | None = None
+) -> Path:
+    """The directory holding ``platform_name``'s skill, where its claim file lives."""
+    return _platform_skill_destination(
+        platform_name, project=project, project_dir=project_dir
+    ).parent
+
+
+def _agents_md_claimers(agents_md: Path) -> list[str]:
+    """Platforms recorded as having written ``agents_md``'s section, any scope.
+
+    Each platform records its claim beside its own skill, so a section written by
+    e.g. codex is invisible from the shared ``.agents`` directory that freebuff
+    uninstalls from. Removing rules another platform still installs would turn
+    that platform's always-on mechanism off behind its back, so every installed
+    destination is consulted before the section is deleted.
+    """
+    project_dir = agents_md.parent
+    names: set[str] = set()
+    for name in _AGENTS_MD_SECTION_PLATFORMS:
+        for project in (False, True):
+            try:
+                skill_dir = _section_claim_dir(
+                    name, project=project, project_dir=project_dir
+                )
+            except (KeyError, OSError):
+                continue
+            names.update(_section_claimers(skill_dir, agents_md))
+    return sorted(names)
+
+
+def _legacy_section_holders(agents_md: Path, own_platform: str) -> list[str]:
+    """Platforms whose install predates section claims and may have wired this file.
+
+    A skill directory with no claim file of any kind was installed before claims
+    existed, so it cannot say whether it wrote the section; keeping the section
+    is the reversible choice (a stale generic block) against deleting rules a
+    working install relies on. Project scope only: a user-global skill is not
+    evidence that this project's AGENTS.md was wired.
+    """
+    try:
+        content = agents_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if _AGENTS_MD_MARKER not in content:
+        return []
+
+    project_dir = agents_md.parent
+    holders: list[str] = []
+    for name in _AGENTS_MD_SECTION_PLATFORMS:
+        if name == own_platform:
+            continue
+        try:
+            skill_dir = _section_claim_dir(name, project=True, project_dir=project_dir)
+        except (KeyError, OSError):
+            continue
+        if not (skill_dir / "SKILL.md").exists():
+            continue
+        if (skill_dir / _SKILL_CLAIM_FILE).exists() or (
+            skill_dir / _SECTION_CLAIM_FILE
+        ).exists():
+            continue
+        holders.append(name)
+    return sorted(holders)
+
+
+def _release_section_claim(skill_dir: Path, platform_name: str, agents_md: Path) -> None:
+    """Drop this project's claim for ``platform_name``.
+
+    Other projects keep their own claims, so uninstalling one project never
+    leaves a section behind in it, and never removes a section another project
+    still wants.
+    """
+    claims = _section_claims(skill_dir)
+    key = _section_claim_key(agents_md)
+    own = [path for path in claims.get(platform_name, []) if path not in ("", key)]
+    if own:
+        claims[platform_name] = own
+    else:
+        claims.pop(platform_name, None)
+    path = skill_dir / _SECTION_CLAIM_FILE
+    if claims:
+        _record_claim_list(path, claims)
+    else:
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
+def _platforms_sharing_skill_path(
+    platform_name: str,
+    skill_dst: Path,
+    *,
+    project: bool,
+    project_dir: Path | None,
+    same_bundle_only: bool = True,
+) -> list[str]:
+    """Other platforms whose skill destination resolves to ``skill_dst``.
+
+    ``agents`` and ``freebuff`` intentionally install one directory, so removing
+    either one removes the other's skill too. Callers report that instead of
+    letting an uninstall silently take out a second platform's install.
+    """
+    own = _PLATFORM_CONFIG.get(platform_name)
+    if own is None:
+        return []
+    own_bundle = (own.get("skill_file"), own.get("skill_refs"))
+    sharing: list[str] = []
+    for other in sorted(_PLATFORM_CONFIG):
+        if other == platform_name:
+            continue
+        cfg = _PLATFORM_CONFIG[other]
+        if same_bundle_only and (cfg.get("skill_file"), cfg.get("skill_refs")) != own_bundle:
+            # A different bundle at the same path is the ambiguous case the
+            # stale-skill refresh refuses to touch; it is not the pair we mean.
+            continue
+        try:
+            dst = _platform_skill_destination(other, project=project, project_dir=project_dir)
+        except (KeyError, ValueError, OSError):
+            continue
+        if dst == skill_dst:
+            sharing.append(other)
+    return sharing
+
+
+def _remove_skill_file(
+    platform_name: str,
+    *,
+    project: bool = False,
+    project_dir: Path | None = None,
+    report_shared: bool = True,
+    keep_shared: bool = True,
+) -> bool:
+    """Remove a platform skill file and its version stamp without touching other scopes.
+
+    ``report_shared=False`` silences the shared-destination note, and
+    ``keep_shared=False`` ignores the claim file, for callers that remove every
+    platform anyway (`graphify uninstall`); a full teardown must not keep a
+    directory for a claim it is about to remove itself.
+    """
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
     removed = False
     with _skill_lock(skill_dst.parent):
+        claims = _claimed_platforms(skill_dst.parent)
+        others = [name for name in claims if name != platform_name]
+        if others and keep_shared:
+            if platform_name in claims:
+                _record_claim_list(skill_dst.parent / _SKILL_CLAIM_FILE, others)
+            names = ", ".join(f"`{name}`" for name in others)
+            print(
+                f"  skill kept       ->  {skill_dst.parent} is still installed for {names}; "
+                f"remove it with `graphify {others[0]} uninstall`"
+            )
+            return False
         if skill_dst.exists():
             skill_dst.unlink()
             print(f"  skill removed    ->  {skill_dst}")
@@ -433,11 +742,28 @@ def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir
         if refs_dir.exists():
             shutil.rmtree(refs_dir)
             removed = True
+        for marker_name in (_SKILL_CLAIM_FILE, _SECTION_CLAIM_FILE):
+            marker = skill_dst.parent / marker_name
+            if marker.exists():
+                marker.unlink()
+                removed = True
         for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
             try:
                 d.rmdir()
             except OSError:
                 break
+    if removed and report_shared and not claims:
+        # No claim file (an install predating it): the directory can still belong
+        # to another name that ships identical bytes, so say so.
+        sharing = _platforms_sharing_skill_path(
+            platform_name, skill_dst, project=project, project_dir=project_dir
+        )
+        if sharing:
+                others = ", ".join(f"`{name}`" for name in sharing)
+                print(
+                    f"  shared path      ->  {skill_dst.parent} is also the "
+                    f"{others} install target; removed for it as well"
+            )
     return removed
 def _project_scope_root(path: Path, project_dir: Path) -> Path:
     """Return the top-level project artifact for a project-scoped skill path."""
@@ -880,6 +1206,17 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "agents",
     },
+    "freebuff": {
+        # Freebuff (Codebuff runtime) discovers skills from ~/.agents/skills and
+        # ./.agents/skills (plus the .claude equivalents) and has no hook API, so
+        # it consumes the generic Agent-Skills bundle instead of a forked body.
+        # A different bundle at this path would overwrite the `agents` platform's
+        # skill and make the directory ambiguous for _refresh_stale_skills (#2800).
+        "skill_file": "skill-agents.md",
+        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "agents",
+    },
     "devin": {
         # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
         "skill_file": "skill-devin.md",
@@ -1149,6 +1486,24 @@ def _print_install_usage() -> None:
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
+
+# Platforms whose install writes the graphify section into AGENTS.md (via
+# _agents_install). Skill-only targets such as claude and copilot install beside
+# AGENTS.md without touching it, so they say nothing about who owns the section.
+_AGENTS_MD_SECTION_PLATFORMS = (
+    "aider",
+    "agents",
+    "amp",
+    "claw",
+    "codex",
+    "droid",
+    "freebuff",
+    "hermes",
+    "kilo",
+    "opencode",
+    "trae",
+    "trae-cn",
+)
 _GEMINI_MD_MARKER = "## graphify"
 # Deliberately H1, not H2 like the markers above: this one anchors the SKILL
 # registration block _register_always_on_block writes into .claude/CLAUDE.md
@@ -2106,9 +2461,19 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     _write_settings_with_backup(hooks_path, existing)
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
+def _agents_md_target(project_dir: Path | None) -> Path:
+    """The AGENTS.md a platform subcommand reads and writes for a project."""
+    return (project_dir or Path(".")) / "AGENTS.md"
+
+
 def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
-    target = (project_dir or Path(".")) / "AGENTS.md"
+    target = _agents_md_target(project_dir)
+    # Record who wrote the section before writing it: the claim tells an
+    # uninstall of another platform whether the rules are still wanted.
+    skill_dir = _section_claim_dir(platform, project=project, project_dir=project_dir)
+    if skill_dir.is_dir():
+        _record_section_claim(skill_dir, platform, target)
 
     if target.exists():
         content, newline = _read_keep_newline(target)
@@ -2166,24 +2531,69 @@ def _amp_uninstall(project_dir: Path | None = None) -> None:
     if removed:
         print("skill removed")
     _agents_uninstall(project_dir or Path("."), platform="amp")
-def _agents_platform_install(project_dir: Path | None = None) -> None:
-    """`graphify agents install`: skill into ~/.agents/skills + AGENTS.md.
+def _agents_platform_install(project_dir: Path | None = None, platform: str = "agents") -> None:
+    """`graphify agents|freebuff install`: skill into ~/.agents/skills + AGENTS.md.
 
-    The amp-twin of the generic Agent-Skills target. Mirrors _amp_install but
-    lands the skill at the spec's user-global ~/.agents/skills (set in
-    _platform_skill_destination). Wiring AGENTS.md keeps it honest with the
-    rendered hooks reference, which points at `graphify agents install`. The bare
-    `graphify install --platform agents` path stays skill-only (via install()),
-    exactly as amp's `--platform amp` does.
+    The amp-twin of the generic Agent-Skills target, shared with Freebuff (which
+    installs the same bundle at the same locations, see _PLATFORM_CONFIG). Mirrors
+    _amp_install but lands the skill at the spec's user-global ~/.agents/skills
+    (set in _platform_skill_destination). Wiring AGENTS.md keeps it honest with
+    the rendered hooks reference, which points at `graphify <platform> install`.
+    The bare `graphify install --platform agents|freebuff` path stays skill-only
+    (via install()), exactly as amp's `--platform amp` does.
     """
-    _copy_skill_file("agents")
-    _agents_install(project_dir or Path("."), "agents")
-def _agents_platform_uninstall(project_dir: Path | None = None) -> None:
-    """`graphify agents uninstall`: remove the skill and the AGENTS.md section."""
-    removed = _remove_skill_file("agents")
+    _copy_skill_file(platform)
+    _agents_install(project_dir or Path("."), platform)
+def _freebuff_install(project_dir: Path | None = None) -> None:
+    """`graphify freebuff install`: the shared Agent-Skills bundle + AGENTS.md.
+
+    Freebuff has no hook API, so AGENTS.md is its only always-on mechanism.
+    """
+    _agents_platform_install(project_dir, "freebuff")
+def _freebuff_uninstall(project_dir: Path | None = None) -> None:
+    """`graphify freebuff uninstall`: remove the shared skill and AGENTS.md section."""
+    _agents_platform_uninstall(project_dir, "freebuff")
+def _freebuff_project_install(project_dir: Path | None = None) -> None:
+    """`graphify freebuff install --project`: project skill + AGENTS.md section.
+
+    `graphify install --project --platform freebuff` stays skill-only (parity
+    with `--platform agents`), but the Freebuff subcommand wires the project
+    AGENTS.md as well: Freebuff has no hook API, so that section is the only
+    always-on mechanism it has.
+    """
+    project_dir = project_dir or Path(".")
+    skill_dst = _copy_skill_file("freebuff", project=True, project_dir=project_dir)
+    _agents_install(project_dir, "freebuff", project=True)
+    _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"])
+def _freebuff_project_uninstall(
+    project_dir: Path | None = None, *, report_missing: bool = True, keep_shared: bool = True
+) -> None:
+    """`graphify freebuff uninstall --project`: remove the project skill and section.
+
+    Also the `uninstall --project --platform freebuff` path: Freebuff's only
+    always-on mechanism is AGENTS.md, so the section goes too, whichever install
+    form wrote it.
+    """
+    project_dir = project_dir or Path(".")
+    removed = _remove_skill_file(
+        "freebuff", project=True, project_dir=project_dir, keep_shared=keep_shared
+    )
     if removed:
         print("skill removed")
-    _agents_uninstall(project_dir or Path("."), platform="agents")
+    elif report_missing and not _claimed_platforms(
+        _platform_skill_destination("freebuff", project=True, project_dir=project_dir).parent
+    ):
+        print("nothing to remove")
+    # The skill stays while another name claims it, and the section goes unless
+    # another installed platform recorded writing it here too (`agents --project`
+    # is skill-only, so it never does).
+    _agents_uninstall(project_dir, platform="freebuff", project=True)
+def _agents_platform_uninstall(project_dir: Path | None = None, platform: str = "agents") -> None:
+    """`graphify agents|freebuff uninstall`: remove the skill and the AGENTS.md section."""
+    removed = _remove_skill_file(platform)
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir or Path("."), platform=platform)
 def _project_install(platform_name: str, project_dir: Path | None = None, strict: bool = False) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
@@ -2222,14 +2632,20 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "freebuff"):
         # Skill-only project install: drop SKILL.md (+ references) at the scope
-        # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
+        # root. `agents`/`freebuff` -> ./.agents/skills/graphify/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
     else:
         install(platform=platform_name, project=True, project_dir=project_dir)
-def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> None:
+def _project_uninstall(
+    platform_name: str,
+    project_dir: Path | None = None,
+    *,
+    report_missing: bool = True,
+    keep_shared: bool = True,
+) -> None:
     """Remove project-scoped platform skill/config files only."""
     project_dir = project_dir or Path(".")
     platform_name = _canonical_platform(platform_name)
@@ -2244,7 +2660,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _kiro_uninstall(project_dir)
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
-        _agents_uninstall(project_dir, platform=platform_name)
+        _agents_uninstall(project_dir, platform=platform_name, project=True)
         if platform_name == "codex":
             _uninstall_codex_hook(project_dir)
     elif platform_name == "antigravity":
@@ -2254,9 +2670,18 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
+    elif platform_name == "freebuff":
+        # Freebuff writes the project AGENTS.md section, so its uninstall must
+        # remove that too (and keep it while another platform still claims the
+        # shared skill directory).
+        _freebuff_project_uninstall(
+            project_dir, report_missing=report_missing, keep_shared=keep_shared
+        )
     elif platform_name in ("copilot", "pi", "kimi", "agents"):
-        removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
-        if not removed:
+        removed = _remove_skill_file(
+            platform_name, project=True, project_dir=project_dir, keep_shared=keep_shared
+        )
+        if not removed and report_missing:
             print("nothing to remove")
     elif platform_name == "codebuddy":
         # project=True keeps `uninstall --project` project-scoped; previously
@@ -2269,30 +2694,27 @@ def _project_uninstall_all(project_dir: Path | None = None) -> None:
     project_dir = project_dir or Path(".")
     print("Uninstalling project-scoped graphify files...\n")
     for platform_name in _PLATFORM_CONFIG:
-        _project_uninstall(platform_name, project_dir)
+        # `agents` and `freebuff` share one directory: whichever runs second finds
+        # it gone (or keeps its claim), which is not "nothing to remove".
+        _project_uninstall(
+            platform_name,
+            project_dir,
+            report_missing=platform_name not in ("agents", "freebuff"),
+            keep_shared=False,
+        )
     for platform_name in ("gemini", "cursor"):
         _project_uninstall(platform_name, project_dir)
     print("\nDone.")
-def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
-    """Remove the graphify section from the local AGENTS.md."""
-    target = (project_dir or Path(".")) / "AGENTS.md"
-
+def _agents_section_uninstall(target: Path) -> None:
+    """Delete the graphify section from ``target``, tolerating a missing file."""
     if not target.exists():
         print("No AGENTS.md found in current directory - nothing to do")
-        if platform == "opencode":
-            _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
-        elif platform == "kilo":
-            _uninstall_kilo_plugin(project_dir or Path("."))
         return
 
     content, newline = _read_keep_newline(target)
     cleaned = _remove_marker_section(content, _AGENTS_MD_MARKER)
     if cleaned is None:
         print("graphify section not found in AGENTS.md - nothing to do")
-        if platform == "opencode":
-            _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
-        elif platform == "kilo":
-            _uninstall_kilo_plugin(project_dir or Path("."))
         return
 
     # A symlink stays: writing through it cleans the file it points to.
@@ -2303,10 +2725,45 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         target.unlink()
         print(f"AGENTS.md was empty after removal - deleted {target.resolve()}")
 
+
+def _agents_uninstall(
+    project_dir: Path, platform: str = "", *, project: bool = False
+) -> None:
+    """Remove the graphify section from the local AGENTS.md.
+
+    Releases ``platform``'s section claim first, then keeps the section while any
+    other installed platform records writing it. Per-platform sidecars (opencode
+    plugin, kilo plugin) are removed either way: they belong to the platform that
+    is uninstalling, not to the section.
+    """
+    target = _agents_md_target(project_dir)
+    keep_section = False
+    if platform:
+        _release_section_claim(
+            _section_claim_dir(platform, project=project, project_dir=project_dir),
+            platform,
+            target,
+        )
+        if _agents_md_claimers(target):
+            keep_section = True
+        else:
+            legacy = _legacy_section_holders(target, platform)
+            if legacy:
+                named = ", ".join(f"`{name}`" for name in legacy)
+                print(
+                    f"  section kept     ->  a pre-tracking {named} install may also own "
+                    f"the section in {target.resolve()}"
+                )
+                keep_section = True
+    if not keep_section:
+        _agents_section_uninstall(target)
+
     if platform == "opencode":
         _uninstall_opencode_plugin(_opencode_dir(project=True, project_dir=project_dir))
     elif platform == "kilo":
         _uninstall_kilo_plugin(project_dir or Path("."))
+
+
 def _kilo_uninstall_global() -> list[str]:
     removed = []
     command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"
@@ -2534,7 +2991,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # ~/.config/agents/skills for amp, ~/.agents/skills, ...) that the AGENTS.md
     # cleanup above does not touch, so remove every platform's.
     for platform_name in _PLATFORM_CONFIG:
-        _remove_skill_file(platform_name)
+        _remove_skill_file(platform_name, report_shared=False, keep_shared=False)
     # Kilo's global command sits outside its skill dir.
     for line in _kilo_uninstall_global():
         print(f"  {line}")
@@ -2770,6 +3227,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "cursor",
     "devin",
     "droid",
+    "freebuff",
     "gemini",
     "hermes",
     "install",
@@ -3042,6 +3500,21 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _agents_platform_uninstall(Path("."))
         else:
             print(f"Usage: graphify {cmd} [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "freebuff":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _freebuff_project_install(Path("."))
+            else:
+                _freebuff_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _freebuff_project_uninstall(Path("."))
+            else:
+                _freebuff_uninstall(Path("."))
+        else:
+            print("Usage: graphify freebuff [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

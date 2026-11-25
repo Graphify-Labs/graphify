@@ -156,6 +156,38 @@ def test_the_copilot_dir_shared_with_vscode_is_not_guessed():
     assert dst.read_text(encoding="utf-8") == OLD_BODY
 
 
+def test_a_path_shared_by_the_same_bundle_is_refreshed(capsys):
+    """agents + freebuff resolve to one directory and one bundle, so a refresh
+    writes identical bytes whichever name does it and is not ambiguous. Skipping
+    it would leave every Freebuff/Agent-Skills install stale forever (#2800 is
+    the opposite case: two DIFFERENT bundles at one path)."""
+    dst = _stale("agents")
+    assert _platform_skill_destination("freebuff") == dst
+
+    mainmod._refresh_stale_skills()
+
+    assert _stamp(dst) == __version__
+    assert dst.read_bytes() == _packaged("agents")
+    assert str(dst.parent) in capsys.readouterr().err
+
+
+def test_a_path_shared_by_two_different_bundles_is_still_not_guessed(requires_symlinks):
+    """A directory reachable by two platforms whose packaged bundles differ still
+    holds one copy of unknown provenance; the stamp cannot say which, so it stays
+    untouched."""
+    real = _platform_skill_destination("agents").parent
+    real.mkdir(parents=True)
+    link = _platform_skill_destination("amp").parent
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(real, target_is_directory=True)
+    dst = _stale("agents")
+
+    mainmod._refresh_stale_skills()
+
+    assert _stamp(dst) == OLD
+    assert dst.read_text(encoding="utf-8") == OLD_BODY
+
+
 @pytest.mark.parametrize("system", ["Linux", "Darwin", "Windows"])
 def test_gemini_and_agents_own_separate_skill_dirs(monkeypatch, system):
     """gemini and agents ship different SKILL.md files, so one shared dir let

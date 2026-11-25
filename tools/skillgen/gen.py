@@ -234,8 +234,8 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
         # pointing at `graphify agents install` (which wires AGENTS.md, like amp).
         "heading_suffix": "",
         "host_display": "your agent",
-        "install_block": "graphify agents install",
-        "uninstall_block": "graphify agents uninstall  # remove the section",
+        "install_block": "graphify agents install       # or: graphify freebuff install",
+        "uninstall_block": "graphify agents uninstall     # or: graphify freebuff uninstall   # remove the section",
         "pretooluse_note": "",
     },
 }
@@ -559,9 +559,18 @@ def _core_to_powershell(body: str) -> str:
     return translated
 
 
-# Step B3's re-run hints name the agent that can write chunk files. A dispatch
-# variant whose host has no `general-purpose` agent names its own (#4494).
-_DEFAULT_WRITER_AGENT = ("general-purpose agent", '`subagent_type="general-purpose"`')
+# Step B3's re-run hints name the agent that can write chunk files. The default
+# is host-neutral: the parallel-subagent tool differs per host (Claude's `Task`,
+# an `Agent` tool, Freebuff's `spawn_agents`), so the hint names the tool each
+# host uses instead of one host's. Claude's concrete writer type stays spelled
+# out, because plain `Task` there defaults to a read-only explorer on some
+# setups. A dispatch variant whose host has its own writer agent names it
+# instead (#4494).
+_DEFAULT_WRITER_AGENT = (
+    'a file-writing subagent (`Task` with `subagent_type="general-purpose"`, '
+    "an `Agent` tool, or `spawn_agents`)",
+    'a subagent that can write files to disk (Claude: `subagent_type="general-purpose"`)',
+)
 _WRITER_AGENT = {"pi-subagents": ("the `delegate` agent", "the `delegate` agent")}
 
 

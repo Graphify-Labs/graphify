@@ -334,10 +334,10 @@ See `references/extraction-spec.md` for the exact subagent prompt (JSON schema, 
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
+- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with a file-writing subagent (`Task` with `subagent_type="general-purpose"`, an `Agent` tool, or `spawn_agents`)." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure a subagent that can write files to disk (Claude: `subagent_type="general-purpose"`) is used.
 
 **Step B3.5 - Verify each reported file was actually read to its end**
 

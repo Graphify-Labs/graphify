@@ -277,16 +277,23 @@ Both bounds matter. The line bound is not only about the 2000-line Read cap: a s
 
 **Step B2 - Dispatch ALL subagents in a single message**
 
-> Uses the `Task` tool for parallel subagent dispatch.
-> Call `Task` once per chunk — ALL in the same response so they run in parallel.
+> Uses the host's parallel subagent tool: Claude's `Task`, an `Agent` tool, or
+> Freebuff's `spawn_agents` (an array of `{agent_type, prompt}` entries).
+> Make one call per chunk — ALL in the same response so they run in parallel.
 
-Pass the extraction prompt as the task description:
+Pass the extraction prompt as the subagent's prompt/task description:
 
 ```
 Task(description="Your task is to perform the following. Follow the instructions below exactly.\n\n<agent-instructions>\n[extraction prompt, with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE substituted]\n</agent-instructions>\n\nExecute this now. Output ONLY the structured JSON response.")
+# Agent tool: pass the same text as the call's prompt.
+# spawn_agents: one {agent_type: <a writer-capable agent>, prompt: <the same text>} entry per chunk.
 ```
 
-Each subagent writes its result to its own `graphify-out/.graphify_chunk_NN.json`. Collect results as each `Task` completes and parse each as JSON.
+**Important - subagent type:** use an agent that can **write files to disk** (Claude's `general-purpose`, or the host's equivalent coding agent with Write/Bash access). Do NOT use a read-only explore/research agent — it cannot write chunk files and silently drops extraction results.
+
+Each subagent writes its result to its own `graphify-out/.graphify_chunk_NN.json`. Collect results as each subagent completes and parse each as JSON.
+
+**Serial fallback:** if the host exposes no spawnable agent that can write files, extract the chunks sequentially in the main context instead, writing each `graphify-out/.graphify_chunk_NN.json` to disk before merging. Slower, but the same chunk files and the same result.
 
 CHUNK_PATH must be an **absolute** path — derive it before dispatching:
 ```bash
@@ -303,10 +310,10 @@ See `references/extraction-spec.md` for the exact subagent prompt (JSON schema, 
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
+- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with a file-writing subagent (`Task` with `subagent_type="general-purpose"`, an `Agent` tool, or `spawn_agents`)." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure a subagent that can write files to disk (Claude: `subagent_type="general-purpose"`) is used.
 
 **Step B3.5 - Verify each reported file was actually read to its end**
 
