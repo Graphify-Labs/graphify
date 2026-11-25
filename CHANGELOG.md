@@ -4,7 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.120 (2026-11-25)
 
-A batch of resolution, serve, export, clustering and performance fixes across eight community pull requests. The Python function-local-import change alters node/edge output, so the AST cache schema bumps (55 to 56) and Python re-extracts on the first build after upgrading; the other fixes need no rebuild.
+A batch of resolution, serve, export, clustering and performance fixes across nine community pull requests. The Python function-local-import change alters node/edge output, so the AST cache schema bumps (55 to 56) and Python re-extracts on the first build after upgrading; the other fixes need no rebuild.
 
 - Feat: **serve** a new `affected` MCP tool reports the reverse-dependency blast radius of a symbol (what breaks if you change it), and `query_graph` gains an optional `seeds` argument to start a traversal from known nodes; both resolve a node by name, file path, or id the same way the CLI does (#5254, thanks @ArnabOPP; proposed by @ramarro123).
 - Perf: **query** per-node search fields, degrees and the hub threshold, an integer-indexed adjacency for BFS/DFS, and rendered NODE lines are each computed once per loaded graph and reused by every later query, and document frequency is taken through the trigram index; query output is byte-identical (#5476, thanks @nothariharan).
