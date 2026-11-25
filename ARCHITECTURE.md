@@ -84,6 +84,9 @@ Go resolves a selector against its visible lexical binding before considering
 a same-named import. An unknown local receiver does not resolve as a package.
 AST cache schema 54 retires older call facts.
 
+Linux watch reconciles the corpus after a watched subtree moves or is
+removed, even when watchdog sends only a directory event.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
