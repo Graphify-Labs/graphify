@@ -169,9 +169,10 @@ def introspect_cargo(root: str | Path) -> dict[str, Any]:
             if target is None:
                 continue
             if inherited:
-                # Shared paths are relative to the workspace root, not the member.
-                # A matching name alone cannot prove a registry/git dep is local.
-                inherited_manifest = (root_path / spec["path"] / "Cargo.toml").resolve()
+                # Shared paths are relative to the workspace manifest's directory,
+                # not the scan root or member. A matching name alone cannot prove a
+                # registry/git dep is local.
+                inherited_manifest = (root_manifest.parent / spec["path"] / "Cargo.toml").resolve()
                 if inherited_manifest != target[1].resolve():
                     continue
             edges.append(
