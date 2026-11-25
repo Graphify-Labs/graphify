@@ -140,6 +140,17 @@ def test_invalid_schema_json_does_not_raise(tmp_path):
     assert _targets(root, "sections/a.liquid") == []
 
 
+def test_asset_url_with_query_or_fragment_resolves_the_file(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/font.eot": "",
+        "sections/a.liquid": "{{ 'font.eot?#iefix' | asset_url }}\n{{ 'gone.svg#frag' | asset_url }}\n",
+    })
+    assert _targets(root, "sections/a.liquid") == [("references", "assets/font.eot", "L1")]
+    nodes = {n["id"]: n for n in extract_liquid(root / "sections/a.liquid")["nodes"]}
+    labels = [n["label"] for n in nodes.values() if n.get("unresolved")]
+    assert labels == ["assets/gone.svg"]
+
+
 def test_asset_url(tmp_path):
     root = _theme(tmp_path, {
         "assets/base.css": "",

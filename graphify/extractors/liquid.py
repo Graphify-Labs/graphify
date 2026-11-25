@@ -52,6 +52,7 @@ _NAME_ARG = re.compile(r"""\s*(['"])([^'"\n]*)\1""")
 _BLOCK_TYPE = re.compile(r"""\btype\s*:\s*(['"])([^'"\n]*)\1""")
 # A quoted literal directly piped into asset_url or into the t / translate filter.
 _FILTER = re.compile(r"""(['"])([^'"\n]+)\1\s*\|\s*(asset_url|t|translate)(?![\w])""")
+_ASSET_SUFFIX = re.compile(r"[?#]")
 _LEADING_COMMENT = re.compile(r"\A\s*/\*.*?\*/", re.DOTALL)
 
 _SKIP_UNTIL = {
@@ -265,6 +266,8 @@ class _Collector:
                     self.file_edge("imports", "block", block, self.root / "blocks" / f"{block}.liquid", line)
 
     def _asset(self, name: str, line: int) -> None:
+        # Old font stacks write 'x.eot?#iefix' | asset_url: the file is the part before ? or #.
+        name = _ASSET_SUFFIX.split(name, maxsplit=1)[0]
         if not _safe_asset(name):
             return
         direct = self.root / "assets" / name
