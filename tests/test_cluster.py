@@ -255,15 +255,12 @@ def test_partition_passes_canonical_weighted_edges_to_native_leiden(monkeypatch)
     from types import SimpleNamespace
     import graphify.cluster as cl
 
+    # Record the call and check it below: _native_leiden treats any exception
+    # from the binding as "unavailable", so an assert in here could not fail.
+    calls = []
+
     def leiden(*, edges, seed, resolution, **kwargs):
-        assert edges == [
-            ("a", "a", 2.0),
-            ("a", "b", 1.0),
-            ("a", "é", 0.25),
-            ("b", "é", 3.0),
-        ]
-        assert seed == 42
-        assert resolution == 1.2
+        calls.append((edges, seed, resolution))
         return 0.0, {"b": 5, "é": 5, "a": 1}
 
     monkeypatch.setitem(sys.modules, "graspologic_native", SimpleNamespace(leiden=leiden))
@@ -282,6 +279,11 @@ def test_partition_passes_canonical_weighted_edges_to_native_leiden(monkeypatch)
     assert list(cl._partition(G.subgraph(G), resolution=1.2).items()) == [
         ("b", 5), ("é", 5), ("a", 1), ("isolated", 6), ("z", 7),
     ]
+    assert calls == [(
+        [("a", "a", 2.0), ("a", "b", 1.0), ("a", "é", 0.25), ("b", "é", 3.0)],
+        42,
+        1.2,
+    )]
 
 
 def test_native_partition_error_preserves_wrapper_input(monkeypatch):
