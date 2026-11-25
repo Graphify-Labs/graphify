@@ -311,3 +311,53 @@ def test_cache_fails_open_on_corrupt_sidecar(tmp_path):
     assert out == fresh  # recomputed, and valid cache rewritten
     # the corrupt file was replaced by a valid one
     json.loads((tmp_path / ".graphify_partition_cache.json").read_text())
+
+
+def test_split_community_avoids_subgraphview_and_preserves_parity(monkeypatch):
+    """_split_community must pass a concrete graph (not a SubGraphView) to _partition
+    and match G.subgraph(nodes) partitioning across Graph, DiGraph, and MultiGraph."""
+    import graphify.cluster as _cm
+
+    seen_subgraphs = []
+    real_partition = _cm._partition
+
+    def _spy(graph, resolution=1.0):
+        seen_subgraphs.append(graph)
+        return real_partition(graph, resolution=resolution)
+
+    monkeypatch.setattr(_cm, "_partition", _spy)
+
+    # Undirected graph with two cliques linked by a weak bridge
+    G = nx.Graph()
+    for i in range(5):
+        for j in range(i + 1, 5):
+            G.add_edge(f"a{i}", f"a{j}", weight=5.0)
+            G.add_edge(f"b{i}", f"b{j}", weight=5.0)
+    G.add_edge("a0", "b0", weight=0.1)
+    G.add_node("outside")
+    G.add_edge("a0", "outside", weight=10.0)
+
+    nodes = [f"a{i}" for i in range(5)] + [f"b{i}" for i in range(5)]
+    split = _cm._split_community(G, nodes)
+    assert len(seen_subgraphs) == 1
+    assert not hasattr(seen_subgraphs[0], "_graph"), "must not pass SubGraphView to _partition"
+    expected_part = real_partition(G.subgraph(nodes))
+    expected_groups = [
+        sorted(n for n, cid in expected_part.items() if cid == target_cid)
+        for target_cid in set(expected_part.values())
+    ]
+    assert sorted(map(sorted, split)) == sorted(expected_groups)
+
+    # DiGraph with asymmetric reciprocal weights
+    D = nx.DiGraph()
+    for i in range(4):
+        for j in range(i + 1, 4):
+            D.add_edge(f"x{i}", f"x{j}", weight=1.0)
+            D.add_edge(f"x{j}", f"x{i}", weight=8.0)
+    d_nodes = [f"x{i}" for i in range(4)]
+    assert _cm._split_community(D, d_nodes) == [sorted(d_nodes)]
+
+    # Zero-edge subset falls back to singletons without calling _partition
+    prev_calls = len(seen_subgraphs)
+    assert _cm._split_community(G, ["a1", "b1", "outside"]) == [["a1"], ["b1"], ["outside"]]
+    assert len(seen_subgraphs) == prev_calls

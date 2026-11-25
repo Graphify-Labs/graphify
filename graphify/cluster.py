@@ -229,20 +229,13 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     # first-pass partition, but the cohesion-split pass produced 70 communities
     # under PYTHONHASHSEED=1 and 69 under =2. Sorting the pair itself removes
     # the dependency; for nx.Graph the orientation carries no meaning anyway.
-    edge_rows = sorted(
-        G.edges(data=True),
-        key=lambda row: (
-            *sorted((str(row[0]), str(row[1]))),
-            # Tie-break only. On a non-multigraph nx.Graph the unordered endpoint
-            # pair above is already unique per edge, so this third element never
-            # actually decides the order between two distinct edges - it exists
-            # purely for determinism. A cheap float therefore produces the exact
-            # same ordering as the former json.dumps(row[2], sort_keys=True) of
-            # the whole attr dict, without re-serialising every edge in pure
-            # Python ahead of the fast native Leiden call.
-            float(row[2].get("weight", 1.0)),
-        ),
-    )
+    def _edge_sort_key(row: tuple) -> tuple[str, str, float]:
+        su = str(row[0])
+        sv = str(row[1])
+        w = float(row[2].get("weight", 1.0))
+        return (su, sv, w) if su <= sv else (sv, su, w)
+
+    edge_rows = sorted(G.edges(data=True), key=_edge_sort_key)
     for src, tgt, attrs in edge_rows:
         stable.add_edge(src, tgt, **attrs)
     del edge_rows  # `stable` holds the edges now
@@ -545,7 +538,15 @@ def cluster(
 
 def _split_community(G: nx.Graph, nodes: list[str]) -> list[list[str]]:
     """Run a second Leiden pass on a community subgraph to split it further."""
-    subgraph = G.subgraph(nodes)
+    # Materialize a concrete graph instead of passing a SubGraphView into
+    # _partition(): SubGraphView invokes a Python filter closure on every edge/
+    # node lookup, dominating split-pass CPU time on large graphs.
+    node_set = set(nodes)
+    subgraph = nx.MultiGraph() if (G.is_multigraph() or G.is_directed()) else nx.Graph()
+    subgraph.add_nodes_from(n for n in node_set if n in G)
+    for u, v, attrs in G.edges(node_set, data=True):
+        if v in node_set:
+            subgraph.add_edge(u, v, **attrs)
     if subgraph.number_of_edges() == 0:
         # No edges - split into individual nodes
         return [[n] for n in sorted(nodes)]
