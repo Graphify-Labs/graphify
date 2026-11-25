@@ -1360,49 +1360,78 @@ def _alias_index(nodes: "Iterable[tuple[str, dict]]") -> dict[str, str]:
     from graphify.extractors.csharp import bare_csharp_method_label
     from graphify.extractors.resolution import _PYTHON_STDLIB_MODULE_NAMES
 
-    alias_candidates: dict[str, set[str]] = {}
+    _AMBIGUOUS = object()
+    alias_map: dict[str, str | object] = {}
+
+    def _register(key: str, nid: str) -> None:
+        prev = alias_map.get(key)
+        if prev is None:
+            alias_map[key] = nid
+        elif prev is not _AMBIGUOUS and prev != nid:
+            alias_map[key] = _AMBIGUOUS
+
+    # Many nodes share the same source_file; cache per-file Path/stem/stdlib work.
+    file_cache: dict[str, tuple[str, str, tuple[tuple[str, str], ...]] | None] = {}
     for nid, attrs in nodes:
         if not isinstance(nid, str) or not isinstance(attrs, dict):
             continue
         sf = attrs.get("source_file")
         if not sf:
             continue
-        rel = Path(str(sf))
-        if _is_abs(str(sf)):
-            continue
-        new_stem = make_id(_fs(rel))
-        if not new_stem:
-            continue
-        is_py_stdlib_stem = (
-            rel.suffix.lower() in (".py", ".pyi")
-            and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
-        )
-        if str(attrs.get("label", "")) == rel.name:
+        sf_str = str(sf)
+        cached = file_cache.get(sf_str)
+        if cached is None:
+            if sf_str in file_cache:
+                continue
+            if _is_abs(sf_str):
+                file_cache[sf_str] = None
+                continue
+            rel = Path(sf_str)
+            new_stem = make_id(_fs(rel))
+            if not new_stem:
+                file_cache[sf_str] = None
+                continue
+            is_py_stdlib_stem = (
+                rel.suffix.lower() in (".py", ".pyi")
+                and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
+            )
+            collected_stems: list[tuple[str, str]] = []
+            for old_stem in _old_file_stems(rel):
+                if old_stem == new_stem:
+                    continue
+                if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
+                    continue
+                collected_stems.append((old_stem, _normalize_id(old_stem)))
+            cached = (new_stem, rel.name, tuple(collected_stems))
+            file_cache[sf_str] = cached
+        new_stem, rel_name, stem_pairs = cached
+        raw_label = str(attrs.get("label", ""))
+        norm_nid = _normalize_id(nid)
+        if raw_label == rel_name:
             suffix = ""  # this node IS the file, whatever its (possibly salted) id
         else:
-            suffix = ""
-            if _normalize_id(nid).startswith(new_stem):
-                suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
-        for old_stem in _old_file_stems(rel):
-            if old_stem == new_stem:
-                continue
-            if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
-                continue
+            suffix = norm_nid[len(new_stem):] if norm_nid.startswith(new_stem) else ""
+        for old_stem, norm_old_stem in stem_pairs:
             alias = old_stem + suffix
-            alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
-            alias_candidates.setdefault(alias, set()).add(nid)
-        m_label = str(attrs.get("label", ""))
-        m_label = bare_csharp_method_label(m_label.strip(), sf) or m_label
-        if attrs.get("_origin") == "ast" and m_label.startswith("."):
-            m_name = make_id(m_label.strip().removeprefix(".").removesuffix("()"))
-            m_alias = f"{new_stem}_{m_name}"
-            if _normalize_id(nid) != _normalize_id(m_alias):
-                alias_candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
-                alias_candidates.setdefault(m_alias, set()).add(nid)
+            norm_alias = _normalize_id(alias) if suffix else norm_old_stem
+            _register(norm_alias, nid)
+            if alias != norm_alias:
+                _register(alias, nid)
+        if attrs.get("_origin") == "ast":
+            stripped = raw_label.strip()
+            m_label = (bare_csharp_method_label(stripped, sf) if stripped.endswith("()") else None) or raw_label
+            if m_label.startswith("."):
+                m_name = make_id(m_label.strip().removeprefix(".").removesuffix("()"))
+                m_alias = f"{new_stem}_{m_name}"
+                norm_m_alias = _normalize_id(m_alias)
+                if norm_nid != norm_m_alias:
+                    _register(norm_m_alias, nid)
+                    if m_alias != norm_m_alias:
+                        _register(m_alias, nid)
     return {
-        alias_key: next(iter(candidates))
-        for alias_key, candidates in alias_candidates.items()
-        if len(candidates) == 1
+        alias_key: target
+        for alias_key, target in alias_map.items()
+        if isinstance(target, str)
     }
 
 
