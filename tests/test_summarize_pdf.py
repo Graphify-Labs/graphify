@@ -551,3 +551,53 @@ def test_one_pdf_with_a_node_is_shown_as_that_node(tmp_path, monkeypatch, capsys
     assert code == 0, err
     assert "Node: protocol.pdf" in out
     assert f"Summary:   {REPLY}" in out
+
+
+# ------------------------------------- a PDF with a summary that cannot be read
+
+
+def _unreadable(monkeypatch) -> None:
+    """Every PDF fails to open, as when pypdf is missing: the files are unchanged."""
+    def fail(path, pages):
+        raise PdfError("cannot be read (made to fail by the test)")
+
+    monkeypatch.setattr("graphify.summarize_llm.pdf_opening_text", fail)
+
+
+def test_a_backend_run_keeps_the_summary_of_a_pdf_it_cannot_read(tmp_path, monkeypatch,
+                                                                 capsys, model) -> None:
+    root = _project(tmp_path, {"protocol.pdf": [COVER, SYNOPSIS]})
+    assert _cli(monkeypatch, capsys, root, "--backend", "claude")[0] == 0
+    before = _data(root)["files"]["protocol.pdf"]
+    _unreadable(monkeypatch)
+    code, out, err = _cli(monkeypatch, capsys, root, "--backend", "claude")
+    assert code == 0, err
+    assert "warning: protocol.pdf:" in err and "it keeps its earlier summary" in err
+    assert _data(root)["files"]["protocol.pdf"] == before
+    assert "1 kept from an earlier run" in out
+    assert _sent_pdfs(model) == 1
+
+
+def test_a_backend_run_drops_the_summary_of_a_pdf_that_became_unreadable(
+        tmp_path, monkeypatch, capsys, model) -> None:
+    root = _project(tmp_path, {"protocol.pdf": [COVER, SYNOPSIS]})
+    assert _cli(monkeypatch, capsys, root, "--backend", "claude")[0] == 0
+    # Another file under the same name, with no text: the summary is not of it.
+    _make_pdf(root / "protocol.pdf", [[]])
+    code, out, err = _cli(monkeypatch, capsys, root, "--backend", "claude")
+    assert code == 0, err
+    assert "warning: protocol.pdf:" in err and "it is not sent" in err
+    assert "files" not in _data(root)
+
+
+def test_a_backend_run_keeps_the_summary_of_a_pdf_node_it_cannot_read(tmp_path, monkeypatch,
+                                                                      capsys, model) -> None:
+    root = _project(tmp_path, {"reports/protocol.pdf": [COVER, SYNOPSIS]})
+    nid = _add_pdf_node(root, "reports/protocol.pdf")
+    assert _cli(monkeypatch, capsys, root, "--backend", "claude")[0] == 0
+    before = _data(root)["nodes"][nid]
+    assert before["generated_by"] == MODEL
+    _unreadable(monkeypatch)
+    code, out, err = _cli(monkeypatch, capsys, root, "--backend", "claude")
+    assert code == 0, err
+    assert _data(root)["nodes"][nid] == before

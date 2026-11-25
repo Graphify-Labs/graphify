@@ -878,3 +878,23 @@ def test_a_reply_cut_off_by_the_output_limit_keeps_its_finished_sentences() -> N
 
 def test_the_prompt_asks_for_a_full_stop() -> None:
     assert "end the last one with a full stop" in build_prompt(_document(), 1)
+
+
+def test_a_project_profile_under_a_linked_folder_is_refused(tmp_path, requires_symlinks) -> None:
+    """A link in place of the profile folder, or of `.graphify`, puts a file
+    from outside the project under the right name. Resolving the file and its
+    parent together hid that: the two always agree."""
+    outside = tmp_path / "outside"
+    (outside / "summaries").mkdir(parents=True)
+    (outside / "summaries" / "clinical.md").write_text("Outside rules.", encoding="utf-8")
+    for link_at, target in (("summaries", outside / "summaries"), (None, outside)):
+        root = tmp_path / ("proj-folder" if link_at else "proj-graphify")
+        if link_at:
+            (root / ".graphify").mkdir(parents=True)
+            (root / ".graphify" / link_at).symlink_to(target, target_is_directory=True)
+        else:
+            root.mkdir()
+            (root / ".graphify").symlink_to(target, target_is_directory=True)
+        assert (root / ".graphify" / "summaries" / "clinical.md").is_file()
+        with pytest.raises(ProfileError, match="points outside"):
+            load_profile("clinical", root)

@@ -2821,6 +2821,7 @@ def dispatch_command(cmd: str) -> None:
             from graphify.summarize_llm import (
                 dry_run_report,
                 find_pdfs,
+                kept_unread,
                 model_name,
                 plan_documents,
                 plan_pdfs,
@@ -2836,8 +2837,13 @@ def dispatch_command(cmd: str) -> None:
             documents = plan_documents(G, root, pages, opts.max_chars)
             from_disk, skipped = plan_pdfs(pdfs, root, pages, documents)
             documents += from_disk
+            # A PDF that cannot be read now keeps the summary of the same file.
+            unread = kept_unread(G, root, existing, documents,
+                                 [source for source, _ in skipped])
             for source, reason in skipped:
-                print(f"warning: {sanitize_label(source)}: {reason}; it is not sent",
+                left = ("it keeps its earlier summary" if source in unread.files
+                        else "it is not sent")
+                print(f"warning: {sanitize_label(source)}: {reason}; {left}",
                       file=sys.stderr)
             jobs, unchanged = prepare(documents, existing, backend=opts.backend,
                                       model=opts.model, pages=pages, max_chars=opts.max_chars,
@@ -2849,7 +2855,8 @@ def dispatch_command(cmd: str) -> None:
                     max_chars=opts.max_chars, profile=profile,
                     unchanged=len(unchanged.nodes), unchanged_files=len(unchanged.files))))
                 return
-            overrides = Entries(dict(unchanged.nodes), dict(unchanged.files))
+            overrides = Entries({**unread.nodes, **unchanged.nodes},
+                                {**unread.files, **unchanged.files})
             if jobs:
                 # Say what leaves the machine before any of it does.
                 print(f"Sending the first {pages} pages of {len(jobs)} document(s) to "

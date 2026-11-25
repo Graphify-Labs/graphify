@@ -506,7 +506,9 @@ def load_profile(name: str, root: Path) -> Profile:
     The name is a plain name, so it can only reach a file in those two
     folders. A project's profile travels with a cloned repository, so it must
     also be a real file inside that folder: a link out of it could send any
-    file on the machine to the model as instructions.
+    file on the machine to the model as instructions. The folder itself, or
+    ``.graphify`` above it, can be such a link, so the file is checked against
+    where the folder is in the project, not against where its parent leads.
     """
     if not _PROFILE_NAME_RE.fullmatch(name or ""):
         raise ProfileError(
@@ -519,7 +521,7 @@ def load_profile(name: str, root: Path) -> Profile:
             continue
         if shared:
             try:
-                path.resolve().relative_to(path.parent.resolve())
+                path.resolve().relative_to(Path(root).resolve() / PROFILE_DIR)
             except (OSError, RuntimeError, ValueError):
                 raise ProfileError(f"profile {path} points outside its folder; not used") from None
         try:
@@ -682,6 +684,23 @@ def kept_entries(G: nx.Graph, root: Path, existing: Entries) -> "tuple[Entries, 
         else:
             stale_files += 1
     return kept, stale_nodes, stale_files
+
+
+def kept_unread(G: nx.Graph, root: Path, existing: Entries, planned: list[Document],
+                skipped: list[str]) -> Entries:
+    """The model-written summaries of PDFs a ``--backend`` run could not read,
+    kept because the file is still the one the summary was written from.
+
+    A PDF that cannot be read is not planned, so the run has no new summary
+    for it; without this its earlier one would be written over. ``skipped``
+    are the paths of the PDFs with no node that were found but not read.
+    """
+    nodes = {document.nid for document in planned if document.nid}
+    unread = Entries(
+        {nid: entry for nid, entry in existing.nodes.items()
+         if nid not in nodes and nid in G and _node_pdf(G.nodes[nid], root) is not None},
+        {rel: entry for rel, entry in existing.files.items() if rel in set(skipped)})
+    return kept_entries(G, root, unread)[0] if unread else unread
 
 
 # -------------------------------------------------------------------- the run
