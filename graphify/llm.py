@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -1959,6 +1960,14 @@ def _claude_cli_supports_json_schema(claude_cmd: str) -> bool:
     return supported
 
 
+def _claude_cli_args(command: str) -> list[str]:
+    try:
+        extra = shlex.split(os.environ.get("GRAPHIFY_CLAUDE_CLI_ARGS", ""))
+    except ValueError as exc:
+        raise ValueError(f"Invalid GRAPHIFY_CLAUDE_CLI_ARGS: {exc}") from exc
+    return [command, "-p", "--output-format", "json", "--no-session-persistence", *extra]
+
+
 def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Claude via the locally-installed Claude Code CLI (`claude -p`).
 
@@ -2034,12 +2043,8 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         + "preamble, no markdown fences.\n\n"
         + user_message
     )
-    cli_args = [
-        claude_cmd, "-p",
-        "--output-format", "json",
-        "--no-session-persistence",
-        *add_dir_args,
-    ]
+    cli_args = _claude_cli_args(claude_cmd)
+    cli_args.extend(add_dir_args)
     # claude-cli defaults to Opus, which is overkill for the structured-JSON
     # extraction graphify performs. GRAPHIFY_CLAUDE_CLI_MODEL=haiku (or
     # sonnet, or a full model ID like claude-haiku-4-5-20251001) lets users
@@ -3366,7 +3371,7 @@ def _call_llm(
                 raise RuntimeError("Claude Code CLI not found on $PATH")
         elif shutil.which("claude") is None:
             raise RuntimeError("Claude Code CLI not found on $PATH")
-        cli_args = [claude_cmd, "-p", "--output-format", "json", "--no-session-persistence"]
+        cli_args = _claude_cli_args(claude_cmd)
         cli_model = (
             mdl if model is not None
             else os.environ.get("GRAPHIFY_CLAUDE_CLI_MODEL", "").strip()
