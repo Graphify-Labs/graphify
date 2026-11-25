@@ -738,16 +738,22 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
         else:
             continue
         build_fallback: Path | None = None
+        declaration_fallback: Path | None = None
         for candidate in _package_entry_candidates(package_dir, subpath, platform):
             resolved = _resolve_js_import_path(candidate)
             if resolved.is_file():
+                # A declaration the entry did not name yields to source or build output.
+                if resolved != candidate and resolved.name.endswith(".d.ts"):
+                    if declaration_fallback is None:
+                        declaration_fallback = resolved
+                    continue
                 if _is_build_output_path(resolved, package_dir):
                     if build_fallback is None:
                         build_fallback = resolved
                 else:
                     return resolved
-        if build_fallback is not None:
-            return build_fallback
+        if build_fallback is not None or declaration_fallback is not None:
+            return build_fallback or declaration_fallback
     return None
 
 def _find_js_project_anchor(start_dir: Path) -> Path:
