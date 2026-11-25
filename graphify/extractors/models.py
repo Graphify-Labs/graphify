@@ -69,6 +69,9 @@ class _SymbolImportFact:
     target_path: Path
     imported_name: str
     line: int
+    # Set for a Python import inside a function: the enclosing function's plain
+    # node ID. The name is bound only within that function (#5421). None means file-wide.
+    scope_id: str | None = None
 
 @dataclass(frozen=True)
 class _SymbolAliasFact:

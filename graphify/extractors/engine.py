@@ -3216,6 +3216,60 @@ def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
         walk(body)
     return bound
 
+def _python_import_names_from_statement(node, source: bytes) -> list[str]:
+    """Local names bound by an `import_statement` or `import_from_statement`."""
+    names: list[str] = []
+    past_import = False
+    for item in node.children:
+        if item.type == "import":
+            past_import = True
+            continue
+        if not past_import:
+            continue
+        if item.type == "aliased_import":
+            alias = item.child_by_field_name("alias")
+            if alias is not None:
+                names.append(_read_text(alias, source))
+        elif item.type == "dotted_name":
+            # For `import a.b.c`, Python binds `a` locally; for `from ... import x`, it binds `x`
+            names.append(_read_text(item, source).split(".")[0 if node.type == "import_statement" else -1])
+        elif item.type == "identifier":
+            names.append(_read_text(item, source))
+    return names
+
+def _python_local_import_names(func_def_node, source: bytes) -> set[str]:
+    """Names bound by `import` or `from ... import` directly inside a function (#5421)."""
+    bound: set[str] = set()
+    def walk(n) -> None:
+        for child in n.children:
+            t = child.type
+            if t in ("function_definition", "class_definition", "lambda"):
+                continue
+            if t in ("import_statement", "import_from_statement"):
+                bound.update(_python_import_names_from_statement(child, source))
+            walk(child)
+    body = func_def_node.child_by_field_name("body")
+    if body is not None:
+        walk(body)
+    return bound
+
+def _python_call_shadowed_by_local_import(call_node, callee_name: str, source: bytes) -> bool:
+    """Check if any enclosing scope binds `callee_name` via a local import (#5421)."""
+    curr = call_node.parent
+    in_function = False
+    while curr is not None and curr.type != "module":
+        if curr.type == "function_definition":
+            if callee_name in _python_local_import_names(curr, source):
+                return True
+            in_function = True
+        elif curr.type == "class_definition" and not in_function:
+            # Class-body bindings are visible to expressions directly in the
+            # class body, not to methods inside the class.
+            if callee_name in _python_local_import_names(curr, source):
+                return True
+        curr = curr.parent
+    return False
+
 def _python_module_bound_names(root, source: bytes) -> set[str]:
     """Names rebound by assignment at MODULE scope (top-level `x = ...`, `for`, walrus).
 
@@ -12464,7 +12518,11 @@ def _extract_generic(
                                 break
                             curr_scope = scope_parents.get(curr_scope)
                         if not tgt_nid:
-                            tgt_nid = label_to_nid.get(callee_name)
+                            if not (
+                                config.ts_module == "tree_sitter_python"
+                                and _python_call_shadowed_by_local_import(node, callee_name, source)
+                            ):
+                                tgt_nid = label_to_nid.get(callee_name)
                         # A class-body call (`x = f()` beside `def f`) may still
                         # name the class's own method; a method body may not.
                         if (
@@ -12589,6 +12647,12 @@ def _extract_generic(
                             "source_location": f"L{node.start_point[0] + 1}",
                             "receiver": swift_receiver or member_receiver,
                         }
+                        if (
+                            config.ts_module == "tree_sitter_python"
+                            and not is_member_call
+                            and _python_call_shadowed_by_local_import(node, callee_name, source)
+                        ):
+                            rc_entry["_python_local_import_shadowed"] = True
                         if config.ts_module in (
                             "tree_sitter_javascript", "tree_sitter_typescript",
                         ) and is_member_call:

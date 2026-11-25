@@ -1540,12 +1540,19 @@ def _apply_symbol_resolution_facts(
         ensure_symbol_node(declaration.file_path, declaration.name, declaration.line)
 
     local_aliases_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
+    scoped_aliases_by_file: dict[tuple[Path, str], list[tuple[int, str, tuple[Path, str]]]] = {}
     for import_fact in facts.imports:
         file_path = _resolve_cached(import_fact.file_path)
-        local_aliases_by_file.setdefault(file_path, {})[import_fact.local_name] = (
+        resolved_target = (
             _resolve_cached(import_fact.target_path),
             import_fact.imported_name,
         )
+        if import_fact.scope_id is None:
+            local_aliases_by_file.setdefault(file_path, {})[import_fact.local_name] = resolved_target
+        else:
+            scoped_aliases_by_file.setdefault(
+                (file_path, import_fact.scope_id), []
+            ).append((import_fact.line, import_fact.local_name, resolved_target))
 
     pending_aliases_by_file: dict[Path, list[_SymbolAliasFact]] = {}
     for alias_fact in facts.aliases:
@@ -2045,7 +2052,15 @@ def _apply_symbol_resolution_facts(
     for use_fact in facts.uses:
         file_path = _resolve_cached(use_fact.file_path)
         target_id = None
-        unresolved_origin = local_aliases_by_file.get(file_path, {}).get(use_fact.local_name)
+        unresolved_origin = None
+        scoped_imports = scoped_aliases_by_file.get((file_path, use_fact.source_id))
+        if scoped_imports:
+            matching = [item for item in scoped_imports if item[1] == use_fact.local_name]
+            if matching:
+                before = [item for item in matching if item[0] <= use_fact.line]
+                unresolved_origin = (before[-1] if before else matching[0])[2]
+        if unresolved_origin is None:
+            unresolved_origin = local_aliases_by_file.get(file_path, {}).get(use_fact.local_name)
         if unresolved_origin is not None:
             origin_path, origin_symbol = resolve_exported_origin(*unresolved_origin)
             target_id = symbol_nodes.get((origin_path, origin_symbol))
@@ -3427,6 +3442,23 @@ def _python_call_identifier(node, source: bytes) -> str | None:
         return _read_text(function_node, source)
     return None
 
+def _python_enclosing_scope_id(node, path: Path, source: bytes) -> str | None:
+    """Return the plain node ID of the innermost enclosing function or class,
+    or None if the node is at module scope (#5421).
+    """
+    parts: list[str] = []
+    curr = node.parent
+    while curr is not None and curr.type != "module":
+        if curr.type in ("function_definition", "class_definition"):
+            name_node = curr.child_by_field_name("name")
+            if name_node is not None:
+                parts.append(_read_text(name_node, source))
+        curr = curr.parent
+    if not parts:
+        return None
+    parts.reverse()
+    return _make_id(_file_stem(path), *parts)
+
 def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
@@ -3452,7 +3484,7 @@ def _collect_python_symbol_resolution_facts(
             continue
         source, root_node = parsed
         imported_names: dict[str, tuple[str, str, str | None]] = {}
-        local_import_scopes: dict[str, list[tuple[int, int]]] = {}
+        local_import_bindings: dict[str, list[tuple[int, int, int, tuple[str, str, str | None]]]] = {}
 
         for node in _walk_python_tree(root_node):
             if node.type in ("import_statement", "import_from_statement"):
@@ -3462,8 +3494,28 @@ def _collect_python_symbol_resolution_facts(
                 ):
                     scope = scope.parent
                 if scope is not None and scope.type == "function_definition":
-                    for _, local in _python_imported_names(node, source):
-                        local_import_scopes.setdefault(local, []).append((scope.start_byte, scope.end_byte))
+                    imp_line = node.start_point[0] + 1
+                    if node.type == "import_statement":
+                        for imported, local in _python_imported_names(node, source):
+                            tp = _resolve_python_module_path(imported, path, root, 0)
+                            binding = (imported, imported, str(tp) if tp is not None else None)
+                            local_import_bindings.setdefault(local, []).append(
+                                (scope.start_byte, scope.end_byte, imp_line, binding)
+                            )
+                    else:
+                        mod_info = _python_import_from_module(node, source)
+                        if mod_info is not None:
+                            lvl, mname = mod_info
+                            tp = _resolve_python_module_path(mname, path, root, lvl)
+                            for imported, local in _python_imported_names(node, source):
+                                binding = (
+                                    imported,
+                                    mname if lvl == 0 else "",
+                                    str(tp) if tp is not None else None,
+                                )
+                                local_import_bindings.setdefault(local, []).append(
+                                    (scope.start_byte, scope.end_byte, imp_line, binding)
+                                )
             if node.type != "import_from_statement":
                 continue
             module = _python_import_from_module(node, source)
@@ -3498,6 +3550,7 @@ def _collect_python_symbol_resolution_facts(
                 pkg_dir = _resolve_python_namespace_dir(module_name, path, root, level)
                 if pkg_dir is None:
                     continue
+            scope_id = _python_enclosing_scope_id(node, path, source)
             for imported_name, local_name in _python_imported_names(node, source):
                 line = node.start_point[0] + 1
                 if pkg_dir is not None:
@@ -3521,9 +3574,11 @@ def _collect_python_symbol_resolution_facts(
                 if target_path is None:
                     continue  # a namespace package owns no symbols of its own to bind
                 facts.imports.append(
-                    _SymbolImportFact(path, local_name, target_path, imported_name, line)
+                    _SymbolImportFact(
+                        path, local_name, target_path, imported_name, line, scope_id=scope_id,
+                    )
                 )
-                if path.stem == "__init__":
+                if path.stem == "__init__" and scope_id is None:
                     facts.exports.append(
                         _SymbolExportFact(
                             path,
@@ -3539,14 +3594,35 @@ def _collect_python_symbol_resolution_facts(
         # Only unconditional top-level imports apply file-wide. For explicitly
         # supplied files outside the scan root, failure to resolve a module does
         # not establish that it is external; retain their existing fallback.
+        def _pick_local_import_binding(
+            entries: list[tuple[int, int, int, tuple[str, str, str | None]]] | tuple[()],
+            start_byte: int,
+            call_line: int,
+        ) -> tuple[str, str, str | None] | None:
+            matching = [e for e in entries if e[0] <= start_byte < e[1]]
+            if not matching:
+                return None
+            min_span = min(e[1] - e[0] for e in matching)
+            innermost = [e for e in matching if e[1] - e[0] == min_span]
+            before = [e for e in innermost if e[2] <= call_line]
+            return (before[-1] if before else innermost[0])[3]
+
         if _resolve_cached(path).is_relative_to(_resolve_cached(root)):
             for call in calls_by_file.get(_resolve_cached(path), []):
-                if call.get("callee") in imported_names:
-                    scopes = local_import_scopes.get(call["callee"], ())
-                    site = call.get("_python_call_site")
-                    if scopes and (not site or any(start <= site[0] < end for start, end in scopes)):
-                        continue  # A nearer import shadows the module binding.
-                    call["_python_import_binding"] = imported_names[call["callee"]]
+                callee_name = call.get("callee")
+                if not callee_name:
+                    continue
+                local_entries = local_import_bindings.get(callee_name, ())
+                site = call.get("_python_call_site")
+                if local_entries and site:
+                    loc_str = str(call.get("source_location", ""))
+                    call_line = int(loc_str[1:]) if loc_str.startswith("L") and loc_str[1:].isdigit() else 0
+                    picked_binding = _pick_local_import_binding(local_entries, site[0], call_line)
+                    if picked_binding is not None:
+                        call["_python_import_binding"] = picked_binding
+                        continue
+                if callee_name in imported_names:
+                    call["_python_import_binding"] = imported_names[callee_name]
 
         param_shadowed = _python_param_shadow_checker(source)
         for source_id, body in _python_top_level_function_bodies(path, root_node, source):
@@ -3557,6 +3633,14 @@ def _collect_python_symbol_resolution_facts(
                 # A parameter named like an import hides it (#5418).
                 if param_shadowed(node, imported_name):
                     continue
+                call_line = node.start_point[0] + 1
+                # A function-local import of an absent/external package shadows
+                # any module-level import of the same name (#5421).
+                local_binding = _pick_local_import_binding(
+                    local_import_bindings.get(imported_name, ()), node.start_byte, call_line,
+                )
+                if local_binding is not None and local_binding[2] is None:
+                    continue
                 facts.uses.append(
                     _SymbolUseFact(
                         path,
@@ -3564,7 +3648,7 @@ def _collect_python_symbol_resolution_facts(
                         imported_name,
                         "calls",
                         "call",
-                        node.start_point[0] + 1,
+                        call_line,
                     )
                 )
 

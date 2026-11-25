@@ -13859,6 +13859,14 @@ def extract(
             and tgt not in imported_symbols
         ):
             continue
+        # A Python call shadowed by a function-local import must not fall back
+        # to a same-file definition or an unrelated candidate without import evidence (#5421).
+        if (
+            effective_suffix(str(rc.get("source_file", ""))) == ".py"
+            and rc.get("_python_local_import_shadowed")
+            and (not has_import_evidence or nid_to_source_file.get(tgt) == rc.get("source_file"))
+        ):
+            continue
         # A source-less candidate is an unresolved external stub, not a
         # project-defined callable. It can remain a target of type/reference
         # edges, but a name-only call must not turn it into a cross-file calls
