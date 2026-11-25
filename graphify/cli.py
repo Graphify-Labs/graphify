@@ -2329,10 +2329,13 @@ def dispatch_command(cmd: str) -> None:
             seeds=seeds or None,
             demote_docs=effective_demote_docs,
         )
-        if refresh_snapshot and generation is not None:
-            write_snapshot(gp, generation, G, legacy, repair=snapshot is not None)
         _touch_query_stamp(gp)
         print(_result)
+        if refresh_snapshot and generation is not None:
+            # The answer goes out first: building the cache can take seconds
+            # and must never cost the user a result.
+            sys.stdout.flush()
+            write_snapshot(gp, generation, G, legacy, repair=snapshot is not None)
         if _is_ambiguity_refusal(_result):
             sys.exit(EXIT_AMBIGUOUS)
         if _result == _QUERY_NO_MATCH or _result.startswith("No unique node match for --seed:"):

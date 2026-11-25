@@ -323,3 +323,33 @@ def test_graph_modules_do_not_load_the_snapshot_module(module):
         env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
     )
     assert result.stdout.strip() == "False"
+
+
+@pytest.mark.parametrize("question", ["bounded retry", "zzzz-missing"])
+def test_failed_snapshot_build_keeps_the_answer_and_status(query_cli, monkeypatch, tmp_path, question):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, question)
+
+    def broken(*_args):
+        raise LookupError("unexpected projection failure")
+
+    monkeypatch.setattr(query_snapshot, "_write_projection", broken)
+    assert run(path, question, "--snapshot") == expected
+    assert not list(cache.rglob("*.sqlite3"))
+
+
+def test_interrupted_snapshot_build_has_already_printed_the_answer(query_cli, monkeypatch, tmp_path, capsys):
+    run, _cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, "bounded retry")[1]
+
+    def interrupted(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(query_snapshot, "_write_projection", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run(path, "bounded retry", "--snapshot")
+    assert capsys.readouterr().out == expected

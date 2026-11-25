@@ -172,8 +172,8 @@ def write_snapshot(graph_path: Path, identity: _GraphIdentity, graph, legacy: bo
             )
             for stale in older[1:]:
                 stale.unlink(missing_ok=True)
-    except (OSError, sqlite3.Error, AttributeError, TypeError, ValueError, OverflowError, MemoryError, RuntimeError):
-        pass  # The canonical JSON path already supplied the answer.
+    except Exception:
+        pass  # The cache is optional and the caller already has its answer.
     finally:
         if temporary is not None:
             try:
