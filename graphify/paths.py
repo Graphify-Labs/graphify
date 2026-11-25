@@ -641,7 +641,12 @@ def stem_filename_budget(output_dir: "str | Path", *, reserve: int = 0, limit: i
         name_max = _component_name_max(output_dir)
         if name_max is None:
             return limit
-        return max(_MIN_STEM_BUDGET, min(limit, name_max - reserve - len(".md")))
+        room = name_max - reserve - len(".md")
+        # The floor only applies where the filesystem has room for it; past
+        # that, a shorter stem beats a name the filesystem rejects.
+        if room < _MIN_STEM_BUDGET:
+            return max(1, room)
+        return max(_MIN_STEM_BUDGET, min(limit, room))
     try:
         base = os.path.abspath(str(output_dir))
     except (OSError, ValueError):
