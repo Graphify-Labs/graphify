@@ -987,17 +987,15 @@ def test_extract_js_module_scope_require_still_single_edge(tmp_path):
     assert len(lazy_edges) == 1
 
 
-def test_extract_js_arrow_function_still_extracted():
+def test_extract_js_arrow_function_still_extracted(tmp_path):
     """Regression: arrow functions in lexical_declaration must still produce nodes."""
     from graphify.extract import extract_js
-    arrow_fixture = FIXTURES / "_arrow_only.js"
-    arrow_fixture.write_text("const greet = () => console.log('hi');\n")
-    try:
-        result = extract_js(arrow_fixture)
-        labels = [n["label"] for n in result["nodes"]]
-        assert "greet()" in labels
-    finally:
-        arrow_fixture.unlink()
+    arrow_fixture = tmp_path / "_arrow_only.js"
+    arrow_fixture.write_text("const greet = () => console.log('hi');\n", encoding="utf-8")
+
+    result = extract_js(arrow_fixture)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "greet()" in labels
 
 
 def test_extract_js_this_assigned_methods(tmp_path):
