@@ -382,7 +382,8 @@ Once connected, your agent gets these tools:
 
 | Tool | What it does |
 |---|---|
-| `query_graph` | Ask a question in natural language, get back the relevant subgraph |
+| `query_graph` | Ask a question in natural language, get back the relevant subgraph; pass `seeds` to start from known nodes |
+| `affected` | Reverse traversal: what breaks if you change a node, symbol, or file |
 | `shortest_path` | Trace how two nodes connect |
 | `get_node` / `get_neighbors` | Look up a node and what it touches |
 | `get_community` / `god_nodes` | Detected clusters and the most-connected hubs |

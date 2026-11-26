@@ -74,6 +74,34 @@ def test_cohesion_score_range_with_self_loops():
     assert 0.0 <= score <= 1.0
     assert score == 1.0
 
+
+def test_cohesion_score_multigraph_parallel_edges_bounded():
+    # MultiGraph with parallel edges between same endpoints must not exceed 1.0.
+    MG = nx.MultiGraph()
+    MG.add_edge("A", "B", relation="imports")
+    MG.add_edge("A", "B", relation="calls")
+    MG.add_edge("A", "B", relation="references")
+    MG.add_edge("A", "A", relation="calls")  # self loop
+    score = cohesion_score(MG, ["A", "B"])
+    assert 0.0 <= score <= 1.0
+    assert score == 1.0
+
+    # With a third unconnected node, exactly 1 out of 3 possible pairs is connected
+    MG.add_node("C")
+    score_3 = cohesion_score(MG, ["A", "B", "C"])
+    assert abs(score_3 - (1.0 / 3.0)) < 1e-9
+
+
+def test_cohesion_score_digraph_mutual_edges_bounded():
+    # DiGraph with reciprocal edges (A->B and B->A) represents one connected pair
+    DG = nx.DiGraph()
+    DG.add_edge("A", "B")
+    DG.add_edge("B", "A")
+    DG.add_edge("A", "A")
+    score = cohesion_score(DG, ["A", "B"])
+    assert 0.0 <= score <= 1.0
+    assert score == 1.0
+
 def test_score_all_keys_match_communities():
     G = make_graph()
     communities = cluster(G)
