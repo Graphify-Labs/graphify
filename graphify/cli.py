@@ -601,8 +601,17 @@ def _handle_unverified_semantic_shrink(
     return incomplete, manifest_files, cleared_semantic
 
 
+def _read_graph_for_extraction(graph_path: Path) -> dict | None:
+    try:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _stale_graph_sources(
     graph_path: Path,
+    data: dict | None,
     scan_root: Path,
     seen_files: set[str],
     detection: dict | None = None,
@@ -645,13 +654,9 @@ def _stale_graph_sources(
     test (path-spelling drift the normalization didn't cover, walk errors,
     …) is KEPT and reported, never mass-evicted.
     """
+    if data is None:
+        return []
     from graphify.paths import nfc
-    try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
     try:
         root_res = scan_root.resolve()
     except (OSError, RuntimeError):
@@ -788,6 +793,7 @@ def _stale_graph_sources(
 
 def _zero_node_stamped_code_sources(
     graph_path: Path,
+    data: dict | None,
     scan_root: Path,
     unchanged_code: list[str],
     manifest_path: Path | None = None,
@@ -814,7 +820,7 @@ def _zero_node_stamped_code_sources(
     #1941: scan-root-relative, forward slash; absolute for out-of-root) and
     compares NFC-normalized (#2210/#2221).
     """
-    if not unchanged_code:
+    if data is None or not unchanged_code:
         return []
     from graphify.paths import nfc
     ast_empty: set[str] = set()
@@ -823,12 +829,6 @@ def _zero_node_stamped_code_sources(
         for _k, _v in load_manifest(str(manifest_path), root=scan_root).items():
             if isinstance(_v, dict) and _v.get("ast_empty"):
                 ast_empty.add(nfc(_k))
-    try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
     try:
         root_res = scan_root.resolve()
     except (OSError, RuntimeError):
@@ -885,6 +885,7 @@ def _zero_node_stamped_code_sources(
 
 def _zero_node_stamped_semantic_sources(
     graph_path: Path,
+    data: dict | None,
     scan_root: Path,
     unchanged_semantic: list[str],
 ) -> list[str]:
@@ -901,15 +902,9 @@ def _zero_node_stamped_semantic_sources(
     #1941: scan-root-relative, forward slash; absolute for out-of-root) and
     compares NFC-normalized (#2210/#2221).
     """
-    if not unchanged_semantic:
+    if data is None or not unchanged_semantic:
         return []
     from graphify.paths import nfc
-    try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
     try:
         root_res = scan_root.resolve()
     except (OSError, RuntimeError):
@@ -4676,6 +4671,7 @@ def dispatch_command(cmd: str) -> None:
                 "nodes for files outside this run's scope are preserved)"
             )
 
+        saved_graph = None
         if not has_path:
             detection = {}
             code_files = []
@@ -4708,6 +4704,7 @@ def dispatch_command(cmd: str) -> None:
             deleted_files = list(detection.get("deleted_files", []))
             excluded_files = list(detection.get("excluded_files", []))
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
+            saved_graph = _read_graph_for_extraction(existing_graph_path)
             # #1909: derive the prune set from the existing graph itself, not
             # just the manifest. A file that became excluded without ever
             # being manifest-listed (every pre-#1897 graph is in this state)
@@ -4716,7 +4713,7 @@ def dispatch_command(cmd: str) -> None:
             _seen_files = {f for _fl in files_by_type.values() for f in _fl}
             _seen_files.update(detection.get("unclassified", []))
             graph_stale_sources = _stale_graph_sources(
-                existing_graph_path, target, _seen_files, detection=detection
+                existing_graph_path, saved_graph, target, _seen_files, detection=detection
             )
             # #2543 heal: manifests poisoned BEFORE failed-source unstamping
             # existed carry live hashes for code files whose extraction failed
@@ -4726,6 +4723,7 @@ def dispatch_command(cmd: str) -> None:
             # run it is now left unstamped, so this cannot wedge.
             _healed_sources = _zero_node_stamped_code_sources(
                 existing_graph_path,
+                saved_graph,
                 target,
                 detection.get("unchanged_files", {}).get("code", []),
                 manifest_path,
@@ -4746,6 +4744,7 @@ def dispatch_command(cmd: str) -> None:
                 _unchanged_sem.extend(detection.get("unchanged_files", {}).get(_k, []))
             _healed_sem_sources = _zero_node_stamped_semantic_sources(
                 existing_graph_path,
+                saved_graph,
                 target,
                 _unchanged_sem,
             )
@@ -4788,7 +4787,8 @@ def dispatch_command(cmd: str) -> None:
                 _seen_files = {f for _fl in files_by_type.values() for f in _fl}
                 _seen_files.update(detection.get("unclassified", []))
                 graph_stale_sources = _stale_graph_sources(
-                    existing_graph_path, target, _seen_files, detection=detection
+                    existing_graph_path, _read_graph_for_extraction(existing_graph_path),
+                    target, _seen_files, detection=detection,
                 )
 
         semantic_files = doc_files + paper_files + image_files
@@ -5055,8 +5055,12 @@ def dispatch_command(cmd: str) -> None:
 
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
+        # Deletions and exclusions can still schedule surviving code for
+        # C++ forward-declaration or ID-collision reconciliation.
+        if not (code_files or deleted_files or excluded_files or graph_stale_sources):
+            saved_graph = None
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
-        if code_files or (incremental_mode and existing_graph_path.exists()):
+        if code_files or saved_graph is not None:
             from graphify.extract import extract as _ast_extract
             # Anchor the cache at the output root, not the scanned project:
             # with --out, a <target>/graphify-out/cache/ would leak a
@@ -5077,7 +5081,7 @@ def dispatch_command(cmd: str) -> None:
             # live corpus — never a re-extracted, deleted, or excluded file, so
             # stale symbols cannot resurrect. Fails open (changed-batch-only
             # resolution, the pre-fix behavior) on an unreadable graph.
-            if incremental_mode and existing_graph_path.exists():
+            if saved_graph is not None:
                 _ctx_nodes: list[dict] = []
                 _ctx_edges: list[dict] = []
                 try:
@@ -5086,9 +5090,6 @@ def dispatch_command(cmd: str) -> None:
                         check_graph_file_size_cap as _ctx_size_cap,
                     )
                     _ctx_size_cap(existing_graph_path)
-                    _ctx_graph = json.loads(
-                        existing_graph_path.read_text(encoding="utf-8")
-                    )
                     _ctx_root = Path(os.path.abspath(target))
 
                     def _ctx_identity(source_file) -> str | None:
@@ -5112,7 +5113,7 @@ def dispatch_command(cmd: str) -> None:
                     # A C++ forward fold is re-established from all live source/proof files.
                     from graphify.extractors.resolution import _cpp_reconciliation_paths
                     code_files = _cpp_reconciliation_paths(
-                        list(code_files), _ctx_graph.get("nodes", []), _ctx_root,
+                        list(code_files), saved_graph.get("nodes", []), _ctx_root,
                         available_paths=[Path(p) for p in files_by_type.get("code", [])],
                         changed_paths=[Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
                     )
@@ -5127,13 +5128,13 @@ def dispatch_command(cmd: str) -> None:
                             ) if _i
                         },
                         [Path(p) for p in files_by_type.get("code", [])],
-                        _ctx_graph.get("nodes", []),
+                        saved_graph.get("nodes", []),
                         _ctx_identity,
                         _ctx_root,
                         set(),
                     )
                     _ctx_live.difference_update(_ctx_identity(p) for p in code_files)
-                    for _node in _ctx_graph.get("nodes", []):
+                    for _node in saved_graph.get("nodes", []):
                         if not _node.get("id") or not _ctx_is_ast_tier(_node):
                             continue
                         _sf = _node.get("source_file")
@@ -5198,8 +5199,8 @@ def dispatch_command(cmd: str) -> None:
                         _ctx_nodes.append(_ctx_node)
                     # Import edges come too: a TS field inherited from an unchanged file
                     # is typed by that file's imports, as in a full build.
-                    for _edge in _ctx_graph.get(
-                        "links", _ctx_graph.get("edges", [])
+                    for _edge in saved_graph.get(
+                        "links", saved_graph.get("edges", [])
                     ):
                         if _edge.get("relation") not in (
                             "contains", "method", "inherits", "imports", "imports_from"
@@ -5250,7 +5251,7 @@ def dispatch_command(cmd: str) -> None:
                 except Exception:
                     _ctx_nodes, _ctx_edges = [], []
                 # Only the context lists are needed; free the full parse.
-                _ctx_graph = None
+                saved_graph = None
                 if _ctx_nodes:
                     ast_kwargs["resolution_context_nodes"] = _ctx_nodes
                 if _ctx_edges:

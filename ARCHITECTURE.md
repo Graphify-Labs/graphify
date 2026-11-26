@@ -63,6 +63,11 @@ Absolute and relative spellings and symlinked scan roots identify the same
 corpus entry; distinct symlink aliases inside that root remain separate entries.
 Excluding one alias must preserve any still-included target or sibling alias.
 
+Incremental CLI extraction shares one read of the saved graph for source
+pruning, recovery of manifest entries with missing output, and AST resolution
+context. Unchanged runs skip building resolver context. Removals and exclusions
+can still schedule AST work to reconcile surviving declarations and IDs.
+
 When an import target ID collides with a C-family header, an explicit target
 path takes priority. Unhinted native includes keep the header fallback. Other
 languages require a unique compatible file candidate before remapping.
