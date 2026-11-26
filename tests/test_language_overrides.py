@@ -184,6 +184,28 @@ def test_invalid_query_defaults_report_key_path_and_line(tmp_path, key, value):
     assert "line 2" in str(error.value)
 
 
+@pytest.mark.parametrize("content, expected", [
+    ("demote_docs=false\n", {"demote_docs": False}),
+    ("demote_docs=True\n", {"demote_docs": True}),
+    ("query_demote_docs=0\n", {"query_demote_docs": False}),
+    ("demote_docs=yes\nquery_demote_docs=off\n", {"demote_docs": True, "query_demote_docs": False}),
+])
+def test_demote_docs_is_a_project_setting(tmp_path, content, expected):
+    (tmp_path / ".graphifyrc").write_text(content, encoding="utf-8")
+    assert load_graphifyrc(tmp_path) == expected
+
+
+@pytest.mark.parametrize("key", ["demote_docs", "query_demote_docs"])
+@pytest.mark.parametrize("value", ["maybe", ""])
+def test_invalid_demote_docs_reports_key_path_and_line(tmp_path, key, value):
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text(f"# project settings\n{key}={value}\n", encoding="utf-8")
+    with pytest.raises(ValueError) as error:
+        load_graphifyrc(tmp_path)
+    assert key in str(error.value) and str(rc) in str(error.value)
+    assert "line 2" in str(error.value)
+
+
 def test_hooks_still_reads_the_same_file_through_its_old_name(tmp_path):
     from graphify.hooks import _load_graphifyrc
     (tmp_path / ".graphifyrc").write_text("viz_node_limit=3\nlanguage.inc=php\n", encoding="utf-8")

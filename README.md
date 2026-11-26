@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://trendshift.io/repositories/25296?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-25296" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/25296" alt="Graphify-Labs%2Fgraphify | Trendshift" width="250" height="55"/></a>
+  <a href="https://runacap.com/ross-index/q3-2026/"><img src="https://runacap.com/wp-content/uploads/2026/02/ROSS_badge_black_Q3_2026.svg" width="260" height="55" alt="ROSS Index Q3 2026, #2 fastest-growing open-source startup"/></a>
 </p>
 
 <div align="center">
@@ -381,7 +382,8 @@ Once connected, your agent gets these tools:
 
 | Tool | What it does |
 |---|---|
-| `query_graph` | Ask a question in natural language, get back the relevant subgraph |
+| `query_graph` | Ask a question in natural language, get back the relevant subgraph; pass `seeds` to start from known nodes |
+| `affected` | Reverse traversal: what breaks if you change a node, symbol, or file |
 | `shortest_path` | Trace how two nodes connect |
 | `get_node` / `get_neighbors` | Look up a node and what it touches |
 | `get_community` / `god_nodes` | Detected clusters and the most-connected hubs |
@@ -484,6 +486,8 @@ query_depth=3
 ```
 
 For `graphify query`, explicit `--budget N` / `--budget=N` and `--depth N` / `--depth=N` override these settings independently. Without a project setting or explicit option, the defaults remain budget 2000 and depth 2. These keys do not change the MCP server's defaults.
+
+Set `demote_docs=false` (alias `query_demote_docs`; accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) to turn off document demotion in `graphify query` by default. `--demote-docs` / `--no-doc-demotion` on the command line override it.
 
 Settings come from the project owning the selected `--graph`, even when the command runs from another directory. An existing absolute directory in the graph's sibling `.graphify_root` marker identifies that project. Otherwise a matching relative `GRAPHIFY_OUT` suffix identifies it; absolute, empty, traversal-containing or nonmatching output paths fall back to the graph file's directory. Relative markers are ignored.
 

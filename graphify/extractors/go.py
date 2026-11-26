@@ -891,9 +891,11 @@ def extract_go(path: Path) -> dict:
                     field = func_node.child_by_field_name("field")
                     operand = func_node.child_by_field_name("operand")
                     receiver_name = _read_text(operand, source) if operand else ""
-                    # Package-qualified call (e.g. fmt.Println) → allow cross-file resolution.
-                    # Receiver method call (e.g. s.logger.Log) → skip, no import evidence.
-                    is_member_call = receiver_name not in go_imported_pkgs
+                    # A visible local binding takes precedence over a same-named
+                    # import, even when its receiver type is unknown.
+                    is_member_call = (
+                        receiver_name in scope_types or receiver_name not in go_imported_pkgs
+                    )
                     if not is_member_call:
                         package_receiver = receiver_name
                         import_path = go_imported_pkgs[receiver_name]
@@ -991,7 +993,7 @@ def extract_go(path: Path) -> dict:
                 arg_field_owner: str | None = None
                 if operand.type == "identifier":
                     name = _read_text(operand, source)
-                    if name in go_imported_pkgs:
+                    if name in go_imported_pkgs and name not in scope_types:
                         continue
                     arg_receiver_type = scope_types.get(name)
                 elif operand.type == "selector_expression":

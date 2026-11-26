@@ -74,6 +74,34 @@ def test_cohesion_score_range_with_self_loops():
     assert 0.0 <= score <= 1.0
     assert score == 1.0
 
+
+def test_cohesion_score_multigraph_parallel_edges_bounded():
+    # MultiGraph with parallel edges between same endpoints must not exceed 1.0.
+    MG = nx.MultiGraph()
+    MG.add_edge("A", "B", relation="imports")
+    MG.add_edge("A", "B", relation="calls")
+    MG.add_edge("A", "B", relation="references")
+    MG.add_edge("A", "A", relation="calls")  # self loop
+    score = cohesion_score(MG, ["A", "B"])
+    assert 0.0 <= score <= 1.0
+    assert score == 1.0
+
+    # With a third unconnected node, exactly 1 out of 3 possible pairs is connected
+    MG.add_node("C")
+    score_3 = cohesion_score(MG, ["A", "B", "C"])
+    assert abs(score_3 - (1.0 / 3.0)) < 1e-9
+
+
+def test_cohesion_score_digraph_mutual_edges_bounded():
+    # DiGraph with reciprocal edges (A->B and B->A) represents one connected pair
+    DG = nx.DiGraph()
+    DG.add_edge("A", "B")
+    DG.add_edge("B", "A")
+    DG.add_edge("A", "A")
+    score = cohesion_score(DG, ["A", "B"])
+    assert 0.0 <= score <= 1.0
+    assert score == 1.0
+
 def test_score_all_keys_match_communities():
     G = make_graph()
     communities = cluster(G)
@@ -126,6 +154,28 @@ def test_remap_communities_to_previous_assigns_deterministic_new_ids():
     assert list(remapped.keys()) == [0, 1]
     assert remapped[0] == ["x", "y", "z"]
     assert remapped[1] == ["m"]
+
+
+def test_remap_community_overlap_ties_prefer_lower_ids():
+    # All four overlaps are equal. Old ID 5 and new ID 11 win even though
+    # both ID 9 and ID 12 occur first in the inputs.
+    communities = {12: ["d", "a"], 11: ["c", "b"], 13: ["new"]}
+    previous = {"d": 9, "c": 9, "a": 5, "b": 5, "removed": 9}
+
+    assert remap_communities_to_previous(communities, previous) == {
+        0: ["new"],
+        5: ["b", "c"],
+        9: ["a", "d"],
+    }
+
+
+def test_remap_community_overlap_counts_distinct_members_and_preserves_membership():
+    # A repeated member contributes one vote for ID 9, leaving the tie to
+    # ID 5. Remapping changes the ID and preserves the sorted member list.
+    communities = {12: ["a", "b", "a"]}
+    previous = {"a": 9, "b": 5}
+
+    assert remap_communities_to_previous(communities, previous) == {5: ["a", "a", "b"]}
 
 
 def _grouping(partition):

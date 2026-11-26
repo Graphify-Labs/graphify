@@ -6,6 +6,7 @@ import importlib
 import json
 import re
 import threading
+from unicodedata import normalize
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -15,6 +16,7 @@ from graphify.extractors.base import (
 )
 from graphify.ids import DeclIdRegistry, normalize_id
 from graphify.extractors.models import LanguageConfig
+from graphify.extractors.python_scope import _python_param_names, _python_param_shadow_checker
 from graphify.extractors.resolution import _resolve_js_import_target
 from graphify.security import sanitize_metadata
 from pathlib import Path
@@ -2862,36 +2864,6 @@ def _python_collect_param_refs(params_node, source: bytes) -> list[tuple[str, st
             _python_collect_type_refs(type_node, source, False, out)
     return out
 
-def _python_param_names(params_node, source: bytes) -> set[str]:
-    """Plain parameter identifiers declared on a Python `parameters` node.
-
-    Covers positional/keyword params plus `*args` / `**kwargs` and typed or
-    default forms — anything that binds a local name the function body can shadow
-    a module-level definition with.
-    """
-    out: set[str] = set()
-    if params_node is None:
-        return out
-    for child in params_node.children:
-        if child.type == "identifier":
-            out.add(_read_text(child, source))
-        elif child.type in (
-            "typed_parameter",
-            "default_parameter",
-            "typed_default_parameter",
-            "list_splat_pattern",
-            "dictionary_splat_pattern",
-        ):
-            # The bound name is the first identifier child (the rest is type/default).
-            name_n = child.child_by_field_name("name")
-            if name_n is None:
-                name_n = next(
-                    (c for c in child.children if c.type == "identifier"), None
-                )
-            if name_n is not None:
-                out.add(_read_text(name_n, source))
-    return out
-
 # pytest fixtures (#ISSUE). A test or fixture names a fixture as a parameter:
 # `def test_x(runner): runner.invoke(cli)`, with `runner` defined in the same
 # file or a conftest.py above it. The parameter has no annotation, so it is
@@ -3049,6 +3021,87 @@ def _python_collect_assignment_targets(node, source: bytes, out: set[str]) -> No
     if node.type in ("pattern_list", "tuple_pattern", "list_pattern"):
         for c in node.children:
             _python_collect_assignment_targets(c, source, out)
+
+
+def _python_import_bound_names(node, source: bytes) -> list[str]:
+    """Local names an `import_statement`/`import_from_statement` node binds.
+
+    A plain `import x` binds `x`; `import x as y` binds `y`; `from m import
+    x` binds `x`; `from m import x as y` binds `y`. `from m import *` binds
+    no name graphify can see without resolving the imported module, so the
+    wildcard contributes nothing here, same convention as the receiver
+    shadow checker's own `import_names` this mirrors.
+    """
+    names: list[str] = []
+    past_import = False
+    for item in node.children:
+        if item.type == "import":
+            past_import = True
+            continue
+        if not past_import:
+            continue
+        if item.type == "aliased_import":
+            alias = item.child_by_field_name("alias")
+            if alias is not None:
+                names.append(_read_text(alias, source))
+        elif item.type == "dotted_name":
+            names.append(_read_text(item, source).split(".")[0])
+    return names
+
+
+def _python_local_import_names(func_def_node, source: bytes) -> set[str]:
+    """Names a Python function body's OWN `import`/`from ... import` statements
+    bind, not descending into nested `function_definition`/`class_definition`/
+    `lambda` subtrees (their imports belong to a different scope).
+
+    A narrower, import-only analogue of `_python_local_bound_names`: kept
+    separate so the bare-call lexical resolution guard built on it (#5421)
+    does not also start suppressing the parameter-shadowing case, which is a
+    distinct, already-tracked issue (#5418).
+    """
+    bound: set[str] = set()
+
+    def walk(n) -> None:
+        for child in n.children:
+            t = child.type
+            if t in ("function_definition", "class_definition", "lambda"):
+                continue
+            if t in ("import_statement", "import_from_statement"):
+                bound.update(_python_import_bound_names(child, source))
+            walk(child)
+
+    body = func_def_node.child_by_field_name("body")
+    if body is not None:
+        walk(body)
+    return bound
+
+
+def _python_call_shadowed_by_local_import(node, callee_name: str, source: bytes) -> bool:
+    """Does the nearest enclosing Python function/class body bind `callee_name`
+    via its OWN `import`/`from ... import` statement?
+
+    A function-local import is only valid in its own lexical scope: `from m
+    import x` inside `caller()` binds `x` there, so a bare `x()` call in that
+    body names the imported symbol, not a same-named module-level function or
+    class elsewhere in the file (#5421). Checked against the nearest enclosing
+    function or class body only, matching Python's own scoping: a sibling
+    nested `def`'s own import is a different scope and must not shadow this
+    call. Stops at the first function/class ancestor and requires the walk to
+    have arrived through that scope's own body, not its parameters/decorators
+    or a default/annotation value (which evaluate in the scope around it): a
+    call reached that way is left unshadowed rather than walked further out,
+    a narrow gap this conservative check accepts rather than risk suppressing
+    a real edge.
+    """
+    n = node
+    while (parent := n.parent) is not None:
+        if parent.type in ("function_definition", "class_definition"):
+            body = parent.child_by_field_name("body")
+            if body is not None and n == body:
+                return callee_name in _python_local_import_names(parent, source)
+            return False
+        n = parent
+    return False
 
 # Languages whose `self`/`this` member calls bind through _self_call_target.
 _SELF_CALL_LANGUAGES = frozenset({
@@ -8026,6 +8079,10 @@ def _extract_generic(
         _python_receiver_shadow_checker(root, source)
         if config.ts_module == "tree_sitter_python" else None
     )
+    python_param_shadowed = (
+        _python_param_shadow_checker(source)
+        if config.ts_module == "tree_sitter_python" else None
+    )
     python_module_instances = (
         _python_module_instance_types(root, source)
         if config.ts_module == "tree_sitter_python" else {}
@@ -11437,6 +11494,45 @@ def _extract_generic(
             "weight": 1.0,
         })
 
+    python_lambda_bindings: dict[int, tuple[str, set[str]]] = {}
+
+    def _python_private_prefix(node) -> str:
+        # A nested class's bases and decorators still use the outer class's
+        # private names. A class supplies its own prefix inside its body.
+        while (parent := node.parent) is not None:
+            if parent.type == "class_definition" and node == parent.child_by_field_name("body"):
+                class_name = parent.child_by_field_name("name")
+                if class_name is None:
+                    return ""
+                name = normalize("NFKC", _read_text(class_name, source)).lstrip("_")
+                return f"_{name}" if name else ""
+            node = parent
+        return ""
+
+    def _python_binding_name(name: str, private_prefix: str) -> str:
+        name = normalize("NFKC", name)
+        if name.startswith("__") and not name.endswith("__"):
+            return private_prefix + name
+        return name
+
+    def _python_lambda_param_shadows(node, name: str) -> bool:
+        """Check lambda body bindings. Defaults cannot see that lambda's own parameters."""
+        while (parent := node.parent) is not None:
+            if parent.type in ("function_definition", "class_definition", "module"):
+                break
+            if parent.type == "lambda" and node == parent.child_by_field_name("body"):
+                if parent.id not in python_lambda_bindings:
+                    prefix = _python_private_prefix(parent)
+                    parameters = _python_param_names(parent.child_by_field_name("parameters"), source)
+                    python_lambda_bindings[parent.id] = (
+                        prefix, {_python_binding_name(param, prefix) for param in parameters},
+                    )
+                prefix, parameters = python_lambda_bindings[parent.id]
+                if _python_binding_name(name, prefix) in parameters:
+                    return True
+            node = parent
+        return False
+
     def _emit_indirect_ref(ident, scope_nid: str, enclosing_locals, context: str) -> None:
         """A function referenced BY NAME — passed as a call argument, or listed as a
         value in a dispatch table — is an indirect dependency of ``scope_nid``. Emit
@@ -11457,6 +11553,8 @@ def _extract_generic(
         # it shadows in every scope — no unique same-named definition elsewhere in
         # the corpus is what this identifier refers to.
         if ident_name in js_external_imports:
+            return
+        if config.ts_module == "tree_sitter_python" and _python_lambda_param_shadows(ident, ident_name):
             return
         _emit_indirect_by_name(ident_name, ident, scope_nid, context)
 
@@ -12196,6 +12294,10 @@ def _extract_generic(
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
+                    elif config.ts_module == "tree_sitter_c" and func_node.type == "field_expression":
+                        # A C field callee is an indirect function-pointer call.
+                        # Its field name gives no evidence for a free function.
+                        callee_name = None
                     elif func_node.type in config.call_accessor_node_types:
                         is_member_call = True
                         if config.call_accessor_field:
@@ -12290,8 +12392,24 @@ def _extract_generic(
             # A known PHP $this receiver resolves against its owning class's methods.
             _builtin_member_call = is_member_call and callee_name in _LANGUAGE_BUILTIN_GLOBALS
             php_builtin_self_call = config.ts_module == "tree_sitter_php" and self_receiver == "this"
-            if callee_name and (
-                callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call
+            # A bare Python call through a parameter, own or captured, has an
+            # unknown target: neither the same-file nor the cross-file lookup
+            # may name one (#5418).
+            _python_param_call = (
+                python_param_shadowed is not None
+                and not is_member_call
+                and bool(callee_name)
+                and python_param_shadowed(node, callee_name)
+            )
+            if (
+                callee_name
+                and not _python_param_call
+                and (callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call)
+                and not (
+                    config.ts_module == "tree_sitter_python"
+                    and not is_member_call
+                    and _python_lambda_param_shadows(node, callee_name)
+                )
             ):
                 # Python member calls defer to receiver-based resolution unless the
                 # receiver is known to stay in the current class. Falling back to a
@@ -12419,15 +12537,24 @@ def _extract_generic(
                     if config.ts_module in (
                         "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
                     ) and not is_member_call:
-                        curr_scope = caller_nid
                         tgt_nid = None
-                        while curr_scope:
-                            if curr_scope in lexical_nids_by_scope and callee_name in lexical_nids_by_scope[curr_scope]:
-                                tgt_nid = lexical_nids_by_scope[curr_scope][callee_name]
-                                break
-                            curr_scope = scope_parents.get(curr_scope)
-                        if not tgt_nid:
-                            tgt_nid = label_to_nid.get(callee_name)
+                        # A function-local import shadows a same-named
+                        # module-level function/class for the rest of this
+                        # call's own lexical scope; neither the lexical-scope
+                        # walk below nor the file-wide label fallback may
+                        # name a target for it (#5421).
+                        if not (
+                            config.ts_module == "tree_sitter_python"
+                            and _python_call_shadowed_by_local_import(node, callee_name, source)
+                        ):
+                            curr_scope = caller_nid
+                            while curr_scope:
+                                if curr_scope in lexical_nids_by_scope and callee_name in lexical_nids_by_scope[curr_scope]:
+                                    tgt_nid = lexical_nids_by_scope[curr_scope][callee_name]
+                                    break
+                                curr_scope = scope_parents.get(curr_scope)
+                            if not tgt_nid:
+                                tgt_nid = label_to_nid.get(callee_name)
                         # A class-body call (`x = f()` beside `def f`) may still
                         # name the class's own method; a method body may not.
                         if (
@@ -12542,7 +12669,22 @@ def _extract_generic(
                         and not is_member_call
                         and callee_name in (local_bound_names.get(caller_nid, frozenset()) | extra_locals)
                     )
-                    if not is_py_local_data:
+                    # Shadowed by a function-local import, with a same-named
+                    # definition elsewhere in this very file: that same-file
+                    # twin cannot be the target, but nothing here knows the
+                    # import's own, so the call is dropped rather than risk
+                    # the global cross-file pass falling back to the twin's
+                    # label by coincidence (#5421). A callee with no same-file
+                    # twin has nothing to wrongly fall back to, so it is left
+                    # to resolve normally (including through a nearer import
+                    # that does name a real cross-file target, #5418).
+                    is_py_import_shadowed = (
+                        config.ts_module == "tree_sitter_python"
+                        and not is_member_call
+                        and callee_name in label_to_nid
+                        and _python_call_shadowed_by_local_import(node, callee_name, source)
+                    )
+                    if not is_py_local_data and not is_py_import_shadowed:
                         # Callee not in this file — save for cross-file resolution in extract()
                         rc_entry = {
                             "caller_nid": caller_nid,

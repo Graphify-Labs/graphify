@@ -87,6 +87,26 @@ def test_two_packages_sharing_a_directory_name_stay_split(tmp_path):
     assert len(_nodes(result, "Server")) == 2
 
 
+def test_each_of_two_same_named_packages_still_folds_its_own_files(tmp_path):
+    # Staying split from each other must not stop either package folding its own
+    # sibling files: the methods follow their own declaration through the salting
+    # disambiguation then applies to the still-colliding id (#5304).
+    result = _extract(tmp_path, {
+        "a/svc/x.go": "package svc\n\ntype Server struct{}\n",
+        "a/svc/y.go": "package svc\n\nfunc (s *Server) Close() {}\n",
+        "b/svc/x.go": "package svc\n\ntype Server struct{}\n\nfunc (s *Server) Save() {}\n",
+    })
+    # Exactly two Server nodes (one per package); without the per-directory fold,
+    # package `a`'s Server stays split across x.go/y.go, giving three — the dict
+    # below would silently collapse that, so assert the count first.
+    all_servers = _nodes(result, "Server")
+    assert len(all_servers) == 2, [n["source_file"] for n in all_servers]
+    servers = {Path(str(n["source_file"])).parent.parent.name: n for n in all_servers}
+    assert sorted(servers) == ["a", "b"], servers
+    assert _edges_from(result, servers["a"]["id"], "method") == {".Close()"}
+    assert _edges_from(result, servers["b"]["id"], "method") == {".Save()"}
+
+
 def test_an_external_test_package_in_the_same_directory_stays_split(tmp_path):
     result = _extract(tmp_path, {
         "svc/a.go": "package svc\n\ntype Fixture struct{}\n\nfunc (f *Fixture) Save() {}\n",
