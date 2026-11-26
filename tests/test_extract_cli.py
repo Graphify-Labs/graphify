@@ -1559,6 +1559,55 @@ def test_success_and_unchanged_unaffected(monkeypatch, tmp_path, capsys):
         )
 
 
+def test_warm_code_only_no_cluster_reads_graph_once(monkeypatch, tmp_path, capsys):
+    import json
+    from pathlib import Path
+
+    project = _two_file_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = [
+        "graphify", "extract", str(project), "--code-only", "--no-cluster",
+        "--out", str(out_dir),
+    ]
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+
+    graph_path = (out_dir / "graphify-out" / "graph.json").resolve()
+    saved_graph = graph_path.read_bytes()
+    saved_mtime = graph_path.stat().st_mtime_ns
+    assert json.loads(saved_graph)["nodes"]
+
+    reads = parses = 0
+    open_path = Path.open
+    loads = json.loads
+
+    def count_graph_reads(path, mode="r", *args, **kwargs):
+        nonlocal reads
+        if path == graph_path and "r" in mode:
+            reads += 1
+        return open_path(path, mode, *args, **kwargs)
+
+    def count_graph_parses(data, *args, **kwargs):
+        nonlocal parses
+        if data == saved_graph_text or data == saved_graph:
+            parses += 1
+        return loads(data, *args, **kwargs)
+
+    saved_graph_text = saved_graph.decode("utf-8")
+    with monkeypatch.context() as warm_run:
+        warm_run.setattr(Path, "open", count_graph_reads)
+        warm_run.setattr(json, "loads", count_graph_parses)
+        _run_extract(monkeypatch, argv)
+
+    assert "no incremental changes detected" in capsys.readouterr().out
+    assert graph_path.read_bytes() == saved_graph
+    assert graph_path.stat().st_mtime_ns == saved_mtime
+    assert (reads, parses) == (1, 1)
+
+
 def test_poisoned_manifest_is_healed(monkeypatch, tmp_path, capsys):
     """A manifest poisoned BEFORE the #2543 fix (live hash stamped, file absent
     from graph.json) must be re-queued and healed by the next run."""

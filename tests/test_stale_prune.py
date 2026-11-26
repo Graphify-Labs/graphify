@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import unicodedata
 
-from graphify.cli import _stale_graph_sources
+from graphify.cli import _read_graph_for_extraction, _stale_graph_sources
 from graphify.detect import detect
 
 NFC_NAME = unicodedata.normalize("NFC", "café.md")          # café.md, composed
@@ -49,7 +49,9 @@ def test_nfd_disk_nfc_graph_source_not_pruned(tmp_path):
     graph_path = _write_graph(tmp_path, ["docs/" + NFC_NAME])
     detection, seen = _scan(tmp_path)
 
-    stale = _stale_graph_sources(graph_path, tmp_path, seen, detection=detection)
+    stale = _stale_graph_sources(
+        graph_path, _read_graph_for_extraction(graph_path), tmp_path, seen, detection=detection,
+    )
     assert stale == []
 
 
@@ -63,7 +65,9 @@ def test_bare_basename_alive_elsewhere_not_pruned(tmp_path, capsys):
     graph_path = _write_graph(tmp_path, [NFC_NAME])  # bare legacy spelling
     detection, seen = _scan(tmp_path)
 
-    stale = _stale_graph_sources(graph_path, tmp_path, seen, detection=detection)
+    stale = _stale_graph_sources(
+        graph_path, _read_graph_for_extraction(graph_path), tmp_path, seen, detection=detection,
+    )
     assert stale == []
 
 
@@ -76,7 +80,9 @@ def test_genuinely_deleted_source_still_pruned(tmp_path):
     graph_path = _write_graph(tmp_path, ["docs/keep.md", "docs/gone.md"])
     detection, seen = _scan(tmp_path)
 
-    stale = _stale_graph_sources(graph_path, tmp_path, seen, detection=detection)
+    stale = _stale_graph_sources(
+        graph_path, _read_graph_for_extraction(graph_path), tmp_path, seen, detection=detection,
+    )
     assert stale == ["docs/gone.md"]
 
 
@@ -92,7 +98,9 @@ def test_alive_but_ignored_source_is_pruned(tmp_path):
     graph_path = _write_graph(tmp_path, ["docs/keep.md", "docs/secret.md"])
     detection, seen = _scan(tmp_path)
 
-    stale = _stale_graph_sources(graph_path, tmp_path, seen, detection=detection)
+    stale = _stale_graph_sources(
+        graph_path, _read_graph_for_extraction(graph_path), tmp_path, seen, detection=detection,
+    )
     assert stale == ["docs/secret.md"]
 
 
@@ -112,7 +120,9 @@ def test_alive_unproven_exclusion_kept_with_warning(tmp_path, capsys):
     seen = {s for s in seen if not s.endswith("other.md")}
     detection = dict(detection, ignored=[], pruned_noise_dirs=[], skipped_sensitive=[])
 
-    stale = _stale_graph_sources(graph_path, tmp_path, seen, detection=detection)
+    stale = _stale_graph_sources(
+        graph_path, _read_graph_for_extraction(graph_path), tmp_path, seen, detection=detection,
+    )
     assert stale == []
     err = capsys.readouterr().err
     assert "fail-closed" in err
