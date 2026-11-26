@@ -790,3 +790,307 @@ def test_return_in_preproc_branch_keeps_alternate_branches(
     targets = _call_targets(result, "f()")
     assert live | {"after()"} <= targets
     assert not {"dead()", "dead2()"} & targets
+
+
+# ---------------------------------------------------------------------------
+# Function-level label activation: a reachable goto opens its label wherever it
+# sits, and reachability flows on from there (break out, loop back edge, code
+# after the loop). Unreachable gotos never open anything.
+# ---------------------------------------------------------------------------
+
+_CALLEES = (
+    "a", "b", "head", "body", "more", "after", "release", "dead", "one", "two",
+    "check", "inside", "q", "r", "tick",
+)
+
+
+def _targets_for(tmp_path: Path, suffix: str, fn_src: str) -> set[str]:
+    root = _real(tmp_path)
+    src = root / f"f{suffix}"
+    src.write_text(
+        "".join(f"void {n}(void) {{}}\n" for n in _CALLEES) + fn_src,
+        encoding="utf-8",
+    )
+    result = extract([src], root=root, cache_root=root)
+    return _call_targets(result, "f()")
+
+
+_LABEL_FLOW_CASES: dict[str, tuple[str, set[str], set[str]]] = {
+    # #5338 P2: the goto lands on a label nested in an if inside while (1); the
+    # break there leaves the loop, so after() is reachable.
+    "goto_reached_nested_break_leaves_loop": (
+        "  while (1) {\n"
+        "    tick();\n"
+        "    if (x) goto L;\n"
+        "    return;\n"
+        "    if (y) { L: more(); break; }\n"
+        "  }\n"
+        "  after();\n",
+        {"tick()", "more()", "after()"},
+        set(),
+    ),
+    # Jumping into a loop the fall-through never reaches: the back edge makes
+    # the body before the label reachable, and a non-constant loop exits.
+    "goto_into_dead_loop_back_edge_and_exit": (
+        "  if (x) goto inside;\n"
+        "  return;\n"
+        "  while (y) {\n"
+        "    head();\n"
+        "  inside:\n"
+        "    body();\n"
+        "  }\n"
+        "  after();\n",
+        {"head()", "body()", "after()"},
+        set(),
+    ),
+    "goto_into_dead_infinite_loop_with_break": (
+        "  if (x) goto inside;\n"
+        "  return;\n"
+        "  while (1) {\n"
+        "    head();\n"
+        "  inside:\n"
+        "    body();\n"
+        "    if (y) break;\n"
+        "  }\n"
+        "  after();\n",
+        {"head()", "body()", "after()"},
+        set(),
+    ),
+    "goto_into_dead_infinite_loop_without_break": (
+        "  if (x) goto inside;\n"
+        "  return;\n"
+        "  while (1) {\n"
+        "    head();\n"
+        "  inside:\n"
+        "    body();\n"
+        "  }\n"
+        "  after();\n",
+        {"head()", "body()"},
+        {"after()"},
+    ),
+    # The goto that opens `first` is only found after `first` is passed, so a
+    # second pass is needed.
+    "backward_goto_needs_second_pass": (
+        "  if (x) goto second;\n"
+        "  return;\n"
+        "first:\n"
+        "  one();\n"
+        "  return;\n"
+        "second:\n"
+        "  two();\n"
+        "  goto first;\n",
+        {"one()", "two()"},
+        set(),
+    ),
+    # Only the label is entered: the dead if's own condition is not evaluated.
+    "dead_if_condition_skipped_label_inside_kept": (
+        "  if (x) goto L;\n"
+        "  return;\n"
+        "  if (y) { check(); L: inside(); }\n",
+        {"inside()"},
+        {"check()"},
+    ),
+    "goto_in_dead_code_opens_nothing": (
+        "  a();\n"
+        "  return;\n"
+        "  goto L;\n"
+        "  dead();\n"
+        "L:\n"
+        "  release();\n",
+        {"a()"},
+        {"dead()", "release()"},
+    ),
+    "do_while_one_without_break_cuts_after": (
+        "  do {\n"
+        "    tick();\n"
+        "  } while (1);\n"
+        "  after();\n",
+        {"tick()"},
+        {"after()"},
+    ),
+    "do_while_one_with_break_keeps_after": (
+        "  do {\n"
+        "    tick();\n"
+        "    if (x) break;\n"
+        "  } while (1);\n"
+        "  after();\n",
+        {"tick()", "after()"},
+        set(),
+    ),
+    "do_while_zero_keeps_after": (
+        "  do {\n"
+        "    tick();\n"
+        "  } while (0);\n"
+        "  after();\n",
+        {"tick()", "after()"},
+        set(),
+    ),
+    # A case wrapped in #if is still a switch entry, even after a returning case.
+    "case_inside_preproc_if_in_switch": (
+        "  switch (x) {\n"
+        "  case 0:\n"
+        "    return;\n"
+        "    dead();\n"
+        "#if FEATURE\n"
+        "  case 1:\n"
+        "    q();\n"
+        "    break;\n"
+        "#endif\n"
+        "  default:\n"
+        "    r();\n"
+        "  }\n"
+        "  after();\n",
+        {"q()", "r()", "after()"},
+        {"dead()"},
+    ),
+    "continue_in_infinite_loop_does_not_exit": (
+        "  for (;;) {\n"
+        "    tick();\n"
+        "    if (x) continue;\n"
+        "    body();\n"
+        "  }\n"
+        "  after();\n",
+        {"tick()", "body()"},
+        {"after()"},
+    ),
+}
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
+@pytest.mark.parametrize("case", list(_LABEL_FLOW_CASES))
+def test_label_activation_flows_through_loops(
+    tmp_path: Path, suffix: str, case: str
+) -> None:
+    body, live, dead = _LABEL_FLOW_CASES[case]
+    targets = _targets_for(
+        tmp_path, suffix, "int x, y;\nvoid f(void) {\n" + body + "}\n"
+    )
+    assert live <= targets, (case, targets)
+    assert not dead & targets, (case, targets)
+
+
+_COMPUTED_GOTO_CASES: dict[str, tuple[str, set[str], set[str]]] = {
+    # #5338 review: `goto *p;` may land on the address-taken label after return.
+    "pointer": (
+        "  void *p = &&cleanup;\n"
+        "  a();\n"
+        "  if (x) goto *p;\n"
+        "  return;\n"
+        "cleanup:\n"
+        "  release();\n",
+        {"a()", "release()"},
+        set(),
+    ),
+    # `goto *table[i];` parses as an ERROR node; it still opens the labels.
+    "table": (
+        "  static void *table[] = { &&one_l, &&two_l };\n"
+        "  if (x) goto *table[y];\n"
+        "  return;\n"
+        "one_l:\n"
+        "  one();\n"
+        "  return;\n"
+        "two_l:\n"
+        "  two();\n",
+        {"one()", "two()"},
+        set(),
+    ),
+    # Only labels whose address is taken can be computed-goto targets.
+    "label_without_address_stays_dead": (
+        "  void *p = &&cleanup;\n"
+        "  if (x) goto *p;\n"
+        "  return;\n"
+        "other:\n"
+        "  dead();\n"
+        "cleanup:\n"
+        "  release();\n",
+        {"release()"},
+        {"dead()"},
+    ),
+}
+
+
+@pytest.mark.parametrize("suffix", [".c", ".cpp"])
+@pytest.mark.parametrize("case", list(_COMPUTED_GOTO_CASES))
+def test_computed_goto_opens_address_taken_labels(
+    tmp_path: Path, suffix: str, case: str
+) -> None:
+    body, live, dead = _COMPUTED_GOTO_CASES[case]
+    targets = _targets_for(
+        tmp_path, suffix, "int x, y;\nvoid f(void) {\n" + body + "}\n"
+    )
+    assert live <= targets, (case, targets)
+    assert not dead & targets, (case, targets)
+
+
+def test_cpp_lambda_return_only_ends_the_lambda(tmp_path: Path) -> None:
+    """A return inside a lambda body cuts the lambda's tail, not the caller's."""
+    targets = _targets_for(
+        tmp_path,
+        ".cpp",
+        "void f(void) {\n"
+        "  auto l = []() {\n"
+        "    a();\n"
+        "    return;\n"
+        "    dead();\n"
+        "  };\n"
+        "  after();\n"
+        "}\n",
+    )
+    assert {"a()", "after()"} <= targets
+    assert "dead()" not in targets
+
+
+# Preprocessor branches that split one statement leave its real body stranded
+# after a parse error; tree-sitter then sees a bare block that always returns.
+# Patterns taken from STM32 HAL sources (HAL_PWREx_ConfigSupply, HAL_SAI_Init).
+_SPLIT_BY_PREPROC_CASES: dict[str, str] = {
+    "if_condition_per_branch": (
+        "#if defined(FEATURE)\n"
+        "  if (x == 0U)\n"
+        "#else\n"
+        "  if (y != 1)\n"
+        "#endif /* FEATURE */\n"
+        "  {\n"
+        "    if (x) { return; } else { return; }\n"
+        "  }\n"
+        "  after();\n"
+    ),
+    "else_if_chain_with_wrapped_link": (
+        "  if (x)\n"
+        "  {\n"
+        "    a();\n"
+        "  }\n"
+        "#if defined(FEATURE)\n"
+        "  else if (y)\n"
+        "  {\n"
+        "    b();\n"
+        "  }\n"
+        "#endif /* FEATURE */\n"
+        "  else\n"
+        "  {\n"
+        "    return;\n"
+        "  }\n"
+        "  after();\n"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "case,suffix",
+    [
+        ("if_condition_per_branch", ".c"),
+        ("if_condition_per_branch", ".cpp"),
+        # tree-sitter-cpp loses `after();` out of the function body here, so
+        # only the C parse (the HAL case) can keep it.
+        ("else_if_chain_with_wrapped_link", ".c"),
+    ],
+)
+def test_block_after_parse_error_does_not_cut_fall_through(
+    tmp_path: Path, suffix: str, case: str
+) -> None:
+    targets = _targets_for(
+        tmp_path,
+        suffix,
+        "int x, y;\nvoid f(void) {\n" + _SPLIT_BY_PREPROC_CASES[case] + "}\n",
+    )
+    assert "after()" in targets, (case, targets)
