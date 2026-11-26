@@ -528,6 +528,9 @@ def to_html(
 
     If node_limit is set and the graph exceeds it, automatically builds an
     aggregated community-level meta-graph instead of raising ValueError.
+    When the graph is above the vis-network comfort threshold but still within
+    the requested limit, a self-contained Canvas renderer is used instead of
+    the force-simulation view (see ``html_large``).
 
     Returns True when the output was written. Returns False when an aggregated
     view would contain fewer than two communities and is intentionally skipped.
@@ -591,6 +594,23 @@ def to_html(
             f"Graph has {G.number_of_nodes()} nodes - too large for HTML viz "
             f"(limit: {limit}). Use --no-viz, raise GRAPHIFY_VIZ_NODE_LIMIT, "
             f"or reduce input size."
+        )
+
+    # Above the vis-network comfort zone, use the Canvas renderer instead of
+    # feeding 20k+ nodes and 50k edges into a browser-side force simulation.
+    # This path is only reached when the caller explicitly allowed full
+    # node-level rendering (an explicit --node-limit / env override); the
+    # default limit still takes the aggregated branch above.
+    if G.number_of_nodes() > MAX_NODES_FOR_VIZ:
+        from graphify.exporters.html_large import to_large_html
+        return to_large_html(
+            G,
+            communities,
+            output_path,
+            community_labels=community_labels,
+            member_counts=member_counts,
+            learning_overlay=learning_overlay,
+            title=_html_document_title(output_path),
         )
 
     node_community = _node_community_map(communities)
