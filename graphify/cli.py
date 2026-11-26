@@ -2482,6 +2482,70 @@ def dispatch_command(cmd: str) -> None:
             print("God nodes (most connected):")
             for rank, n in enumerate(gods, 1):
                 print(f"  {rank}. {_sanitize_label(str(n['label']))} - {n['degree']} edges")
+    elif cmd in ("cycles", "import-cycles", "import_cycles"):
+        from graphify.affected import load_graph
+        from graphify.analyze import find_import_cycles, format_import_cycles_text
+
+        graph_path = _default_graph_path()
+        max_length = 5
+        top_n = 20
+        as_json = "--json" in sys.argv
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--graph="):
+                graph_path = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--max-length" and i + 1 < len(args):
+                try:
+                    max_length = int(args[i + 1])
+                except ValueError:
+                    print("error: --max-length must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--max-length="):
+                try:
+                    max_length = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --max-length must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            elif args[i] == "--top" and i + 1 < len(args):
+                try:
+                    top_n = int(args[i + 1])
+                except ValueError:
+                    print("error: --top must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--top="):
+                try:
+                    top_n = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --top must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            else:
+                i += 1
+        gp = Path(graph_path).resolve()
+        if not gp.exists():
+            print(f"error: graph file not found: {gp}", file=sys.stderr)
+            sys.exit(1)
+        if gp.suffix != ".json":
+            print("error: graph file must be a .json file", file=sys.stderr)
+            sys.exit(1)
+        try:
+            G = load_graph(gp)
+        except Exception as exc:
+            print(f"error: could not load graph: {exc}", file=sys.stderr)
+            sys.exit(1)
+        cycles = find_import_cycles(G, max_cycle_length=max_length, top_n=top_n)
+        if as_json:
+            print(json.dumps(cycles, indent=2))
+        else:
+            print(format_import_cycles_text(cycles))
     elif cmd == "save-result":
         # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
         #                      [--outcome useful|dead_end|corrected] [--correction TEXT]

@@ -38,6 +38,7 @@ from graphify.serve import (
     _community_header,
     _search_tokens,
     _shortest_path_text,
+    _import_cycles_text,
 )
 
 
@@ -2392,3 +2393,26 @@ def test_who_calls_question_reaches_a_caller_in_another_repo():
     text = _query_graph_text(_make_two_repo_graph(), "who calls charge", mode="bfs", depth=1, token_budget=2000)
     assert "Context: call (heuristic)" in text
     assert "Checkout" in text
+
+
+def test_import_cycles_text_reports_cycles_and_respects_bounds():
+    G = nx.DiGraph()
+    G.add_node("a", label="a.py", source_file="a.py")
+    G.add_node("b", label="b.py", source_file="b.py")
+    G.add_node("c", label="c.py", source_file="c.py")
+    G.add_edge("a", "b", relation="imports_from", source_file="a.py")
+    G.add_edge("b", "a", relation="imports_from", source_file="b.py")
+    G.add_edge("b", "c", relation="imports_from", source_file="b.py")
+    G.add_edge("c", "a", relation="imports_from", source_file="c.py")
+
+    out = _import_cycles_text(G, {"max_cycle_length": 5, "top_n": 10})
+    assert "Import cycles (2 found):" in out
+    assert "a.py -> b.py -> a.py (length 2)" in out
+    assert "a.py -> b.py -> c.py -> a.py (length 3)" in out
+
+    bounded = _import_cycles_text(G, {"max_cycle_length": 2, "top_n": 10})
+    assert "Import cycles (1 found):" in bounded
+    assert "length 3" not in bounded
+
+    empty = _import_cycles_text(_make_graph(), {})
+    assert empty == "No circular import dependencies detected."
