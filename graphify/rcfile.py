@@ -61,6 +61,7 @@ LANGUAGE_ALIASES: dict[str, str] = {
     "swift": ".swift",
     "lua": ".lua",
     "zig": ".zig",
+    "gdscript": ".gd", "godot": ".gd",
     "elixir": ".ex",
     "julia": ".jl",
     "dart": ".dart",

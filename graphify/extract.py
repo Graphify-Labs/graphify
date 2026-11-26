@@ -99,6 +99,7 @@ from graphify.extractors.terraform import extract_terraform, prepare_terraform, 
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.vbnet import extract_vbnet, resolve_vbnet_partial_calls  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
+from graphify.extractors.gdscript import extract_gdscript, resolve_gdscript  # noqa: F401
 from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
 
@@ -4897,6 +4898,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".cs": "dotnet", ".vb": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
     ".lua": "lua", ".luau": "lua",
     ".zig": "zig",
+    ".gd": "gdscript",
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
@@ -11781,6 +11783,7 @@ _DISPATCH: dict[str, Any] = {
     ".luau": extract_lua,
     ".toc": extract_lua,
     ".zig": extract_zig,
+    ".gd": extract_gdscript,
     ".ps1": extract_powershell,
     ".psm1": extract_powershell,
     ".psd1": extract_powershell_manifest,
@@ -13734,6 +13737,16 @@ def extract(
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("C include resolution failed, skipping: %s", exc)
+
+    # GDScript: bind extends / preload / class_name types / typed-receiver calls
+    # and signal wiring across .gd files. The facts are name-keyed, so this
+    # only needs the final node ids, which exist from here on.
+    if any(effective_suffix(p) == ".gd" for p in paths):
+        try:
+            resolve_gdscript(per_file, paths, all_nodes, all_edges, root)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("GDScript resolution failed, skipping: %s", exc)
 
     # Build evidence index from import edges so cross-file calls backed by an
     # explicit import statement can be promoted from INFERRED to EXTRACTED.

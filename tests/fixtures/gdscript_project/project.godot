@@ -1,0 +1,7 @@
+; Engine configuration file.
+
+config_version=5
+
+[autoload]
+
+Events="*res://scripts/events.gd"

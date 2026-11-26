@@ -38,6 +38,7 @@ from graphify.extractors.terraform import extract_terraform
 from graphify.extractors.verilog import extract_verilog
 from graphify.extractors.vbnet import extract_vbnet
 from graphify.extractors.zig import extract_zig
+from graphify.extractors.gdscript import extract_gdscript
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "apex": extract_apex,
@@ -73,4 +74,5 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "verilog": extract_verilog,
     "vbnet": extract_vbnet,
     "zig": extract_zig,
+    "gdscript": extract_gdscript,
 }
