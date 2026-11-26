@@ -64,11 +64,6 @@ def _pack(typecode: str, values: list[Any]) -> bytes:
     return arr.tobytes()
 
 
-def _align4(buf: bytearray) -> None:
-    while len(buf) % 4:
-        buf.append(0)
-
-
 def _large_layout(
     G: nx.Graph,
     node_community: dict[Any, Any],
@@ -168,7 +163,6 @@ def _build_large_assets(
         key=lambda cid: str(cid),
     )
     cid_to_u32 = {cid: i for i, cid in enumerate(original_cids)}
-    u32_to_cid = {i: cid for cid, i in cid_to_u32.items()}
 
     labels: list[str] = []
     pos_values: list[float] = []
@@ -479,13 +473,14 @@ _LARGE_SCRIPT = r"""
     centerY.set(cid, centerY.get(cid) / centerN.get(cid));
   }
 
-  // Adjacency list for the inspector.  2*m pushes is fine for 50k edges.
+  // Adjacency list for the inspector.  Store edge indices so each neighbor
+  // can be shown with its relation (and direction) without a second lookup.
   const adj = new Array(n);
   for (let i = 0; i < n; i++) adj[i] = [];
   for (let e = 0; e < m; e++) {
     const a = edgeSrc[e], b = edgeTgt[e];
-    adj[a].push(b);
-    if (b !== a) adj[b].push(a);
+    adj[a].push(e);
+    if (b !== a) adj[b].push(e);
   }
 
   // Spatial grid for hover/click.  Cell size is in world units; at fit the
@@ -627,6 +622,8 @@ _LARGE_SCRIPT = r"""
         const extracted = conf === 0;
         if ((pass === 0) !== extracted) continue;
         const a = edgeSrc[e], b = edgeTgt[e];
+        if (hiddenCommunities.size &&
+            (hiddenCommunities.has(community[a]) || hiddenCommunities.has(community[b]))) continue;
         if (!allEdges && community[a] === community[b]) continue;
         const ax = pos[a * 2], ay = pos[a * 2 + 1];
         const bx = pos[b * 2], by = pos[b * 2 + 1];
@@ -870,6 +867,52 @@ _LARGE_SCRIPT = r"""
         octx.fillText(labels[i], sx, sy - r - 4);
       }
     }
+    // Mirror the vis-network edge tooltip: while a node is hovered or
+    // selected, name the relationships of its edges on the map.
+    const focus = selected >= 0 ? selected : hovered;
+    if (focus >= 0 && !hiddenCommunities.has(community[focus])) {
+      drawFocusedEdgeLabels(t, focus);
+    }
+  }
+
+  function drawFocusedEdgeLabels(t, i) {
+    // Only once the user has zoomed in enough for the text to be readable
+    // without covering the whole cluster.
+    if (camera.scale < 0.9) return;
+    const incident = adj[i] || [];
+    if (!incident.length) return;
+    octx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    octx.textAlign = 'center';
+    octx.textBaseline = 'middle';
+    const placed = [];
+    let drawn = 0;
+    const ax = screenX(pos[i * 2]);
+    const ay = screenY(pos[i * 2 + 1]);
+    for (const e of incident) {
+      if (drawn >= 40) break;
+      const rel = relations[edgeRelation[e]] || '';
+      if (!rel) continue;
+      const nb = edgeSrc[e] === i ? edgeTgt[e] : edgeSrc[e];
+      if (hiddenCommunities.has(community[nb])) continue;
+      const bx = screenX(pos[nb * 2]);
+      const by = screenY(pos[nb * 2 + 1]);
+      if (Math.hypot(bx - ax, by - ay) < 34) continue;
+      const mx = (ax + bx) / 2;
+      const my = (ay + by) / 2;
+      if (mx < 0 || mx > overlay.clientWidth || my < 0 || my > overlay.clientHeight) continue;
+      const width = octx.measureText(rel).width + 6;
+      const rect = { left: mx - width / 2, top: my - 7, right: mx + width / 2, bottom: my + 7 };
+      if (placed.some((r) => !(rect.right < r.left || rect.left > r.right || rect.bottom < r.top || rect.top > r.bottom))) continue;
+      placed.push(rect);
+      octx.globalAlpha = 0.78;
+      octx.fillStyle = t.bg;
+      octx.fillRect(rect.left, rect.top, width, 14);
+      octx.globalAlpha = 0.95;
+      octx.fillStyle = t.label;
+      octx.fillText(rel, mx, my);
+      drawn++;
+    }
+    octx.globalAlpha = 1;
   }
 
   function pick(mx, my) {
@@ -919,25 +962,34 @@ _LARGE_SCRIPT = r"""
       const status = learn === 1 ? 'preferred' : learn === 2 ? 'contested' : 'annotated';
       add('Learning:', status + ((learning[i] & 4) ? ' (stale)' : ''));
     }
-    const neighbors = adj[i] || [];
-    if (neighbors.length) {
+    const incident = adj[i] || [];
+    if (incident.length) {
       const heading = document.createElement('div');
       heading.className = 'field';
       heading.style.cssText = 'margin-top:8px;color:var(--text-2);font-size:11px';
-      heading.textContent = 'Neighbors (' + neighbors.length + ')';
+      heading.textContent = 'Neighbors (' + incident.length + ')';
       box.append(heading);
       const list = document.createElement('div');
       list.id = 'neighbors-list';
       const seen = new Set();
-      for (const nb of neighbors) {
-        if (seen.has(nb)) continue;
-        seen.add(nb);
+      for (const e of incident) {
+        const nb = edgeSrc[e] === i ? edgeTgt[e] : edgeSrc[e];
+        const relation = relations[edgeRelation[e]] || '';
+        // Keep parallel edges that carry different relations: dedupe per
+        // neighbor+relation pair, not per neighbor.
+        const key = nb + '\u0000' + relation;
+        if (seen.has(key)) continue;
+        seen.add(key);
         if (seen.size > 80) break;
         const link = document.createElement('span');
         link.className = 'neighbor-link';
         link.style.borderLeftColor = colorByCid.get(community[nb]) || '#555';
         link.dataset.idx = String(nb);
-        link.textContent = labels[nb];
+        const arrow = relation ? (edgeSrc[e] === i ? '\u2192 ' : '\u2190 ') : '';
+        link.textContent = relation
+          ? labels[nb] + '  ' + arrow + relation
+          : labels[nb];
+        link.title = relation ? labels[nb] + ' \u2014 ' + relation : labels[nb];
         list.append(link);
       }
       box.append(list);
