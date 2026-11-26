@@ -23,6 +23,10 @@ skills/
 # broad skills/ rule above ignores install-target skill dirs elsewhere.
 !graphify/skills/
 !graphify/skills/**
+!/skills/
+/skills/*
+!/skills/graphify/
+!/skills/graphify/**
 # The skillgen core fragments are the human-edited source of the lean SKILL.md.
 # A global "core" ignore (for core dumps) would otherwise drop them.
 !tools/skillgen/fragments/core/
