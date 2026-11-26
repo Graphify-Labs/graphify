@@ -193,8 +193,9 @@ inclusive end line of the declaration at `source_file` / `source_location`, in t
 same `L58` form. `source_location` itself stays a start-only `L42` string.
 Tree-sitter's exclusive end point at column zero maps to the preceding line. The
 shared engine's type, function and declaration hooks, plus Go and Objective-C
-declarations, supply these ranges. File nodes, reference stubs, synthetic owners
-and Objective-C macro enums reconstructed from isolated fragments omit the field.
+declarations, supply these ranges, including `NS_ENUM`-style enums whose members
+are re-parsed from the original body. File nodes, reference stubs and synthetic
+owners omit the field.
 
 A merged header declaration retains its own range; `definition_end_location`
 pairs with the separate `definition_file` / `definition_location` site.

@@ -386,3 +386,18 @@ def test_get_node_prints_the_definition_range(tmp_path):
     G = build([extract([tmp_path / "Box.m", tmp_path / "Box.h"], tmp_path / "cache", root=tmp_path)])
     run = next(n for n, d in G.nodes(data=True) if d.get("label") == "-run")
     assert serve._node_location(G.nodes[run], "definition") == "L3-L5"
+
+
+@pytest.mark.parametrize("macro", ["NS_ENUM", "NS_OPTIONS", "NS_CLOSED_ENUM"])
+def test_objc_macro_enums_carry_ranges(tmp_path, macro):
+    path = tmp_path / "Colors.h"
+    path.write_text(
+        f"typedef {macro}(NSInteger, Color) {{\n    ColorRed = 1,\n    ColorBlue =\n        2,\n}};\n",
+        encoding="utf-8",
+    )
+    from graphify.extractors.objc import extract_objc
+
+    result = extract_objc(path)
+    ranges = {label: (_node(result, label)["source_location"], _node(result, label).get("source_end_location"))
+              for label in ("Color", "ColorRed", "ColorBlue")}
+    assert ranges == {"Color": ("L1", "L5"), "ColorRed": ("L2", "L2"), "ColorBlue": ("L3", "L4")}

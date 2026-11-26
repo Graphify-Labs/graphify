@@ -135,13 +135,15 @@ def extract_objc(path: Path) -> dict:
     objc_field_types: dict[str, dict[str, str | None]] = {}
 
     def add_node(nid: str, label: str, line: int, markers: tuple[str, ...] = (),
-                 *, ast_node=None) -> None:
+                 *, ast_node=None, end_line: int | None = None) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
             node: dict = {"id": nid, "label": label, "file_type": "code",
                     "source_file": str_path, "source_location": f"L{line}"}
             if ast_node is not None:
-                node["source_end_location"] = f"L{_inclusive_end_line(ast_node)}"
+                end_line = _inclusive_end_line(ast_node)
+            if end_line is not None:
+                node["source_end_location"] = f"L{end_line}"
             for marker in markers:
                 node[marker] = True
             nodes.append(node)
@@ -263,8 +265,8 @@ def extract_objc(path: Path) -> dict:
                         _record_field_type(cls_nid, *entry)
 
     def _emit_enum(enum_spec, name: str, line: int,
-                   mapped_members: list[tuple[str, int]] | None = None,
-                   *, declaration=None) -> None:
+                   mapped_members: list[tuple[str, int, int]] | None = None,
+                   *, declaration=None, end_line: int | None = None) -> None:
         """Emit a C-style enum type node plus a node + `case_of` edge per
         enumerator, mirroring how every other language with enums models them
         (Java #1719, C++ #3939, Swift). Objective-C is an object-oriented
@@ -272,7 +274,7 @@ def extract_objc(path: Path) -> dict:
         `enum`/`typedef enum` definitions were dropped entirely.
         """
         enum_nid = _make_id(stem, name)
-        add_node(enum_nid, name, line, ast_node=declaration or enum_spec)
+        add_node(enum_nid, name, line, ast_node=declaration or enum_spec, end_line=end_line)
         add_edge(file_nid, enum_nid, "contains", line)
         member_asts = {}
         if mapped_members is None:
@@ -285,14 +287,14 @@ def extract_objc(path: Path) -> dict:
                     continue
                 mname = next((_read(c) for c in member.children if c.type == "identifier"), None)
                 if mname:
-                    mapped_members.append((mname, member.start_point[0] + 1))
+                    mapped_members.append((mname, member.start_point[0] + 1, None))
                     member_asts.setdefault(mname, member)
-        for mname, m_line in mapped_members:
+        for mname, m_line, m_end in mapped_members:
             member_nid = _make_id(enum_nid, mname)
-            add_node(member_nid, mname, m_line, ast_node=member_asts.get(mname))
+            add_node(member_nid, mname, m_line, ast_node=member_asts.get(mname), end_line=m_end)
             add_edge(enum_nid, member_nid, "case_of", m_line)
 
-    def _macro_enum_members() -> list[tuple[str, int, list[tuple[str, int]]]]:
+    def _macro_enum_members() -> list[tuple[str, int, int, list[tuple[str, int, int]]]]:
         """Validate selected typedef macros without changing the original parse tree.
 
         The Objective-C grammar does not expose these bodies as enum_specifiers.
@@ -419,7 +421,7 @@ def extract_objc(path: Path) -> dict:
                    for child in body.children):
                 continue
 
-            members: list[tuple[str, int]] = []
+            members: list[tuple[str, int, int]] = []
             previous_member_end = None
             for member in body.children:
                 if member.type != "enumerator":
@@ -442,10 +444,14 @@ def extract_objc(path: Path) -> dict:
                 if original_end > close_brace.end_byte or source[original_start:original_end] != name:
                     break
                 line = open_brace.start_point[0] + identifier.start_point[0] - body.start_point[0] + 1
-                members.append((name.decode("utf-8", errors="replace"), line))
+                # Fragment rows match source rows from the brace on; only the first row's columns shift.
+                end_row, end_column = member.end_point
+                end = open_brace.start_point[0] + end_row - body.start_point[0] + (end_column > 0)
+                members.append((name.decode("utf-8", errors="replace"), line, max(line, end)))
                 previous_member_end = member.end_byte
             else:
-                accepted.append((_read(names[0]), macro.start_point[0] + 1, members))
+                accepted.append((_read(names[0]), macro.start_point[0] + 1,
+                                 after_body[0].end_point[0] + 1, members))
         return accepted
 
     macro_enums = _macro_enum_members()
@@ -740,8 +746,8 @@ def extract_objc(path: Path) -> dict:
             walk(child, parent_nid)
 
     walk(root)
-    for name, line, members in macro_enums:
-        _emit_enum(None, name, line, members)
+    for name, line, end_line, members in macro_enums:
+        _emit_enum(None, name, line, members, end_line=end_line)
 
     # Second pass: resolve calls inside method bodies
     all_method_nids = {n["id"] for n in nodes if n["id"] != file_nid}
