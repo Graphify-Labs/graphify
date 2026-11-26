@@ -3030,6 +3030,19 @@ def _confidence_tag(d: dict) -> str:
     return conf
 
 
+def _import_cycles_text(G: nx.Graph, arguments: dict) -> str:
+    """Body of the `import_cycles` MCP tool (module-level so tests can call it
+    without an mcp install)."""
+    from graphify.analyze import find_import_cycles, format_import_cycles_text
+
+    raw_max = arguments.get("max_cycle_length")
+    raw_top = arguments.get("top_n")
+    max_cycle_length = max(1, int(5 if raw_max is None else raw_max))
+    top_n = max(0, int(20 if raw_top is None else raw_top))
+    cycles = find_import_cycles(G, max_cycle_length=max_cycle_length, top_n=top_n)
+    return format_import_cycles_text(cycles)
+
+
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
@@ -3440,6 +3453,17 @@ def _build_server(graph_path: str):
                 },
             ),
             types.Tool(
+                name="import_cycles",
+                description="Detect circular import dependencies at the file level (shortest cycles first).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "max_cycle_length": {"type": "integer", "default": 5, "description": "Maximum cycle length to report"},
+                        "top_n": {"type": "integer", "default": 20, "description": "Maximum number of cycles to return"},
+                    },
+                },
+            ),
+            types.Tool(
                 name="list_prs",
                 description=(
                     "List open GitHub PRs with CI status, review state, and graph impact "
@@ -3738,6 +3762,9 @@ def _build_server(graph_path: str):
     def _tool_shortest_path(arguments: dict) -> str:
         return _shortest_path_text(G, arguments)
 
+    def _tool_import_cycles(arguments: dict) -> str:
+        return _import_cycles_text(G, arguments)
+
     def _tool_list_prs(arguments: dict) -> str:
         from graphify.prs import fetch_prs, fetch_worktrees, format_prs_text, _detect_default_branch
         repo = arguments.get("repo") or None
@@ -3833,6 +3860,7 @@ def _build_server(graph_path: str):
         "god_nodes": _tool_god_nodes,
         "graph_stats": _tool_graph_stats,
         "shortest_path": _tool_shortest_path,
+        "import_cycles": _tool_import_cycles,
         "list_prs": _tool_list_prs,
         "get_pr_impact": _tool_get_pr_impact,
         "triage_prs": _tool_triage_prs,

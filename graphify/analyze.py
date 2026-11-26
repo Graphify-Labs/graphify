@@ -842,6 +842,9 @@ def find_import_cycles(
         src_file = attrs.get("source_file", "")
         return src_file if isinstance(src_file, str) else ""
 
+    if top_n <= 0 or max_cycle_length < 1:
+        return []
+
     # Step 1: Build a directed file-level graph from import/re-export edges.
     # IMPORTANT: resolve endpoints using source_file only; never infer from label/id.
     file_graph = nx.DiGraph()
@@ -944,3 +947,17 @@ def find_import_cycles(
         })
 
     return result
+
+
+def format_import_cycles_text(cycles: list[dict]) -> str:
+    """Format find_import_cycles() output into a human-readable summary."""
+    if not cycles:
+        return "No circular import dependencies detected."
+    from .security import sanitize_label
+
+    lines = [f"Import cycles ({len(cycles)} found):"]
+    for rank, entry in enumerate(cycles, 1):
+        chain = [sanitize_label(str(f)) for f in entry["cycle"]]
+        chain_str = " -> ".join([*chain, chain[0]])
+        lines.append(f"  {rank}. {chain_str} (length {entry['length']})")
+    return "\n".join(lines)
