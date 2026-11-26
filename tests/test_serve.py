@@ -2414,5 +2414,14 @@ def test_import_cycles_text_reports_cycles_and_respects_bounds():
     assert "Import cycles (1 found):" in bounded
     assert "length 3" not in bounded
 
-    empty = _import_cycles_text(_make_graph(), {})
-    assert empty == "No circular import dependencies detected."
+    null_args = _import_cycles_text(G, {"max_cycle_length": None, "top_n": None})
+    assert "Import cycles (2 found):" in null_args
+
+    zero_top = _import_cycles_text(G, {"top_n": 0})
+    assert zero_top == "No circular import dependencies detected."
+
+    acyclic = nx.DiGraph()
+    acyclic.add_node("a", label="a.py", source_file="a.py")
+    acyclic.add_node("b", label="b.py", source_file="b.py")
+    acyclic.add_edge("a", "b", relation="imports_from", source_file="a.py")
+    assert _import_cycles_text(acyclic, {}) == "No circular import dependencies detected."

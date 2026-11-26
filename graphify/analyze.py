@@ -842,6 +842,9 @@ def find_import_cycles(
         src_file = attrs.get("source_file", "")
         return src_file if isinstance(src_file, str) else ""
 
+    if top_n <= 0 or max_cycle_length < 1:
+        return []
+
     # Step 1: Build a directed file-level graph from import/re-export edges.
     # IMPORTANT: resolve endpoints using source_file only; never infer from label/id.
     file_graph = nx.DiGraph()

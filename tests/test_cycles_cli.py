@@ -85,3 +85,25 @@ def test_cycles_cli_missing_graph_errors(monkeypatch, tmp_path, capsys):
         _run(monkeypatch, ["graphify", "cycles", "--graph", str(tmp_path / "missing.json")])
     assert exc.value.code == 1
     assert "graph file not found" in capsys.readouterr().err
+
+
+def test_cycles_cli_top_zero_returns_no_cycles(monkeypatch, tmp_path, capsys):
+    gp = _write_cycle_graph(tmp_path)
+    _run(monkeypatch, ["graphify", "cycles", "--graph", str(gp), "--top", "0"])
+    assert "No circular import dependencies detected." in capsys.readouterr().out
+
+    _run(monkeypatch, ["graphify", "cycles", "--graph", str(gp), "--top", "0", "--json"])
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_cycles_cli_rejects_invalid_bounds(monkeypatch, tmp_path, capsys):
+    gp = _write_cycle_graph(tmp_path)
+    with pytest.raises(SystemExit) as exc_top:
+        _run(monkeypatch, ["graphify", "cycles", "--graph", str(gp), "--top", "-1"])
+    assert exc_top.value.code == 1
+    assert "--top must be >= 0" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit) as exc_len:
+        _run(monkeypatch, ["graphify", "cycles", "--graph", str(gp), "--max-length", "0"])
+    assert exc_len.value.code == 1
+    assert "--max-length must be >= 1" in capsys.readouterr().err

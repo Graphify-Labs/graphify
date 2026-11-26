@@ -930,3 +930,16 @@ def test_betweenness_matches_networkx_bit_for_bit(G, k):
 
     expected = nx.betweenness_centrality(G, k=k, seed=42)
     assert list(_betweenness_centrality(G, k, seed=42).items()) == list(expected.items())
+
+
+def test_find_import_cycles_zero_top_n_returns_empty():
+    from graphify.analyze import find_import_cycles
+
+    G = nx.DiGraph()
+    G.add_node("a", source_file="a.py")
+    G.add_node("b", source_file="b.py")
+    G.add_edge("a", "b", relation="imports_from", source_file="a.py")
+    G.add_edge("b", "a", relation="imports_from", source_file="b.py")
+    assert find_import_cycles(G, top_n=0) == []
+    assert find_import_cycles(G, top_n=-1) == []
+    assert find_import_cycles(G, max_cycle_length=0) == []

@@ -3035,8 +3035,10 @@ def _import_cycles_text(G: nx.Graph, arguments: dict) -> str:
     without an mcp install)."""
     from graphify.analyze import find_import_cycles, format_import_cycles_text
 
-    max_cycle_length = max(1, int(arguments.get("max_cycle_length", 5)))
-    top_n = max(1, int(arguments.get("top_n", 20)))
+    raw_max = arguments.get("max_cycle_length")
+    raw_top = arguments.get("top_n")
+    max_cycle_length = max(1, int(5 if raw_max is None else raw_max))
+    top_n = max(0, int(20 if raw_top is None else raw_top))
     cycles = find_import_cycles(G, max_cycle_length=max_cycle_length, top_n=top_n)
     return format_import_cycles_text(cycles)
 
