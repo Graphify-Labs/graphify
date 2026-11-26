@@ -12,6 +12,7 @@ from graphify.extractors.base import (  # noqa: F401
     _read_source_text,
     _read_text,
 )
+from graphify.extractors.python_scope import _python_param_shadow_checker
 from graphify.ids import normalize_id
 from graphify.rcfile import effective_suffix, get_language_overrides
 import functools
@@ -1130,7 +1131,14 @@ def _disambiguate_colliding_node_ids(
     scatter a single module across N file-qualified duplicates.
     """
     by_id: dict[str, list[dict]] = {}
+    # Files whose copy of a node an earlier merge folded into it (Go, #5304). Their
+    # edges still name the shared pre-salt id keyed by their OWN path, so they must
+    # follow the node they were folded into. Transient: always consumed here.
+    folded_files: dict[int, list[str]] = {}
     for node in nodes:
+        folded = node.pop("_go_folded_files", None)
+        if folded:
+            folded_files[id(node)] = folded
         if node.get("type") in ("module", "namespace"):
             continue
         nid = node.get("id")
@@ -1175,6 +1183,11 @@ def _disambiguate_colliding_node_ids(
             remap[(old_id, source_key)] = new_id
             if new_id != old_id:
                 node["id"] = new_id
+        for node in group:
+            for folded_file in folded_files.get(id(node), ()):
+                folded_key = _source_key(folded_file, root)
+                if folded_key and folded_key not in source_keys:
+                    remap.setdefault((old_id, folded_key), node["id"])
 
     if not remap:
         # No colliding ids to salt apart, but the transient `target_file` hint an
@@ -1526,13 +1539,29 @@ def _apply_symbol_resolution_facts(
     for declaration in facts.declarations:
         ensure_symbol_node(declaration.file_path, declaration.name, declaration.line)
 
-    local_aliases_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
+    # Keyed by scope_id (None = module level, else the plain id of the function
+    # an import is local to), so a function-local Python import's alias binds
+    # only a use whose own scope_id matches, instead of every same-named call
+    # anywhere in the file (#5421's second, deferred scenario). JS/TS imports
+    # never set scope_id, so every alias they contribute lives under the same
+    # None key as before -- this is purely additive for them.
+    local_aliases_by_file: dict[Path, dict[str, dict[str | None, tuple[Path, str]]]] = {}
     for import_fact in facts.imports:
         file_path = _resolve_cached(import_fact.file_path)
-        local_aliases_by_file.setdefault(file_path, {})[import_fact.local_name] = (
+        local_aliases_by_file.setdefault(file_path, {}).setdefault(
+            import_fact.local_name, {}
+        )[import_fact.scope_id] = (
             _resolve_cached(import_fact.target_path),
             import_fact.imported_name,
         )
+
+    def _local_alias(file_path: Path, name: str, scope_id: str | None) -> tuple[Path, str] | None:
+        by_scope = local_aliases_by_file.get(file_path, {}).get(name)
+        if not by_scope:
+            return None
+        if scope_id is not None and scope_id in by_scope:
+            return by_scope[scope_id]
+        return by_scope.get(None)
 
     pending_aliases_by_file: dict[Path, list[_SymbolAliasFact]] = {}
     for alias_fact in facts.aliases:
@@ -1544,11 +1573,11 @@ def _apply_symbol_resolution_facts(
         while changed:
             changed = False
             for alias_fact in aliases:
-                if alias_fact.alias in local_aliases:
+                if None in local_aliases.get(alias_fact.alias, {}):
                     continue
-                origin = local_aliases.get(alias_fact.target_name)
+                origin = local_aliases.get(alias_fact.target_name, {}).get(None)
                 if origin is not None:
-                    local_aliases[alias_fact.alias] = origin
+                    local_aliases.setdefault(alias_fact.alias, {})[None] = origin
                     changed = True
 
     named_exports_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
@@ -1612,7 +1641,7 @@ def _apply_symbol_resolution_facts(
         if export_fact.target_path is not None and export_fact.target_name is not None:
             origin = (_resolve_cached(export_fact.target_path), export_fact.target_name)
         elif export_fact.local_name is not None:
-            origin = local_aliases_by_file.get(file_path, {}).get(export_fact.local_name)
+            origin = _local_alias(file_path, export_fact.local_name, None)
             if origin is None and (file_path, export_fact.local_name) in symbol_nodes:
                 origin = (file_path, export_fact.local_name)
         if origin is None:
@@ -2032,7 +2061,7 @@ def _apply_symbol_resolution_facts(
     for use_fact in facts.uses:
         file_path = _resolve_cached(use_fact.file_path)
         target_id = None
-        unresolved_origin = local_aliases_by_file.get(file_path, {}).get(use_fact.local_name)
+        unresolved_origin = _local_alias(file_path, use_fact.local_name, use_fact.source_id)
         if unresolved_origin is not None:
             origin_path, origin_symbol = resolve_exported_origin(*unresolved_origin)
             target_id = symbol_nodes.get((origin_path, origin_symbol))
@@ -3440,6 +3469,22 @@ def _collect_python_symbol_resolution_facts(
         source, root_node = parsed
         imported_names: dict[str, tuple[str, str, str | None]] = {}
         local_import_scopes: dict[str, list[tuple[int, int]]] = {}
+        top_level_bodies = _python_top_level_function_bodies(path, root_node, source)
+
+        # A function-local import binds its name only inside that function's own
+        # body, not the whole file: tag every import_from_statement found while
+        # walking each top-level def/method body with that body's own (plain,
+        # unsalted) id, the same id a bare call inside it gets as its
+        # facts.uses source_id below. _apply_symbol_resolution_facts then binds
+        # the alias only for a use whose source_id matches, so it cannot leak
+        # into an unrelated sibling function's own same-named call (#5421's
+        # second, deferred scenario -- distinct from local_import_scopes above,
+        # which guards the separate raw_calls direct-call fallback for #5229).
+        import_scope_by_node_id: dict[int, str] = {}
+        for scope_source_id, body in top_level_bodies:
+            for node in _walk_python_tree(body):
+                if node.type == "import_from_statement":
+                    import_scope_by_node_id[node.id] = scope_source_id
 
         for node in _walk_python_tree(root_node):
             if node.type in ("import_statement", "import_from_statement"):
@@ -3508,7 +3553,10 @@ def _collect_python_symbol_resolution_facts(
                 if target_path is None:
                     continue  # a namespace package owns no symbols of its own to bind
                 facts.imports.append(
-                    _SymbolImportFact(path, local_name, target_path, imported_name, line)
+                    _SymbolImportFact(
+                        path, local_name, target_path, imported_name, line,
+                        import_scope_by_node_id.get(node.id),
+                    )
                 )
                 if path.stem == "__init__":
                     facts.exports.append(
@@ -3535,10 +3583,14 @@ def _collect_python_symbol_resolution_facts(
                         continue  # A nearer import shadows the module binding.
                     call["_python_import_binding"] = imported_names[call["callee"]]
 
-        for source_id, body in _python_top_level_function_bodies(path, root_node, source):
+        param_shadowed = _python_param_shadow_checker(source)
+        for source_id, body in top_level_bodies:
             for node in _walk_python_tree(body):
                 imported_name = _python_call_identifier(node, source)
                 if imported_name is None:
+                    continue
+                # A parameter named like an import hides it (#5418).
+                if param_shadowed(node, imported_name):
                     continue
                 facts.uses.append(
                     _SymbolUseFact(
@@ -4311,9 +4363,10 @@ def _merge_go_package_types(
 
     GOD-NODE GUARDS:
 
-      * Every node in the id-collision must be a ``.go`` file in ONE directory — Go's
-        package unit. The id folds in only the directory's NAME, so ``a/svc`` and
-        ``b/svc`` collide on id while being different packages; those stay split.
+      * Only ``.go`` nodes in ONE directory — Go's package unit — fold together. The
+        id folds in only the directory's NAME, so ``a/svc`` and ``b/svc`` collide on
+        id while being different packages; those stay split from each other, and
+        each directory's own copies fold separately (#5304).
       * A ``_test.go`` member folds only when its package clause names the same
         package as the group's other files (#5209). An internal test file
         (``package svc``) commonly adds test-only methods to a package type, while an
@@ -4321,10 +4374,17 @@ def _merge_go_package_types(
         types of its own; same-directory is not evidence of same package there, so a
         clause that differs or cannot be read keeps the group split.
 
-    No edge re-pointing is needed: the group already shares one id, so every edge
+    No edge re-pointing is needed here: the group already shares one id, so every edge
     already points at the survivor. The declaration site wins — the file holding
     ``type X``, the only one with a ``contains`` edge to it — and the dropped nodes'
     methods keep their own ``source_file``, so no location is lost with them.
+
+    When the id still collides afterwards (another directory's package declares the
+    same name), ``_disambiguate_colliding_node_ids`` salts each survivor by its own
+    path and re-points edges by the path that EMITTED them, which for a dropped
+    sibling's ``method`` edges is in no salt. The survivor therefore lists the files
+    it absorbed in a transient ``_go_folded_files``, which that pass consumes so those
+    edges follow it instead of staying on the dead bare id (#5304).
     """
     by_id: dict[str, list[dict]] = {}
     for n in all_nodes:
@@ -4350,22 +4410,31 @@ def _merge_go_package_types(
     for nid, group in by_id.items():
         if len(group) < 2:
             continue
-        files = [Path(str(n.get("source_file", ""))) for n in group]
-        if len({f.parent for f in files}) != 1:
-            continue
-        if any(f.name.endswith("_test.go") for f in files):
-            clauses = {_go_package_clause(f) for f in files}
-            if len(clauses) != 1 or None in clauses:
+        # Fold each directory on its own: `alpha/` and `other/alpha/` share the id but
+        # are two packages, and each may spread its own type over sibling files.
+        by_dir: dict[Path, list[dict]] = {}
+        for n in group:
+            by_dir.setdefault(Path(str(n.get("source_file", ""))).parent, []).append(n)
+        for members in by_dir.values():
+            if len(members) < 2:
                 continue
-        # A type whose declaring file is outside the corpus leaves the whole group
-        # method-only; one node is still the answer, so fold on the lowest path.
-        declared = declaring_files.get(nid, set())
-        candidates = [n for n in group if str(n.get("source_file", "")) in declared] or group
-        keeper = min(candidates, key=lambda n: (str(n.get("source_file", "")),
-                                                str(n.get("source_location", ""))))
-        for node in group:
-            if node is not keeper:
-                drop_objs.add(id(node))
+            files = [Path(str(n.get("source_file", ""))) for n in members]
+            if any(f.name.endswith("_test.go") for f in files):
+                clauses = {_go_package_clause(f) for f in files}
+                if len(clauses) != 1 or None in clauses:
+                    continue
+            # A type whose declaring file is outside the corpus leaves the whole group
+            # method-only; one node is still the answer, so fold on the lowest path.
+            declared = declaring_files.get(nid, set())
+            candidates = [n for n in members
+                          if str(n.get("source_file", "")) in declared] or members
+            keeper = min(candidates, key=lambda n: (str(n.get("source_file", "")),
+                                                    str(n.get("source_location", ""))))
+            folded = keeper.setdefault("_go_folded_files", [])
+            for node in members:
+                if node is not keeper:
+                    drop_objs.add(id(node))
+                    folded.append(str(node.get("source_file", "")))
 
     if drop_objs:
         all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
