@@ -436,6 +436,23 @@ graphify prs --conflicts           # PRs sharing graph subsystems: merge-order r
 
 See the [full command reference](#full-command-reference) below.
 
+Add `--snapshot` for repeated CLI queries on a large graph.
+
+```bash
+graphify query "who calls load_graph" --snapshot
+```
+
+The first query builds a local SQLite cache for that graph generation.
+Concurrent queries use JSON while the cache is building. Later queries with
+the flag reuse it until `graph.json` changes. The cache lives
+under `$XDG_CACHE_HOME/graphify/query-snapshots` (default `~/.cache`) or under
+`%LOCALAPPDATA%\graphify\query-snapshots` on Windows. It is disposable and can
+take more disk space than `graph.json`. Snapshots support undirected simple
+graphs with normalized labels. Other graphs use the regular query path.
+Graphify's atomic writes invalidate the snapshot. Clear the cache if an
+external writer edits `graph.json` in place and preserves its file identity
+and timestamps.
+
 ---
 
 ## Labeling and rendering limits

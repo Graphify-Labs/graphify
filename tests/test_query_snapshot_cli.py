@@ -1,0 +1,439 @@
+"""Exercise cache creation, use, and recovery through graphify query."""
+
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+import json
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import subprocess
+import sys
+from threading import Event
+
+import networkx as nx
+from networkx.readwrite import json_graph
+import pytest
+
+from graphify import __main__ as mainmod, paths, query_snapshot
+from graphify.cli import EXIT_AMBIGUOUS, EXIT_NOT_FOUND, _load_query_graph
+
+
+@pytest.fixture
+def query_cli(monkeypatch, tmp_path, capsys):
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setenv("LOCALAPPDATA", str(cache))
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_DISABLE", "1")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    def run(path, question, *args):
+        monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "query", question, "--graph", str(path), *args])
+        status = 0
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            status = exc.code
+        out, err = capsys.readouterr()
+        return status, out, err
+
+    return run, cache
+
+
+def _write(path: Path, graph: nx.Graph) -> None:
+    path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")), encoding="utf-8")
+
+
+def _fixture():
+    graph = nx.Graph()
+    graph.add_node("one", label="ParseNóde()", source_file="src/one.py", source_location="L1")
+    graph.add_node("two", label="ParseNóde()", source_file="src/two.py", source_location="L9")
+    graph.add_node("서울", label="서울()", source_file="src/three.py", source_location="L17")
+    graph.add_node("driver", label="driver()", source_file="src/one.py", rationale="bounded retry")
+    graph.add_node("literal", label="Alpha.Beta", attributes={"request": {"mode": "delta literal"}})
+    graph.add_node("id", label="ID", source_file="src/id.py")
+    graph.add_edge("one", "driver", relation="calls", _src="driver", _tgt="one")
+    graph.add_edge("two", "driver", relation="inherits", context="type")
+    graph.add_edge("one", "서울", relation="references", context="return_type")
+    graph.add_edge("two", "two", relation="calls", context="call")
+    return graph
+
+
+def _deny_json(_path):
+    pytest.fail("a snapshot cache hit read graph.json")
+
+
+def test_concurrent_cold_query_uses_json_while_snapshot_is_building(query_cli, monkeypatch, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    graph, legacy = _load_query_graph(path)
+    expected = run(path, "bounded retry")
+    assert expected[0] == 0
+    identity = query_snapshot.graph_identity(path)
+    assert identity is not None
+
+    started, release = Event(), Event()
+    project = query_snapshot._write_projection
+
+    def paused_projection(*args):
+        started.set()
+        assert release.wait(40), "snapshot writer was not released"
+        project(*args)
+
+    monkeypatch.setattr(query_snapshot, "_write_projection", paused_projection)
+    script = """
+import sys
+from graphify import __main__ as main
+main._check_skill_version = lambda _: None
+sys.argv = ["graphify", *sys.argv[1:]]
+main.main()
+"""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        writer = executor.submit(query_snapshot.write_snapshot, path, identity, graph, legacy)
+        try:
+            assert started.wait(15), "snapshot writer did not start"
+            result = subprocess.run(
+                [sys.executable, "-c", script, "query", "bounded retry", "--graph", str(path), "--snapshot"],
+                capture_output=True, text=True, encoding="utf-8", timeout=20,
+                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+                     "PYTHONIOENCODING": "utf-8"},
+            )
+            assert (result.returncode, result.stdout, result.stderr) == expected
+            assert not list(cache.rglob("[0-9a-f]*.sqlite3"))
+        finally:
+            release.set()
+        writer.result()
+
+    started.clear()
+    query_snapshot.write_snapshot(path, identity, graph, legacy)
+    assert not started.is_set()
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", "--snapshot") == expected
+
+
+def test_warm_snapshot_matches_normal_query_without_loading_json(query_cli, monkeypatch, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    cases = [
+        ("what calls the parser", ("--seed", "one", "--context", "call")),
+        ("why bounded retry", ("--depth", "1")),
+        ("src/one.py::ParseNóde", ("--dfs", "--budget", "100")),
+        ("서울", ("--context", "return")),
+        ("ID", ("--no-doc-demotion",)),
+        ("delta literal", ()),
+        ("ParseNóde", ()),
+        ("zzzz-missing", ()),
+    ]
+    expected = [run(path, question, *args) for question, args in cases]
+    assert [status for status, _, _ in expected][-2:] == [EXIT_AMBIGUOUS, EXIT_NOT_FOUND]
+    assert "driver() --calls" in expected[0][1]
+    assert run(path, cases[0][0], *cases[0][1], "--snapshot") == expected[0]
+    assert len(list(cache.rglob("*.sqlite3"))) == 1
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert [run(path, question, *args, "--snapshot") for question, args in cases] == expected
+
+
+def test_context_filtered_query_keeps_learning_annotations(query_cli, monkeypatch, tmp_path):
+    run, _ = query_cli
+    path = tmp_path / "graph.json"
+    graph = _fixture()
+    graph.graph["_learning_overlay"] = {
+        "driver": {"status": "preferred", "stale": False},
+        "one": {"status": "contested", "stale": True},
+    }
+    _write(path, graph)
+
+    args = ("--seed", "driver", "--context", "call")
+    expected = run(path, "bounded retry", *args)
+    assert expected[0] == 0
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+    assert "learning=preferred]" in expected[1]
+    assert "learning=contested:stale]" in expected[1]
+
+
+def test_snapshot_rebuilds_when_unicode_data_changes(query_cli, monkeypatch, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, "bounded retry")
+    assert run(path, "bounded retry", "--snapshot") == expected
+    (first,) = cache.rglob("*.sqlite3")
+
+    monkeypatch.setattr(query_snapshot, "unidata_version", "0.0.0")
+    assert run(path, "bounded retry", "--snapshot") == expected
+    assert len(set(cache.rglob("*.sqlite3")) - {first}) == 1
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", "--snapshot") == expected
+
+
+def test_snapshot_recovers_from_same_size_replacement_and_broken_table(query_cli, monkeypatch, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    graph = _fixture()
+    _write(path, graph)
+    assert run(path, "bounded retry", "--snapshot")[0] == 0
+    first_generation = set(cache.rglob("*.sqlite3"))
+    assert len(first_generation) == 1
+
+    previous_stat = path.stat()
+    replacement = tmp_path / "replacement.json"
+    graph.nodes["driver"]["rationale"] = "digital token"
+    _write(replacement, graph)
+    assert replacement.stat().st_size == previous_stat.st_size
+    os.utime(replacement, ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns))
+    replacement.replace(path)
+    expected = run(path, "digital token")
+    assert expected[0] == 0 and "driver()" in expected[1]
+    assert run(path, "digital token", "--snapshot") == expected
+    assert run(path, "bounded retry", "--snapshot")[0] == EXIT_NOT_FOUND
+
+    # Leave the metadata intact so opening the cache succeeds, then fail in
+    # the middle of query evaluation and verify the canonical path repairs it.
+    current_generation = set(cache.rglob("*.sqlite3")) - first_generation
+    assert len(current_generation) == 1
+    index, = current_generation
+    with closing(sqlite3.connect(index)) as db:
+        with db:
+            db.execute("DROP TABLE search")
+    assert run(path, "digital token", "--snapshot") == expected
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "digital token", "--snapshot") == expected
+
+
+def test_unavailable_snapshot_directory_preserves_query_answer(query_cli, monkeypatch, tmp_path):
+    run, _ = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, "bounded retry")
+    assert expected[0] == 0
+
+    def unavailable_cache(_path, _identity):
+        raise RuntimeError("cannot resolve cache directory")
+
+    monkeypatch.setattr(query_snapshot, "_cache_file", unavailable_cache)
+    assert run(path, "bounded retry", "--snapshot") == expected
+
+
+def test_snapshot_build_failure_preserves_seeded_answer(query_cli, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    graph = _fixture()
+    # A seeded query can render its neighborhood without reading every node's
+    # search text. Bad data on an unrelated node only affects the optional build.
+    graph.add_node("unrelated", source_file=3)
+    _write(path, graph)
+    expected = run(path, "parser", "--seed", "one")
+    assert expected[0] == 0
+    assert run(path, "parser", "--seed", "one", "--snapshot") == expected
+    assert not list(cache.rglob("*.sqlite3"))
+
+
+@pytest.mark.parametrize(("field", "value"), [("nodes", "bad"), ("signatures", None)])
+def test_malformed_projection_metadata_recovers_through_json(query_cli, monkeypatch, tmp_path, field, value):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    args = ("--context", "call")
+    expected = run(path, "bounded retry", *args)
+    assert expected[0] == 0
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+
+    index, = cache.rglob("*.sqlite3")
+    with closing(sqlite3.connect(index)) as db, db:
+        metadata = json.loads(db.execute("SELECT value FROM metadata").fetchone()[0])
+        metadata[field] = value
+        db.execute("UPDATE metadata SET value = ?", (json.dumps(metadata),))
+
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", *args, "--snapshot") == expected
+
+
+def test_deeply_nested_snapshot_payload_recovers_through_json(query_cli, monkeypatch, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, "bounded retry")
+    assert expected[0] == 0
+    assert run(path, "bounded retry", "--snapshot") == expected
+
+    (index,) = cache.rglob("*.sqlite3")
+    payload = "[" * 20_000 + "0" + "]" * 20_000
+    with closing(sqlite3.connect(index)) as db, db:
+        db.execute("UPDATE nodes SET payload = ? WHERE id = ?", (payload, "driver"))
+
+    assert run(path, "bounded retry", "--snapshot") == expected
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert run(path, "bounded retry", "--snapshot") == expected
+
+
+def test_case_variant_normalized_label_keeps_json_scoring(query_cli, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    graph = nx.Graph()
+    graph.add_node("opaque", label="different", norm_label="OwnerToken")
+    _write(path, graph)
+
+    expected = run(path, "token")
+    assert expected[0] == 0
+    assert run(path, "token", "--snapshot") == expected
+    assert run(path, "token", "--snapshot") == expected
+    assert not list(cache.rglob("*.sqlite3"))
+
+
+@pytest.mark.parametrize(("question", "args"), [
+    ("find bounded retry \udc80", ()),
+    ("what calls the parser", ("--seed", "one\udc80", "--seed", "one")),
+])
+def test_unencodable_input_keeps_json_query_behavior(query_cli, tmp_path, question, args):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    assert run(path, "bounded retry", "--snapshot")[0] == 0
+    index, = cache.rglob("*.sqlite3")
+    written = index.stat().st_mtime_ns
+
+    expected = run(path, question, *args)
+    assert expected[0] == 0
+    assert run(path, question, *args, "--snapshot") == expected
+    assert index.stat().st_mtime_ns == written
+
+
+@pytest.mark.parametrize("constructor", [nx.DiGraph, nx.MultiGraph])
+def test_unsupported_graph_shapes_use_existing_cli(query_cli, tmp_path, constructor):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, constructor(_fixture()))
+    assert run(path, "bounded retry", "--snapshot") == run(path, "bounded retry")
+    assert not list(cache.rglob("*.sqlite3"))
+
+
+@pytest.mark.parametrize("module", ["graphify.build", "graphify.affected"])
+def test_graph_modules_do_not_load_the_snapshot_module(module):
+    # The snapshot is opt-in, so building or walking a graph must not import it
+    # (or SQLite). A fresh interpreter keeps this test's own imports out of it.
+    code = f"import sys, {module}; print('graphify.query_snapshot' in sys.modules)"
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    assert result.stdout.strip() == "False"
+
+
+@pytest.mark.parametrize("question", ["bounded retry", "zzzz-missing"])
+def test_failed_snapshot_build_keeps_the_answer_and_status(query_cli, monkeypatch, tmp_path, question):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, question)
+
+    def broken(*_args):
+        raise LookupError("unexpected projection failure")
+
+    monkeypatch.setattr(query_snapshot, "_write_projection", broken)
+    assert run(path, question, "--snapshot") == expected
+    assert not list(cache.rglob("*.sqlite3"))
+
+
+def test_interrupted_snapshot_build_has_already_printed_the_answer(query_cli, monkeypatch, tmp_path, capsys):
+    run, _cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    expected = run(path, "bounded retry")[1]
+
+    def interrupted(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(query_snapshot, "_write_projection", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run(path, "bounded retry", "--snapshot")
+    assert capsys.readouterr().out == expected
+
+
+def test_dotted_queries_do_not_read_every_node_row(query_cli, monkeypatch, tmp_path):
+    # `Type.Member` and `file.ext` queries first ask whether the text names a
+    # source file. A warm snapshot answers that without decoding every node.
+    run, _cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _fixture())
+    questions = ["Alpha.Gamma", "one.py", "SRC/ONE.PY", "driver.retry"]
+    expected = [run(path, question) for question in questions]
+    assert run(path, questions[0], "--snapshot") == expected[0]
+
+    def full_scan(*_args, **_kwargs):
+        pytest.fail("a warm snapshot query read every node row")
+
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    monkeypatch.setattr(query_snapshot._Nodes, "__call__", full_scan)
+    monkeypatch.setattr(query_snapshot._Nodes, "__iter__", full_scan)
+    assert [run(path, question, "--snapshot") for question in questions] == expected
+
+
+def _ranking_fixture():
+    graph = nx.Graph()
+    graph.add_node("sweep", label="public.sweep_widget_state()", source_file="db/functions.sql")
+    graph.add_node("state", label="state", source_file="src/state.py")
+    graph.add_node("widget", label="widget", source_file="src/widget.py")
+    graph.add_node("println", label="fmt.Println", source_file="vendor/fmt/print.go")
+    graph.add_node("store", label="WidgetStore", source_file="src/widgets/widget_store.py")
+    graph.add_node("store_file", label="widget_store.py", source_file="src/widgets/widget_store.py")
+    # A hub above the p99 degree floor, so traversal must stop at it.
+    graph.add_node("hub", label="Logger", source_file="src/log.py")
+    for i in range(60):
+        graph.add_node(f"leaf{i}", label=f"leaf_{i}()", source_file=f"src/leaves/leaf{i}.py")
+        graph.add_edge("hub", f"leaf{i}", relation="calls", context="call")
+    graph.add_edge("leaf3", "leaf4", relation="calls", context="call")
+    graph.add_edge("store", "hub", relation="calls", context="call")
+    graph.add_edge("sweep", "store", relation="references")
+    graph.add_edge("store_file", "store", relation="contains")
+    graph.add_edge("state", "sweep", relation="calls", context="call")
+    graph.add_edge("widget", "state", relation="calls", context="call")
+    return graph
+
+
+def test_warm_snapshot_matches_qualified_source_and_hub_ranking(query_cli, monkeypatch, tmp_path):
+    run, _cache = query_cli
+    path = tmp_path / "graph.json"
+    _write(path, _ranking_fixture())
+    cases = [
+        ("sweep widget state", ()),
+        ("sweep_widget_state", ("--budget", "120")),
+        ("Println", ()),
+        ("src/widgets/widget_store.py", ("--budget", "120")),
+        ("widget store", ("--dfs",)),
+        ("WidgetStore", ("--context", "call", "--dfs", "--depth", "3")),
+        ("leaf_3", ()),
+        ("leaf_3", ("--context", "call", "--depth", "3")),
+        ("x", ("--seed", "src/widgets/widget_store.py")),
+    ]
+    expected = [run(path, question, *args) for question, args in cases]
+    # The qualified-name tier puts the qualified label ahead of the nodes
+    # whose whole label is one query word, and the hub stops the walk.
+    assert "Start: ['public.sweep_widget_state()', 'state', 'widget']" in expected[0][1]
+    assert "| 3 nodes found" in expected[6][1]
+    assert run(path, *cases[0][:1], "--snapshot") == expected[0]
+    monkeypatch.setattr(paths, "read_graph_json", _deny_json)
+    assert [run(path, question, *args, "--snapshot") for question, args in cases] == expected
+
+
+def test_next_build_removes_files_left_by_a_killed_builder(query_cli, tmp_path):
+    run, cache = query_cli
+    path = tmp_path / "graph.json"
+    graph = _fixture()
+    _write(path, graph)
+    assert run(path, "bounded retry", "--snapshot")[0] == 0
+    scope, = {file.parent for file in cache.rglob("*.sqlite3")}
+    # Builders hold the build lock, so a temporary file seen by the next
+    # builder belongs to one that died before its own cleanup ran.
+    orphan = scope / ".building-orphan.sqlite3"
+    orphan.write_bytes(b"partial")
+
+    graph.nodes["driver"]["rationale"] = "rebuilt retry"
+    _write(path, graph)
+    assert run(path, "rebuilt retry", "--snapshot") == run(path, "rebuilt retry")
+    assert not orphan.exists()
