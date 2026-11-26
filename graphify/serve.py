@@ -636,6 +636,27 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     N = G.number_of_nodes() or 1
     uncached = [t for t in terms if t not in cache]
     if uncached:
+        # Fast path (#5429): a term with a trigram absent from the index
+        # cannot appear in any norm_label (index is a superset). df=0,
+        # idf=log(1+N), no per-node scan. This turns 512 absent 12-char
+        # terms from 10k*512 substring checks into postings lookups.
+        try:
+            postings = _get_trigram_index(G)["postings"]
+        except Exception:
+            postings = {}
+        need_scan: list[str] = []
+        for t in uncached:
+            if len(t) >= 3 and postings:
+                try:
+                    grams = _trigrams(t)
+                except Exception:
+                    grams = set()
+                if grams and any(g not in postings for g in grams):
+                    cache[t] = math.log(1 + N)
+                    continue
+            need_scan.append(t)
+        uncached = need_scan
+    if uncached:
         df: dict[str, int] = {t: 0 for t in uncached}
         # Document frequency is "term appears in norm_label". The trigram index
         # is a superset of that (it indexes every searchable field), so it can
