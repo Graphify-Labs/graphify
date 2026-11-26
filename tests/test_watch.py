@@ -1818,13 +1818,38 @@ def _watchdog_available() -> bool:
         return False
 
 
+def _start_watch_thread(monkeypatch, watch_mod, watch_path, *, debounce):
+    import threading
+    from types import SimpleNamespace
+
+    stop = threading.Event()
+
+    def sleep(seconds):
+        if stop.wait(seconds):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        watch_mod,
+        "time",
+        SimpleNamespace(sleep=sleep, monotonic=time.monotonic),
+    )
+    monkeypatch.setenv("GRAPHIFY_REBUILD_TIMEOUT", "0")
+    thread = threading.Thread(
+        target=watch_mod.watch,
+        args=(watch_path,),
+        kwargs={"debounce": debounce},
+        daemon=True,
+    )
+    thread.start()
+    return thread, stop
+
+
 @pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
 def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
     """gh-928: the watch Handler must short-circuit paths matching
     .graphifyignore so busy volumes (node_modules churn, build artefacts,
     Time Machine writes, …) don't wake the rebuild pipeline.
     """
-    import threading
     from graphify import watch as watch_mod
 
     watch_root = tmp_path / ".hidden-parent" / "corpus"
@@ -1838,30 +1863,28 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
     monkeypatch.setattr(watch_mod, "_rebuild_code", lambda p, **kw: rebuild_calls.append(p) or True)
     monkeypatch.setattr(watch_mod, "_notify_only", lambda p: notify_calls.append(p))
 
-    # Run watch() in a thread with a short debounce so we can verify the
-    # post-debounce dispatch path actually runs on real events.
-    t = threading.Thread(
-        target=watch_mod.watch,
-        args=(watch_root,),
-        kwargs={"debounce": 0.2},
-        daemon=True,
+    t, stop = _start_watch_thread(
+        monkeypatch, watch_mod, watch_root, debounce=0.2
     )
-    t.start()
-    time.sleep(0.5)  # let observer.start() settle
+    try:
+        time.sleep(0.5)  # let observer.start() settle
 
-    # Ignored writes — handler must drop these.
-    (watch_root / "node_modules" / "junk.js").write_text("// noise\n", encoding="utf-8")
-    (watch_root / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
-    time.sleep(1.0)
-    assert rebuild_calls == [], "ignored writes triggered a rebuild"
-    assert notify_calls == [], "ignored writes triggered a notify"
+        # Ignored writes — handler must drop these.
+        (watch_root / "node_modules" / "junk.js").write_text("// noise\n", encoding="utf-8")
+        (watch_root / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
+        time.sleep(1.0)
+        assert rebuild_calls == [], "ignored writes triggered a rebuild"
+        assert notify_calls == [], "ignored writes triggered a notify"
 
-    # Non-ignored write — handler must accept and (after debounce) dispatch.
-    (watch_root / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and not rebuild_calls:
-        time.sleep(0.1)
-    assert rebuild_calls, "non-ignored .py write should have triggered _rebuild_code"
+        # Non-ignored write — handler must accept and (after debounce) dispatch.
+        (watch_root / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not rebuild_calls:
+            time.sleep(0.1)
+        assert rebuild_calls, "non-ignored .py write should have triggered _rebuild_code"
+    finally:
+        stop.set()
+        t.join()
 
 
 @pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
@@ -1870,7 +1893,6 @@ def test_watch_non_linux_handler_accepts_events_without_watched_entry(
 ):
     """#5075: macOS and Windows keep the recursive schedule, so their handler
     must accept file events even though the manual `watched` map is empty."""
-    import threading
 
     from graphify import watch as watch_mod
     from watchdog import observers
@@ -1892,6 +1914,11 @@ def test_watch_non_linux_handler_accepts_events_without_watched_entry(
 
         def start(self):
             pass
+        def stop(self):
+            pass
+
+        def join(self):
+            pass
 
     fake = FakeObserver()
     monkeypatch.setattr(observers, "Observer", lambda: fake)
@@ -1902,24 +1929,23 @@ def test_watch_non_linux_handler_accepts_events_without_watched_entry(
     )
     monkeypatch.setattr(watch_mod, "_notify_only", lambda p: None)
 
-    thread = threading.Thread(
-        target=watch_mod.watch,
-        args=(watch_root,),
-        kwargs={"debounce": 0.1},
-        daemon=True,
+    thread, stop = _start_watch_thread(
+        monkeypatch, watch_mod, watch_root, debounce=0.1
     )
-    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and "handler" not in captured:
+            time.sleep(0.01)
+        assert captured.get("recursive") is True
 
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and "handler" not in captured:
-        time.sleep(0.01)
-    assert captured.get("recursive") is True
-
-    captured["handler"].on_any_event(FileCreatedEvent(str(target)))
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and not rebuild_calls:
-        time.sleep(0.05)
-    assert rebuild_calls, "the recursive handler dropped a real file event"
+        captured["handler"].on_any_event(FileCreatedEvent(str(target)))
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not rebuild_calls:
+            time.sleep(0.05)
+        assert rebuild_calls, "the recursive handler dropped a real file event"
+    finally:
+        stop.set()
+        thread.join()
 
 
 @pytest.mark.skipif(not _watchdog_available(), reason="watchdog not installed")
@@ -1928,7 +1954,6 @@ def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     not per filesystem event. Otherwise busy volumes re-read the file
     thousands of times per second.
     """
-    import threading
     from graphify import watch as watch_mod
     from graphify import detect as detect_mod
 
@@ -1947,15 +1972,20 @@ def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     monkeypatch.setattr(watch_mod, "_rebuild_code", lambda p, **kw: True)
     monkeypatch.setattr(watch_mod, "_notify_only", lambda p: None)
 
-    t = threading.Thread(target=watch_mod.watch, args=(tmp_path,), kwargs={"debounce": 0.2}, daemon=True)
-    t.start()
-    time.sleep(0.5)
+    t, stop = _start_watch_thread(
+        monkeypatch, watch_mod, tmp_path, debounce=0.2
+    )
+    try:
+        time.sleep(0.5)
 
-    # Generate many events; loader must not be called again.
-    for i in range(50):
-        (tmp_path / "ignored" / f"f{i}.py").write_text("x\n", encoding="utf-8")
-    time.sleep(0.7)
-    assert calls["n"] == 1, f"_load_graphifyignore called {calls['n']} times; expected 1"
+        # Generate many events; loader must not be called again.
+        for i in range(50):
+            (tmp_path / "ignored" / f"f{i}.py").write_text("x\n", encoding="utf-8")
+        time.sleep(0.7)
+        assert calls["n"] == 1, f"_load_graphifyignore called {calls['n']} times; expected 1"
+    finally:
+        stop.set()
+        t.join()
 
 
 # --- _check_shrink: silent-corruption guard with explicit-deletion bypass ---

@@ -41,6 +41,9 @@ def link_shared_type_declarations(merged: "nx.Graph") -> int:
     for node, data in merged.nodes(data=True):
         if not data.get("_callable_class") or not data.get("source_file"):
             continue
+        # MATLAB package names do not establish shared types across repositories.
+        if (data.get("metadata") or {}).get("language") == "matlab":
+            continue
         namespace = str((data.get("metadata") or {}).get("namespace") or "")
         label = str(data.get("label") or "")
         if not namespace or not label or not data.get("repo"):

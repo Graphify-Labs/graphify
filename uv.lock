@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11.5, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -76,7 +76,7 @@ name = "autograd"
 version = "1.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9d/ac/4a8b58364ba865ab545251edbe475e5a35326814a5d274a2211d33ed8a5d/autograd-1.9.1.tar.gz", hash = "sha256:7818c5c69ddf9efb7da74097bd741a4c7920133f41966f68537223a15ef798bc", size = 2566975, upload-time = "2026-07-02T07:43:58.255Z" }
 wheels = [
@@ -462,7 +462,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/01/1253e6698a07380cd31a736d248a3f2a50a7c88779a1813da27503cadc2a/contourpy-1.3.3.tar.gz", hash = "sha256:083e12155b210502d0bca491432bb04d56dc3432f95a979b429f2848c3dbe880", size = 13466174, upload-time = "2025-07-26T12:03:12.549Z" }
 wheels = [
@@ -548,7 +548,7 @@ resolution-markers = [
     "python_full_version == '3.13.*'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/83/5a/a55177dd22553a277388e8a1b3220e92de91bacb28356cdc73caa240121d/contourpy-1.4.0.tar.gz", hash = "sha256:20156f5a1ac4f8ce02656e39a61e82164a3d359796dc8026f75b062783d500e1", size = 13323726, upload-time = "2026-09-11T19:05:05.808Z" }
 wheels = [
@@ -986,9 +986,9 @@ name = "gensim"
 version = "4.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "smart-open", marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "smart-open" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1a/80/fe9d2e1ace968041814dbcfce4e8499a643a36c41267fa4b6c4f54cce420/gensim-4.4.0.tar.gz", hash = "sha256:a3f5b626da5518e79a479140361c663089fe7998df8ba52d56e1ded71ac5bdf5", size = 23260095, upload-time = "2025-10-18T02:06:45.962Z" }
 wheels = [
@@ -1035,6 +1035,7 @@ dependencies = [
     { name = "tree-sitter-julia" },
     { name = "tree-sitter-kotlin" },
     { name = "tree-sitter-lua" },
+    { name = "tree-sitter-matlab" },
     { name = "tree-sitter-objc" },
     { name = "tree-sitter-php" },
     { name = "tree-sitter-powershell" },
@@ -1294,6 +1295,7 @@ requires-dist = [
     { name = "tree-sitter-language-pack", marker = "extra == 'erlang'", specifier = "==0.11.0" },
     { name = "tree-sitter-language-pack", marker = "extra == 'r'", specifier = "==0.11.0" },
     { name = "tree-sitter-lua", specifier = ">=0.2,<0.6" },
+    { name = "tree-sitter-matlab", specifier = "==1.3.1" },
     { name = "tree-sitter-objc", specifier = ">=3.0,<4.0" },
     { name = "tree-sitter-ocaml", marker = "extra == 'all'" },
     { name = "tree-sitter-ocaml", marker = "extra == 'ocaml'" },
@@ -1350,24 +1352,24 @@ name = "graspologic"
 version = "3.4.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anytree", marker = "python_full_version < '3.13'" },
-    { name = "beartype", marker = "python_full_version < '3.13'" },
-    { name = "future", marker = "python_full_version < '3.13'" },
-    { name = "gensim", marker = "python_full_version < '3.13'" },
-    { name = "graspologic-native", marker = "python_full_version < '3.13'" },
-    { name = "hyppo", marker = "python_full_version < '3.13'" },
-    { name = "joblib", marker = "python_full_version < '3.13'" },
-    { name = "matplotlib", marker = "python_full_version < '3.13'" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "anytree" },
+    { name = "beartype" },
+    { name = "future" },
+    { name = "gensim" },
+    { name = "graspologic-native" },
+    { name = "hyppo" },
+    { name = "joblib" },
+    { name = "matplotlib" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.12.*'" },
     { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.12.*'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "pot", marker = "python_full_version < '3.13'" },
-    { name = "scikit-learn", marker = "python_full_version < '3.13'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "seaborn", marker = "python_full_version < '3.13'" },
-    { name = "statsmodels", marker = "python_full_version < '3.13'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
-    { name = "umap-learn", marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "pot" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "seaborn" },
+    { name = "statsmodels" },
+    { name = "typing-extensions" },
+    { name = "umap-learn" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/91/bb/0fe2ef85ea775e7b8416b2cf90097aa4b5e0c9c2271d7fe6789bab27d0ca/graspologic-3.4.4.tar.gz", hash = "sha256:79878caf367da3e89046a4ec94291c5b1a5da569f19fdd879d8b45c3563d7110", size = 5134258, upload-time = "2025-09-08T21:44:01.969Z" }
 wheels = [
@@ -1585,15 +1587,15 @@ name = "hyppo"
 version = "0.5.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "autograd", marker = "python_full_version < '3.13'" },
-    { name = "future", marker = "python_full_version < '3.13'" },
-    { name = "numba", marker = "python_full_version < '3.13'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "pandas", marker = "python_full_version < '3.13'" },
-    { name = "patsy", marker = "python_full_version < '3.13'" },
-    { name = "scikit-learn", marker = "python_full_version < '3.13'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "statsmodels", marker = "python_full_version < '3.13'" },
+    { name = "autograd" },
+    { name = "future" },
+    { name = "numba" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "pandas" },
+    { name = "patsy" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "statsmodels" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/dd/a6/0d84fe8486a1447da8bdb8ebb249d525fd8c1d0fe038bceb003c6e0513f9/hyppo-0.5.2.tar.gz", hash = "sha256:4634d15516248a43d25c241ed18beeb79bb3210360f7253693b3f154fe8c9879", size = 125115, upload-time = "2025-05-24T18:33:27.418Z" }
 wheels = [
@@ -1742,7 +1744,7 @@ name = "joblib"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cloudpickle", marker = "python_full_version < '3.13'" },
+    { name = "cloudpickle" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d5/1d/537ab090f302b838943a1b56497dd53059b9a9b46a074936470173a2e207/joblib-1.6.0.tar.gz", hash = "sha256:2ccc96785b12046c08fd6d55839c12857831b54a3c1673ffadd2f04bfc4eda03", size = 327903, upload-time = "2026-08-31T09:39:04.122Z" }
 wheels = [
@@ -2285,8 +2287,8 @@ name = "numba"
 version = "0.68.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "llvmlite", marker = "python_full_version < '3.13'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "llvmlite" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/4e/cd/e8280f9ffa30fea9fabc5341223701231fcc5d53a31f51419d42d4bec3a6/numba-0.68.0.tar.gz", hash = "sha256:8a781de54b980b98f43bff7f1093701b5f07c80d031c7cfa8a87493d8bf73f2d", size = 2855363, upload-time = "2026-09-30T15:05:44.721Z" }
 wheels = [
@@ -2504,9 +2506,9 @@ name = "pandas"
 version = "3.0.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "python-dateutil", marker = "python_full_version < '3.13'" },
-    { name = "tzdata", marker = "(python_full_version < '3.13' and sys_platform == 'emscripten') or (python_full_version < '3.13' and sys_platform == 'win32')" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "python-dateutil" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e2/17/d7b106e05bfa642e8694451e7d3d759c6a241c5386a5d962e4f66c047e06/pandas-3.0.6.tar.gz", hash = "sha256:66b07ef7315a31bfe1089cd3d71a7de781c9dca986762d0b4fe7c0ef17465d10", size = 4667686, upload-time = "2026-09-17T23:23:18.345Z" }
 wheels = [
@@ -2574,8 +2576,8 @@ name = "patsy"
 version = "1.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "packaging", marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "packaging" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/08/e3/950e513affdfe1c1864397b4f40d6ed06ec1b54f608e462c27f151dd72df/patsy-1.0.3.tar.gz", hash = "sha256:79ebf4c93ff4d296e58a9d5be2b2ee31bd49d737cf11d70ffbd8a44b2de42e65", size = 399992, upload-time = "2026-08-29T21:35:32.258Z" }
 wheels = [
@@ -2729,8 +2731,8 @@ name = "pot"
 version = "0.9.7.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8f/e3/61271810cdea79e869531bbfcbc2b5a1d94e88ec5ebdd32ed81aa2ff40cc/pot-0.9.7.post1.tar.gz", hash = "sha256:2edd70845047ac2d378487b980a2bffb5ff58e9b92b7133896ff5753f6300cec", size = 1842013, upload-time = "2026-07-29T09:01:39.843Z" }
 wheels = [
@@ -3033,11 +3035,11 @@ name = "pynndescent"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "joblib", marker = "python_full_version < '3.13'" },
-    { name = "llvmlite", marker = "python_full_version < '3.13'" },
-    { name = "numba", marker = "python_full_version < '3.13'" },
-    { name = "scikit-learn", marker = "python_full_version < '3.13'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "joblib" },
+    { name = "llvmlite" },
+    { name = "numba" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/4a/fb/7f58c397fb31666756457ee2ac4c0289ef2daad57f4ae4be8dec12f80b03/pynndescent-0.6.0.tar.gz", hash = "sha256:7ffde0fb5b400741e055a9f7d377e3702e02250616834231f6c209e39aac24f5", size = 2992987, upload-time = "2026-01-08T21:29:58.943Z" }
 wheels = [
@@ -3640,11 +3642,11 @@ name = "scikit-learn"
 version = "1.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "joblib", marker = "python_full_version < '3.13'" },
-    { name = "narwhals", marker = "python_full_version < '3.13'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "threadpoolctl", marker = "python_full_version < '3.13'" },
+    { name = "joblib" },
+    { name = "narwhals" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "threadpoolctl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d2/eb/eaf5e07fcc0da7149b0e084f24e54edd7441b9a89ce7e034032ae97fe3a0/scikit_learn-1.9.1.tar.gz", hash = "sha256:629cada3e33e2b9bf376cdc7614a47a4140b8aedc1d836579e359736fbd82977", size = 7786908, upload-time = "2026-09-10T18:34:04.679Z" }
 wheels = [
@@ -3693,7 +3695,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -3768,7 +3770,7 @@ resolution-markers = [
     "python_full_version == '3.13.*'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7e/74/66de6258867beb2ef08f35f9f2ac017a52cacd5081714d239ff1a442d458/scipy-1.18.1.tar.gz", hash = "sha256:52c4b7422442aba924d03ad4019852b08a92e64ea187b933135687bfe2747307", size = 30781235, upload-time = "2026-08-21T23:28:50.599Z" }
 wheels = [
@@ -3819,9 +3821,9 @@ name = "seaborn"
 version = "0.13.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "matplotlib", marker = "python_full_version < '3.13'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "pandas", marker = "python_full_version < '3.13'" },
+    { name = "matplotlib" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "pandas" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/86/59/a451d7420a77ab0b98f7affa3a1d78a313d2f7281a57afb1a34bae8ab412/seaborn-0.13.2.tar.gz", hash = "sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7", size = 1457696, upload-time = "2024-01-25T13:21:52.551Z" }
 wheels = [
@@ -3851,7 +3853,7 @@ name = "smart-open"
 version = "8.0.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "wrapt", marker = "python_full_version < '3.13'" },
+    { name = "wrapt" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/68/e3/1fb5c310b1f55d99ba51cb81b8f1a0e4b5f89be44de69405aeeb12814778/smart_open-8.0.4.tar.gz", hash = "sha256:8cff8321f0b0ae4bd9cb0cd0c507c135ad6aa980171248fca520b645fd6ff717", size = 62316, upload-time = "2026-10-17T19:34:45.106Z" }
 wheels = [
@@ -3916,11 +3918,11 @@ name = "statsmodels"
 version = "0.14.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "packaging", marker = "python_full_version < '3.13'" },
-    { name = "pandas", marker = "python_full_version < '3.13'" },
-    { name = "patsy", marker = "python_full_version < '3.13'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "packaging" },
+    { name = "pandas" },
+    { name = "patsy" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/81/e8d74b34f85285f7335d30c5e3c2d7c0346997af9f3debf9a0a9a63de184/statsmodels-0.14.6.tar.gz", hash = "sha256:4d17873d3e607d398b85126cd4ed7aad89e4e9d89fc744cdab1af3189a996c2a", size = 20689085, upload-time = "2025-12-05T23:08:39.522Z" }
 wheels = [
@@ -4459,6 +4461,30 @@ wheels = [
 ]
 
 [[package]]
+name = "tree-sitter-matlab"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/04/be954b2edb5b57648d91d4412e225e361e9c37ac22ce6c45d78713a9b744/tree_sitter_matlab-1.3.1.tar.gz", hash = "sha256:91a2ab61a6179b8aec0216f18f1c1eb4e1409b768641b9c661bab434648bb54d", size = 172140, upload-time = "2026-08-26T06:47:41.047Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/ec/d7f27aa3dd0aed3a9bcdfd3f765d28ee4fba1b2473ca8d3e4c3f39eff78e/tree_sitter_matlab-1.3.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:dd080613d88e184c389a8026ff176c3b5a30cd164000ae0f121d5086794afa89", size = 86528, upload-time = "2026-08-26T06:47:19.22Z" },
+    { url = "https://files.pythonhosted.org/packages/05/ce/5e8f5fb357426ec96762a3f063e053a8fefcfde7981f1f28016068f7f2e4/tree_sitter_matlab-1.3.1-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:78f79557f6be5e98d3ba4aa76f655efaab1d5c21dea4127ccd7fe25e20415cf4", size = 116326, upload-time = "2026-08-26T06:47:20.768Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/f6/0b44ab0452eec5a3d21c33009e58a3447e93a16545d1fa6f2ab491f6c163/tree_sitter_matlab-1.3.1-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:52ada1a896da00cc6e3c918e5548e0b22dd5dcc3cf2ecf061135af45de13d74a", size = 123180, upload-time = "2026-08-26T06:47:22.128Z" },
+    { url = "https://files.pythonhosted.org/packages/76/8a/35d394daf205c758a9a0cb375638e5945c290b4200f7b80479d27479acc6/tree_sitter_matlab-1.3.1-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:14e4386c054507d55d0f5d7d88e53b990967a0ef29146fcc77af0ed5995b49e4", size = 120807, upload-time = "2026-08-26T06:47:23.46Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/ea/bccd684fc87b7d4ae6b5375405c97a71518c3d1ab401cc7f29ca0b8d8cd6/tree_sitter_matlab-1.3.1-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:6a789cf1ed450965f28c476a305c407ff2f0692a336d72fd8ea86a9221b6701f", size = 115012, upload-time = "2026-08-26T06:47:24.79Z" },
+    { url = "https://files.pythonhosted.org/packages/77/6b/e0fc1b2ecd8e33c11ef82dacaa8e4f48c768bff29b987dce16206166b726/tree_sitter_matlab-1.3.1-cp310-abi3-win32.whl", hash = "sha256:bf2f24efcceb670828d4a8d82c5a551bd77e4752b0f2913d72145fc2b5380de9", size = 81100, upload-time = "2026-08-26T06:47:25.987Z" },
+    { url = "https://files.pythonhosted.org/packages/52/5b/f3151a2c407c0776a8c6d22d06bc727c813d755e3dc7cda3819f7f8ae2e9/tree_sitter_matlab-1.3.1-cp310-abi3-win_amd64.whl", hash = "sha256:505d5efdcbd1d76b7134eb7e79727265135c92f2cadbe119930604b5c65fdb46", size = 81914, upload-time = "2026-08-26T06:47:27.409Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/94/55f785a562baf807fddffe4d0208138fb73351eee2a20fd0dc3f65a795bc/tree_sitter_matlab-1.3.1-cp310-abi3-win_arm64.whl", hash = "sha256:325b4af0332ed2e13158d866245974f9f61ad817be159d5245692abaff3bb34e", size = 80980, upload-time = "2026-08-26T06:47:28.728Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/d3/330d3500e0323d56367375fb07b41182ab86fc1f45be0f086250fca23b59/tree_sitter_matlab-1.3.1-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:a4c06388d5334ef98d2f7cb40f93d578f3eb66cd8316a5305a59757c256d9060", size = 86587, upload-time = "2026-08-26T06:47:30.205Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/b4/23fccc18ca1c8640476795223e49fe95cfe557f07bde10fd4b82e3dc043a/tree_sitter_matlab-1.3.1-cp314-cp314t-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:5bd17ef2ad965867d70af8e6be245e6886e5e8d115f66a2aa155380884a65252", size = 119143, upload-time = "2026-08-26T06:47:31.565Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/43/2d5eb367db854e41417c2dfc1ca549e00f0d6de14dbbcd2221b572831136/tree_sitter_matlab-1.3.1-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:bde730be2a387afc3308ae2aa720ba8d11f91c5c8183acadf149bc427c63bcf8", size = 125836, upload-time = "2026-08-26T06:47:32.819Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/6a/e7def13d2f86ba6ae735dd3ea76d62ebc726d8d7dd626e3db1691fb322fb/tree_sitter_matlab-1.3.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:955acf4ad3e7b9a4ec84e14dd8d6c42596a45d36d5f6d1a8fd9fdc68b2970dc3", size = 123558, upload-time = "2026-08-26T06:47:34.073Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/b3/69bde9098b0fb3b605e975b4cc9144202fe45a8617e704bf9bff45b17e87/tree_sitter_matlab-1.3.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:3173e14a34e82f13304cd4ae066aad7250bc73b0c855e2be96e889673b8e1f5c", size = 117824, upload-time = "2026-08-26T06:47:35.384Z" },
+    { url = "https://files.pythonhosted.org/packages/91/df/24297ff094dbf66e4aebd53a877302b793412748c291481c409c616bdd44/tree_sitter_matlab-1.3.1-cp314-cp314t-win32.whl", hash = "sha256:5afe8ee1ecf3314bb7e111b34ae70bd53289b417059866c145c6e11193a594c3", size = 83702, upload-time = "2026-08-26T06:47:36.8Z" },
+    { url = "https://files.pythonhosted.org/packages/04/b4/c02832e71e806bff22d872d168f454d95e38da97d9516f284f662c7f6e27/tree_sitter_matlab-1.3.1-cp314-cp314t-win_amd64.whl", hash = "sha256:b678a165ea792dc3a731580d7edeb838d29c5c95b475fe8bc840752afdc2e9b8", size = 84173, upload-time = "2026-08-26T06:47:38.156Z" },
+    { url = "https://files.pythonhosted.org/packages/99/91/71d6470bbe5433c1320b0060b66a30e4b100eb64f4c034bed97790966283/tree_sitter_matlab-1.3.1-cp314-cp314t-win_arm64.whl", hash = "sha256:d13490be96978603f03d9decbb3e2216108b97b3ab434a7709c00278a5afacfd", size = 83503, upload-time = "2026-08-26T06:47:39.579Z" },
+]
+
+[[package]]
 name = "tree-sitter-objc"
 version = "3.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -4765,12 +4791,12 @@ name = "umap-learn"
 version = "0.5.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numba", marker = "python_full_version < '3.13'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "pynndescent", marker = "python_full_version < '3.13'" },
-    { name = "scikit-learn", marker = "python_full_version < '3.13'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "tqdm", marker = "python_full_version < '3.13'" },
+    { name = "numba" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" } },
+    { name = "pynndescent" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "tqdm" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/02/ee/af4171241117f85c74b5ca6448ea1033cc28d599c13651d67289bacd4083/umap_learn-0.5.12.tar.gz", hash = "sha256:6aff02ecac5f2aad9f3c65ee518d7ae93e1a985ae38721fdcffceee4232c33c7", size = 96672, upload-time = "2026-04-08T20:03:54.012Z" }
 wheels = [
