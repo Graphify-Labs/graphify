@@ -5131,6 +5131,12 @@ def dispatch_command(cmd: str) -> None:
                             "file_type": _node.get("file_type"),
                             "type": _node.get("type"),
                         }
+                        # #5227: the ADR/RFC citation pass finds a decision
+                        # document by its page node and first heading.
+                        if _node.get("file_type") == "document":
+                            for _doc_key in ("node_kind", "source_location"):
+                                if _node.get(_doc_key):
+                                    _ctx_node[_doc_key] = _node[_doc_key]
                         # Keep bounded resolver identity for unchanged nodes;
                         # these markers cannot be reconstructed from labels.
                         for _marker in (
