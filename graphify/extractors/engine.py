@@ -1617,8 +1617,18 @@ _JS_PRIVATE_MEMBER_PREFIXES = ("_", "$", "#")
 _JS_MEMBER_METHOD_TYPES = ("method_definition", "method_signature", "abstract_method_signature")
 
 
+def _ts_function_property(member: Node) -> bool:
+    """Recognize a property with an explicit function type."""
+    if member.type != "property_signature":
+        return False
+    annotation = member.child_by_field_name("type")
+    while annotation is not None and annotation.type in ("type_annotation", "parenthesized_type"):
+        annotation = next((child for child in annotation.named_children if not child.is_extra), None)
+    return annotation is not None and annotation.type == "function_type"
+
+
 def _js_member_nid(class_nid: str, member_node, name: str, source: bytes,
-                   groups_cache: dict) -> str:
+                   groups_cache: dict, *, include_function_properties: bool = False) -> str:
     """Node id for a JS/TS class member, salted when a sibling collides (#4475).
 
     ``make_id`` drops ``_``, ``$`` and ``#``, so ``updateHash`` / ``_updateHash``,
@@ -1639,7 +1649,9 @@ def _js_member_nid(class_nid: str, member_node, name: str, source: bytes,
     if groups is None:
         names: dict[str, set[str]] = {}
         for c in body.children:
-            if c.type in _JS_MEMBER_METHOD_TYPES:
+            if c.type in _JS_MEMBER_METHOD_TYPES or (
+                include_function_properties and _ts_function_property(c)
+            ):
                 name_node = c.child_by_field_name("name")
             elif c.type in ("field_definition", "public_field_definition"):
                 value = c.child_by_field_name("value")
@@ -9590,16 +9602,18 @@ def _extract_generic(
                         )
                     if _ts_has_readonly_binding(node, source, ts_declaration_file, *ts_readonly_bindings):
                         return
-                # Only direct signatures belong to the alias. Leave methods of
-                # nested object properties and other type expressions alone.
+                # Only direct callable members belong to the alias.
                 for member in body.named_children:
-                    if member.type != "method_signature":
+                    if member.type != "method_signature" and not _ts_function_property(member):
                         continue
                     member_name = member.child_by_field_name("name")
                     name = _read_text(member_name, source) if member_name is not None else ""
                     if not normalize_id(name):
                         continue
-                    member_nid = _js_member_nid(class_nid, member, name, source, js_member_groups)
+                    member_nid = _js_member_nid(
+                        class_nid, member, name, source, js_member_groups,
+                        include_function_properties=True,
+                    )
                     member_line = member.start_point[0] + 1
                     add_node(member_nid, f".{name}()", member_line,
                              metadata={"kind": "type_alias_method"})

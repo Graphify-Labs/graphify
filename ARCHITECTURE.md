@@ -110,12 +110,14 @@ contained type IDs. Type metadata records a label-based `type_path`, including
 C# generic arity. Exported field tables use this path and namespace, not raw
 node IDs, to survive cache relocation and corpus ID remapping.
 
-TypeScript object type aliases own nodes for their direct method signatures,
-including inline objects wrapped in an unqualified `Readonly` when the alias's
-scope does not shadow that name. The extractor retains each method's source location.
-It skips nested objects and other wrappers. These declarations can be reached
-through a resolved typed receiver and are excluded from bare call lookup.
-AST cache schema 57 refreshes existing graphs for these new declarations.
+TypeScript object type aliases own nodes for direct method signatures and
+properties with an explicit function type. This includes inline objects wrapped
+in an unqualified `Readonly` when the alias's scope does not shadow that name.
+The extractor retains each member's source location. Nested object members,
+other wrappers, and properties whose callability requires type resolution stay
+outside this extraction. These declarations can be reached through a resolved
+typed receiver and are excluded from bare call lookup. AST cache schema 58
+invalidates cached extractions that omitted function-typed properties.
 
 Java preserves package/import context for qualified receivers, typed
 locals/parameters/fields, casts, and declared factory returns. Nested member

@@ -1,4 +1,4 @@
-"""Record direct method signatures on named structural TypeScript aliases."""
+"""Record direct callable members on named structural TypeScript aliases."""
 
 from pathlib import Path
 
@@ -39,6 +39,29 @@ def test_object_type_aliases_keep_direct_method_signatures(tmp_path, suffix):
         ("InterfacePort", ".read()", "L1"),
         ("AliasPort", ".read()", "L3"),
         ("ReadonlyPort", ".read()", "L7"),
+    }
+
+
+@pytest.mark.parametrize("suffix", [".ts", ".tsx"])
+def test_object_type_aliases_keep_direct_callable_properties(tmp_path, suffix):
+    methods = _method_edges(
+        tmp_path / f"ports{suffix}",
+        "interface InterfacePort { callback: () => number }\n"
+        "type AliasPort = {\n"
+        "  read: () => number;\n"
+        "  readonly maybeRead?: (/* annotated */ () => number);\n"
+        "  name: string;\n"
+        "  inner: { nested: () => number };\n"
+        "  fallback: (() => number) | undefined;\n"
+        "};\n"
+        "type ReadonlyPort = Readonly<{\n"
+        "  read: () => number;\n"
+        "}>;\n",
+    )
+    assert methods == {
+        ("AliasPort", ".read()", "L3"),
+        ("AliasPort", ".maybeRead()", "L4"),
+        ("ReadonlyPort", ".read()", "L10"),
     }
 
 
@@ -186,6 +209,39 @@ def test_alias_method_calls_require_a_typed_receiver(tmp_path):
         (nodes["useAlias()"], methods[nodes["AliasPort"]]),
         (nodes["useReadonly()"], methods[nodes["ReadonlyPort"]]),
         (nodes["useImported()"], methods[nodes["AliasPort"]]),
+    }
+
+
+def test_imported_alias_callable_properties_resolve_to_distinct_members(tmp_path):
+    ports = tmp_path / "ports.ts"
+    ports.write_text(
+        "export type Port = Readonly<{ read(): number; _read: () => number }>;\n",
+        encoding="utf-8",
+    )
+    caller = tmp_path / "caller.ts"
+    caller.write_text(
+        "import type { Port } from './ports';\n"
+        "function _read() { return 0; }\n"
+        "function useBare() { return _read(); }\n"
+        "function useMethod(port: Port) { return port.read(); }\n"
+        "function useProperty(port: Port) { return port._read(); }\n",
+        encoding="utf-8",
+    )
+    result = extract([ports, caller], root=tmp_path, cache_root=tmp_path / "cache")
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    assert {
+        labels[edge["target"]]
+        for edge in result["edges"]
+        if edge["relation"] == "method" and labels[edge["source"]] == "Port"
+    } == {".read()", "._read()"}
+    assert {
+        (labels[edge["source"]], labels[edge["target"]])
+        for edge in result["edges"]
+        if edge["relation"] == "calls"
+    } == {
+        ("useBare()", "_read()"),
+        ("useMethod()", ".read()"),
+        ("useProperty()", "._read()"),
     }
 
 
