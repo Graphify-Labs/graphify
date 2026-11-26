@@ -320,4 +320,4 @@ def test_watch_relative_roots_receive_config_events_without_rebasing_source_path
     drive_watch(Path(argument), monkeypatch, [change], observed_roots=registered_roots)
     graph = json.loads((root / "graphify-out" / "graph.json").read_text())
     paths = {node["source_file"] for node in graph["nodes"] if node["label"] == "watched()"}
-    assert paths == {str(Path(argument) / "page.tpl")}
+    assert paths == {(Path(argument) / "page.tpl").as_posix()}
