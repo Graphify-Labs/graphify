@@ -3568,5 +3568,24 @@ def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
 def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
     """Remove all nodes tagged with repo_tag from G in-place. Returns count removed."""
     to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
+    removed = set(to_remove)
     G.remove_nodes_from(to_remove)
+    hes = G.graph.get("hyperedges")
+    if isinstance(hes, list):
+        kept: list = []
+        for he in hes:
+            if not isinstance(he, dict):
+                kept.append(he)
+                continue
+            nodes = he.get("nodes")
+            if not isinstance(nodes, list):
+                kept.append(he)
+                continue
+            surviving = [n for n in nodes if n not in removed]
+            if surviving:
+                if len(surviving) != len(nodes):
+                    he = {**he, "nodes": surviving}
+                kept.append(he)
+            # else: drop hyperedge with no surviving members
+        G.graph["hyperedges"] = kept
     return len(to_remove)
