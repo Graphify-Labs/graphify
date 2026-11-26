@@ -199,7 +199,8 @@ def test_different_relation_replacing_an_edge_does_not_inherit_its_also_seen():
 
 
 def test_ts_barrel_reexport_edge_is_a_fixed_point_of_the_build(tmp_path):
-    """End to end: a written graph re-fed through the build keeps the same also_seen."""
+    """End to end: the barrel's re_exports edge carries no imports_from sites, and a
+    written graph re-fed through the build gives the same edge."""
     pytest.importorskip("tree_sitter_typescript")
     from graphify.extract import extract
 
@@ -209,14 +210,22 @@ def test_ts_barrel_reexport_edge_is_a_fixed_point_of_the_build(tmp_path):
         "export * from './x';\nexport { alpha as first } from './x';\n")
     ext = extract([tmp_path / "lib" / "x.ts", tmp_path / "lib" / "index.ts"], cache_root=tmp_path)
     G = build_from_json(ext, root=tmp_path)
-    (pair,) = [(u, v) for u, v, d in G.edges(data=True)
-               if d.get("relation") == "re_exports" and d.get("context") == "export"]
+    pairs = [(u, v) for u, v, d in G.edges(data=True)
+             if d.get("relation") == "re_exports" and d.get("context") == "export"]
+    assert len(pairs) == 1, f"expected one file-level re_exports edge, got {pairs}"
+    pair = pairs[0]
+    def evidence(graph):
+        # _src/_tgt are stripped below, so the rebuild re-derives them
+        return {k: v for k, v in edge_data(graph, *pair).items() if k not in ("_src", "_tgt")}
+
+    first = evidence(G)
+    assert "also_seen" not in first
     data = json_graph.node_link_data(G, edges="links")
     for link in data["links"]:
         link.pop("_src", None)
         link.pop("_tgt", None)
     again = build_from_json({"nodes": data["nodes"], "edges": data["links"], "hyperedges": []}, root=tmp_path)
-    assert edge_data(G, *pair).get("also_seen") == edge_data(again, *pair).get("also_seen")
+    assert evidence(again) == first
 
 
 def test_different_relation_replacing_an_edge_does_not_inherit_its_score_or_location():
