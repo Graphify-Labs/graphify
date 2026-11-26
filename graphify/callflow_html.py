@@ -601,6 +601,7 @@ def mermaid_init(scale: float, direction: str = "LR") -> str:
     scale = max(0.65, min(float(scale or 1.0), 1.8))
     config = {
         "theme": "dark",
+        "maxTextSize": 250000,
         "themeVariables": {
             "fontSize": f"{round(15 * scale, 1)}px",
             "fontFamily": "Segoe UI, system-ui, sans-serif",
@@ -1840,6 +1841,7 @@ def write_callflow_html(
   const mermaidConfig = {
     startOnLoad: false,
     theme: 'dark',
+    maxTextSize: 250000,
     securityLevel: 'loose',
     flowchart: { htmlLabels: true, useMaxWidth: true },
     themeVariables: {
