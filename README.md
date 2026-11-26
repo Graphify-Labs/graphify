@@ -361,7 +361,7 @@ Both encourage scoped graph queries before broad source searches. Choose the ins
 
 ## Connect your agent over MCP
 
-Point any MCP-capable agent at a Graphify graph and it queries the graph directly instead of grepping files. Connect to the hosted graph (Graphify Cloud, free plan, no card):
+Point any MCP-capable agent at a Graphify graph and it queries the graph directly instead of grepping files. Connect to the hosted graph (Graphify, free plan, no card):
 
 ```bash
 # Claude Code
