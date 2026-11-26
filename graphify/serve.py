@@ -17,6 +17,7 @@ from graphify.paths import consumed, read_graph_json
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import _CONFIDENCE_RANK, edge_datas, edge_evidence, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json, _is_test_path
+from graphify import freshness as _freshness
 
 try:
     with warnings.catch_warnings():
@@ -3703,7 +3704,7 @@ def _build_server(graph_path: str):
     def _tool_graph_stats(_: dict) -> str:
         confs = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
         total = len(confs) or 1
-        return (
+        text = (
             f"Nodes: {G.number_of_nodes()}\n"
             f"Edges: {G.number_of_edges()}\n"
             f"Communities: {len(communities)}\n"
@@ -3712,6 +3713,16 @@ def _build_server(graph_path: str):
             f"AMBIGUOUS: {round(confs.count('AMBIGUOUS')/total*100)}%\n"
             f"{_build_commit_line()}"
         )
+        if _freshness.enabled():
+            # v8 already always reports built-at-commit (#3354). When auto-refresh
+            # is on, append Freshness / HEAD lines and skip the duplicate stamp.
+            extra = [
+                line for line in _freshness.graph_stats_lines(active_graph_path)
+                if not line.startswith("Built at commit:")
+            ]
+            if extra:
+                text = text.rstrip("\n") + "\n" + "\n".join(extra) + "\n"
+        return text
 
     def _build_commit_line() -> str:
         """Which commit the graph was built from, and whether HEAD has moved on.
@@ -3917,17 +3928,30 @@ def _build_server(graph_path: str):
         handler = _handlers.get(name)
         if not handler:
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+        banner = ""
+        if _freshness.enabled():
+            # Opt-in freshness enforcement: if the project graph is behind HEAD,
+            # rebuild once before answering. Runs off the event loop; a per-repo
+            # lock makes concurrent calls share a single build. Never raises.
+            # Imported here: the CLI imports this module without the `mcp` extra.
+            import anyio
+            result = await anyio.to_thread.run_sync(_freshness.ensure_fresh, project_path)
+            banner = result.banner
+
+        def _with_banner(text: str) -> str:
+            return f"{banner}\n{text}" if banner else text
+
         try:
             await _warm_graph(project_path)
             _select_graph(project_path)  # bind G/communities to the target graph
-            return [types.TextContent(type="text", text=handler(arguments))]
+            return [types.TextContent(type="text", text=_with_banner(handler(arguments)))]
         except ToolError:
             # A handler-signalled error: propagate so the result is marked
             # isError:true (the mcp 1.x decorator wraps a raised exception into
             # an error result; the 2.x path catches it in _on_call_tool).
             raise
         except Exception as exc:
-            return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
+            return [types.TextContent(type="text", text=_with_banner(f"Error executing {name}: {exc}"))]
 
     if hasattr(Server, "list_tools"):
         # mcp 1.x: decorator-based registration. The SDK wraps the raw returns
@@ -4251,7 +4275,27 @@ def _main(argv: list[str] | None = None) -> None:
         default=3600.0,
         help="Reap stateful sessions idle this many seconds (default: 3600; 0 disables)",
     )
+    parser.add_argument(
+        "--auto-refresh",
+        action="store_true",
+        help=(
+            "Rebuild a project's graph when it is behind the repo's git HEAD "
+            "before answering (env: GRAPHIFY_AUTO_REFRESH)"
+        ),
+    )
+    parser.add_argument(
+        "--auto-refresh-dirty",
+        action="store_true",
+        help=(
+            "Also rebuild on uncommitted working-tree changes (implies "
+            "--auto-refresh; env: GRAPHIFY_AUTO_REFRESH_DIRTY)"
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.auto_refresh or args.auto_refresh_dirty:
+        os.environ["GRAPHIFY_AUTO_REFRESH"] = "1"
+    if args.auto_refresh_dirty:
+        os.environ["GRAPHIFY_AUTO_REFRESH_DIRTY"] = "1"
     graph_path = args.graph_flag or args.graph_path or _default_graph_json()
 
     if args.transport == "http":

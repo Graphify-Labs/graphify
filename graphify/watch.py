@@ -2335,6 +2335,58 @@ def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
     return "rendered"
 
 
+
+def _restamp_built_commit(
+    graph_path: Path, payload: dict, commit: str | None
+) -> bool:
+    """Advance ``built_at_commit`` in graph.json when the topology is unchanged.
+
+    The no-op comparison strips ``built_at_commit`` (see
+    ``_canonical_*_for_compare`` / ``_topology_signature_for_compare``), so a
+    commit that leaves the node/edge payload identical never advances the stamp.
+    A consumer that treats ``built_at_commit != HEAD`` as stale therefore
+    rebuilds forever. Restamping makes the stamp honest without rebuilding.
+    Returns True when the file was rewritten (which advances its mtime, so
+    hot-reload readers reparse it).
+    """
+    if not commit or payload.get("built_at_commit") == commit:
+        return False
+    updated = dict(payload)
+    updated["built_at_commit"] = commit
+    try:
+        from graphify.paths import write_json_atomic
+
+        write_json_atomic(graph_path, updated, indent=2)
+    except Exception as exc:  # never let a restamp failure fail the update
+        print(
+            f"[graphify watch] warning: could not restamp built_at_commit: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    print(f"[graphify watch] restamped built_at_commit to {commit[:8]} (topology unchanged).")
+    return True
+
+
+
+def _restamp_existing_graph(out: Path, watch_root: Path | str) -> bool:
+    """Advance ``built_at_commit`` on an early no-change exit.
+
+    v8 can leave graphify-out untouched when no extractable file changed
+    (``_inputs_unchanged`` / incremental empty change-set), even if git HEAD
+    has moved on. Without a restamp, ``built_at_commit != HEAD`` stays true
+    and a freshness consumer would rebuild forever. No-ops when there is no
+    graph, no git HEAD, or the stamp already matches.
+    """
+    graph_path = out / "graph.json"
+    if not graph_path.is_file():
+        return False
+    try:
+        payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return _restamp_built_commit(graph_path, payload, _git_head(cwd=watch_root))
+
+
 def _keep_unchanged_clustered_graph(
     graph_tmp: Path,
     existing_graph_data: dict,
@@ -2342,6 +2394,9 @@ def _keep_unchanged_clustered_graph(
     report: str,
     *,
     same_graph: bool,
+    graph_path: Path | None = None,
+    commit: str | None = None,
+    payload: dict | None = None,
 ) -> bool:
     """Keep a matching graph if the report already matches or can be restored."""
     report_missing = not report_path.exists()
@@ -2359,6 +2414,8 @@ def _keep_unchanged_clustered_graph(
         _reconcile_graph_html(report_path.parent, existing_graph_data)
     else:
         print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
+    if graph_path is not None:
+        _restamp_built_commit(graph_path, payload or existing_graph_data, commit)
     return True
 
 
@@ -2595,6 +2652,7 @@ def _rebuild_code(
                     "[graphify watch] No relevant changes; "
                     "graphify-out left untouched."
                 )
+                _restamp_existing_graph(out, watch_root)
                 return True
 
         # #4740: the caller asked for an incremental update. The manifest already
@@ -2653,6 +2711,7 @@ def _rebuild_code(
                             "files differ from the last build."
                         )
                         if not excluded_rows and not report_missing:
+                            _restamp_existing_graph(out, watch_root)
                             return True
 
         # #2495: hand reconcile the same ignore decisions the detect() call
@@ -3269,6 +3328,7 @@ def _rebuild_code(
                 pass
 
             if same_graph:
+                _restamp_built_commit(existing_graph, existing_payload, commit)
                 print("[graphify watch] No code-graph changes detected (--no-cluster); outputs left untouched.")
             else:
                 print(
@@ -3315,6 +3375,7 @@ def _rebuild_code(
                 except Exception:
                     pass
                 html_action = _reconcile_graph_html(out, existing_graph_data)
+                _restamp_built_commit(existing_graph, existing_graph_data, commit)
                 if html_action == "rendered":
                     print(
                         "[graphify watch] No code-graph topology changes detected; "
@@ -3468,6 +3529,7 @@ def _rebuild_code(
             return False
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
         same_graph = False
+        existing_payload = None
         if existing_graph.exists():
             try:
                 check_graph_file_size_cap(existing_graph)
@@ -3495,6 +3557,7 @@ def _rebuild_code(
         same_graph = same_graph and not legacy_layout
         keep_graph = _keep_unchanged_clustered_graph(
             graph_tmp, existing_graph_data, report_path, report, same_graph=same_graph,
+            graph_path=existing_graph, commit=commit, payload=existing_payload,
         )
         if not keep_graph:
             if not _check_shrink(
