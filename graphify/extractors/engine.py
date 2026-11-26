@@ -3790,7 +3790,7 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
     return bound
 
 
-def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
+def _js_direct_lexical_names(node, source: bytes, *, ignore_require: bool = True) -> frozenset[str]:
     """Names bound by `let`/`const` declarators that are DIRECT children of
     node (not nested inside a further block, loop, function, or class).
 
@@ -3806,7 +3806,7 @@ def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
         for declarator in child.children:
             if declarator.type == "variable_declarator":
                 val = declarator.child_by_field_name("value")
-                if val is not None and val.type == "call_expression":
+                if ignore_require and val is not None and val.type == "call_expression":
                     fn = val.child_by_field_name("function")
                     if fn is not None and fn.type == "identifier" and _read_text(fn, source) == "require":
                         continue
@@ -3847,14 +3847,15 @@ def _js_enclosing_bound_names(node, source: bytes) -> set[str]:
         anc = anc.parent
     return bound
 
-def _js_receiver_shadowed(node, name: str | None, source: bytes, bindings_by_scope: dict) -> bool:
-    """Resolve the receiver binding along the full lexical ancestor chain from
-    the call site, so a separately-tracked inner function still sees the outer
-    shadowing of the imported name."""
-    if not name:
-        return False
+def _js_receiver_binding_scope(node, name: str, source: bytes, bindings_by_scope: dict,
+                               *, for_property_alias: bool = False):
+    """Find the nearest scope binding the receiver, including across closures."""
     scope = node.parent
     while scope is not None:
+        # Case labels have one shared lexical scope. Do not read through it
+        # when resolving a property alias; this index does not model its bindings.
+        if for_property_alias and scope.type == "switch_body":
+            return scope
         bindings = bindings_by_scope.get(scope)
         if bindings is None:
             bound: set[str] = set()
@@ -3865,7 +3866,7 @@ def _js_receiver_shadowed(node, name: str | None, source: bytes, bindings_by_sco
                     if own_name is not None:
                         bound.add(_read_text(own_name, source))
             if scope.type in ("program", "statement_block", "for_statement"):
-                bound.update(_js_direct_lexical_names(scope, source))
+                bound.update(_js_direct_lexical_names(scope, source, ignore_require=not for_property_alias))
                 for child in scope.named_children:
                     if child.type in (
                         "function_declaration", "generator_function_declaration",
@@ -3882,9 +3883,9 @@ def _js_receiver_shadowed(node, name: str | None, source: bytes, bindings_by_sco
             bindings = frozenset(bound)
             bindings_by_scope[scope] = bindings
         if name in bindings:
-            return True
+            return scope
         scope = scope.parent
-    return False
+    return None
 
 
 def _js_module_bound_names(root, source: bytes) -> set[str]:
@@ -4014,9 +4015,8 @@ def _find_body(node, config: LanguageConfig):
     return None
 
 
-def _ts_alias_object_type(node, source: bytes):
-    """Find the object literal in a direct alias or an unqualified Readonly alias."""
-    value = node.child_by_field_name("value")
+def _ts_object_literal_type(value, source: bytes):
+    """Find a direct object literal or one wrapped in unqualified Readonly."""
     if value is None or value.type != "generic_type":
         return value if value is not None and value.type == "object_type" else None
     name = value.child_by_field_name("name")
@@ -4141,6 +4141,117 @@ def _ts_has_readonly_binding(
                     return True
         scope = scope.parent
     return False
+
+
+def _ts_receiver_type_binding(node, name: str, source: bytes, config: LanguageConfig):
+    """Find the closest same-file declaration or unaliased named import of a type."""
+    scope = node.parent
+    while scope is not None:
+        params = scope.child_by_field_name("type_parameters")
+        if params is not None and any(
+            (ident := child.child_by_field_name("name")) is not None
+            and _read_text(ident, source) == name
+            for child in params.named_children if child.type == "type_parameter"
+        ):
+            return params
+        if scope.type in _TS_LEXICAL_SCOPES:
+            declarations = []
+            for child in scope.named_children:
+                if child.type == "export_statement":
+                    child = child.child_by_field_name("declaration")
+                if child is not None and child.type == "ambient_declaration":
+                    child = next(iter(child.named_children), None)
+                if child is None:
+                    continue
+                if (child.type in config.class_types
+                        and (ident := child.child_by_field_name("name")) is not None
+                        and _read_text(ident, source) == name):
+                    declarations.append(child)
+                if child.type == "import_statement":
+                    declarations.extend(
+                        spec for spec in _walk_js_tree(child)
+                        if spec.type == "import_specifier"
+                        and spec.child_by_field_name("alias") is None
+                        and (ident := spec.child_by_field_name("name")) is not None
+                        and _read_text(ident, source) == name
+                    )
+            if declarations:
+                return declarations[0] if len(declarations) == 1 else scope
+        scope = scope.parent
+    return None
+
+
+def _ts_property_receiver_type(block, name: str, source: bytes, bindings_by_scope: dict,
+                               object_literal_type, config: LanguageConfig) -> tuple[int, str, bool] | None:
+    """Read `const alias = parameter.property` from the two lexical bindings."""
+    for declaration in block.named_children:
+        if (declaration.type != "lexical_declaration"
+                or not any(child.type == "const" for child in declaration.children)):
+            continue
+        alias = next((child for child in declaration.named_children
+                      if child.type == "variable_declarator"
+                      and (target := child.child_by_field_name("name")) is not None
+                      and target.type == "identifier" and _read_text(target, source) == name), None)
+        if alias is not None:
+            break
+    else:
+        return None
+    value = alias.child_by_field_name("value")
+    if (alias.child_by_field_name("type") is not None or value is None
+            or value.type != "member_expression"
+            or value.child_by_field_name("optional_chain") is not None):
+        return None
+    base, prop = value.child_by_field_name("object"), value.child_by_field_name("property")
+    if base is None or base.type != "identifier" or prop is None or prop.type != "property_identifier":
+        return None
+
+    base_name = _read_text(base, source)
+    function = _js_receiver_binding_scope(base, base_name, source, bindings_by_scope, for_property_alias=True)
+    if function is None or function.type not in _TS_FUNCTION_NODES:
+        return None
+    params = function.child_by_field_name("parameters")
+    if params is None:
+        return None
+    param = next((item for item in params.named_children if item.type == "required_parameter"
+                  and (pattern := item.child_by_field_name("pattern")) is not None
+                  and pattern.type == "identifier" and _read_text(pattern, source) == base_name), None)
+    annotation = param.child_by_field_name("type") if param is not None else None
+    if annotation is None:
+        return None
+    shape = next((child for child in annotation.named_children if not child.is_extra), None)
+    if shape is not None and shape.type == "type_identifier":
+        binding = _ts_receiver_type_binding(shape, _read_text(shape, source), source, config)
+        if (binding is None or binding.type != "type_alias_declaration"
+                or binding.child_by_field_name("type_parameters") is not None):
+            return None
+        shape = binding.child_by_field_name("value")
+    body = object_literal_type(shape)
+    if body is None:
+        return None
+
+    prop_name = _read_text(prop, source)
+    members = [item for item in body.named_children
+               if (member_name := item.child_by_field_name("name")) is not None
+               and _read_text(member_name, source) == prop_name]
+    if len(members) != 1 or members[0].type != "property_signature":
+        return None
+    member = members[0]
+    annotation = member.child_by_field_name("type")
+    if annotation is None or any(child.type == "?" for child in member.children):
+        return None
+    declared = [child for child in annotation.named_children if not child.is_extra]
+    if len(declared) != 1 or declared[0].type != "type_identifier":
+        return None
+    type_name = _read_text(declared[0], source)
+    binding = _ts_receiver_type_binding(declared[0], type_name, source, config)
+    if binding is not None:
+        if binding.type == "import_specifier":
+            return alias.end_byte, type_name, True
+        if binding.type in config.class_types:
+            scope = _ts_enclosing_scope(binding)
+            if scope is not None and scope.type == "program":
+                return alias.end_byte, type_name, False
+    return None
 
 
 def _js_import_is_type_only(node) -> bool:
@@ -8310,6 +8421,8 @@ def _extract_generic(
     # params/locals instead of a shared union that over-suppresses siblings.
     closure_locals_by_body: dict[int, set[str]] = {}
     js_receiver_bindings: dict = {}
+    ts_property_receiver_bindings: dict = {}
+    ts_property_receiver_types: dict[tuple[Node, str], tuple[int, str, bool] | None] = {}
     # PHP only: ordinal counter for anonymous closures, keyed by scope id
     # (parent_class_nid or stem). Stable across line-only edits (#3409).
     php_closure_counts: dict[str, int] = {}
@@ -8617,8 +8730,40 @@ def _extract_generic(
     ts_readonly_bindings: tuple[set[Node], set[_TsNamespaceScope]] | None = None
     ts_declaration_file = str_path.endswith((".d.ts", ".d.mts", ".d.cts"))
 
+    def ts_object_literal_type(value):
+        nonlocal ts_readonly_bindings
+        body = _ts_object_literal_type(value, source)
+        if body is not None and body.parent is not None and body.parent.type == "type_arguments":
+            if ts_readonly_bindings is None:
+                ts_readonly_bindings = _ts_readonly_binding_scopes(root, source, config, ts_declaration_file)
+            if _ts_has_readonly_binding(body, source, ts_declaration_file, *ts_readonly_bindings):
+                return None
+        return body
+
+    def ts_property_receiver_at(ident, name: str) -> tuple[str, bool] | None:
+        block = _js_receiver_binding_scope(ident, name, source, js_receiver_bindings)
+        if block is None or block.type != "statement_block":
+            return None
+        block = _js_receiver_binding_scope(
+            ident, name, source, ts_property_receiver_bindings, for_property_alias=True,
+        )
+        if block is None or block.type != "statement_block":
+            return None
+        key = (block, name)
+        if key not in ts_property_receiver_types:
+            ts_property_receiver_types[key] = _ts_property_receiver_type(
+                block, name, source, ts_property_receiver_bindings, ts_object_literal_type, config,
+            )
+        hit = ts_property_receiver_types[key]
+        if hit is None:
+            return None
+        end_byte, type_name, imported = hit
+        if ident.start_byte < end_byte or type_name in js_external_imports:
+            return None
+        return type_name, imported
+
     def walk(node, parent_class_nid: str | None = None) -> None:
-        nonlocal ruby_singleton_context_depth, ts_readonly_bindings
+        nonlocal ruby_singleton_context_depth
         t = node.type
 
         # Lua: `require("mod")` used as a bare statement (no assignment) is
@@ -9580,16 +9725,9 @@ def _extract_generic(
                                              line, context="generic_arg")
 
             if config.ts_module == "tree_sitter_typescript" and t == "type_alias_declaration":
-                body = _ts_alias_object_type(node, source)
+                body = ts_object_literal_type(node.child_by_field_name("value"))
                 if body is None:
                     return
-                if body.parent is not None and body.parent.type == "type_arguments":
-                    if ts_readonly_bindings is None:
-                        ts_readonly_bindings = _ts_readonly_binding_scopes(
-                            root, source, config, ts_declaration_file,
-                        )
-                    if _ts_has_readonly_binding(node, source, ts_declaration_file, *ts_readonly_bindings):
-                        return
                 # Only direct signatures belong to the alias. Leave methods of
                 # nested object properties and other type expressions alone.
                 for member in body.named_children:
@@ -11972,6 +12110,7 @@ def _extract_generic(
             is_scoped_call: bool = False
             swift_receiver: str | None = None
             member_receiver: str | None = None
+            ts_property_receiver: tuple[str, bool] | None = None
             kotlin_qualified_prefix: str | None = None
             kotlin_object_receiver: str | None = None
             # Kotlin `x.m()` / `this.x.m()`: the receiver variable and its declared type.
@@ -12542,7 +12681,10 @@ def _extract_generic(
                             obj = func_node.child_by_field_name(config.call_accessor_object_field)
                             if obj is not None and obj.type == "identifier":
                                 member_receiver = _read_text(obj, source)
-                                if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+                                if config.ts_module == "tree_sitter_typescript" and node.type == "call_expression":
+                                    ts_property_receiver = ts_property_receiver_at(obj, member_receiver)
+                                if (ts_property_receiver is None
+                                        and config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")):
                                     # `const { creator } = this; creator.m()` reads the
                                     # field the same way `this.creator.m()` does.
                                     _this_field = _ts_field_destructured_from_this(obj, member_receiver, source)
@@ -12713,7 +12855,7 @@ def _extract_generic(
                     config.ts_module in (
                         "tree_sitter_javascript", "tree_sitter_typescript",
                     )
-                    and is_member_call and member_receiver
+                    and is_member_call and member_receiver and ts_property_receiver is None
                 ):
                     _owner = method_owner.get(caller_nid)
                     if _owner is not None and _make_id(
@@ -12926,10 +13068,14 @@ def _extract_generic(
                         if config.ts_module in (
                             "tree_sitter_javascript", "tree_sitter_typescript",
                         ) and is_member_call:
-                            rc_entry["_js_receiver_shadowed"] = _js_receiver_shadowed(
-                                node, member_receiver, source, js_receiver_bindings,
+                            rc_entry["_js_receiver_shadowed"] = bool(
+                                member_receiver and _js_receiver_binding_scope(
+                                    node, member_receiver, source, js_receiver_bindings,
+                                )
                             )
                             rc_entry["_js_construct"] = node.type == "new_expression"
+                            if ts_property_receiver is not None:
+                                rc_entry["_ts_property_receiver"] = list(ts_property_receiver)
                         if python_receiver_shadowed is not None and is_member_call:
                             rc_entry["_python_receiver_shadowed"] = python_receiver_shadowed(
                                 node, member_receiver or ""
