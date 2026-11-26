@@ -586,7 +586,49 @@ def cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
 
 
 def score_all(G: nx.Graph, communities: dict[int, list[str]]) -> dict[int, float]:
-    return {cid: cohesion_score(G, nodes) for cid, nodes in communities.items()}
+    """Compute cohesion_score for all communities in a single O(|E|) pass."""
+    if not communities:
+        return {}
+    node_comm: dict[str, int] = {}
+    for cid, nodes in communities.items():
+        if len(nodes) <= 1:
+            continue
+        for node in nodes:
+            if node in node_comm:
+                # Overlapping communities passed by a custom caller: fall back per-community.
+                return {c: cohesion_score(G, ns) for c, ns in communities.items()}
+            node_comm[node] = cid
+
+    if G.is_multigraph() or G.is_directed():
+        seen_pairs: dict[int, set[tuple[str, str]]] = {
+            cid: set() for cid, nodes in communities.items() if len(nodes) > 1
+        }
+        for u, v in G.edges():
+            if u == v:
+                continue
+            cu = node_comm.get(u)
+            if cu is not None and cu == node_comm.get(v):
+                su, sv = str(u), str(v)
+                seen_pairs[cu].add((su, sv) if su <= sv else (sv, su))
+        counts = {cid: len(pairs) for cid, pairs in seen_pairs.items()}
+    else:
+        counts = {cid: 0 for cid, nodes in communities.items() if len(nodes) > 1}
+        for u, v in G.edges():
+            if u == v:
+                continue
+            cu = node_comm.get(u)
+            if cu is not None and cu == node_comm.get(v):
+                counts[cu] += 1
+
+    result: dict[int, float] = {}
+    for cid, nodes in communities.items():
+        n = len(nodes)
+        if n <= 1:
+            result[cid] = 1.0
+        else:
+            possible = n * (n - 1) / 2
+            result[cid] = min(1.0, counts[cid] / possible) if possible > 0 else 0.0
+    return result
 
 
 def remap_communities_to_previous(
