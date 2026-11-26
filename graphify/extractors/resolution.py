@@ -4235,6 +4235,7 @@ def _merge_decl_def_classes(
     # Identify, per surviving id, which node to keep (header preferred). We can't
     # mutate all_nodes mid-scan, so collect a set of node object ids to drop.
     drop_objs: set[int] = set()
+    collapsed: set[str] = set()
     for nid, group in by_id.items():
         if len(group) < 2:
             continue
@@ -4302,6 +4303,7 @@ def _merge_decl_def_classes(
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
+        collapsed.add(nid)
 
     if not drop_objs:
         return
@@ -4311,6 +4313,8 @@ def _merge_decl_def_classes(
     # definition_location); edges are unchanged because the id is identical. Then
     # de-dup any now-identical edges (e.g. the impl file's `contains`/`method`
     # edge that duplicates the header's after the collapse).
+    # Only ids that actually had a merge partner can have merge-created
+    # duplicates. Track which ids collapsed.
     all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
 
     seen_keys: set[tuple] = set()
@@ -4318,12 +4322,21 @@ def _merge_decl_def_classes(
     for e in all_edges:
         src = e.get("source")
         tgt = e.get("target")
-        if src == tgt:
+        # Only de-dup edges touching a collapsed id. All other edges
+        # (recursive self-loops like rec_fact->rec_fact, same-stem
+        # .cu/.metal member edges sharing raw ids pre-disambiguation)
+        # must pass through untouched, preserving order-independence (#5468).
+        if src not in collapsed and tgt not in collapsed:
+            rewritten.append(e)
             continue
         k = (src, tgt, e.get("relation"), e.get("context"))
         if e.get("relation") == "calls":
             # A repeat call site is not a merge twin; keep it for the build's `also_seen`.
             k += (e.get("source_file"), e.get("source_location"))
+        else:
+            # Non-call merge twins from header+impl must still differ by
+            # origin file, else .cu/.metal style raw-id collisions collapse.
+            k += (e.get("source_file"),)
         if k in seen_keys:
             continue
         seen_keys.add(k)
