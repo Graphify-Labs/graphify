@@ -1007,7 +1007,7 @@ def _file_label_reassignments(items: "list[tuple]") -> dict:
     nodes whose basename collides with another's — the shortest unique
     directory-qualified suffix (#2032). Keys of non-colliding/basename-unique file
     nodes are omitted (their label stays bare)."""
-    from collections import defaultdict
+    from collections import Counter, defaultdict
     groups: dict[str, list[tuple]] = defaultdict(list)
     for key, label, sf in items:
         if sf and label and _is_file_node_label(str(label), str(sf)):
@@ -1018,8 +1018,30 @@ def _file_label_reassignments(items: "list[tuple]") -> dict:
         distinct = {sf for _, sf in members}
         if len(distinct) < 2:
             continue  # no collision — leave the bare basename label
+
+        # Batch-compute shortest unique suffixes in O(M * D) linear time
+        # instead of O(M^2 * D) all-pairs comparisons (#2032).
+        parts_by_sf = {
+            sf: tuple(p for p in sf.replace("\\", "/").split("/") if p)
+            for sf in distinct
+        }
+        suffix_counts: Counter[tuple[str, ...]] = Counter()
+        for parts in parts_by_sf.values():
+            for k in range(1, len(parts) + 1):
+                suffix_counts[parts[-k:]] += 1
+
+        label_by_sf: dict[str, str] = {}
+        for sf, parts in parts_by_sf.items():
+            resolved = None
+            for k in range(1, len(parts) + 1):
+                suffix = parts[-k:]
+                if suffix_counts[suffix] == 1:
+                    resolved = "/".join(suffix)
+                    break
+            label_by_sf[sf] = resolved if resolved is not None else "/".join(parts)
+
         for key, sf in members:
-            out[key] = _shortest_unique_suffix(sf, distinct)
+            out[key] = label_by_sf[sf]
     return out
 
 

@@ -349,6 +349,18 @@ def test_trigram_candidates_falls_back_on_short_token():
     assert _trigram_candidates(G, ["ab"]) is None   # <3 chars -> can't trigram-filter
 
 
+def test_pruning_absent_terms_preserves_full_scan_scores_and_seeds(monkeypatch):
+    stock = _make_big_graph()
+    one_shot = stock.copy()
+    monkeypatch.setattr(one_shot, "_graphify_one_shot_query", True, raising=False)
+    terms = ["item", "zebraquokkawidget", "absentxyzzyg"]
+
+    assert _trigram_candidates(stock, terms) is None
+    expected = _score_query(stock, terms, collect_per_term_seeds=True)
+
+    assert _score_query(one_shot, terms, collect_per_term_seeds=True) == expected
+
+
 def test_score_nodes_prefilter_is_identical_to_full_scan(monkeypatch):
     G = _make_big_graph()
     queries = ["zebraquokkawidget", "marmosetgadget handler", "foo bar baz",
