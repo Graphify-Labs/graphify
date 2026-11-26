@@ -117,6 +117,16 @@ It skips nested objects and other wrappers. These declarations can be reached
 through a resolved typed receiver and are excluded from bare call lookup.
 AST cache schema 57 refreshes existing graphs for these new declarations.
 
+TypeScript also resolves a call through a local `const` initialized from one
+property of an explicitly typed parameter, including calls inside a closure.
+The parameter's annotation can be an object literal or a non-generic object
+type alias in the same file, with the same unshadowed `Readonly` support.
+The property needs a direct, required signature with a simple type name that
+resolves to a same-file declaration or an unaliased named import. Receiver and
+parameter bindings follow lexical scope. The call links to the type's exact
+method as `INFERRED`. Destructuring, property chains and other type expressions
+are outside this rule. AST cache schema 58 refreshes the receiver facts.
+
 Java preserves package/import context for qualified receivers, typed
 locals/parameters/fields, casts, and declared factory returns. Nested member
 types inherited from resolved supertypes participate in lexical lookup; ambiguous

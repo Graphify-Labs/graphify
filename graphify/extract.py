@@ -6783,7 +6783,11 @@ def _resolve_typescript_member_calls(
         for static, attr in ((False, "_ts_fields"), (True, "_ts_static_fields")):
             for fname, ftype in (n.get(attr) or {}).items():
                 ts_fields_by_id.setdefault((str(n.get("id")), static), {}).setdefault(fname, ftype)
-    if not type_table_by_file and not ts_fields_by_id:
+    has_legacy_receiver_evidence = bool(type_table_by_file or ts_fields_by_id)
+    if not has_legacy_receiver_evidence and not any(
+        call.get("_ts_property_receiver")
+        for result in per_file for call in result.get("raw_calls", ())
+    ):
         return
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
@@ -6836,13 +6840,17 @@ def _resolve_typescript_member_calls(
             owner_file = file_of_node.get(e.get("source"))
             if owner_file is not None:
                 file_of_node.setdefault(e.get("target"), owner_file)
-    # ``imports`` targets are the imported symbol nodes; ``imports_from`` targets
-    # are module file nodes. A symbol id never collides with a file id, so one
-    # set serves both origin checks below.
+    # A property alias requires an exact type binding. Keep named symbol
+    # imports distinct from the weaker module-import evidence used elsewhere.
     imported_by_filenode: dict[str, set[str]] = {}
+    symbol_imports_by_filenode: dict[str, set[str]] = {}
     for e in all_edges:
         if e.get("relation") in ("imports", "imports_from"):
             imported_by_filenode.setdefault(e.get("source"), set()).add(e.get("target"))
+        if e.get("relation") == "imports":
+            source, target = e.get("source"), e.get("target")
+            if isinstance(source, str) and isinstance(target, str):
+                symbol_imports_by_filenode.setdefault(source, set()).add(target)
 
     # `class B extends A`: a field A declares is B's too. Bases are matched by
     # their node, else by a unique class of that label carrying fields.
@@ -6886,8 +6894,14 @@ def _resolve_typescript_member_calls(
         caller = rc.get("caller_nid")
         if not receiver or not callee or not caller:
             continue
+        property_receiver = rc.get("_ts_property_receiver")
+        if property_receiver is None and not has_legacy_receiver_evidence:
+            continue
         declaring_nid: str | None = None
-        if receiver[:1].isupper():
+        if property_receiver is not None:
+            type_name, property_type_imported = property_receiver
+            type_qualified = False
+        elif receiver[:1].isupper():
             type_name = receiver
             type_qualified = True  # the receiver names the type in source
         else:
@@ -6917,7 +6931,8 @@ def _resolve_typescript_member_calls(
             # Table-typed only: an uppercase receiver also matches namespace aliases and
             # default imports, and node_modules is unscanned, so those are npm names.
             # The caller's family stands in for the `lang` tag TS raw_calls do not carry.
-            if not type_qualified and _lang_family(rc.get("source_file")) == "jsts":
+            if (property_receiver is None and not type_qualified
+                    and _lang_family(rc.get("source_file")) == "jsts"):
                 _park_unresolved_member_call(
                     node_by_id.get(caller), callee, type_name, "typescript", rc,
                 )
@@ -6943,13 +6958,28 @@ def _resolve_typescript_member_calls(
                 or (type_file is not None and type_file in imported)
             )
 
-        visible = [nid for nid in type_defs if _visible(nid)]
+        if property_receiver is not None:
+            # Nested functions have a `contains` edge from their lexical
+            # owner. Imports belong to the outermost file node.
+            enclosing: set[str] = set()
+            while caller_file in file_of_node and caller_file not in enclosing:
+                enclosing.add(caller_file)
+                caller_file = file_of_node[caller_file]
+            if caller_file is None:
+                continue
+            visible = [nid for nid in type_defs if node_by_id[nid].get("label") == type_name and (
+                nid in symbol_imports_by_filenode.get(caller_file, ()) if property_type_imported
+                else file_of_node.get(nid) == caller_file
+            )]
+        else:
+            visible = [nid for nid in type_defs if _visible(nid)]
         if len(visible) != 1:
             continue
         type_nid = visible[0]
         method_nid = method_exact.get((type_nid, str(callee)))
         exact = method_nid is not None
-        if not exact and (type_nid, _key(callee)) not in method_key_ambiguous:
+        if (property_receiver is None and not exact
+                and (type_nid, _key(callee)) not in method_key_ambiguous):
             method_nid = method_index.get((type_nid, _key(callee)))
         if not method_nid:
             # Receiver typed, but the type has no such method. The old fallback
