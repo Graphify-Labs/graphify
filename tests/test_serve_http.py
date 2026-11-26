@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -565,6 +567,25 @@ def test_graph_stats_commit_follows_project_path(tmp_path):
         default = _call_tool(client, headers, "graph_stats", {}, rid=3)
     assert scoped == _STATS_NO_COMMIT + f"Built at commit: {sha} (matches HEAD)\n"
     assert default == _STATS_NO_COMMIT
+
+
+@pytest.mark.parametrize(
+    ("host", "expected_url"),
+    [
+        ("::1", "http://[::1]:8080/mcp"),
+        ("::", "http://[::]:8080/mcp"),
+        ("[::1]", "http://[::1]:8080/mcp"),
+        ("127.0.0.1", "http://127.0.0.1:8080/mcp"),
+    ],
+)
+def test_serve_http_prints_valid_url_for_bind_host(monkeypatch, capsys, host, expected_url):
+    monkeypatch.delenv("GRAPHIFY_API_KEY", raising=False)
+    monkeypatch.setattr(serve_mod, "_build_http_app", lambda *args, **kwargs: object())
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=lambda *args, **kwargs: None))
+
+    serve_mod.serve_http("graph.json", host=host, port=8080, path="/mcp")
+
+    assert expected_url in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("host_header", ["[::1]:8080", "[::1]"])

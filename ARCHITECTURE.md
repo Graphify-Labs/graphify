@@ -201,7 +201,7 @@ pairs with the separate `definition_file` / `definition_location` site.
 Objective-C declarations and implementations in one file follow the same rule.
 Duplicate records only backfill an end location when the corresponding file and
 start location match. Build, JSON export and global graphs preserve both fields.
-AST cache schema 56 invalidates results that predate declaration ranges.
+AST cache schema 57 invalidates results that predate declaration ranges.
 
 `graphify section` and the `get_section` MCP tool return the text of a Markdown
 heading's section (`graphify/sections.py`). The section's end is found at read

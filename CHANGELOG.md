@@ -2,6 +2,20 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.120 (2026-11-25)
+
+A batch of resolution, serve, export, clustering and performance fixes across nine community pull requests. The Python function-local-import change alters node/edge output, so the AST cache schema bumps (55 to 56) and Python re-extracts on the first build after upgrading; the other fixes need no rebuild.
+
+- Feat: **serve** a new `affected` MCP tool reports the reverse-dependency blast radius of a symbol (what breaks if you change it), and `query_graph` gains an optional `seeds` argument to start a traversal from known nodes; both resolve a node by name, file path, or id the same way the CLI does (#5254, thanks @ArnabOPP; proposed by @ramarro123).
+- Perf: **query** per-node search fields, degrees and the hub threshold, an integer-indexed adjacency for BFS/DFS, and rendered NODE lines are each computed once per loaded graph and reused by every later query, and document frequency is taken through the trigram index; query output is byte-identical (#5476, thanks @nothariharan).
+- Fix: **python** a bare call inside a function whose name is bound by a function-local import (`from m import x`, `import x`) no longer binds to an unrelated same-named module-level definition in the same file; the import shadows the twin within that function only (#5427, thanks @ayushcodes10).
+- Fix: **python** a function-local import no longer leaks its binding into a sibling function at the same scope, so a same-named call elsewhere in the file resolves to its own target rather than the imported one (#5436, thanks @ayushcodes10).
+- Fix: **watch** the watcher test helper replaces the clock in `watch.py` only, instead of patching the process-wide `time.sleep`, which had broken the subprocess waits a rebuild performs and made the watch tests flaky under the parallel suite (#5444, thanks @Deepjyoti-Sarmah).
+- Fix: **serve** an IPv6 bind host is bracketed in the printed streamable-HTTP URL (`http://[::1]:8080/mcp`), so the connection URL is valid (#5470, thanks @leninworld).
+- Fix: **cluster** `cohesion_score` is bounded to [0.0, 1.0] on a MultiGraph or DiGraph by counting unique connected node pairs rather than parallel or reciprocal edges, so the density invariant holds (#5459, thanks @Gaurav-meena95).
+- Fix: **export** the Cypher, GraphML and SVG exporters create missing destination parent directories (matching the other exporters), and the Cypher writer is atomic so an interrupted write cannot leave a truncated file (#5450, thanks @Gaurav-meena95).
+- Fix: **export** the Obsidian, canvas, Cypher and SVG exporters tolerate a node whose label is null or non-string instead of crashing (#5457, thanks @Gaurav-meena95).
+
 ## 0.9.119 (2026-11-24)
 
 A fix for a core-install regression in 0.9.118, plus a batch of resolution, extractor, export and performance fixes across ten community pull requests. The Python, Go and COBOL changes alter node/edge output, so the AST cache schema bumps (53 to 55) and those languages re-extract on the first build after upgrading; the other fixes need no rebuild.
