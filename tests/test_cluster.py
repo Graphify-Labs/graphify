@@ -339,3 +339,40 @@ def test_cache_fails_open_on_corrupt_sidecar(tmp_path):
     assert out == fresh  # recomputed, and valid cache rewritten
     # the corrupt file was replaced by a valid one
     json.loads((tmp_path / ".graphify_partition_cache.json").read_text())
+
+
+def test_score_all_single_pass_parity_and_no_subgraph_allocations(monkeypatch):
+    """score_all must match per-community cohesion_score across Graph/DiGraph/MultiGraph
+    without calling G.subgraph() for partitioned communities."""
+    import pytest
+
+    def _build(cls):
+        G = cls()
+        G.add_edges_from([("a", "b"), ("b", "c"), ("a", "a"), ("c", "d")])
+        G.add_node("solo")
+        return G
+
+    for cls in (nx.Graph, nx.DiGraph, nx.MultiGraph):
+        G = _build(cls)
+        if cls is nx.DiGraph:
+            G.add_edge("b", "a")  # reciprocal edge
+        elif cls is nx.MultiGraph:
+            G.add_edge("a", "b")  # parallel edge
+        communities = {0: ["a", "b", "c"], 1: ["d"], 2: ["solo"]}
+        expected = {cid: cohesion_score(G, nodes) for cid, nodes in communities.items()}
+
+        def _forbid_subgraph(_nodes):
+            raise AssertionError("score_all must not allocate SubGraphView for partitions")
+
+        monkeypatch.setattr(G, "subgraph", _forbid_subgraph)
+        got = score_all(G, communities)
+        for cid in communities:
+            assert got[cid] == pytest.approx(expected[cid])
+
+    # Overlapping communities fall back to per-community cohesion_score cleanly.
+    G = _build(nx.Graph)
+    overlapping = {0: ["a", "b", "c"], 1: ["b", "c", "d"]}
+    assert score_all(G, overlapping) == {
+        cid: cohesion_score(G, nodes) for cid, nodes in overlapping.items()
+    }
+    assert score_all(G, {}) == {}
