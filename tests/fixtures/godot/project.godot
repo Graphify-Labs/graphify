@@ -1,0 +1,21 @@
+; Engine configuration file.
+
+config_version=5
+
+[application]
+
+config/name="Probe"
+run/main_scene="res://scenes/main.tscn"
+
+[autoload]
+
+GameState="*res://autoload/game_state.gd"
+Hud="*res://autoload/hud.tscn"
+Probe="*uid://bprobe1234"
+
+[input]
+
+move_left={
+"deadzone": 0.5,
+"events": []
+}
