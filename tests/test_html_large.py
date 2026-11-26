@@ -73,10 +73,62 @@ def _canvas_html(tmp_path, n: int = 6001) -> str:
 
 
 def _js_function(html: str, name: str) -> str:
-    """Return the source of one top-level function in the Canvas script."""
-    start = html.index(f"function {name}(")
-    end = html.index("\n  function ", start + 1)
-    return html[start:end]
+    """Return the source of one function in the Canvas script.
+
+    Matches the closing brace instead of scanning for the next ``function``
+    declaration, so a function at the end of the script (or with different
+    indentation) is still extracted.
+    """
+    match = re.search(rf"(?m)^[ \t]*function\s+{re.escape(name)}\s*\(", html)
+    assert match, f"function {name} not found"
+    i = html.index("{", match.end())
+    depth = 0
+    quote = None
+    while i < len(html):
+        char = html[i]
+        if quote:
+            if char == "\\":
+                i += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "'\"`":
+            quote = char
+        elif char == "/" and html.startswith("//", i):
+            newline = html.find("\n", i + 2)
+            i = len(html) if newline < 0 else newline
+            continue
+        elif char == "/" and html.startswith("/*", i):
+            end = html.find("*/", i + 2)
+            i = len(html) if end < 0 else end + 1
+            continue
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return html[match.start():i + 1]
+        i += 1
+    raise AssertionError(f"function {name} is unterminated")
+
+
+def _run_node(script: str) -> str:
+    """Execute a Node.js harness and return stdout, skipping without node."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    proc = subprocess.run(
+        [node, "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert proc.returncode == 0, f"Node script failed ({proc.returncode}): {proc.stderr}"
+    return proc.stdout
 
 
 def test_large_graph_uses_canvas_binary_renderer(tmp_path):
@@ -152,6 +204,146 @@ def test_large_graph_exposes_edge_relations(tmp_path):
     # The inspected node's edge relations are also drawn on the map.
     assert "relations[edgeRelation[e]]" in _js_function(html, "drawFocusedEdgeLabels")
     assert "drawFocusedEdgeLabels(" in _js_function(html, "drawOverlay")
+
+
+def test_large_graph_relation_display_executes(tmp_path):
+    """Execute the inspector and map-label code so a broken relation display
+    is caught even when the source still mentions ``relations``."""
+    html = _canvas_html(tmp_path)
+    harness = (
+        """
+function mockEl(tag) {
+  return {
+    tag, className: '', textContent: '', title: '', style: {}, dataset: {}, children: [],
+    append(...kids) { this.children.push(...kids); },
+    appendChild(kid) { this.children.push(kid); },
+    replaceChildren() { this.children.length = 0; },
+  };
+}
+const infoBox = mockEl('div');
+const document = { createElement: mockEl, createTextNode: (text) => ({ text: String(text) }) };
+const $ = (id) => (id === 'info-content' ? infoBox : null);
+const labels = ['Alpha', 'Beta'];
+const fileTypes = ['code'];
+const fileTypeIds = [0, 0];
+const nameByCid = new Map([[0, 'Core']]);
+const community = [0, 0];
+const sources = ['src/a.py'];
+const sourceIds = [0, 0];
+const degree = [1, 1];
+const learning = [0, 0];
+const adj = [[0], [0]];
+const edgeSrc = [0];
+const edgeTgt = [1];
+const edgeRelation = [1];
+const relations = ['', 'calls'];
+const colorByCid = new Map([[0, '#123456']]);
+"""
+        + _js_function(html, "showInfo")
+        + """
+showInfo(0);
+const flat = (el) => {
+  if (el == null) return '';
+  if (typeof el === 'string') return el;
+  if (Object.prototype.hasOwnProperty.call(el, 'text')) return el.text;
+  if (el.textContent) return el.textContent;
+  return (el.children || []).map(flat).join('');
+};
+const rows = infoBox.children.map(flat);
+
+const drawn = [];
+const octx = {
+  font: '', textAlign: '', textBaseline: '', globalAlpha: 1, fillStyle: '',
+  measureText: (text) => ({ width: text.length * 6 }),
+  fillRect() {},
+  fillText: (text) => { drawn.push(text); },
+};
+const overlay = { clientWidth: 800, clientHeight: 600 };
+const camera = { x: 0, y: 0, scale: 1 };
+const canvas = { clientWidth: 800, clientHeight: 600 };
+const pos = [0, 0, 200, 0];
+const screenX = (x) => (x - camera.x) * camera.scale + canvas.clientWidth / 2;
+const screenY = (y) => (y - camera.y) * camera.scale + canvas.clientHeight / 2;
+const hiddenCommunities = new Set();
+"""
+        + _js_function(html, "drawFocusedEdgeLabels")
+        + """
+drawFocusedEdgeLabels({ bg: '#fff', label: '#000' }, 0);
+console.log(JSON.stringify({ rows, drawn }));
+"""
+    )
+    result = json.loads(_run_node(harness))
+    assert any("\u2192 calls" in row for row in result["rows"]), result["rows"]
+    assert result["drawn"] == ["calls"]
+
+
+def test_stale_learning_rings_are_desaturated_and_dashed(tmp_path):
+    """Execute drawNodes: stale preferred/contested annotations must land in
+    the gray dashed batch, never the current green/amber one."""
+    html = _canvas_html(tmp_path)
+    harness = (
+        """
+const strokes = [];
+const ctx = {
+  fillStyle: '', strokeStyle: '', lineWidth: 0, globalAlpha: 1, dash: [], arcs: 0,
+  beginPath() { this.dash = []; this.arcs = 0; },
+  rect() { this.arcs += 1; },
+  moveTo() {},
+  arc() { this.arcs += 1; },
+  fill() {},
+  stroke() {
+    strokes.push({ style: this.strokeStyle, width: this.lineWidth, dash: this.dash.slice(), arcs: this.arcs });
+  },
+  setLineDash(dash) { this.dash = dash.slice(); },
+};
+const canvas = { clientWidth: 800, clientHeight: 600 };
+const overlay = { clientWidth: 800, clientHeight: 600 };
+const camera = { x: 0, y: 0, scale: 1 };
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const screenX = (x) => (x - camera.x) * camera.scale + canvas.clientWidth / 2;
+const screenY = (y) => (y - camera.y) * camera.scale + canvas.clientHeight / 2;
+const worldX = (sx) => (sx - canvas.clientWidth / 2) / camera.scale + camera.x;
+const worldY = (sy) => (sy - canvas.clientHeight / 2) / camera.scale + camera.y;
+const nodeRadius = () => 5;
+const pos = [0, 0, 20, 0, 0, 20, 20, 20];
+const community = [0, 0, 0, 0];
+const learning = [1, 2, 5, 6];
+const n = 4;
+const TAU = Math.PI * 2;
+const membersByCommunity = new Map([[0, [0, 1, 2, 3]]]);
+const hiddenCommunities = new Set();
+const colorByCid = new Map([[0, '#123456']]);
+"""
+        + _js_function(html, "drawNodes")
+        + """
+drawNodes({});
+console.log(JSON.stringify(strokes));
+"""
+    )
+    strokes = json.loads(_run_node(harness))
+    assert len(strokes) == 3
+    by_style = {item["style"]: item for item in strokes}
+    assert by_style["#22c55e"]["arcs"] == 1
+    assert by_style["#22c55e"]["dash"] == []
+    assert by_style["#f59e0b"]["arcs"] == 1
+    assert by_style["#f59e0b"]["dash"] == []
+    assert by_style["#9ca3af"]["arcs"] == 2
+    assert by_style["#9ca3af"]["dash"] == [4, 4]
+
+
+def test_js_function_handles_last_function(tmp_path):
+    """The helper must not depend on another function following the target."""
+    html = _canvas_html(tmp_path)
+    source = _js_function(html, "applyTheme")
+    assert source.lstrip().startswith("function applyTheme(")
+    assert source.rstrip().endswith("}")
+    assert "requestDraw" in source
+
+
+def test_js_function_scans_balanced_braces():
+    """Braces inside strings and comments must not end the function early."""
+    fake = "    function last(a) {\n      if (a) { return '}'; }\n      // }\n    }"
+    assert _js_function(fake, "last").strip() == fake.strip()
 
 
 def test_to_html_without_node_limit_raises_above_default(tmp_path, monkeypatch):

@@ -672,15 +672,20 @@ _LARGE_SCRIPT = r"""
     }
 
     // Learning rings are sparse (only annotated nodes), so a second pass is
-    // cheaper than carrying the state into the batched fill above.
+    // cheaper than carrying the state into the batched fill above.  Stale
+    // annotations use the same desaturated dashed ring as the vis-network
+    // renderer so an outdated lesson cannot look like a current one.
     if (z >= 0.3) {
-      for (let pass = 0; pass < 2; pass++) {
+      for (let pass = 0; pass < 3; pass++) {
         ctx.beginPath();
         let found = false;
         for (let i = 0; i < n; i++) {
           const code = learning[i];
           const status = code & 3;
-          if (status === 0 || (pass === 0 ? status !== 1 : status !== 2)) continue;
+          if (status !== 1 && status !== 2) continue;
+          const stale = (code & 4) !== 0;
+          const group = stale ? 2 : status - 1;
+          if (group !== pass) continue;
           if (hiddenCommunities.has(community[i])) continue;
           const x = pos[i * 2], y = pos[i * 2 + 1];
           if (x < minWorldX || x > maxWorldX || y < minWorldY || y > maxWorldY) continue;
@@ -691,9 +696,17 @@ _LARGE_SCRIPT = r"""
           found = true;
         }
         if (found) {
-          ctx.strokeStyle = pass === 0 ? '#22c55e' : '#f59e0b';
-          ctx.lineWidth = 1.5;
+          if (pass === 2) {
+            ctx.strokeStyle = '#9ca3af';
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([4, 4]);
+          } else {
+            ctx.strokeStyle = pass === 0 ? '#22c55e' : '#f59e0b';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([]);
+          }
           ctx.stroke();
+          ctx.setLineDash([]);
         }
       }
     }
