@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 import networkx as nx
 
-from graphify.build import edge_datas
+from graphify.build import _is_ast_tier, _is_file_node_label, edge_datas
+from graphify.extractors.csharp import bare_csharp_method_label
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
 # graphs. Excluded from god-node ranking so they don't displace real abstractions
@@ -81,15 +82,12 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
     # File-level hub: label matches the actual source filename — bare basename OR
     # the directory-qualified form the #2032 disambiguation pass may assign.
     source_file = attrs.get("source_file", "")
-    if source_file:
-        from graphify.build import _is_file_node_label
-        if _is_file_node_label(label, source_file):
-            return True
+    if source_file and _is_file_node_label(label, source_file):
+        return True
     # Method stub: AST extractor labels methods as '.method_name()'; C# methods
     # carry their owner for display ('Owner.method_name()', #4883).
     if label.startswith(".") and label.endswith("()"):
         return True
-    from graphify.extractors.csharp import bare_csharp_method_label
     if bare_csharp_method_label(label, source_file) is not None:
         return True
     # Module-level function stub: labeled 'function_name()' - only has a contains edge
@@ -210,7 +208,6 @@ def _is_contains_only_ast_node(G: nx.Graph, node_id: str) -> bool:
     """AST declarations (type aliases, enum members, local consts, JSON keys)
     whose only edge is the structural `contains` from their declaring file are
     working as designed, not documentation gaps (#4205)."""
-    from graphify.build import _is_ast_tier
     attrs = G.nodes[node_id]
     if not _is_ast_tier(attrs):
         return False
@@ -656,7 +653,7 @@ def suggest_questions(
     # 4. Isolated or weakly-connected nodes → exploration questions
     isolated = [
         n for n in G.nodes()
-        if G.degree(n) <= 1
+        if degree[n] <= 1
         and not _is_file_node(G, n)
         and not _is_concept_node(G, n)
         and not _is_contains_only_ast_node(G, n)
@@ -664,8 +661,8 @@ def suggest_questions(
     ]
     if isolated:
         has_semantic_layer = any(
-            G.nodes[n].get("file_type") in ("document", "paper", "image")
-            for n in G.nodes()
+            d.get("file_type") in ("document", "paper", "image")
+            for _, d in G.nodes(data=True)
         )
         reason = (
             "possible documentation gaps or missing edges" if has_semantic_layer
@@ -681,8 +678,10 @@ def suggest_questions(
     # 5. Low-cohesion communities → structural questions
     from .cluster import cohesion_score
     for cid, nodes in communities.items():
+        if len(nodes) < 5:
+            continue
         score = cohesion_score(G, nodes)
-        if score < 0.15 and len(nodes) >= 5:
+        if score < 0.15:
             label = community_labels.get(cid, f"Community {cid}")
             questions.append({
                 "type": "low_cohesion",

@@ -233,6 +233,34 @@ def test_effective_suffix_is_the_real_one_until_a_project_says_otherwise():
     assert effective_suffix(Path("x/a.F90")) == ".F90"
 
 
+@pytest.mark.parametrize("raw", [
+    "", ".", "..", "...", ".gitignore", ".tar.gz", "..py", "foo.",
+    "foo..py", "a.b/foo", "a/b/foo.py", "a\\b\\foo.cs", "dir\\.inc",
+    "a/b.py/", "a/b.py/.", "C:foo.py", "foo.bar.baz", "a/b/.env",
+    "a/b/", "foo", ".a.", "..a",
+])
+def test_effective_suffix_and_cache_salt_str_matches_path(raw):
+    expected = Path(raw).suffix
+    assert effective_suffix(raw) == expected
+    assert effective_suffix(Path(raw)) == expected
+
+    set_language_overrides({".py": ".pyi", ".gz": ".tar", ".inc": ".php"})
+    try:
+        expected_override = {".py": ".pyi", ".gz": ".tar", ".inc": ".php"}.get(
+            expected.lower(), expected
+        )
+        assert effective_suffix(raw) == expected_override
+        expected_salt = (
+            f"language={expected_override}"
+            if expected.lower() in (".py", ".gz", ".inc")
+            else None
+        )
+        assert cache_salt(raw) == expected_salt
+        assert cache_salt(Path(raw)) == expected_salt
+    finally:
+        set_language_overrides(None)
+
+
 def test_dispatch_goes_to_the_declared_extractor():
     assert _get_extractor(Path("a.inc")) is extract_pascal
     set_language_overrides({".inc": ".php"})

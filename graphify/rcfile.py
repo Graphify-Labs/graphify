@@ -31,9 +31,12 @@ typos from silently disabling classification.
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
+
+_PY314_SUFFIX = sys.version_info >= (3, 14)
 
 RC_FILENAME = ".graphifyrc"
 
@@ -258,6 +261,32 @@ def activate_language_overrides(root: Path) -> dict[str, str]:
     return get_language_overrides()
 
 
+def _str_suffix(path: str) -> str:
+    """Return the suffix of a string path matching ``Path(path).suffix`` without Path allocation."""
+    if not path or "." not in path:
+        return ""
+    if os.altsep:
+        if path.endswith((os.sep, os.altsep)):
+            return Path(path).suffix
+        sep_idx = max(path.rfind(os.sep), path.rfind(os.altsep))
+    else:
+        if path.endswith(os.sep):
+            return Path(path).suffix
+        sep_idx = path.rfind(os.sep)
+    name = path[sep_idx + 1:] if sep_idx >= 0 else path
+    if not name or name == "." or name == "..":
+        return Path(path).suffix
+    if _PY314_SUFFIX:
+        stripped = name.lstrip(".")
+        if not stripped or "." not in stripped:
+            return ""
+        return "." + stripped.rpartition(".")[2]
+    dot = name.rfind(".")
+    if dot <= 0 or dot == len(name) - 1:
+        return ""
+    return name[dot:]
+
+
 def effective_suffix(path: Path | str) -> str:
     """The suffix graphify should treat ``path`` as having.
 
@@ -265,7 +294,12 @@ def effective_suffix(path: Path | str) -> str:
     the real suffix untouched (case preserved, so callers that distinguish
     ``.F90`` from ``.f90`` keep doing so).
     """
-    suffix = Path(path).suffix
+    if isinstance(path, str):
+        suffix = _str_suffix(path)
+    elif isinstance(path, Path):
+        suffix = path.suffix
+    else:
+        suffix = Path(path).suffix
     active = _active()
     if not active:
         return suffix
@@ -282,5 +316,11 @@ def cache_salt(path: Path | str) -> str | None:
     active = _active()
     if not active:
         return None
-    target = active.get(Path(path).suffix.lower())
+    if isinstance(path, str):
+        suffix = _str_suffix(path)
+    elif isinstance(path, Path):
+        suffix = path.suffix
+    else:
+        suffix = Path(path).suffix
+    target = active.get(suffix.lower())
     return f"language={target}" if target else None

@@ -234,9 +234,11 @@ def bare_csharp_method_label(label: object, source_file: object) -> str | None:
     dot (an explicit interface implementation is still labeled ``.Build()``),
     so the split is unambiguous.
     """
-    if not _is_cs_file(source_file) or not isinstance(label, str):
+    if not isinstance(label, str) or not label.endswith("()"):
         return None
-    if not label.endswith("()"):
+    if "." not in label[:-2]:
+        return None
+    if not _is_cs_file(source_file):
         return None
     owner, dot, name = label[:-2].rpartition(".")
     if not dot or not _is_plain_csharp_name(name):

@@ -930,3 +930,44 @@ def test_betweenness_matches_networkx_bit_for_bit(G, k):
 
     expected = nx.betweenness_centrality(G, k=k, seed=42)
     assert list(_betweenness_centrality(G, k, seed=42).items()) == list(expected.items())
+
+
+def test_bare_csharp_method_label_short_circuits_non_method_labels(monkeypatch):
+    from graphify.extractors import csharp
+
+    called = False
+
+    def _spy(value):
+        nonlocal called
+        called = True
+        return False
+
+    monkeypatch.setattr(csharp, "_is_cs_file", _spy)
+    assert csharp.bare_csharp_method_label("MyClass", "a.cs") is None
+    assert csharp.bare_csharp_method_label("plain_func()", "a.cs") is None
+    assert csharp.bare_csharp_method_label(None, "a.cs") is None
+    assert not called
+
+
+def test_suggest_questions_skips_cohesion_for_small_communities(monkeypatch):
+    import graphify.cluster as cluster_mod
+
+    G = nx.Graph()
+    for i in range(6):
+        G.add_node(f"big_{i}", label=f"Big{i}", file_type="code", source_file="a.py")
+    G.add_edge("big_0", "big_1", relation="calls", confidence="EXTRACTED")
+    for i in range(3):
+        G.add_node(f"small_{i}", label=f"Small{i}", file_type="code", source_file="b.py")
+
+    seen_communities: list[int] = []
+    orig_cohesion = cluster_mod.cohesion_score
+
+    def _spy_cohesion(graph, nodes):
+        seen_communities.append(len(nodes))
+        return orig_cohesion(graph, nodes)
+
+    monkeypatch.setattr(cluster_mod, "cohesion_score", _spy_cohesion)
+    communities = {0: [f"big_{i}" for i in range(6)], 1: [f"small_{i}" for i in range(3)]}
+    qs = suggest_questions(G, communities, {0: "BigComm", 1: "SmallComm"}, top_n=10)
+    assert seen_communities == [6]
+    assert any(q["type"] == "low_cohesion" and "BigComm" in q["question"] for q in qs)
