@@ -266,7 +266,7 @@ def cases_b(root: Path) -> list[Case]:
         rel = _rel(root, p)
         text = mask_inactive(_read(p))
         ln = _Lines(text)
-        for m in re.finditer(r"\b(?:function|class)\s+([A-Za-z_$][\w$]*)", text):
+        for m in re.finditer(r"\b(?:function|class)\s+(?!extends\b)([A-Za-z_$][\w$]*)", text):
             out.append((rel, ln.of(m.start()), m.group(1)))
     return out
 

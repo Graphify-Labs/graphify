@@ -202,6 +202,14 @@ def test_category_b_selectors_skip_pseudo_at_rules_comments_and_declarations(tmp
     assert keys == [".a", "#b", ".c", ".d"]
 
 
+def test_category_b_anonymous_class_expression_is_not_a_named_case(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/a.js.liquid": "var A = class extends Base {};\nclass Named extends Base {}\nfunction go() {}\n",
+    })
+    keys = [k for _f, _l, k in gate.cases_b(root)]
+    assert keys == ["Named", "go"]
+
+
 # ------------------------------------------------------------- category (f)
 
 def test_category_f_without_metafields_json_every_use_is_a_miss(tmp_path):
