@@ -5043,10 +5043,18 @@ def dispatch_command(cmd: str) -> None:
         # subtree, I/O error) yields a legitimately smaller graph that must not
         # be force-written over a complete one — same failure class as a crashed
         # pass. detect()/detect_incremental() already record these; consume them.
-        if detection.get("walk_errors"):
+        _ast_pass_incomplete = bool(detection.get("walk_errors"))
+        if _ast_pass_incomplete:
             _extraction_incomplete = True
 
-        if incremental_mode:
+        _refresh_js_resolution = bool(detection.get("resolution_inputs_changed"))
+        if _refresh_js_resolution:
+            # An unchanged importer may resolve differently after a resolver
+            # input changes. Re-resolve the code corpus without stale context,
+            # while still merging the existing graph and its semantic layer.
+            print("[graphify extract] JS/TS resolution inputs changed; re-extracting all code.")
+            code_files = [Path(p) for p in files_by_type.get("code", [])]
+        elif incremental_mode:
             from graphify.extractors.terraform import refresh_terraform_paths
             code_files = refresh_terraform_paths(
                 code_files, [Path(p) for p in files_by_type.get("code", [])],
@@ -5066,6 +5074,8 @@ def dispatch_command(cmd: str) -> None:
             ast_kwargs: dict = {"cache_root": out_root, "root": target}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
+            if _refresh_js_resolution or force:
+                ast_kwargs["refresh_astro_cache"] = True
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
             # incremental re-scan extracts only the changed code files, so the
             # cross-file resolvers cannot see a callee living in an unchanged
@@ -5077,7 +5087,7 @@ def dispatch_command(cmd: str) -> None:
             # live corpus — never a re-extracted, deleted, or excluded file, so
             # stale symbols cannot resurrect. Fails open (changed-batch-only
             # resolution, the pre-fix behavior) on an unreadable graph.
-            if incremental_mode and existing_graph_path.exists():
+            if incremental_mode and not _refresh_js_resolution and existing_graph_path.exists():
                 _ctx_nodes: list[dict] = []
                 _ctx_edges: list[dict] = []
                 try:
@@ -5269,6 +5279,7 @@ def dispatch_command(cmd: str) -> None:
                 if not cli_allow_partial:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
+                _ast_pass_incomplete = True
                 _extraction_incomplete = True  # the whole AST pass was lost
             # Only extract() reads the resolution context; free it before the
             # semantic pass and graph build.
@@ -5674,6 +5685,22 @@ def dispatch_command(cmd: str) -> None:
             {f for _fl in files_by_type.values() for f in _fl}
             if has_path else None
         )
+        _resolution_inputs = detection.get("resolution_inputs", [])
+        if _scan_corpus is not None:
+            _scan_corpus.update(_resolution_inputs)
+
+        def _save_extract_manifest() -> None:
+            if _refresh_js_resolution and (_ast_pass_incomplete or _failed_ast_sources):
+                # Retrying only a failed callee would not repair edges of its
+                # unchanged callers. Keep the previous resolver snapshot so
+                # the full refresh retries even for a deleted input.
+                return
+            _save_manifest(
+                {**_manifest_files, "resolution_inputs": _resolution_inputs},
+                manifest_path=str(manifest_path), kind="both", root=target,
+                scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic,
+                clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None,
+            )
 
         def _invalidate_file_manifest_for_db_graph() -> None:
             if has_path:
@@ -5702,6 +5729,7 @@ def dispatch_command(cmd: str) -> None:
             )
             if (
                 incremental_mode
+                and not (_refresh_js_resolution and _ast_pass_incomplete)
                 and not code_files
                 and not semantic_files
                 and not deleted_files
@@ -5877,7 +5905,7 @@ def dispatch_command(cmd: str) -> None:
                 )
             try:
                 if has_path:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
+                    _save_extract_manifest()
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -6099,7 +6127,7 @@ def dispatch_command(cmd: str) -> None:
         _wja(analysis_path, analysis, indent=2)
         try:
             if has_path:
-                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
+                _save_extract_manifest()
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 

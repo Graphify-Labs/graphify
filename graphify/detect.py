@@ -2351,12 +2351,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         safe_dirs.append(d)
                     dirnames[:] = safe_dirs
             for fname in filenames:
-                if fname in _SKIP_FILES:
-                    if is_resolution_input(fname):
-                        # Not corpus input, but a JS/TS resolution input: record
-                        # it so the no-change gate can compare its content
-                        # (#4740). It stays out of the scan exactly as before.
-                        resolution_inputs.append(str(dp / fname))
+                if fname in _SKIP_FILES and not is_resolution_input(fname):
                     continue
                 p = dp / fname
                 if _is_installed_graphify_file(p):
@@ -2404,6 +2399,11 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
+            continue
+        if p.name in _SKIP_FILES and is_resolution_input(p):
+            # These lockfiles can move JS/TS edges without changing source
+            # bytes. Track admitted files for the manifest, outside the corpus.
+            resolution_inputs.append(str(p))
             continue
         ftype = classify_file(p)
         if not ftype:
@@ -3307,6 +3307,9 @@ def detect_incremental(
     kind="ast": a file is "changed" when its ast_hash is missing or its
         content has changed. Use this for `graphify update`.
 
+    ``resolution_inputs_changed`` signals changes to JS/TS resolution inputs,
+    including lockfiles tracked outside the extraction corpus.
+
     Fast path: mtime unchanged + hash matches → unchanged (free, no disk IO
     beyond stat). Slow path: mtime bumped → compare MD5 against the relevant
     hash field before re-extracting.
@@ -3350,6 +3353,10 @@ def detect_incremental(
         return full
 
     new_files, unchanged_files = classify_manifest_files(full["files"], manifest, kind=kind)
+    resolution_inputs = full.get("resolution_inputs", [])
+    changed_lockfiles, _ = classify_manifest_files(
+        {"resolution_inputs": resolution_inputs}, manifest, kind="ast"
+    )
 
     # Manifest rows that left the corpus, split by disk existence (#1908):
     # a row whose file is gone from DISK is a genuine deletion (its cached
@@ -3367,7 +3374,7 @@ def detect_incremental(
             for flist in full["files"].values()
             for f in flist
         ]
-        + list(full.get("resolution_inputs", [])),
+        + resolution_inputs,
         root=root,
     )
 
@@ -3378,4 +3385,9 @@ def detect_incremental(
     full["new_total"] = new_total
     full["deleted_files"] = deleted_files
     full["excluded_files"] = excluded_files
+    full["resolution_inputs_changed"] = bool(changed_lockfiles["resolution_inputs"]) or any(
+        is_resolution_input(f)
+        for files in (*new_files.values(), deleted_files, excluded_files)
+        for f in files
+    )
     return full
