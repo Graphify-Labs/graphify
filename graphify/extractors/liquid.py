@@ -184,7 +184,7 @@ class _Collector:
                 continue
             self.edges.append({
                 "source": self.file_id, "target": target_id, "target_file": str(block),
-                "relation": "imports", "confidence": "INFERRED", "confidence_score": 0.6,
+                "relation": "imports", "confidence": "INFERRED", "confidence_score": 0.55,
                 "source_file": str(self.path), "source_location": f"L{self.blocks_line}", "weight": 1.0,
             })
 
