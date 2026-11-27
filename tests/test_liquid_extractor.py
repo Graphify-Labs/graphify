@@ -1046,6 +1046,23 @@ def test_custom_element_tag_links_to_its_define(tmp_path):
     assert node["source_file"] == str(root / "assets/el.js") and node["source_location"] == "L3"
 
 
+def test_custom_element_define_inside_js_comments_is_not_a_definition(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/el.js": (
+            "// customElements.define('x-line', class {});\n"
+            "/* customElements.define('x-block', class {});\n"
+            "   customElements.define('x-block2', class {}); */\n"
+            "const u = \"https://example.com/a\"; customElements.define('x-real', class {});\n"
+        ),
+        "sections/s.liquid": (
+            "{% javascript %}\n// customElements.define('x-js', class {});\n{% endjavascript %}\n"
+            "<x-line></x-line><x-block></x-block><x-block2></x-block2><x-js></x-js><x-real></x-real>\n"
+        ),
+    })
+    resolved = {n["label"]: n["source_location"] for _, n in _ce_edges(root, "sections/s.liquid") if n["source_file"].endswith("el.js")}
+    assert resolved == {"<x-real>": "L4"}
+
+
 def test_custom_element_in_comment_schema_and_closing_tag_makes_nothing(tmp_path):
     root = _theme(tmp_path, {
         "assets/el.js": _EL_JS,

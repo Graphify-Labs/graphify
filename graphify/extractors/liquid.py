@@ -1029,6 +1029,29 @@ def _line_numbers(text: str, offsets: list[int], first_line: int = 1) -> list[in
     return lines
 
 
+_JS_NOISE = re.compile(r"""//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`""", re.S)
+
+
+def _blank_js_comments(text: str) -> str:
+    """Blank ``//`` and ``/* */`` comments, keeping offsets and newlines; strings and template literals are untouched."""
+    def repl(m: re.Match) -> str:
+        chunk = m.group(0)
+        return chunk if chunk[0] in "\"'`" else re.sub(r"[^\n]", " ", chunk)
+
+    return _JS_NOISE.sub(repl, text)
+
+
+def _blank_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """``text`` with JS comments blanked inside each ``(begin, stop)`` span only."""
+    out, pos = [], 0
+    for begin, stop in spans:
+        out.append(text[pos:begin])
+        out.append(_blank_js_comments(text[begin:stop]))
+        pos = stop
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _custom_element_defines(root: Path) -> dict[str, tuple[Path, int]]:
     """``{name: (file, line)}`` of every ``customElements.define('x-y', …)`` in the theme's JS.
 
@@ -1053,7 +1076,9 @@ def _custom_element_defines(root: Path) -> dict[str, tuple[Path, int]]:
             for opener in _JAVASCRIPT_OPEN.finditer(text):
                 end = _find_end_tag(text, opener.end(), "endjavascript")
                 spans.append((opener.end(), end[0] if end else len(text)))
+            text = _blank_spans(text, spans)
         else:
+            text = _blank_js_comments(text)
             spans = [(0, len(text))]
         for begin, stop in spans:
             matches = list(_CE_DEFINE.finditer(text, begin, stop))
