@@ -121,7 +121,10 @@ def _suppress_output():
     return contextlib.redirect_stdout(io.StringIO())
 
 
-def _sorted_native_edges(G: nx.Graph) -> list[tuple[str, str, float]] | None:
+def _sorted_native_edges(
+    G: nx.Graph,
+    ambiguous_scale: float = 1.0,
+) -> list[tuple[str, str, float]] | None:
     # A simple graph has one edge per unordered pair. The stable graph inserts
     # nodes and edges in lexical order, so its edge iterator emits precisely
     # these canonical pairs in the same order, including self-loops.
@@ -143,7 +146,10 @@ def _sorted_native_edges(G: nx.Graph) -> list[tuple[str, str, float]] | None:
             return None
         if v < u:
             u, v = v, u
-        edges.append((u, v, float(weight)))
+        w = float(weight)
+        if ambiguous_scale != 1.0 and attrs.get("confidence") == "AMBIGUOUS":
+            w *= ambiguous_scale
+        edges.append((u, v, w))
     edges.sort()
     return edges
 
@@ -153,6 +159,7 @@ def _native_leiden(
     resolution: float,
     *,
     stable_graph: collections.abc.Callable[[], nx.Graph] | None = None,
+    ambiguous_scale: float = 1.0,
 ) -> dict[str, int] | None:
     """Call graspologic_native.leiden() directly, bypassing graspologic's own
     package import.
@@ -180,9 +187,14 @@ def _native_leiden(
         return None
 
     edges = None
-    if stable_graph is not None and type(G) is nx.Graph and all(type(node) is str for node in G):
+    if (
+        stable_graph is not None
+        and not G.is_directed()
+        and not G.is_multigraph()
+        and all(type(node) is str for node in G)
+    ):
         try:
-            edges = _sorted_native_edges(G)
+            edges = _sorted_native_edges(G, ambiguous_scale=ambiguous_scale)
         except (ValueError, OverflowError):
             pass  # Retry with the stable graph's original conversion and validation order.
     id_to_node: dict[str, object] = {}
@@ -250,7 +262,14 @@ def _native_leiden(
     return partition
 
 
-def _stable_partition_graph(G: nx.Graph) -> nx.Graph:
+def _effective_weight(attrs: dict, ambiguous_scale: float) -> float:
+    w = float(attrs.get("weight", 1.0))
+    if ambiguous_scale != 1.0 and attrs.get("confidence") == "AMBIGUOUS":
+        w *= ambiguous_scale
+    return w
+
+
+def _stable_partition_graph(G: nx.Graph, ambiguous_scale: float = 1.0) -> nx.Graph:
     stable = nx.Graph()
     stable.add_nodes_from(sorted(G.nodes(), key=str))
     # Canonicalise the endpoint pair before sorting. On an undirected graph the
@@ -275,15 +294,28 @@ def _stable_partition_graph(G: nx.Graph) -> nx.Graph:
             # same ordering as the former json.dumps(row[2], sort_keys=True) of
             # the whole attr dict, without re-serialising every edge in pure
             # Python ahead of the fast native Leiden call.
-            float(row[2].get("weight", 1.0)),
+            _effective_weight(row[2], ambiguous_scale),
         ),
     )
-    for src, tgt, attrs in edge_rows:
-        stable.add_edge(src, tgt, **attrs)
+    if ambiguous_scale == 1.0:
+        for src, tgt, attrs in edge_rows:
+            stable.add_edge(src, tgt, **attrs)
+    else:
+        for src, tgt, attrs in edge_rows:
+            if attrs.get("confidence") == "AMBIGUOUS":
+                scaled_attrs = dict(attrs)
+                scaled_attrs["weight"] = _effective_weight(attrs, ambiguous_scale)
+                stable.add_edge(src, tgt, **scaled_attrs)
+            else:
+                stable.add_edge(src, tgt, **attrs)
     return stable
 
 
-def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
+def _partition(
+    G: nx.Graph,
+    resolution: float = 1.0,
+    ambiguous_scale: float = 1.0,
+) -> dict[str, int]:
     """Run community detection. Returns {node_id: community_id}.
 
     Tries Leiden (graspologic_native directly, then graspologic) first — best
@@ -301,10 +333,15 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     def get_stable_graph() -> nx.Graph:
         nonlocal stable
         if stable is None:
-            stable = _stable_partition_graph(G)
+            stable = _stable_partition_graph(G, ambiguous_scale=ambiguous_scale)
         return stable
 
-    native_result = _native_leiden(G, resolution, stable_graph=get_stable_graph)
+    native_result = _native_leiden(
+        G,
+        resolution,
+        stable_graph=get_stable_graph,
+        ambiguous_scale=ambiguous_scale,
+    )
     if native_result is not None:
         return native_result
 
@@ -478,15 +515,6 @@ def cluster(
         except Exception:
             _cache_path = None
 
-    if ambiguous_scale != 1.0 and any(
-        d.get("confidence") == "AMBIGUOUS" for _, _, d in G.edges(data=True)
-    ):
-        G = G.copy()
-        for u, v, d in G.edges(data=True):
-            if d.get("confidence") == "AMBIGUOUS":
-                base = float(d.get("weight", 1.0))
-                d["weight"] = base * ambiguous_scale
-
     # Compute hub exclusion set before removing anything so degree is based on full graph
     hub_nodes: set[str] = set()
     if exclude_hubs_percentile is not None:
@@ -521,7 +549,7 @@ def cluster(
 
     raw: dict[int, list[str]] = {}
     if connected.number_of_nodes() > 0:
-        partition = _partition(connected, resolution=resolution)
+        partition = _partition(connected, resolution=resolution, ambiguous_scale=ambiguous_scale)
         for node, cid in partition.items():
             raw.setdefault(cid, []).append(node)
 
@@ -566,7 +594,7 @@ def cluster(
     final_communities: list[list[str]] = []
     for nodes in raw.values():
         if len(nodes) > max_size:
-            final_communities.extend(_split_community(G, nodes))
+            final_communities.extend(_split_community(G, nodes, ambiguous_scale=ambiguous_scale))
         else:
             final_communities.append(nodes)
 
@@ -575,7 +603,7 @@ def cluster(
     second_pass: list[list[str]] = []
     for nodes in final_communities:
         if len(nodes) >= _COHESION_SPLIT_MIN_SIZE and cohesion_score(G, nodes) < _COHESION_SPLIT_THRESHOLD:
-            splits = _split_community(G, nodes)
+            splits = _split_community(G, nodes, ambiguous_scale=ambiguous_scale)
             second_pass.extend(splits if len(splits) > 1 else [nodes])
         else:
             second_pass.append(nodes)
@@ -601,14 +629,18 @@ def cluster(
     return result
 
 
-def _split_community(G: nx.Graph, nodes: list[str]) -> list[list[str]]:
+def _split_community(
+    G: nx.Graph,
+    nodes: list[str],
+    ambiguous_scale: float = 1.0,
+) -> list[list[str]]:
     """Run a second Leiden pass on a community subgraph to split it further."""
     subgraph = G.subgraph(nodes)
     if subgraph.number_of_edges() == 0:
         # No edges - split into individual nodes
         return [[n] for n in sorted(nodes)]
     try:
-        sub_partition = _partition(subgraph)
+        sub_partition = _partition(subgraph, ambiguous_scale=ambiguous_scale)
         sub_communities: dict[int, list[str]] = {}
         for node, cid in sub_partition.items():
             sub_communities.setdefault(cid, []).append(node)
