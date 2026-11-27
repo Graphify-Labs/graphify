@@ -1,194 +1,247 @@
-"""Tests for semantically_similar_to edge support."""
-import networkx as nx
+"""Tests for cross-file semantic similarity reconciliation (#3948)."""
+from __future__ import annotations
+
 import pytest
-from graphify.build import build_from_json
-from graphify.analyze import surprising_connections, _surprise_score
-from graphify.report import generate
+
+from graphify.semantic_similarity import (
+    _node_text,
+    _tokenize,
+    reconcile_semantic_similarity,
+)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def test_tokenize_filters_stop_words_and_short_tokens():
+    text = "The quick brown fox jumps over the lazy dog and 123 rules"
+    tokens = _tokenize(text)
+    assert "the" not in tokens
+    assert "and" not in tokens
+    assert "123" not in tokens
+    assert "quick" in tokens
+    assert "brown" in tokens
+    assert "rules" in tokens
 
-def _make_extraction_with_semantic_edge():
-    """Two nodes in separate files connected by a semantically_similar_to edge."""
-    return {
-        "nodes": [
-            {"id": "a_validate_input", "label": "validate_input", "file_type": "code",
-             "source_file": "auth/validators.py", "source_location": "L5"},
-            {"id": "b_check_input", "label": "check_input", "file_type": "code",
-             "source_file": "api/checks.py", "source_location": "L12"},
-        ],
-        "edges": [
-            {
-                "source": "a_validate_input",
-                "target": "b_check_input",
-                "relation": "semantically_similar_to",
-                "confidence": "INFERRED",
-                "confidence_score": 0.82,
-                "source_file": "auth/validators.py",
-                "source_location": None,
-                "weight": 0.82,
-            }
-        ],
-        "input_tokens": 100,
-        "output_tokens": 50,
+
+def test_node_text_aggregates_rationale_and_label():
+    node = {
+        "id": "concept_a",
+        "label": "Authentication Invariant",
+        "rationale": "Always verify cryptographic signatures before state mutation",
+        "file_type": "rationale",
     }
+    text = _node_text(node)
+    assert "Always verify cryptographic signatures" in text
+    assert "Authentication Invariant" in text
 
 
-def _make_graph_with_semantic_edge():
-    return build_from_json(_make_extraction_with_semantic_edge())
-
-
-def _make_two_edge_graph():
-    """Graph with one semantically_similar_to edge and one references edge, both cross-file."""
-    G = nx.Graph()
-    for nid, label, src in [
-        ("a", "ValidateInput", "auth/validators.py"),
-        ("b", "CheckInput", "api/checks.py"),
-        ("c", "LoadConfig", "config/loader.py"),
-        ("d", "ReadConfig", "utils/reader.py"),
-    ]:
-        G.add_node(nid, label=label, source_file=src, file_type="code")
-    # semantically_similar_to edge
-    G.add_edge("a", "b", relation="semantically_similar_to", confidence="INFERRED",
-               confidence_score=0.82, source_file="auth/validators.py", weight=0.82,
-               _src="a", _tgt="b")
-    # plain references edge (same confidence tier)
-    G.add_edge("c", "d", relation="references", confidence="INFERRED",
-               confidence_score=0.7, source_file="config/loader.py", weight=0.7,
-               _src="c", _tgt="d")
-    return G
-
-
-# ---------------------------------------------------------------------------
-# Test 1: semantically_similar_to passes through build_from_json without being dropped
-# ---------------------------------------------------------------------------
-
-def test_semantic_edge_survives_build_from_json():
-    G = _make_graph_with_semantic_edge()
-    assert G.number_of_edges() == 1
-    u, v, data = next(iter(G.edges(data=True)))
-    assert data["relation"] == "semantically_similar_to"
-
-
-def test_semantic_edge_nodes_present():
-    G = _make_graph_with_semantic_edge()
-    assert "a_validate_input" in G.nodes
-    assert "b_check_input" in G.nodes
-
-
-# ---------------------------------------------------------------------------
-# Test 2: confidence_score is preserved for semantically_similar_to edges
-# ---------------------------------------------------------------------------
-
-def test_semantic_edge_confidence_score_preserved():
-    G = _make_graph_with_semantic_edge()
-    u, v, data = next(iter(G.edges(data=True)))
-    assert data.get("confidence_score") == pytest.approx(0.82)
-    assert data.get("confidence") == "INFERRED"
-
-
-# ---------------------------------------------------------------------------
-# Test 3: surprising_connections scores semantically_similar_to edges higher
-#         than references edges with the same community membership
-# ---------------------------------------------------------------------------
-
-def test_semantic_edge_scores_higher_than_references():
-    G = _make_two_edge_graph()
-    communities = {0: ["a", "b"], 1: ["c", "d"]}
-    node_community = {"a": 0, "b": 0, "c": 1, "d": 1}
-
-    score_sem, reasons_sem = _surprise_score(
-        G, "a", "b", G.edges["a", "b"], node_community,
-        "auth/validators.py", "api/checks.py"
-    )
-    score_ref, _ = _surprise_score(
-        G, "c", "d", G.edges["c", "d"], node_community,
-        "config/loader.py", "utils/reader.py"
-    )
-    assert score_sem > score_ref
-
-
-def test_semantic_edge_reason_mentions_similarity():
-    G = _make_two_edge_graph()
-    communities = {0: ["a", "b"], 1: ["c", "d"]}
-    node_community = {"a": 0, "b": 0, "c": 1, "d": 1}
-
-    _, reasons = _surprise_score(
-        G, "a", "b", G.edges["a", "b"], node_community,
-        "auth/validators.py", "api/checks.py"
-    )
-    assert any("similar" in r for r in reasons)
-
-
-# ---------------------------------------------------------------------------
-# Test 4: report renders [semantically similar] tag for these edges
-# ---------------------------------------------------------------------------
-
-def _make_report_with_semantic_surprise():
-    G = _make_graph_with_semantic_edge()
-    communities = {0: ["a_validate_input", "b_check_input"]}
-    cohesion = {0: 0.5}
-    labels = {0: "Validators"}
-    gods = []
-    surprises = [
+def test_reconcile_emits_semantically_similar_to_for_high_cosine():
+    nodes = [
         {
-            "source": "validate_input",
-            "target": "check_input",
-            "relation": "semantically_similar_to",
-            "confidence": "INFERRED",
-            "confidence_score": 0.82,
-            "source_files": ["auth/validators.py", "api/checks.py"],
-            "why": "semantically similar concepts with no structural link",
-        }
+            "id": "doc_a_rule",
+            "label": "Tenant Isolation Policy",
+            "rationale": "Enforce tenant boundary isolation across multi-tenant database transactions and storage shards",
+            "file_type": "rationale",
+            "source_file": "docs/arch/isolation.md",
+        },
+        {
+            "id": "doc_b_rule",
+            "label": "Tenant Isolation Requirement",
+            "rationale": "Enforce tenant boundary isolation across multi-tenant database transactions and storage shards",
+            "file_type": "concept",
+            "source_file": "policies/security.md",
+        },
     ]
-    detection = {"total_files": 2, "total_words": 500, "needs_graph": True, "warning": None}
-    tokens = {"input": 100, "output": 50}
-    return generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    edges = []
+    updated = reconcile_semantic_similarity(nodes, edges, report=False)
+    assert len(updated) == 1
+    edge = updated[0]
+    assert edge["source"] == "doc_a_rule"
+    assert edge["target"] == "doc_b_rule"
+    assert edge["relation"] == "semantically_similar_to"
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] >= 0.85
 
 
-def test_report_renders_semantically_similar_tag():
-    report = _make_report_with_semantic_surprise()
-    assert "[semantically similar]" in report
+def test_reconcile_catches_paraphrased_rule_with_rare_term_overlap():
+    """Concrete case from #3948:
+    Two documents state the same core design rule in different words and
+    surrounded by lengthy document-specific material, diluting global TF-IDF
+    cosine to ~0.37. The shared low-frequency terms allow the second
+    acceptance path to identify the pair.
+    """
+    shared_core = (
+        "asynchronous idempotent retry backoff with jitter and deadletter queue"
+    )
+    long_doc_1 = (
+        f"Billing pipeline settlement batch processing architecture. {shared_core}. "
+        "Contains extensive background regarding invoice lifecycle, chargeback limits, "
+        "reconciliation schedules, and compliance requirements for PCI auditing."
+    )
+    long_doc_2 = (
+        f"Notification dispatch cluster operations manual. {shared_core}. "
+        "Covers gateway failover thresholds, SMS rate-limiting headers, APNs TLS certificates, "
+        "and subscriber webhook circuit breakers."
+    )
 
-
-def test_report_semantic_tag_on_correct_line():
-    report = _make_report_with_semantic_surprise()
-    for line in report.splitlines():
-        if "semantically_similar_to" in line:
-            assert "[semantically similar]" in line
-            break
-    else:
-        pytest.fail("No line with semantically_similar_to found in report")
-
-
-def test_report_no_semantic_tag_for_other_relations():
-    """Non-semantic edges must not get the [semantically similar] tag."""
-    G = nx.Graph()
-    for nid, label, src in [
-        ("x", "Alpha", "repo1/a.py"),
-        ("y", "Beta", "repo2/b.py"),
-    ]:
-        G.add_node(nid, label=label, source_file=src, file_type="code")
-    G.add_edge("x", "y", relation="references", confidence="EXTRACTED",
-               confidence_score=1.0, source_file="repo1/a.py", weight=1.0)
-
-    communities = {0: ["x", "y"]}
-    cohesion = {0: 0.5}
-    labels = {0: "Misc"}
-    gods = []
-    surprises = [
+    nodes = [
         {
-            "source": "Alpha",
-            "target": "Beta",
+            "id": "billing_retry",
+            "label": "Settlement Retry Strategy",
+            "rationale": long_doc_1,
+            "file_type": "rationale",
+            "source_file": "services/billing/SPEC.md",
+        },
+        {
+            "id": "notification_retry",
+            "label": "Dispatch Failure Handling",
+            "rationale": long_doc_2,
+            "file_type": "concept",
+            "source_file": "services/notifications/README.md",
+        },
+    ]
+
+    edges = []
+    # Moderate cosine path with shared rare terms
+    updated = reconcile_semantic_similarity(
+        nodes,
+        edges,
+        cosine_threshold=0.65,
+        moderate_cosine_threshold=0.25,
+        min_rare_terms=4,
+        report=False,
+    )
+    assert len(updated) == 1
+    edge = updated[0]
+    assert edge["relation"] == "semantically_similar_to"
+    assert edge["confidence"] == "INFERRED"
+    assert 0.65 <= edge["confidence_score"] <= 0.95
+
+
+def test_reconcile_skips_same_source_file():
+    nodes = [
+        {
+            "id": "concept_1",
+            "label": "Memory Pool",
+            "rationale": "Fixed size buffer chunk allocator to eliminate heap fragmentation",
+            "file_type": "concept",
+            "source_file": "src/allocator.c",
+        },
+        {
+            "id": "concept_2",
+            "label": "Buffer Pool",
+            "rationale": "Fixed size buffer chunk allocator to eliminate heap fragmentation",
+            "file_type": "rationale",
+            "source_file": "src/allocator.c",
+        },
+    ]
+    edges = []
+    updated = reconcile_semantic_similarity(nodes, edges, report=False)
+    assert len(updated) == 0
+
+
+def test_reconcile_preserves_existing_edge_without_duplicate():
+    nodes = [
+        {
+            "id": "rule_a",
+            "label": "Data Encryption",
+            "rationale": "AES-GCM encryption for all sensitive payloads at rest and in transit",
+            "file_type": "rationale",
+            "source_file": "security/spec.md",
+        },
+        {
+            "id": "rule_b",
+            "label": "Payload Protection",
+            "rationale": "AES-GCM encryption for all sensitive payloads at rest and in transit",
+            "file_type": "concept",
+            "source_file": "storage/spec.md",
+        },
+    ]
+    existing = [
+        {
+            "source": "rule_a",
+            "target": "rule_b",
             "relation": "references",
             "confidence": "EXTRACTED",
-            "source_files": ["repo1/a.py", "repo2/b.py"],
-            "why": "cross-file connection",
+            "confidence_score": 1.0,
         }
     ]
-    detection = {"total_files": 2, "total_words": 200, "needs_graph": True, "warning": None}
-    tokens = {"input": 50, "output": 25}
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
-    assert "[semantically similar]" not in report
+    updated = reconcile_semantic_similarity(nodes, existing, report=False)
+    # Does not duplicate or overwrite the existing edge
+    assert len(updated) == 1
+    assert updated[0]["relation"] == "references"
+
+
+def test_reconcile_idempotence():
+    nodes = [
+        {
+            "id": "rule_a",
+            "label": "Data Encryption",
+            "rationale": "AES-GCM encryption for all sensitive payloads at rest and in transit",
+            "file_type": "rationale",
+            "source_file": "security/spec.md",
+        },
+        {
+            "id": "rule_b",
+            "label": "Payload Protection",
+            "rationale": "AES-GCM encryption for all sensitive payloads at rest and in transit",
+            "file_type": "concept",
+            "source_file": "storage/spec.md",
+        },
+    ]
+    edges = []
+    first_pass = reconcile_semantic_similarity(nodes, edges, report=False)
+    assert len(first_pass) == 1
+
+    second_pass = reconcile_semantic_similarity(nodes, first_pass, report=False)
+    assert len(second_pass) == 1
+
+
+def test_reconcile_ignores_code_nodes_without_rationale():
+    nodes = [
+        {
+            "id": "func_a",
+            "label": "validate_user",
+            "file_type": "code",
+            "source_file": "auth/user.py",
+        },
+        {
+            "id": "func_b",
+            "label": "validate_user",
+            "file_type": "code",
+            "source_file": "api/user.py",
+        },
+    ]
+    edges = []
+    updated = reconcile_semantic_similarity(nodes, edges, report=False)
+    assert len(updated) == 0
+
+
+def test_reconcile_handles_empty_or_trivial():
+    assert reconcile_semantic_similarity([], []) == []
+    assert reconcile_semantic_similarity([{"id": "a"}], []) == []
+    assert reconcile_semantic_similarity([{"id": "a", "label": ""}], []) == []
+
+
+def test_reconcile_with_reporting_output(capsys):
+    nodes = [
+        {
+            "id": "rule_a",
+            "label": "Tenant Isolation Policy",
+            "rationale": "Enforce tenant boundary isolation across multi-tenant database transactions and storage shards",
+            "file_type": "rationale",
+            "source_file": "docs/arch/isolation.md",
+        },
+        {
+            "id": "rule_b",
+            "label": "Tenant Isolation Requirement",
+            "rationale": "Enforce tenant boundary isolation across multi-tenant database transactions and storage shards",
+            "file_type": "concept",
+            "source_file": "policies/security.md",
+        },
+    ]
+    edges = []
+    updated = reconcile_semantic_similarity(nodes, edges, report=True)
+    assert len(updated) == 1
+    captured = capsys.readouterr()
+    assert "[graphify] Reconciled 1 cross-file semantically_similar_to edge(s):" in captured.err
+    assert "rule_a ~ rule_b" in captured.err
+
