@@ -480,7 +480,12 @@ def measure(root: Path, graph: Graph, cats: str) -> dict[str, dict]:
         if cat == "a":
             for file, line, name, expected in cases_a(root):
                 cases.append(1)
-                if any(graph.rel(n.get("source_file")) == expected for n in graph.targets(file, line)):
+                found = graph.targets(file, line)
+                if (root / expected).is_file():
+                    ok = any(graph.rel(n.get("source_file")) == expected for n in found)
+                else:  # a call to a file the theme lacks: Shopify errors at runtime, the graph must say unresolved
+                    ok = any(_is_unresolved(n) and norm(n.get("label")) == expected for n in found)
+                if ok:
                     covered += 1
                 else:
                     failures.append([file, line, f"{name} -> {expected}"])
@@ -575,7 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point; returns the process exit code (0 ok, 1 miss, 2 bad input)."""
     ap = argparse.ArgumentParser(description="Check graph.json covers every active grep case of a theme.")
     ap.add_argument("themes", nargs="+", help="theme root(s) containing graphify-out/graph.json")
-    ap.add_argument("--categories", default=CATEGORIES, help="comma list drawn from a,b,c,d,e,f")
+    ap.add_argument("--categories", default=",".join(CATEGORIES), help="comma list drawn from a,b,c,d,e,f")
     ap.add_argument("--max-failures", type=int, default=5, help="failures listed per category")
     ap.add_argument("--json", action="store_true", help="emit JSON {theme: {category: {covered,total,failures,warnings}}}")
     try:

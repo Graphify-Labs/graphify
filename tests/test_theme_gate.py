@@ -253,3 +253,18 @@ def test_masking_a_megabyte_of_liquid_stays_linear(tmp_path):
     t0 = time.perf_counter()
     gate.mask_inactive(text)
     assert len(text) > 1_000_000 and time.perf_counter() - t0 < 2
+
+
+def test_default_categories_measure_all_six(tmp_path):
+    root = _theme(tmp_path, {"snippets/a.liquid": "plain"})
+    _graph(root, [], [])
+    assert gate.main([str(root)]) == 0
+
+
+def test_category_a_call_to_a_missing_file_needs_an_unresolved_node_with_the_expected_path(tmp_path):
+    root = _theme(tmp_path, {"snippets/page.liquid": "{% render 'ghost' %}"})
+    ghost = {"id": "g", "label": "snippets/ghost.liquid", "source_file": "snippets/page.liquid", "unresolved": True}
+    _graph(root, [_file_node("snippets/page.liquid")], [])
+    assert _measure(root, "a")["a"]["covered"] == 0
+    _graph(root, [_file_node("snippets/page.liquid"), ghost], [_edge("snippets/page.liquid", "g", "snippets/page.liquid", "L1")])
+    assert _measure(root, "a")["a"]["covered"] == 1
