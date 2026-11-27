@@ -596,10 +596,14 @@ def edge_score(edge: dict) -> float:
     return score
 
 
-def mermaid_init(scale: float, direction: str = "LR") -> str:
+DEFAULT_MAX_TEXT_SIZE = 250_000
+
+
+def mermaid_init(scale: float, direction: str = "LR", max_text_size: int = DEFAULT_MAX_TEXT_SIZE) -> str:
     """Return a Mermaid init directive that scales diagrams using Mermaid config."""
     scale = max(0.65, min(float(scale or 1.0), 1.8))
     config = {
+        "maxTextSize": max_text_size,
         "theme": "dark",
         "themeVariables": {
             "fontSize": f"{round(15 * scale, 1)}px",
@@ -1847,6 +1851,7 @@ def write_callflow_html(
 (function () {
   const mermaidConfig = {
     startOnLoad: false,
+    maxTextSize: 250000,
     theme: 'dark',
     securityLevel: 'loose',
     flowchart: { htmlLabels: true, useMaxWidth: true },

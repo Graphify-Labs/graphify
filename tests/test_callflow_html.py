@@ -394,3 +394,36 @@ def test_call_table_rows_without_whole_graph_params_unchanged(tmp_path):
     # semantics other call sites may rely on).
     export_node = [n for n in nodes if n["id"] == "export"]
     assert "External entry" in generate_call_table_rows(export_node, section_edges, "en")
+
+
+def test_mermaid_init_configures_max_text_size():
+    """mermaid_init configures maxTextSize to prevent browser diagram rendering crashes."""
+    import re
+    from graphify.callflow_html import DEFAULT_MAX_TEXT_SIZE, mermaid_init
+
+    # Default init directive
+    init_str = mermaid_init(1.0, "LR")
+    m = re.search(r"%%\{init:\s*(\{.*?\})\s*\}%%", init_str)
+    assert m is not None, "Mermaid init directive not found"
+    config = json.loads(m.group(1))
+    assert config["maxTextSize"] == DEFAULT_MAX_TEXT_SIZE
+    assert config["maxTextSize"] >= 200_000
+
+    # Custom maxTextSize
+    custom_init = mermaid_init(1.0, "TB", max_text_size=500_000)
+    m_custom = re.search(r"%%\{init:\s*(\{.*?\})\s*\}%%", custom_init)
+    assert m_custom is not None
+    assert json.loads(m_custom.group(1))["maxTextSize"] == 500_000
+
+
+def test_write_callflow_html_includes_max_text_size(tmp_path):
+    """Generated callflow HTML includes maxTextSize in both init directives and mermaidConfig."""
+    _make_graphify_out(tmp_path)
+    html_path = write_callflow_html(tmp_path, output="graphify-out/callflow.html", max_sections=2)
+    content = html_path.read_text(encoding="utf-8")
+
+    # In mermaid directive
+    assert '"maxTextSize": 250000' in content or '"maxTextSize":250000' in content
+    # In client-side script configuration
+    assert "maxTextSize: 250000" in content
+
