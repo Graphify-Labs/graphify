@@ -461,3 +461,26 @@ def test_cohesion_score_avoids_subgraph_allocation_across_graph_types(monkeypatc
         # 2 unique pairs ({a,b}, {b,c}) out of 3 possible in {a, b, c}
         assert cohesion_score(G, ["a", "b", "c"]) == pytest.approx(2 / 3)
         assert cohesion_score(G, ["a", "b", "missing"]) == pytest.approx(1 / 3)
+def test_ambiguous_scale_does_not_mutate_graph_and_subgraph_uses_native_fast_path():
+    from graphify.cluster import _native_leiden, _sorted_native_edges, _stable_partition_graph
+
+    G = nx.Graph()
+    G.add_edge("a", "b", weight=2.0, confidence="AMBIGUOUS")
+    G.add_edge("b", "c", weight=2.0, confidence="EXTRACTED")
+
+    edges = _sorted_native_edges(G, ambiguous_scale=0.25)
+    assert edges == [("a", "b", 0.5), ("b", "c", 2.0)]
+    assert G["a"]["b"]["weight"] == 2.0
+
+    stable = _stable_partition_graph(G, ambiguous_scale=0.25)
+    assert stable["a"]["b"]["weight"] == 0.5
+    assert stable["b"]["c"]["weight"] == 2.0
+    assert G["a"]["b"]["weight"] == 2.0
+
+    sub = G.subgraph(["a", "b", "c"])
+
+    def _forbid_stable():
+        raise AssertionError("undirected SubGraphView should use _sorted_native_edges fast path")
+
+    res = _native_leiden(sub, 1.0, stable_graph=_forbid_stable, ambiguous_scale=0.25)
+    assert res is None or set(res) == {"a", "b", "c"}
