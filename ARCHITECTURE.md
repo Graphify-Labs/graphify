@@ -84,6 +84,11 @@ Go resolves a selector against its visible lexical binding before considering
 a same-named import. An unknown local receiver does not resolve as a package.
 AST cache schema 54 retires older call facts.
 
+Cypher file export preserves node and relationship source attribution.
+Parallel relationships receive distinct ordinals within each directed
+endpoint pair and relationship type, so the same script can be replayed.
+The ordinals apply to that exported snapshot.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions
