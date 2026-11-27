@@ -58,7 +58,7 @@ If the user invoked `/graphify --help` or `/graphify -h` (with no other argument
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
-Follow these steps in order unless the fast path above applies.
+Run the steps in order. A step marked 'only if' runs when its condition holds.
 
 ### Step 1 - Ensure graphify is installed
 
@@ -192,7 +192,7 @@ After transcription:
 
 This step has two parts: **structural extraction** (deterministic, free) and **semantic extraction** (your AI model, costs tokens).
 
-> **graphify needs no API key. Never ask the user for one, and never block on one.** Code is extracted structurally (AST) with no LLM and no key at all — a code-only corpus (the common `/graphify .` on a repo) skips semantic extraction entirely, so go straight to Part A and skip Part B. Semantic extraction (only for docs, papers, and images) is done by your own model. graphify does **not** read `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or any other provider key. If you cannot dispatch subagents, do not stall: a code-only corpus has no semantic work (write the empty semantic file and continue to Part C); for docs/papers/images, extract them inline yourself. If you catch yourself about to prompt for or block on a missing API key, that is a misread of this skill — proceed without one.
+> **graphify needs no API key. Never ask the user for one, and never block on one.** Code is extracted structurally (AST) with no LLM and no key at all — a code-only corpus (the common `/graphify .` on a repo) skips semantic extraction entirely, so go straight to Part A and skip Part B. Semantic extraction (only for docs, papers, and images) is done by your own model. This pipeline reads no other provider key (the `graphify extract --backend` CLI can; this pipeline does not use it). If you cannot dispatch subagents, do not stall: a code-only corpus has no semantic work (write the empty semantic file and continue to Part C); for docs/papers/images, extract them inline yourself. If you catch yourself about to prompt for or block on a missing API key, that is a misread of this skill — proceed without one.
 
 **Run Part A (AST) and Part B (semantic) in parallel. Dispatch all semantic subagents AND start AST extraction in the same message. Both can run simultaneously since they operate on different file types. Merge results in Part C as before.**
 
@@ -758,7 +758,7 @@ print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
 rm -f .graphify_detect.json .graphify_extract.json .graphify_ast.json .graphify_semantic.json .graphify_analysis.json .graphify_labels.json; find . -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
-rm -f graphify-out/.needs_update 2>/dev/null || true
+rm -f graphify-out/needs_update 2>/dev/null || true
 ```
 
 Tell the user (omit the obsidian line unless --obsidian was given):

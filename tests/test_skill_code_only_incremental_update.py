@@ -82,7 +82,7 @@ def test_codex_code_only_update_materializes_and_merges_fresh_ast(tmp_path: Path
         "#### Part A - Structural extraction for code files",
         "#### Part B - Semantic extraction",
     ))
-    empty_semantic_blocks = _python_blocks(_section(core, "**Fast path:**", "**MANDATORY"))
+    empty_semantic_blocks = _python_blocks(_section(core, "**Fast path:**", "Before dispatching subagents,"))
     part_c_blocks = _python_blocks(_section(
         core,
         "#### Part C - Merge AST + semantic into final extraction",

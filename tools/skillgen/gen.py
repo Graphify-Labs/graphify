@@ -1395,16 +1395,27 @@ def _is_update_detect_populate_fix_line(line: str) -> bool:
 
 
 def _is_skip_steps_clarification_line(line: str) -> bool:
-    """Whether a line is part of the #4061 fast-path clarification.
+    """Whether a line is part of the #4061 / #5477 step-ordering clarification.
 
-    The fast path skips Steps 1-5 for an existing graph, but the following
-    paragraph said "Follow these steps in order. Do not skip steps." Both the
-    removed old sentence and the added reword are sanctioned here.
+    The fast path skips Steps 1-5 for an existing graph, and optional steps are
+    marked 'only if', so saying "Do not skip steps" contradicted both.
     """
     stripped = line.strip()
     return stripped in {
         "Follow these steps in order. Do not skip steps.",
         "Follow these steps in order unless the fast path above applies.",
+        "Run the steps in order. A step marked 'only if' runs when its condition holds.",
+    }
+
+
+def _is_skill_contradiction_fix_line(line: str) -> bool:
+    """Whether a line is part of the #5477 bundled skill fixes (flag file and subagent wording)."""
+    stripped = line.strip()
+    return stripped in {
+        "rm -f graphify-out/.needs_update 2>/dev/null || true",
+        "rm -f graphify-out/needs_update 2>/dev/null || true",
+        "**MANDATORY: You MUST use the subagent system here. Reading files yourself one-by-one is forbidden - it is 5-10x slower. If you do not use parallel subagents you are doing this wrong.**",
+        "Dispatch parallel subagents here rather than reading the files yourself: they run in parallel and keep the main context free. On a host that cannot dispatch subagents, follow the no-subagent fallback in the API-key note above.",
     }
 
 
@@ -1503,6 +1514,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_code_only_fast_path_fix_line,
     _is_update_detect_populate_fix_line,
     _is_skip_steps_clarification_line,
+    _is_skill_contradiction_fix_line,
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
