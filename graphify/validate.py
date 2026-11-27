@@ -21,7 +21,7 @@ def validate_extraction(data: dict) -> list[str]:
     # hashable ids land here; a non-hashable id (e.g. a list emitted by a
     # malformed LLM extraction) is reported as an error rather than crashing
     # the validator on set construction.
-    node_ids: set = set()
+    node_ids: set[str] = set()
 
     # Nodes
     if "nodes" not in data:
@@ -44,7 +44,13 @@ def validate_extraction(data: dict) -> list[str]:
                         f"Node {i} has non-hashable id {node['id']!r} - id must be a string"
                     )
                 else:
-                    node_ids.add(node["id"])
+                    if isinstance(node["id"], str):
+                        node_ids.add(node["id"])
+                    else:
+                        errors.append(f"Node {i} id must be a string")
+            for field in ("label", "source_file"):
+                if field in node and not isinstance(node[field], str):
+                    errors.append(f"Node {i} {field} must be a string")
             if "file_type" in node and (
                 not isinstance(node["file_type"], str) or node["file_type"] not in VALID_FILE_TYPES
             ):
@@ -75,18 +81,23 @@ def validate_extraction(data: dict) -> list[str]:
                     f"Edge {i} has invalid confidence '{edge['confidence']}' "
                     f"- must be one of {sorted(VALID_CONFIDENCES)}"
                 )
+            for field in ("relation", "source_file"):
+                if field in edge and not isinstance(edge[field], str):
+                    errors.append(f"Edge {i} {field} must be a string")
             for endpoint in ("source", "target"):
                 if endpoint not in edge:
                     continue
                 val = edge[endpoint]
                 try:
-                    unmatched = bool(node_ids) and val not in node_ids
+                    hash(val)
                 except TypeError:
                     errors.append(
                         f"Edge {i} {endpoint} {val!r} is non-hashable - must be a string"
                     )
                     continue
-                if unmatched:
+                if not isinstance(val, str):
+                    errors.append(f"Edge {i} {endpoint} must be a string")
+                elif node_ids and val not in node_ids:
                     errors.append(f"Edge {i} {endpoint} '{val}' does not match any node id")
 
     return errors
