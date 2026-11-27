@@ -3664,8 +3664,41 @@ _CPP_EXPORT_MACRO_RE = re.compile(
 )
 
 
+# Export macro leading a free-function or variable declaration (#5550):
+# ``MYLIB_EXPORT uint64_t f(int);``, ``extern FOO_API int n;``. tree-sitter-cpp
+# reads the macro as the return type and the real type as an ERROR, so the
+# file reports a syntax error and a definition gains a phantom type node.
+# The parse tree cannot tell which of two adjacent words is the macro
+# (``DWORD WINAPI run()`` has the same shape the other way round), so only
+# the conventional spellings are matched: a name ending in ``EXPORT`` or
+# ``_API`` with a non-empty prefix, followed by another identifier.
+_CPP_EXPORT_DECL_MACRO_RE = re.compile(
+    rb"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]*(?:EXPORT|_API)(?![A-Za-z0-9_])"
+    rb"(?=[ \t\r\n]+[A-Za-z_:])"
+)
+
+
+_CPP_ELABORATED_KEYWORD_TAIL_RE = re.compile(
+    rb"\b(?:class|struct|union|enum)[ \t\r\n]+\Z"
+)
+
+
+def _blank_cpp_export_decl_macro(source: bytes, m: re.Match[bytes]) -> bytes:
+    line_start = source.rfind(b"\n", 0, m.start()) + 1
+    if source[line_start : m.start()].lstrip(b" \t").startswith(b"#"):
+        return m.group(0)  # keep ``#define MYLIB_API ...`` intact
+    if _CPP_ELABORATED_KEYWORD_TAIL_RE.search(
+        source, max(0, m.start() - 64), m.start()
+    ):
+        # ``class MODULE_API var{1};`` names a type; the class/struct rule
+        # already decided whether that word is a macro.
+        return m.group(0)
+    return b" " * len(m.group(0))
+
+
 def _normalize_cpp_export_macros(source: bytes) -> bytes:
-    """Blank an export macro between ``class``/``struct`` and the type name.
+    """Blank an export macro between ``class``/``struct`` and the type name,
+    and one leading a function or variable declaration (#5550).
 
     Single ALL-CAPS identifier macros (and stacked ones) are handled.
     Note: paren-attribute macros like ``__declspec(dllexport)`` and
@@ -3703,7 +3736,10 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
 
         return m.group(1) + bytes(blanked_macro) + m.group(3) + m.group(4)
 
-    return _CPP_EXPORT_MACRO_RE.sub(repl, source)
+    source = _CPP_EXPORT_MACRO_RE.sub(repl, source)
+    return _CPP_EXPORT_DECL_MACRO_RE.sub(
+        lambda m: _blank_cpp_export_decl_macro(source, m), source
+    )
 
 
 _CPP_CONDITIONAL_TOKEN_RE = re.compile(
