@@ -34,7 +34,7 @@ from pathlib import Path
 
 from graphify.extractors.base import _read_source_text
 from graphify.extractors.liquid import (
-    _LEADING_COMMENT,
+    _strip_json_comments,
     _Collector,
     _find_theme_root,
     _safe_component,
@@ -128,7 +128,7 @@ def extract_shopify_theme_json(path: Path) -> dict:
         if path.stat().st_size > _MAX_JSON_BYTES and found[1] != _SETTINGS_SCHEMA:
             return empty
         src = _read_source_text(path)
-        data = json.loads(_LEADING_COMMENT.sub("", src, count=1))
+        data = json.loads(_strip_json_comments(src))
     except (OSError, ValueError, RecursionError):
         return empty
     if found[1] == _SETTINGS_SCHEMA:
