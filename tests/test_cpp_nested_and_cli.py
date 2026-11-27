@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from graphify.extract import _normalize_cpp_cli, extract_cpp
+from graphify.extract import (
+    _normalize_cpp_cli,
+    _normalize_cpp_directive_comments,
+    extract,
+    extract_cpp,
+)
 
 pytest.importorskip("tree_sitter_cpp")
 
@@ -456,6 +461,154 @@ def test_cpp_export_macro_normalization_preserves_byte_offsets(tmp_path):
 
     # Check that newlines are preserved exactly
     assert out.count(b"\n") == src.count(b"\n")
+
+
+def test_cpp_directive_block_comment_does_not_hide_following_function(tmp_path, capsys):
+    source = tmp_path / "c.hpp"
+    source.write_text(
+        "#define RUN_ONCE(x) \\\n"
+        "  do { \\\n"
+        "    run(x); /* the comment */ \\\n"
+        "  } while(0)\n"
+        "inline void real_function() {}\n",
+        encoding="utf-8",
+    )
+    control = tmp_path / "control.hpp"
+    control.write_text(
+        "#define RUN_ONCE(x) \\\n"
+        "  do { \\\n"
+        "    run(x); \\\n"
+        "  } while(0)\n"
+        "inline void real_function() {}\n",
+        encoding="utf-8",
+    )
+
+    result = extract_cpp(source)
+    assert result.get("parse_errors") is None
+    assert _labels(source)[1:] == _labels(control)[1:]
+
+    extract([source], root=tmp_path, cache_root=tmp_path, parallel=False)
+    warning = capsys.readouterr().err
+    assert "syntax errors" not in warning
+    assert "partially extracted" not in warning
+
+
+@pytest.mark.parametrize(
+    "source, changed, parses",
+    [
+        (
+            b"#define R(x) \\\n  do { \\\n    run(x); /* c */ \\\n  } while(0)\n"
+            b"inline void f() {}\n",
+            True,
+            True,
+        ),
+        (b"#define V 1 /* c */ + 2\ninline void f() {}\n", True, True),
+        (b"#define V 1'000 /* c */ + 2'000\ninline void f() {}\n", True, True),
+        (
+            b"#define R(x) a(x); /* c */ b(x); /* d */ \\\n  e(x)\n"
+            b"inline void f() {}\n",
+            True,
+            True,
+        ),
+        (
+            b"#define FOO(x) \\\n  /* long \\\n  comment */ \\\n  body(x)\n"
+            b"void f() {}\n",
+            True,
+            True,
+        ),
+        (b'#define S "/* not */"\ninline void f() {}\n', False, False),
+        (
+            b'const char *s = "#define V 1 /* not */";\n'
+            b"/*\n#define V 1 /* still not a directive\n*/\n"
+            b"inline void f() {}\n",
+            False,
+            True,
+        ),
+        (
+            b'const char *raw = R"tag(\n#define V 1 /* not */\n)tag";\n'
+            b"inline void f() {}\n",
+            False,
+            True,
+        ),
+        (b"#define V 1 /* c */ + 2\r\ninline void f() {}\r\n", True, True),
+        (b"\t  #  define V 1 /* c */ + 2\ninline void f() {}\n", True, True),
+        (b"#define LAST 1 /* c */\ninline void f() {}\n", True, True),
+        (b"#define FIRST 1 /* c */ \\\n  + 2\ninline void f() {}\n", True, True),
+        (b"#define LINE 1 // c\ninline void f() {}\n", False, True),
+        (
+            b"#define X 1 // /* not block */\ninline void f() {}\n",
+            False,
+            True,
+        ),
+        (
+            b"int x = 1 \\\n# define X 2 /* c */\ninline void f() {}\n",
+            False,
+            False,
+        ),
+        (
+            b"#if FLAG /* c */ && \\\n  OTHER\nint value;\n#endif\n",
+            False,
+            True,
+        ),
+        (b"#include <a/*b*/c.h>\ninline void f() {}\n", False, True),
+    ],
+    ids=[
+        "continued-macro",
+        "object-like",
+        "digit-separators",
+        "two-comments",
+        "comment-crossing-splice",
+        "comment-marker-in-string",
+        "fake-directives-in-normal-code",
+        "fake-directive-in-raw-string",
+        "crlf",
+        "indented-directive",
+        "comment-at-directive-end",
+        "comment-before-continuation",
+        "line-comment",
+        "block-marker-in-line-comment",
+        "directive-after-splice",
+        "conditional-continuation",
+        "include-path",
+    ],
+)
+def test_cpp_directive_block_comment_normalization(tmp_path, source, changed, parses):
+    normalized = _normalize_cpp_directive_comments(source)
+    assert (normalized != source) is changed
+    if not changed:
+        assert normalized is source
+    assert [
+        i for i in range(len(normalized))
+        if normalized[i:i + 2] == b"\\\n" or normalized[i:i + 3] == b"\\\r\n"
+    ] == [
+        i for i in range(len(source))
+        if source[i:i + 2] == b"\\\n" or source[i:i + 3] == b"\\\r\n"
+    ]
+
+    path = tmp_path / "directive.hpp"
+    path.write_bytes(source)
+    assert (extract_cpp(path).get("parse_errors") is None) is parses
+
+
+def test_cpp_directive_comment_normalization_preserves_byte_offsets():
+    source = (
+        b"#define RUN_ONCE(x) \\\r\n"
+        b"\tdo { \\\r\n"
+        b"\t\trun(x); /* the \\\r\n"
+        b"\t\tcomment */ \\\r\n"
+        b"\t} while(0)\r\n"
+        b"inline void real_function() {}\r\n"
+    )
+    normalized = _normalize_cpp_directive_comments(source)
+    assert normalized != source
+    assert len(normalized) == len(source)
+    assert [i for i, byte in enumerate(normalized) if byte in b"\r\n"] == [
+        i for i, byte in enumerate(source) if byte in b"\r\n"
+    ]
+    assert [
+        i for i in range(len(normalized)) if normalized[i:i + 3] == b"\\\r\n"
+    ] == [i for i in range(len(source)) if source[i:i + 3] == b"\\\r\n"]
+    assert normalized.count(b"\n", 0, normalized.index(b"real_function")) == 5
 
 
 def test_cpp_export_macro_all_caps_class_final(tmp_path):
