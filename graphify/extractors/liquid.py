@@ -455,7 +455,8 @@ class _Collector:
         self.static_blocks: set[str] = set()            # theme block names placed by ``content_for 'block'`` or ``blocks[]``
         self.blocks_line: int | None = None   # first static ``content_for 'blocks'``
         self.accepts_theme = False            # schema ``blocks`` lists ``@theme``
-        self.want_html = True                 # the settings index scans many files and has no use for HTML uses
+        self._defines: dict[str, tuple[Path, int]] | None = None
+        self.want_html = True                # the settings index scans many files and has no use for HTML uses
 
     def inferred_theme_blocks(self) -> None:
         """INFERRED ``imports`` to every public ``blocks/*.liquid`` when ``content_for 'blocks'``
@@ -508,7 +509,9 @@ class _Collector:
         """
         if name in _RESERVED_ELEMENTS:
             return
-        hit = _custom_element_defines(self.root).get(name)
+        if self._defines is None:
+            self._defines = _custom_element_defines(self.root)   # once per file: the signature check stats the theme
+        hit = self._defines.get(name)
         if hit is None:
             self._unresolved("references", "custom_element", name, f"<{name}>", line)
             return
@@ -801,6 +804,7 @@ class _Collector:
 
     def statement(self, text: str, line: int) -> None:
         """Handle one tag body or one line of a ``{% liquid %}`` block."""
+        self.html(text, line)   # markup echoed from a tag or an output, e.g. ``echo '<x-y>'``
         if "metafields" in text:
             for m in _METAFIELD_USE.finditer(text):
                 at = line + text.count("\n", 0, m.start())

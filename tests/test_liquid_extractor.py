@@ -1068,3 +1068,54 @@ def test_custom_element_affected_from_the_js_lists_the_liquid(tmp_path):
     seed = next(n for n, d in graph.nodes(data=True) if d.get("label") == "el.js")
     sources = {str(graph.nodes[h.node_id].get("source_file")) for h in affected_nodes(graph, seed)}
     assert any(s.endswith("snippets/pop.liquid") for s in sources), sources
+
+
+def test_custom_element_is_attribute_with_either_quote(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/el.js": "customElements.define('cart-button', class {}, { extends: 'button' });\n",
+        "snippets/a.liquid": "<button is=\"cart-button\"></button>\n<button is='cart-button'></button>\n",
+    })
+    edges = _ce_edges(root, "snippets/a.liquid")
+    assert [(e["source_location"], n["label"]) for e, n in edges] == [("L1", "<cart-button>"), ("L2", "<cart-button>")]
+
+
+def test_custom_element_reserved_html_names_are_not_elements(tmp_path):
+    root = _theme(tmp_path, {"snippets/a.liquid": "<font-face></font-face><missing-glyph/><annotation-xml>\n"})
+    assert _ce_edges(root, "snippets/a.liquid") == []
+    assert _unresolved(root, "snippets/a.liquid") == []
+
+
+def test_custom_element_without_a_define_is_unresolved(tmp_path):
+    root = _theme(tmp_path, {"snippets/a.liquid": "<p></p>\n<judgeme-widget data-id=\"1\"></judgeme-widget>\n"})
+    [(edge, node)] = _ce_edges(root, "snippets/a.liquid")
+    assert (edge["confidence"], edge["source_location"]) == ("AMBIGUOUS", "L2")
+    assert node["label"] == "<judgeme-widget>" and node["unresolved"] and node["ref_kind"] == "custom_element"
+
+
+def test_custom_element_defined_in_a_javascript_block_resolves_from_another_file(tmp_path):
+    root = _theme(tmp_path, {
+        "sections/s.liquid": "{% javascript %}\n\ncustomElements.define('x-slider', class extends HTMLElement {});\n{% endjavascript %}\n",
+        "snippets/a.liquid": "<x-slider></x-slider>\n",
+    })
+    [(edge, node)] = _ce_edges(root, "snippets/a.liquid")
+    assert edge["confidence"] == "EXTRACTED"
+    assert node["source_file"] == str(root / "sections/s.liquid") and node["source_location"] == "L3"
+
+
+def test_custom_element_inside_liquid_tag_string_literals_counts(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/el.js": _EL_JS,
+        "snippets/a.liquid": "{% liquid\n  if a\n    echo '<x-popover open>'\n  endif\n%}\n{{ '<x-popover>' }}\n",
+    })
+    assert [e["source_location"] for e, _ in _ce_edges(root, "snippets/a.liquid")] == ["L3", "L6"]
+
+
+def test_custom_element_scan_of_a_megabyte_of_html_is_fast(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/el.js": _EL_JS,
+        "snippets/big.liquid": "<a-b x=1></a-b>\n" * 30000 + "<x-" + "a-" * 200000 + "\n",
+    })
+    start = time.perf_counter()
+    result = extract_liquid(root / "snippets/big.liquid")
+    assert "error" not in result
+    assert time.perf_counter() - start < 2
