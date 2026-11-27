@@ -1110,6 +1110,67 @@ def test_custom_element_inside_liquid_tag_string_literals_counts(tmp_path):
     assert [e["source_location"] for e, _ in _ce_edges(root, "snippets/a.liquid")] == ["L3", "L6"]
 
 
+# -- CSS classes (R5) --------------------------------------------------------
+
+def _class_edges(root: Path, rel: str) -> list[tuple[str, str, str, float]]:
+    """(selector label, selector file, line, score) of the INFERRED class edges leaving ``rel``."""
+    result = extract_liquid(root / rel)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    out = []
+    for e in result["edges"]:
+        node = nodes.get(e["target"], {})
+        if e["source"] == _make_id(str(root / rel)) and e["confidence"] == "INFERRED" and node.get("label", "").startswith("."):
+            assert e["relation"] == "references"
+            out.append((node["label"], Path(node["source_file"]).relative_to(root).as_posix(), e["source_location"], e["confidence_score"]))
+    return sorted(out, key=lambda t: (t[2], t[0], t[1]))
+
+
+def test_css_class_tokens_link_to_selectors_in_css_and_css_liquid(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/base.css": ".btn { color: red }\n",
+        "assets/c.css.liquid": ".is-open { color: {{ settings.c }} }\n",
+        "snippets/a.liquid": "<a class=\"btn btn--{{ x }} {% if y %}is-open{% endif %}\">\n",
+    })
+    assert _class_edges(root, "snippets/a.liquid") == [
+        (".btn", "assets/base.css", "L1", 0.55), (".is-open", "assets/c.css.liquid", "L1", 0.55),
+    ]
+
+
+def test_css_class_defined_in_two_files_links_to_both(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/a.css": ".card {}\n", "assets/b.css": "\n.card {}\n",
+        "snippets/a.liquid": "<div class='card'></div>\n",
+    })
+    assert _class_edges(root, "snippets/a.liquid") == [(".card", "assets/a.css", "L1", 0.55), (".card", "assets/b.css", "L1", 0.55)]
+
+
+def test_css_class_multiline_attribute_with_quotes_inside_a_liquid_tag(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/a.css": ".x {} .y {} .z {}\n",
+        "snippets/a.liquid": "<div\n  class=\"x\n    {% if a != \"\" %}y{% endif %}\n    z\">\n",
+    })
+    assert [(t[0], t[2]) for t in _class_edges(root, "snippets/a.liquid")] == [(".x", "L2"), (".y", "L3"), (".z", "L4")]
+
+
+def test_css_class_in_comment_schema_and_data_attribute_makes_nothing(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/a.css": ".x {}\n",
+        "snippets/a.liquid": (
+            "{% comment %}<i class=\"x\">{% endcomment %}<i data-class=\"x\">"
+            "{% schema %}{\"default\": \"<i class=\\\"x\\\">\"}{% endschema %}\n"
+        ),
+    })
+    assert _class_edges(root, "snippets/a.liquid") == []
+
+
+def test_css_class_defined_in_a_stylesheet_block_of_another_liquid_file(tmp_path):
+    root = _theme(tmp_path, {
+        "sections/s.liquid": "<p></p>\n{% stylesheet %}\n.sec-x { color: red }\n{% endstylesheet %}\n",
+        "snippets/a.liquid": "<div class=\"sec-x nope\"></div>\n",
+    })
+    assert _class_edges(root, "snippets/a.liquid") == [(".sec-x", "sections/s.liquid", "L1", 0.55)]
+
+
 def test_custom_element_scan_of_a_megabyte_of_html_is_fast(tmp_path):
     root = _theme(tmp_path, {
         "assets/el.js": _EL_JS,

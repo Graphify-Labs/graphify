@@ -276,6 +276,24 @@ def test_default_categories_measure_all_six(tmp_path):
     assert gate.main([str(root)]) == 0
 
 
+def test_real_extractor_covers_custom_elements_and_css_classes(tmp_path):
+    from graphify.extract import extract
+
+    root = _theme(tmp_path / "theme", {
+        "layout/theme.liquid": "{{ content_for_layout }}\n",
+        "assets/el.js": "customElements.define('x-popover', class extends HTMLElement {});\n",
+        "assets/base.css": ".btn { color: red }\n.card { color: blue }\n",
+        "snippets/a.liquid": "<x-popover open></x-popover>\n<div class=\"btn card--{{ x }} {% if y %}card{% endif %}\">\n",
+        "sections/s.liquid": "<button is=\"x-popover\" class='btn nope'></button>\n",
+    })
+    files = sorted([*root.rglob("*.liquid"), *root.rglob("*.js"), *root.rglob("*.css")])
+    result = extract(files, cache_root=root, root=root, parallel=False)
+    _graph(root, result["nodes"], result["edges"])
+    measured = _measure(root, "ce")
+    assert (measured["c"]["covered"], measured["c"]["total"]) == (2, 2)
+    assert (measured["e"]["covered"], measured["e"]["total"]) == (3, 3)
+
+
 def test_category_a_call_to_a_missing_file_needs_an_unresolved_node_with_the_expected_path(tmp_path):
     root = _theme(tmp_path, {"snippets/page.liquid": "{% render 'ghost' %}"})
     ghost = {"id": "g", "label": "snippets/ghost.liquid", "source_file": "snippets/page.liquid", "unresolved": True}

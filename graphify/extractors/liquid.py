@@ -540,6 +540,43 @@ class _Collector:
             "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
         })
 
+    def classes(self, view: str) -> None:
+        """INFERRED ``references`` from each ``class`` token to every theme selector of that name.
+
+        ``view`` is the file with Liquid and inactive regions blanked to spaces (newlines kept). WHY: a ``"`` inside
+        ``{% if x != "" %}`` would end the attribute value early; blanked, the value runs to its real closing quote.
+        A token with no selector in the theme is not a component use and gets no edge.
+        """
+        if "class" not in view:
+            return
+        index = _css_class_index(self.root)
+        if not index:
+            return
+        last_offset, current = 0, 1
+        for am in _CLASS_ATTR.finditer(view):
+            group = 1 if am.group(1) is not None else 2
+            base = am.start(group)
+            for tm in _CLASS_TOKEN.finditer(am.group(group)):
+                token = tm.group(0)
+                targets = index.get(token) if _CLASS_NAME.fullmatch(token) else None
+                if not targets:
+                    continue
+                offset = base + tm.start()
+                current += view.count("\n", last_offset, offset)
+                last_offset = offset
+                for node_id, selector_file, selector_line in targets:
+                    if not self._first(node_id, "references", current):
+                        continue
+                    self._declare({
+                        "id": node_id, "label": "." + token, "file_type": "code",
+                        "source_file": str(selector_file), "source_location": f"L{selector_line}",
+                    })
+                    self.edges.append({
+                        "source": self.file_id, "target": node_id, "relation": "references",
+                        "confidence": "INFERRED", "confidence_score": 0.55,
+                        "source_file": str(self.path), "source_location": f"L{current}", "weight": 1.0,
+                    })
+
     def _declare(self, node: dict) -> None:
         if node["id"] not in self._node_ids:
             self._node_ids.add(node["id"])
@@ -1026,6 +1063,56 @@ def _custom_element_defines(root: Path) -> dict[str, tuple[Path, int]]:
     return found
 
 
+_STYLESHEET_OPEN = re.compile(r"\{%-?\s*stylesheet\s*-?%\}")
+# ``class="…"`` / ``class='…'``; a ``-`` before the name excludes ``data-class``.
+_CLASS_ATTR = re.compile(r"""(?<![\w-])class\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+_CLASS_TOKEN = re.compile(r"\S+")
+_CLASS_NAME = re.compile(r"[A-Za-z_-][\w-]*")
+# root -> (signature, {class name: [(selector node id, file, line)]})
+_CSS_CACHE: dict[str, tuple[tuple, dict[str, list[tuple[str, Path, int]]]]] = {}
+
+
+def _css_class_index(root: Path) -> dict[str, list[tuple[str, Path, int]]]:
+    """``{class name: [(selector node id, file, line)]}`` for every ``.name`` selector the theme defines.
+
+    Sources: ``assets/*.css``, ``assets/*.css.liquid`` (Liquid stripped) and ``{% stylesheet %}`` bodies. Ids come
+    from ``css_selector_id``, so they equal the nodes the CSS extraction creates. Cached like the defines index.
+    """
+    from graphify.extractors.css import css_selector_id, css_selectors
+
+    files = _theme_sources(root, ("*.css", "*.css.liquid"), True)
+    signature = _signature(files)
+    cached = _CSS_CACHE.get(str(root))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    index: dict[str, list[tuple[str, Path, int]]] = {}
+
+    def add(path: Path, selectors: list[tuple[str, int]], line_offset: int = 0) -> None:
+        first: dict[str, int] = {}
+        for selector, line in selectors:
+            if selector.startswith("."):
+                first.setdefault(selector[1:], line + line_offset)
+        for name, line in first.items():
+            index.setdefault(name, []).append((css_selector_id(str(path), "." + name), path, line))
+
+    for f in files:
+        try:
+            text = _read_source_text(f)
+        except OSError:
+            continue
+        if f.parent.name == "assets":
+            add(f, css_selectors(_strip_liquid(text) if f.name.endswith(".liquid") else text))
+            continue
+        if "stylesheet" not in text:
+            continue
+        for opener in _STYLESHEET_OPEN.finditer(text):
+            end = _find_end_tag(text, opener.end(), "endstylesheet")
+            body = text[opener.end():end[0] if end else len(text)]
+            add(f, css_selectors(body), text.count("\n", 0, opener.end()))
+    _CSS_CACHE[str(root)] = (signature, index)
+    return index
+
+
 class _Unset:
     """Sentinel: the locale has not been looked up yet."""
 
@@ -1180,6 +1267,8 @@ def extract_liquid(path: Path) -> dict:
     out = _Collector(path, root if root is not None else path.parent)
     if root is not None:
         _scan(src, out)
+        if not path.name.endswith((".css.liquid", ".js.liquid")):
+            out.classes(_strip_liquid(src, drop_schema=True))
         out.inferred_theme_blocks()
         out.resolve_settings()
         if path.name.endswith(".css.liquid"):
@@ -1211,12 +1300,13 @@ def _add_js_symbols(path: Path, src: str, out: _Collector) -> None:
 _BLANK_NON_NEWLINE = re.compile(r"[^\n]")
 
 
-def _strip_liquid(src: str, output_fill: str = "") -> str:
+def _strip_liquid(src: str, output_fill: str = "", drop_schema: bool = False) -> str:
     """``src`` with every Liquid tag, output and ``comment``/``doc`` body replaced by spaces, newlines kept.
 
     Tokenizes like ``_scan`` (nested ``comment``, an opener without closer is text); ``raw`` bodies stay,
     since Liquid emits them verbatim. Line and column of everything that survives are unchanged.
-    ``output_fill`` replaces the first character of each ``{{ }}`` (``"0"`` keeps JS expressions parseable).
+    ``output_fill`` replaces the first character of each ``{{ }}`` (``"0"`` keeps JS expressions parseable);
+    ``drop_schema`` blanks ``{% schema %}`` bodies too (JSON, never rendered).
     """
     n = len(src)
     pieces: list[str] = []
@@ -1275,7 +1365,7 @@ def _strip_liquid(src: str, output_fill: str = "") -> str:
             depth += (name == "comment") - (name == "endcomment")
         elif name == "comment":
             depth = 1
-        elif name in ("raw", "doc"):
+        elif name in ("raw", "doc") or (drop_schema and name == "schema"):
             span = _find_end_tag(src, end, "end" + name)
             if span is not None:
                 emit(span[0], name == "raw")
