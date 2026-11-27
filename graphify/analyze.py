@@ -409,7 +409,12 @@ def _cross_community_surprises(
             return []
         if G.number_of_nodes() > 5000:
             return []
-        betweenness = nx.edge_betweenness_centrality(G)
+        # A multigraph's scores are keyed (u, v, key) and split between parallel
+        # edges. Score each pair once; the loop below lists its edges.
+        pairs = G
+        if G.is_multigraph():
+            pairs = nx.DiGraph(G) if G.is_directed() else nx.Graph(G)
+        betweenness = nx.edge_betweenness_centrality(pairs)
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
