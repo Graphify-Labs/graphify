@@ -476,6 +476,22 @@ def _rm_to_remove_item(cmd: str) -> str:
     return f"Remove-Item -Force -ErrorAction SilentlyContinue {joined}"
 
 
+def _cat_to_get_content(line: str) -> str:
+    """Translate ``$(cat FILE)`` sidecar reads inside a CLI call to Get-Content.
+
+    The emitted ``$((Get-Content ... -Raw).TrimEnd("`r","`n"))`` evaluates both
+    bare and inside a double-quoted PowerShell string — a plain
+    ``(Get-Content ...)`` inside ``"..."`` is a literal, not a call — and the
+    CR/LF-only ``TrimEnd`` matches bash ``$(...)`` semantics, which strip
+    trailing newlines while preserving intentional boundary spaces.
+    """
+    return re.sub(
+        r"\$\(cat ([^)]+)\)",
+        lambda m: f"$((Get-Content {m.group(1).replace('/', chr(92))} -Raw).TrimEnd(\"`r\",\"`n\"))",
+        line,
+    )
+
+
 def _translate_bash_block(lines: list[str]) -> list[str]:
     """Translate the body of one ```` ```bash ```` fence to PowerShell."""
     out: list[str] = []
@@ -496,8 +512,10 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
             out.append(_FIND_CHUNKS_PS)
         elif line.strip().startswith("rm -f "):
             out.append(_rm_to_remove_item(line))
-        elif not line.strip() or line.lstrip().startswith("#") or line.startswith("graphify "):
-            out.append(line)  # blank lines, comments, and graphify CLI calls are shell-neutral
+        elif line.strip().startswith("graphify "):
+            out.append(_cat_to_get_content(line))  # CLI calls are shell-neutral bar sidecar reads
+        elif not line.strip() or line.lstrip().startswith("#"):
+            out.append(line)  # blank lines and comments pass through
         else:
             raise ValueError(f"cannot translate bash line to PowerShell: {line!r}")
     if in_py:
@@ -506,10 +524,16 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
 
 
 def _translate_prose_line(line: str) -> str:
-    """Translate inline `` `rm -f ...` `` code spans in prose to Remove-Item."""
-    return re.sub(
+    """Translate inline code spans in prose: ``rm -f`` and ``$(cat FILE)`` reads."""
+    line = re.sub(
         r"`rm -f ([^`]+)`",
         lambda m: "`" + _rm_to_remove_item("rm -f " + m.group(1)) + "`",
+        line,
+    )
+    return re.sub(
+        r'`([^`]*)\$\(cat ([^)]+)\)([^`]*)`',
+        lambda m: "`" + m.group(1)
+        + f"$((Get-Content {m.group(2).replace('/', chr(92))} -Raw).TrimEnd(\"`r\",\"`n\"))" + m.group(3) + "`",
         line,
     )
 
@@ -1294,6 +1318,48 @@ def _is_input_path_sidecar_fix_line(line: str) -> bool:
     )
 
 
+def _is_query_value_transport_fix_line(line: str) -> bool:
+    """Whether a line is part of the query/path/explain value-transport fix.
+
+    The query, path and explain runbooks pasted free-text values (questions,
+    answers, node names, node lists) into quoted shell arguments and Python
+    string literals (``--answer "ANSWER"``, ``question = 'QUESTION'``,
+    ``a_term = 'NODE_A'``), so any value containing a quote, ``$()`` or a
+    backtick executed as code instead of data — the same injection class as
+    the INPUT_PATH fix (#4762). Every free-text value now travels through a
+    sidecar file under ``graphify-out/`` that the agent writes before the
+    block runs: questions, answers, node names and the expanded query are
+    read back with ``Path(...).read_text`` or ``$(cat ...)``, the answer goes
+    through ``save-result --answer-file``, and the node list through a
+    ``while read`` shell array. Both the removed paste-the-value lines and
+    the added file-transport lines match here.
+    """
+    stripped = line.strip()
+    return (
+        ".graphify_question" in stripped
+        or ".graphify_answer" in stripped
+        or ".graphify_nodes" in stripped
+        or ".graphify_node_a" in stripped
+        or ".graphify_node_b" in stripped
+        or ".graphify_node_name" in stripped
+        or ".graphify_expanded" in stripped
+        or ".graphify_correction" in stripped
+        or stripped == "_nodes=()"
+        or '"ANSWER"' in stripped
+        or '"QUESTION"' in stripped
+        or '"ORIGINAL_QUESTION"' in stripped
+        or "'QUESTION'" in stripped
+        or "'NODE_A'" in stripped
+        or "'NODE_B'" in stripped
+        or "'NODE_NAME'" in stripped
+        or stripped.startswith("Replace `QUESTION`")
+        or stripped.startswith("Replace `NODE_A`")
+        or stripped.startswith("Replace `NODE_NAME`")
+        or stripped.startswith("After writing the explanation, save it back")
+        or "Value transport (query, path and explain)" in stripped
+    )
+
+
 def _is_worktree_visibility_note_line(line: str) -> bool:
     """Whether a line is the Step 9 working-tree note (#3941).
 
@@ -1506,6 +1572,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
+    _is_query_value_transport_fix_line,
 )
 
 

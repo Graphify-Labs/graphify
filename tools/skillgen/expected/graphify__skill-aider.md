@@ -985,6 +985,8 @@ Then run Steps 5–9 as normal (label communities, generate viz, benchmark, clea
 
 ## For /graphify query
 
+**Value transport (query, path and explain).** Wherever a command below needs your text — a question, an answer, a node name, a node list — the value arrives as a file under `graphify-out/`. Write it before the command runs, with your file-writing tool or a quoted heredoc like Step 1's; never paste it into the command line or a Python string literal — a value containing a quote, `$()`, or a backtick would execute as code instead of data. (`MODE` and `BUDGET` stay literals: one is a fixed enum, the other a number.)
+
 Two traversal modes - choose based on the question:
 
 | Mode | Flag | Best for |
@@ -1021,7 +1023,7 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text())
 G = json_graph.node_link_graph(data, edges='links')
 
-question = 'QUESTION'
+question = Path('graphify-out/.graphify_question').read_text(encoding='utf-8-sig').strip()
 mode = 'MODE'  # 'bfs' or 'dfs'
 terms = [t.lower() for t in question.split() if len(t) > 3]
 
@@ -1098,17 +1100,17 @@ print(output)
 "
 ```
 
-Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above.
+Write the user's actual question to `graphify-out/.graphify_question` before running the block; replace `MODE` with `bfs` or `dfs` and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above.
 
 **Bypass check (hub/bridge questions only, #4426).** If the question is about why a node bridges communities or has unusually many edges (a hub/god node), the neighbour listing above only shows code that already has an edge to it — it cannot show code that does the hub's job without ever calling it. Before finalizing the answer: pick one or two literal, distinctive things the hub does (a hard-coded constant it wraps, a specific string it returns, the exact computation in its body), then grep the corpus for that literal text in files that have no edge to the hub node in the subgraph above. Report any hits separately, labeled "Bypasses", distinct from the normal neighbour list — each is a file that reimplements the hub instead of using it. Also check whether the hub's own community label names a different node: a shared utility is often clustered into its heaviest consumer's community, so the label can read as if that consumer were the bridge. If so, say so plainly in the answer rather than letting the label stand unquestioned.
 
 After writing the answer, save it back into the graph so it improves future queries:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+$(cat graphify-out/.graphify_python) -m graphify save-result --question="$(cat graphify-out/.graphify_question)" --answer-file graphify-out/.graphify_answer --type query --nodes-file graphify-out/.graphify_nodes
 ```
 
-Replace `QUESTION` with the question, `ANSWER` with your full answer text, `SOURCE_NODES` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+The question file already holds the user's question. Write your full answer text to `graphify-out/.graphify_answer` and each node label you cited on its own line in `graphify-out/.graphify_nodes`. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
 ---
 
@@ -1137,8 +1139,8 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text())
 G = json_graph.node_link_graph(data, edges='links')
 
-a_term = 'NODE_A'
-b_term = 'NODE_B'
+a_term = Path('graphify-out/.graphify_node_a').read_text(encoding='utf-8-sig').strip()
+b_term = Path('graphify-out/.graphify_node_b').read_text(encoding='utf-8-sig').strip()
 
 def find_node(term):
     term = term.lower()
@@ -1175,12 +1177,12 @@ except nx.NodeNotFound as e:
 "
 ```
 
-Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
+Write the two concept names from the user to `graphify-out/.graphify_node_a` and `graphify-out/.graphify_node_b` — the block reads them; there is nothing to paste. Then explain the path in plain language - what each hop means, why it's significant.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back — write `Path from <A> to <B>` composed with the real names to `graphify-out/.graphify_question`, your answer to `graphify-out/.graphify_answer`, and both names on their own lines in `graphify-out/.graphify_nodes`:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+$(cat graphify-out/.graphify_python) -m graphify save-result --question="$(cat graphify-out/.graphify_question)" --answer-file graphify-out/.graphify_answer --type path_query --nodes-file graphify-out/.graphify_nodes
 ```
 
 ---
@@ -1210,7 +1212,7 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text())
 G = json_graph.node_link_graph(data, edges='links')
 
-term = 'NODE_NAME'
+term = Path('graphify-out/.graphify_node_name').read_text(encoding='utf-8-sig').strip()
 term_lower = term.lower()
 
 # Find best matching node
@@ -1241,12 +1243,12 @@ for neighbor in G.neighbors(nid):
 "
 ```
 
-Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
+Write the concept the user asked about to `graphify-out/.graphify_node_name` — the block reads it; there is nothing to paste. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back — write `Explain <concept>` composed with the real name to `graphify-out/.graphify_question`, your answer to `graphify-out/.graphify_answer`, and the name on its own line in `graphify-out/.graphify_nodes`:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+$(cat graphify-out/.graphify_python) -m graphify save-result --question="$(cat graphify-out/.graphify_question)" --answer-file graphify-out/.graphify_answer --type explain --nodes-file graphify-out/.graphify_nodes
 ```
 
 ---
