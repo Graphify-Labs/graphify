@@ -1,6 +1,7 @@
 """resolution — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from typing import Any, Callable
 from pathlib import Path
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
@@ -5300,6 +5301,43 @@ _pascal_unit_cache: dict[str, dict[str, str]] = {}
 
 _pascal_class_stem_cache: dict[str, dict[str, str]] = {}  # root_key → {stem_lower: _file_stem}
 
+_PascalCorpusIndex = tuple[
+    dict[str, tuple[Path, ...]], dict[str, tuple[Path, ...]]
+]
+_ACTIVE_PASCAL_CORPUS: ContextVar[_PascalCorpusIndex | None] = ContextVar(
+    "_ACTIVE_PASCAL_CORPUS", default=None
+)
+
+
+def set_active_pascal_corpus(
+    paths: tuple[Path, ...] | None,
+) -> Token[_PascalCorpusIndex | None]:
+    """Index only Pascal files dispatched in the current extraction batch."""
+    if paths is None:
+        return _ACTIVE_PASCAL_CORPUS.set(None)
+    units: dict[str, list[Path]] = {}
+    classes: dict[str, list[Path]] = {}
+    for path in paths:
+        suffix = effective_suffix(path).lower()
+        if suffix in {".pas", ".pp", ".dpr", ".dpk", ".inc"}:
+            units.setdefault(path.stem.casefold(), []).append(path)
+        if suffix in {".pas", ".pp", ".dpr", ".dpk"}:
+            classes.setdefault(path.stem.casefold(), []).append(path)
+    return _ACTIVE_PASCAL_CORPUS.set(
+        (
+            {name: tuple(files) for name, files in units.items()},
+            {name: tuple(files) for name, files in classes.items()},
+        )
+    )
+
+
+def reset_active_pascal_corpus(
+    token: Token[_PascalCorpusIndex | None],
+) -> None:
+    """Restore the corpus context previously returned by the setter."""
+    _ACTIVE_PASCAL_CORPUS.reset(token)
+
+
 def _pascal_project_root(from_path: Path) -> Path:
     """Return the highest ancestor directory that looks like a Pascal project root.
 
@@ -5337,6 +5375,15 @@ def _pascal_resolve_unit(from_path: Path, unit_name: str) -> str:
     project.  Falls back to _make_id(unit_name) for units not found on disk
     (e.g. standard RTL units like SysUtils, Windows).
     """
+    corpus = _ACTIVE_PASCAL_CORPUS.get()
+    if corpus is not None:
+        candidates = corpus[0].get(unit_name.casefold(), ())
+        if len(candidates) == 1:
+            return _make_id(str(candidates[0]))
+        # Missing and duplicate unit names are not safe to guess. The latter
+        # commonly appears in vendored or multi-project Delphi workspaces.
+        return _make_id(unit_name)
+
     root = _pascal_project_root(from_path)
     root_key = str(root)
     if root_key not in _pascal_unit_cache:
@@ -5359,6 +5406,13 @@ def _pascal_resolve_class(from_path: Path, class_name: str) -> str | None:
     """
     prefix = class_name[:1]
     unit_name = class_name[1:] if prefix in ("T", "I") else class_name
+
+    corpus = _ACTIVE_PASCAL_CORPUS.get()
+    if corpus is not None:
+        candidates = corpus[1].get(unit_name.casefold(), ())
+        if len(candidates) == 1:
+            return _make_id(_file_stem(candidates[0]), class_name)
+        return None
 
     root = _pascal_project_root(from_path)
     root_key = str(root)
