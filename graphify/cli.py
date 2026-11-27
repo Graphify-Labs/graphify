@@ -92,35 +92,8 @@ _COMPACT_CONTEXT = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
-# Strict-mode block (opt-in). Claude Code PreToolUse honors
-# hookSpecificOutput.permissionDecision == "deny" and shows permissionDecisionReason
-# to the model. Fires at most once per session (see _mark_session_denied) so it can
-# never strand an agent: the very next read proceeds with the soft nudge.
-_READ_DENY = json.dumps({
-    "hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": (
-            'graphify strict mode: this project has a fresh knowledge graph that covers '
-            'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
-            '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
-            'will be allowed. This block fires at most once per session; after one '
-            'query, read raw files for the exact lines the graph pointed you to.'
-        ),
-    }
-}, ensure_ascii=False, separators=(",", ":")) + "\n"
-_SEARCH_DENY = json.dumps({
-    "hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": (
-            'graphify strict mode: this project has a knowledge graph. Run '
-            '`graphify query "<your question>"` (or `graphify explain` / '
-            '`graphify path`) FIRST to orient yourself, then re-issue this Grep — '
-            'it will be allowed. This block fires at most once per session.'
-        ),
-    }
-}, ensure_ascii=False, separators=(",", ":")) + "\n"
+# (the strict-mode deny payloads live further down, next to the tool-name
+# vocabulary the guard branches on)
 _HOOK_SOURCE_EXTS = (
     '.py', '.js', '.cjs', '.ts', '.tsx', '.jsx', '.astro', '.vue', '.svelte', '.ejs', '.go',
     '.rs', '.java', '.rb', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.kt',
@@ -1140,6 +1113,57 @@ def _hook_strict_enabled(flag: bool) -> bool:
     return flag
 
 
+# Tool names each supported harness registers for the SAME operation. Claude Code
+# capitalizes (Read/Grep/Bash); DeepSeek Harness registers lowercase
+# (read/grep/glob/bash). The guard branches on the operation, never on the host,
+# so one policy module serves every harness the installer supports.
+_TOOL_READ_NAMES = frozenset({"Read", "read"})
+_TOOL_SEARCH_NAMES = frozenset({"Grep", "grep"})
+_TOOL_BASH_NAMES = frozenset({"Bash", "bash"})
+
+
+def _tool_is(payload: dict, names: "frozenset[str]") -> bool:
+    """True when the payload's tool is one of *names*, or the payload names none.
+
+    An absent or null ``tool_name`` keeps the legacy bare-payload behaviour: the
+    guard is also driven directly (tests, hosts whose pre-tool event carries no
+    name), and those payloads must be examined rather than silently skipped.
+    """
+    name = payload.get("tool_name")
+    return name is None or name in names
+
+
+# Strict-mode deny, one payload per kind. The text is unchanged from before dsh
+# support: Claude Code and dsh both honour permissionDecision == "deny" and show
+# permissionDecisionReason to the model, and both get the same one block per
+# session (see _mark_session_denied) so a deny can never strand an agent.
+_READ_DENY = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            'graphify strict mode: this project has a fresh knowledge graph that covers '
+            'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
+            '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
+            'will be allowed. This block fires at most once per session; after one '
+            'query, read raw files for the exact lines the graph pointed you to.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+_SEARCH_DENY = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            'graphify strict mode: this project has a knowledge graph. Run '
+            '`graphify query "<your question>"` (or `graphify explain` / '
+            '`graphify path`) FIRST to orient yourself, then re-issue this Grep — '
+            'it will be allowed. This block fires at most once per session.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
 def _touch_query_stamp(graph_path: "Path") -> None:
     """Record that graphify oriented the agent recently, next to the queried graph.
     The strict guard suppresses its block while this stamp is fresh. Fail-silent."""
@@ -1566,12 +1590,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
 
     In strict mode (opt-in), the FIRST raw Read of indexed, fresh code or dedicated
     Grep in the project is DENIED with a redirect to `graphify query`, then
-    downgrades to the soft nudge. The two tools share one block per session.
-    Bash and Glob stay nudge-only: a compound shell command has no single
-    parseable target and blocking file listing would strand navigation. A Bash
-    command that prints an in-project code file (cat/head/tail/sed -n/nl/less/
-    more/bat, see _bash_read_target) gets the Read nudge for that file, through
-    the same budget, and is never denied.
+    downgrades to the soft nudge. Claude Code and dsh share that one-shot
+    contract; neither host gets a second, stricter policy. A Bash command that
+    prints an in-project code file is routed through the read policy and is never
+    denied.
     Out-of-project and graph-output targets are ignored; stale graphs never block.
     """
     from graphify.paths import out_path
@@ -1607,7 +1629,33 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         except Exception:
             pass
         return
+    # Host-neutral SessionStart guard: orient a fresh session with the same one
+    # line the Claude Code compaction hook restates, and reset the budget when the
+    # source IS a compaction. Hosts whose start event carries startup/resume/clear
+    # sources (DeepSeek Harness) use this instead of `compact`, which only fires on
+    # a compaction; Claude Code keeps `compact` so its behaviour is unchanged.
+    if kind == "session":
+        try:
+            if d.get("hook_event_name", "SessionStart") != "SessionStart":
+                return
+            if d.get("source") == "compact":
+                _reset_hook_session(str(d.get("session_id") or ""))
+            if out_path("graph.json").is_file():
+                sys.stdout.write(_nudge_for_out(_COMPACT_CONTEXT))
+        except Exception:
+            pass
+        return
     t = d.get("tool_input", d)
+    if isinstance(t, str):
+        # Some hosts hand the tool arguments through as the JSON text the model
+        # emitted instead of a parsed object (DeepSeek Harness's Claude-Code
+        # bridge does exactly this: `tool_input` is the raw argument string).
+        # Parsing it here is what keeps the read/search policy applying there;
+        # an unparseable string still fails open below.
+        try:
+            t = json.loads(t) if t.strip() else {}
+        except (ValueError, TypeError):
+            return
     if not isinstance(t, dict):
         return
     try:
@@ -1615,7 +1663,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         # guard below with the file as its target. A reader wins over a search
         # in the same command, since the read nudge names the file's symbols.
         bash_read = False
-        if kind == "search" and d.get("tool_name") in (None, "Bash"):
+        if kind == "search" and _tool_is(d, _TOOL_BASH_NAMES):
             target = _bash_read_target(str(t.get("command", "") or ""), str(d.get("cwd") or ""))
             if target:
                 kind, t, bash_read = "read", {"file_path": target}, True
@@ -1630,7 +1678,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # outside the project emits no project hint (#4961).
             pattern = t.get("pattern")
             is_grep_tool = not cmd_str and isinstance(pattern, str) and bool(pattern) \
-                and d.get("tool_name") in (None, "Grep")
+                and _tool_is(d, _TOOL_SEARCH_NAMES)
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
             if not (is_grep_tool or is_bash_search) or not out_path("graph.json").is_file():
                 return
@@ -1799,10 +1847,9 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 if _nudge_allowed(d):
                     sys.stdout.write(_nudge_for_out(_READ_NUDGE_STALE))
                 return
-            # Strict block: Read tool only, first time per session, not recently
-            # oriented, and the file is demonstrably indexed. Bash stays advisory.
-            tool_name = d.get("tool_name")
-            if not bash_read and _hook_strict_enabled(strict) and tool_name in (None, "Read") \
+            # Strict block: Read tool only, not recently oriented, and the file is
+            # demonstrably indexed. Bash stays advisory.
+            if not bash_read and _hook_strict_enabled(strict) and _tool_is(d, _TOOL_READ_NAMES) \
                     and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
                     and _mark_session_denied(str(d.get("session_id") or "")):
@@ -3587,14 +3634,15 @@ def dispatch_command(cmd: str) -> None:
         # tool calls. Graph guidance reaches the agent via AGENTS.md / skill instead.
         sys.exit(0)
     elif cmd == "hook-guard":
-        # Shell-agnostic Claude/Codebuddy PreToolUse guard (#522). Replaces the old
-        # inline-bash hooks that failed on Windows. Prints an additionalContext nudge
-        # toward graphify when a fresh in-project graph exists; always exits 0. In
-        # strict mode (opt-in, `hook-guard <read|search> --strict`) it blocks the
-        # first raw Read or dedicated Grep per session via the JSON permissionDecision
+        # Shell-agnostic PreToolUse guard (#522). Replaces the old inline-bash
+        # hooks that failed on Windows. Prints an additionalContext nudge toward
+        # graphify when a fresh in-project graph exists; always exits 0. In strict
+        # mode (opt-in, `hook-guard <read|search> --strict`) it blocks the first
+        # raw Read or dedicated Grep per session via the JSON permissionDecision
         # payload — never via exit code — and downgrades to the nudge thereafter.
-        # `hook-guard compact` is the SessionStart (matcher "compact") hook that
-        # resets the session's nudge budget after a context compaction.
+        # `hook-guard compact` is the Claude Code SessionStart (matcher "compact")
+        # hook; `hook-guard session` is the host-neutral SessionStart hook that
+        # also fires on startup/resume/clear.
         _run_hook_guard(
             sys.argv[2] if len(sys.argv) > 2 else "",
             strict="--strict" in sys.argv[3:],

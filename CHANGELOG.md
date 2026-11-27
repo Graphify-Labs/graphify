@@ -122,6 +122,9 @@ Performance work on the extract/build/update pipeline, plus a batch of extractor
 
 The AST cache schema is bumped to 50; warm caches re-run the affected Kotlin, Java, SQL, VB.NET, C++ and Python (sys.path import) extractions.
 
+- Change: **dsh** `graphify dsh install` now checks each profile's installed bridge copy and its version instead of trusting the `package.json` declaration, names the profiles it found, and exits 2 when none of them can mount the bridge. Previously an install with no usable bridge printed the add command but still reported success, so scripts and users saw a green result over an inert guard.
+- Add: **dsh** `graphify dsh doctor` now repairs as well as reports. It adds the pinned bridge to every dsh profile through `dsh plugin add`, rewrites missing skill/hook/overlay wiring while keeping user hook entries and the existing `--strict` choice, reports a double mount instead of silently choosing a scope, and re-checks; `graphify dsh doctor --check` stays read-only for CI and post-upgrade audits.
+
 ## 0.9.113 (2026-11-19)
 
 - Change: **packaging** the minimum Python is now 3.11.5 (was 3.11), and soupsieve is pinned to 4.1.1 for every interpreter. soupsieve's patched releases require 3.11.5, so raising the floor clears the open soupsieve advisories (ReDoS and recursion/polynomial-DoS in the CSS selector parser, reached transitively through beautifulsoup4 in the optional `svg`/`all`/`pdf` extras). Installs on Python 3.11.0-3.11.4 keep resolving to 0.9.112; everyone on 3.11.5 and up is unaffected (#5301, thanks @TPAteeq).

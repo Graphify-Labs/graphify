@@ -67,6 +67,12 @@ def _v8_baseline_ref(platform_key: str) -> str:
         # amp's modulo the install/uninstall command wording (prose, not headings),
         # so amp's v8 body is the correct per-host coverage baseline.
         return f"{_V8_BASELINE_SHA}:graphify/skill-amp.md"
+    if platform_key == "dsh":
+        # `dsh` is a post-v8 platform with no own v8 body. It renders the shared
+        # lean core, so claude's v8 body - the richest superset of that core - is
+        # the per-host coverage baseline; its one hook-heading delta is allowlisted
+        # in _CONSOLIDATION_ALLOWLIST below.
+        return f"{_V8_BASELINE_SHA}:graphify/skill.md"
     return f"{_V8_BASELINE_SHA}:graphify/skill-{platform_key}.md"
 
 # Immutable baseline for --always-on-roundtrip. The six always-on instruction
@@ -200,6 +206,9 @@ _QUERY_STUB = "query-stub/default.md"
 _HOOKS_SOURCE = {
     "claude-md": "references/shared/hooks.md",
     "agents-md": "references/host/hooks-agents-md.md",
+    # dsh wires always-on through the mounted hook bridge, not an instruction
+    # file, so it needs its own body (skill, hooks.json, cordis overlay).
+    "dsh": "references/host/hooks-dsh.md",
 }
 
 # Per-host slots for the agents-md hooks reference template. Rendered EXACTLY as
@@ -243,6 +252,8 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
 _HOOKS_TARGET = {
     "claude-md": "CLAUDE.md",
     "agents-md": "AGENTS.md",
+    # dsh's always-on wiring IS the hook config, so the pointer names it.
+    "dsh": "`.dsh/hooks.json`",
 }
 
 # Allowlist for the per-host coverage audit (waves 2-3 consolidations).
@@ -300,6 +311,13 @@ _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
         "### Step 4 - Build graph and cluster",
         "### Step 5 - Generate report and visualization",
         "### After completing all steps",
+    }),
+    # dsh is post-v8 and has its own hooks reference (the mounted hook bridge,
+    # not an instruction file), so claude's "For native CLAUDE.md integration"
+    # heading is intentionally replaced; the commit-hook and source-read
+    # freshness content is carried verbatim.
+    "dsh": frozenset({
+        "## For native CLAUDE.md integration",
     }),
 }
 
@@ -562,7 +580,11 @@ def _core_to_powershell(body: str) -> str:
 # Step B3's re-run hints name the agent that can write chunk files. A dispatch
 # variant whose host has no `general-purpose` agent names its own (#4494).
 _DEFAULT_WRITER_AGENT = ("general-purpose agent", '`subagent_type="general-purpose"`')
-_WRITER_AGENT = {"pi-subagents": ("the `delegate` agent", "the `delegate` agent")}
+_WRITER_AGENT = {
+    "pi-subagents": ("the `delegate` agent", "the `delegate` agent"),
+    "dsh-subagents": ("a `subagent` delegation with file-write access",
+                      "a `subagent` delegation with file-write access"),
+}
 
 
 def _render_core(platform: Platform) -> str:

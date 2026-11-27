@@ -161,6 +161,16 @@ def test_install_removes_legacy_bash_hook_and_stays_idempotent(tmp_path):
         "graphify hook-guard gemini",
         "graphify hook-check",
         "[ -f graphify-out/graph.json ] && echo x || true",
+        # The executable is not part of the identity: a renamed binary, a wrapper
+        # script, and a quoted install path all still carry graphify's argv tail,
+        # so a re-install replaces the entry instead of appending a second set.
+        "/opt/graphify/bin/gf-guard hook-guard read",
+        "/home/me/bin/hook-wrapper.sh hook-guard search --strict",
+        '"/opt/graph tools/gf.exe" hook-check',
+        "/opt/bin/gf-guard hook-guard session",
+        # Matchers and subcommands compare case-insensitively: a hand-edited or
+        # re-cased command is still ours.
+        "GF-GUARD HOOK-GUARD READ",
     ],
 )
 def test_graphify_commands_are_recognised(command):
@@ -174,10 +184,63 @@ def test_graphify_commands_are_recognised(command):
         "python /tools/check.py",
         "eslint .",
         "",
+        # Near-misses: our subcommand vocabulary, but not our argv shape.
+        "mytool hook-guard scan",
+        "python /tools/check.py hook-guard-read",
+        # The shape must END the command. A user composing our guard with other
+        # shell is their own entry, and uninstall must not eat it.
+        "gf-guard hook-guard read && rm -rf build",
+        "gf-guard hook-guard search | tee hook.log",
     ],
 )
 def test_other_commands_are_not_recognised(command):
     assert not install_mod._is_graphify_hook_command(command)
+
+
+@pytest.mark.parametrize("name", sorted(_INSTALLERS))
+def test_a_reinstall_after_the_exe_path_changed_replaces_the_old_entries(
+    tmp_path, monkeypatch, name
+):
+    """A moved/renamed exe must not leave the previous install's hooks behind.
+
+    Re-installing after switching how graphify is installed (pipx -> uv tool, a
+    venv -> homebrew, or a wrapper script earlier on PATH) changed the command
+    text, so the old entry was no longer recognised: the install appended a
+    second full set and uninstall removed only the second. Both guards then ran
+    on every tool call (PR #5443 review, finding 2).
+    """
+    install, uninstall, rel, section = _INSTALLERS[name]
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    monkeypatch.setattr(
+        install_mod, "_resolve_graphify_exe", lambda project=False: "/opt/old/bin/gf-guard"
+    )
+    install(project)
+    once = _groups(json.loads((project / rel).read_text(encoding="utf-8")), section)
+
+    monkeypatch.setattr(
+        install_mod, "_resolve_graphify_exe", lambda project=False: "/opt/new/bin/gf-guard"
+    )
+    install(project)
+    twice = _groups(json.loads((project / rel).read_text(encoding="utf-8")), section)
+
+    assert len(twice) == len(once), f"{name}: re-install appended a second set of groups"
+    commands = [
+        entry.get("command", "")
+        for group in twice
+        if isinstance(group, dict)
+        for entry in group.get("hooks", [])
+        if isinstance(entry, dict)
+    ]
+    assert not any("/opt/old/" in command for command in commands), (
+        f"{name}: the stale hook survived the re-install"
+    )
+    assert any("/opt/new/" in command for command in commands), f"{name}: new exe not written"
+
+    uninstall(project)
+    after = (project / rel).read_text(encoding="utf-8")
+    assert "hook-guard" not in after, f"{name}: uninstall left a graphify hook behind"
 
 
 def test_strip_drops_only_emptied_groups_and_passes_malformed_through():

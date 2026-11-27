@@ -23,7 +23,9 @@ def _scan_blocks():
             m = re.search(r' -c "\n(.*)\n"', block, re.S)
             if m:
                 found.append((art.path, m.group(1).replace('\\"', '"')))
-    assert len(found) == 31
+    # 33 since `dsh` was added (its SKILL.md and references/update.md each carry
+    # the scan block); every rendered scan is exercised by the parametrized test.
+    assert len(found) == 33
     return found
 
 

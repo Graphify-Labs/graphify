@@ -919,8 +919,11 @@ def test_audit_allowlist_documents_only_consolidations():
     for hs in gen._CONSOLIDATION_ALLOWLIST.values():
         all_allowlisted |= set(hs)
     assert "## For native AGENTS.md integration (Trae)" not in all_allowlisted
-    # Only the two minimal-body hosts carry per-host consolidations.
-    assert set(gen._CONSOLIDATION_ALLOWLIST) == {"kilo", "vscode"}
+    # Only the two minimal-body hosts carry per-host consolidations, plus `dsh`:
+    # a post-v8 host whose hooks reference genuinely replaces claude's
+    # CLAUDE.md-integration section with the mounted-bridge one (its install is
+    # hooks + overlay, not an instruction file).
+    assert set(gen._CONSOLIDATION_ALLOWLIST) == {"kilo", "vscode", "dsh"}
 
 
 # --- the trae / trae-cn native AGENTS.md integration fix -----------------------
