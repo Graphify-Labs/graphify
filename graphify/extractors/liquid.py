@@ -11,6 +11,9 @@ block":
 * ``{% schema %}`` ``blocks[]`` entries -> ``blocks/<type>.liquid``   (``imports``)
 * ``{% schema %}`` ``presets[].blocks`` (nested, list or dict form) -> ``blocks/<type>.liquid``
   when that file exists (``imports``; section-local types get nothing)
+* ``{% schema %}`` ``enabled_on`` / ``disabled_on`` ``templates`` and ``groups``
+  -> ``templates/<x>.json`` (or ``.liquid``) and ``sections/<g>-group.json`` (or ``<g>.json``)
+  (``references``; ``"*"`` gets nothing)
 * ``'x' | asset_url`` / ``inline_asset_content`` -> ``assets/x[.liquid]`` (``references``)
 * ``'a.b' | t`` / ``| translate``       -> key ``a.b`` of the default locale (``references``)
 
@@ -335,6 +338,30 @@ class _Collector:
         else:
             self.file_edge("references", "asset", name, direct, line)
 
+    def _availability(self, data: dict, body: str, line: int) -> None:
+        """``references`` for ``enabled_on`` / ``disabled_on`` templates and section groups."""
+        for key in ("enabled_on", "disabled_on"):
+            spec = data.get(key)
+            if not isinstance(spec, dict):
+                continue
+            key_at = max(body.find(f'"{key}"'), 0)
+            for field, kind in (("templates", "template"), ("groups", "section_group")):
+                names = spec.get(field)
+                if not isinstance(names, list):
+                    continue
+                for name in names:
+                    if not isinstance(name, str) or name == "*" or not name or name.startswith("/") \
+                            or "\\" in name or ".." in name or "\0" in name:
+                        continue
+                    if kind == "template":
+                        candidates = [self.root / "templates" / f"{name}.json", self.root / "templates" / f"{name}.liquid"]
+                    else:
+                        candidates = [self.root / "sections" / f"{name}-group.json", self.root / "sections" / f"{name}.json"]
+                    target = next((c for c in candidates if c.is_file()), candidates[0])
+                    m = re.compile(r'"' + re.escape(name) + '"').search(body, key_at)
+                    entry_line = line + body.count("\n", 0, m.start()) if m else line
+                    self.file_edge("references", kind, name, target, entry_line)
+
     def _preset_blocks(self, data: dict, body: str, line: int) -> None:
         """``imports`` for each ``presets[].blocks`` type (nested too) that has a ``blocks/`` file."""
         presets = data.get("presets")
@@ -375,6 +402,7 @@ class _Collector:
         if not isinstance(data, dict):
             return
         self._preset_blocks(data, body, line)
+        self._availability(data, body, line)
         blocks = data.get("blocks")
         if not isinstance(blocks, list):
             return

@@ -486,6 +486,25 @@ def test_inline_asset_content_filter_links_the_asset(tmp_path):
     assert len(unresolved) == 1 and unresolved[0]["source_location"] == "L2"
 
 
+def test_enabled_and_disabled_on_link_templates_and_groups(tmp_path):
+    schema = json.dumps({
+        "name": "Banner",
+        "enabled_on": {"templates": ["index", "customers/account", "*"], "groups": ["header", "aside"]},
+        "disabled_on": {"templates": ["cart", "ghost"]},
+    }, indent=2)
+    root = _theme(tmp_path, {
+        "templates/index.json": "{}", "templates/customers/account.json": "{}", "templates/cart.liquid": "",
+        "sections/header-group.json": "{}", "sections/aside.json": "{}",
+        "sections/banner.liquid": "{% schema %}\n" + schema + "\n{% endschema %}\n",
+    })
+    assert sorted(x[1] for x in _targets(root, "sections/banner.liquid")) == [
+        "sections/aside.json", "sections/header-group.json",
+        "templates/cart.liquid", "templates/customers/account.json", "templates/index.json",
+    ]
+    unresolved = [e for e in _edges(root, "sections/banner.liquid") if e["confidence"] == "AMBIGUOUS"]
+    assert len(unresolved) == 1 and unresolved[0]["target"].startswith("ref_liquid_template_")
+
+
 def test_preset_blocks_link_existing_block_files_nested_and_dict_form(tmp_path):
     schema = json.dumps({
         "name": "Hero",
