@@ -486,6 +486,22 @@ def test_inline_asset_content_filter_links_the_asset(tmp_path):
     assert len(unresolved) == 1 and unresolved[0]["source_location"] == "L2"
 
 
+def test_content_for_blocks_with_theme_blocks_infers_public_blocks(tmp_path):
+    schema = json.dumps({"name": "S", "blocks": [{"type": "@theme"}, {"type": "@app"}]})
+    root = _theme(tmp_path, {
+        "blocks/card.liquid": "", "blocks/badge.liquid": "", "blocks/_private.liquid": "",
+        "sections/open.liquid": "{% content_for 'blocks' %}\n{% schema %}\n" + schema + "\n{% endschema %}\n",
+        "sections/named.liquid": "{% content_for 'blocks' %}\n{% schema %}\n"
+        + json.dumps({"name": "N", "blocks": [{"type": "card"}]}) + "\n{% endschema %}\n",
+        "sections/no_call.liquid": "{% schema %}\n" + schema + "\n{% endschema %}\n",
+    })
+    inferred = [e for e in _edges(root, "sections/open.liquid") if e["confidence"] == "INFERRED"]
+    assert sorted(Path(e["target_file"]).name for e in inferred) == ["badge.liquid", "card.liquid"]
+    assert {e["relation"] for e in inferred} == {"imports"} and inferred[0]["source_location"] == "L1"
+    assert [e for e in _edges(root, "sections/named.liquid") if e["confidence"] == "INFERRED"] == []
+    assert [e for e in _edges(root, "sections/no_call.liquid") if e["confidence"] == "INFERRED"] == []
+
+
 def test_asset_img_url_filter_links_the_asset(tmp_path):
     root = _theme(tmp_path, {
         "assets/logo.png": "",

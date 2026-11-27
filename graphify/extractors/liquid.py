@@ -9,6 +9,8 @@ block":
 * ``sections 'x'``                      -> ``sections/x.json``        (``imports``)
 * ``content_for 'block', type: 'x'``    -> ``blocks/x.liquid``        (``imports``)
 * ``{% schema %}`` ``blocks[]`` entries -> ``blocks/<type>.liquid``   (``imports``)
+* ``content_for 'blocks'`` in a file whose schema lists ``@theme`` -> every public
+  ``blocks/*.liquid`` (no ``_`` prefix) not linked otherwise (``imports``, ``INFERRED``)
 * ``{% schema %}`` ``presets[].blocks`` (nested, list or dict form) -> ``blocks/<type>.liquid``
   when that file exists (``imports``; section-local types get nothing)
 * ``{% schema %}`` ``enabled_on`` / ``disabled_on`` ``templates`` and ``groups``
@@ -37,7 +39,8 @@ Gates and limits, all fail-closed:
   ``shopify.`` are provided by Shopify and get no edge.
 
 Not covered: the ``{% block %}`` / ``{% partial %}`` preview tags, CSS and app
-references, dynamic ``content_for 'blocks'`` expansion.
+references, ``@app`` blocks, and schemas that accept only named block types
+(``content_for 'blocks'`` then links nothing beyond the schema's own ``blocks[]``).
 """
 from __future__ import annotations
 
@@ -161,6 +164,29 @@ class _Collector:
         self._seen: set[tuple[str, str, int]] = set()
         self._locale: tuple[Path, dict] | None | _Unset = _UNSET
         self._schema_locale: tuple[Path, dict] | None | _Unset = _UNSET
+        self.blocks_line: int | None = None   # first static ``content_for 'blocks'``
+        self.accepts_theme = False            # schema ``blocks`` lists ``@theme``
+
+    def inferred_theme_blocks(self) -> None:
+        """INFERRED ``imports`` to every public ``blocks/*.liquid`` when ``content_for 'blocks'``
+        meets a schema that accepts ``@theme``. Blocks already linked get nothing extra."""
+        if self.blocks_line is None or not self.accepts_theme:
+            return
+        folder = self.root / "blocks"
+        if not folder.is_dir() or not _inside(self.root, folder):
+            return
+        linked = {e["target_file"] for e in self.edges if e.get("target_file")}
+        for block in sorted(folder.glob("*.liquid")):
+            if block.name.startswith("_") or str(block) in linked or block == self.path or not block.is_file():
+                continue
+            target_id = _make_id(str(block))
+            if not self._first(target_id, "imports", self.blocks_line):
+                continue
+            self.edges.append({
+                "source": self.file_id, "target": target_id, "target_file": str(block),
+                "relation": "imports", "confidence": "INFERRED", "confidence_score": 0.6,
+                "source_file": str(self.path), "source_location": f"L{self.blocks_line}", "weight": 1.0,
+            })
 
     def _declare(self, node: dict) -> None:
         if node["id"] not in self._node_ids:
@@ -319,6 +345,8 @@ class _Collector:
                 self.file_edge("imports", "section_group", name, self.root / "sections" / f"{name}.json", line)
         elif tag == "content_for":
             arg = _NAME_ARG.match(rest)
+            if arg and arg.group(2) == "blocks" and self.blocks_line is None:
+                self.blocks_line = line
             if arg and arg.group(2) == "block":
                 m = _BLOCK_TYPE.search(rest[arg.end():])
                 if m and _safe_component(m.group(2)):
@@ -406,6 +434,8 @@ class _Collector:
         blocks = data.get("blocks")
         if not isinstance(blocks, list):
             return
+        if any(isinstance(b, dict) and b.get("type") == "@theme" for b in blocks):
+            self.accepts_theme = True
         search_from = body.find('"blocks"')
         for entry in blocks:
             if not isinstance(entry, dict):
@@ -569,4 +599,5 @@ def extract_liquid(path: Path) -> dict:
     out = _Collector(path, root if root is not None else path.parent)
     if root is not None:
         _scan(src, out)
+        out.inferred_theme_blocks()
     return {"nodes": out.nodes, "edges": out.edges}
