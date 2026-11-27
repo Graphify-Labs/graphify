@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from graphify.ids import DeclIdRegistry
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -161,14 +162,36 @@ def _rust_use_module(argument: str) -> str:
     return clean.split("::")[-1].strip()
 
 
-def _rust_use_bindings(node, source: bytes, prefix: str = "", self_path: str = "") -> list[tuple[str, int]]:
+def _rust_use_path_info(written: str) -> dict | None:
+    """Return path segments for a plain item or module binding, excluding comments/alias."""
+    clean = re.sub(r"/\*.*?\*/|//[^\n]*", " ", written, flags=re.S)
+    clean = clean.strip()
+    path = clean.split(" as ", 1)[0].strip()
+    if not path:
+        return None
+    absolute = path.startswith("::")
+    segments = [part.strip() for part in path.lstrip(":").split("::") if part.strip()]
+    if segments and segments[-1] == "*":
+        segments.pop()
+    if not segments:
+        return None
+    return {
+        "root": segments[0], "segments": segments,
+        "absolute": absolute, "written": clean,
+    }
+
+
+def _rust_use_bindings(
+    node, source: bytes, prefix: str = "", self_path: str = "",
+) -> list[tuple[str, int]]:
     """Each binding of a `use` tree, as the argument of a plain `use` that binds the same
     name, with its line: `a::{b, c as d, e::{self}, f::*}` gives `b`, `c as d`, `a::e`
     and `f::*` (as `use a::b;` and so on would: only the last segment counts). Paths
     keep their text as written."""
     t, line = node.type, node.start_point[0] + 1
     if t == "use_list":
-        return [binding for child in node.named_children for binding in _rust_use_bindings(child, source, prefix, self_path)]
+        return [binding for child in node.named_children
+                for binding in _rust_use_bindings(child, source, prefix, self_path)]
     if t == "scoped_use_list":
         path, group = node.child_by_field_name("path"), node.child_by_field_name("list")
         lead = prefix + source[node.start_byte:group.start_byte].decode("utf-8", errors="replace") if group is not None else ""
@@ -179,7 +202,8 @@ def _rust_use_bindings(node, source: bytes, prefix: str = "", self_path: str = "
         clause, node = node, node.child_by_field_name("path")
         alias = source[node.end_byte:clause.end_byte].decode("utf-8", errors="replace") if node is not None else ""
     if node is not None and node.type == "self" and self_path:  # `a::{self}` binds `a`
-        return [(self_path + alias, line)]
+        binding = self_path + alias
+        return [(binding, line)]
     if node is not None and node.type in ("use_wildcard", "identifier", "scoped_identifier", "crate", "self", "super"):
         return [(prefix + _read_text(node, source) + alias, line)]
     return []
@@ -200,6 +224,48 @@ _RUST_PRIMITIVE_TYPES: frozenset[str] = frozenset({
 })
 
 
+# Macros whose arguments are ordinary Rust expressions. A DSL macro (`table!`,
+# `quote!`, `html!`, nom combinators) also writes `name(...)` but means
+# something else by it, so only these are scanned for calls.
+_RUST_EXPRESSION_MACROS = frozenset({
+    "assert", "assert_eq", "assert_ne", "debug_assert", "debug_assert_eq",
+    "debug_assert_ne", "dbg", "eprint", "eprintln", "format", "format_args",
+    "panic", "print", "println", "todo", "unimplemented", "unreachable", "vec",
+    "write", "writeln", "debug", "error", "info", "trace", "warn",
+})
+
+
+def _rust_macro_arg_calls(token_tree) -> list[tuple[str, int]]:
+    """Bare `f(...)` calls written inside a macro's arguments.
+
+    Tree-sitter keeps macro arguments as a flat token tree, so `println!("{}", f(x))`
+    has no call_expression: it is an `identifier` followed by a `(` token tree.
+    A name after `.` or `::` is a method or path call and is left out, as is a
+    name followed by `!` (a nested macro, which is its own macro_invocation).
+    """
+    found: list[tuple[str, int]] = []
+    stack = [token_tree]
+    while stack:
+        tree = stack.pop()
+        children = tree.children
+        for i, child in enumerate(children):
+            if child.type == "token_tree":
+                stack.append(child)
+                continue
+            if child.type != "identifier" or i + 1 >= len(children):
+                continue
+            nxt = children[i + 1]
+            if nxt.type != "token_tree" or not nxt.children or nxt.children[0].type != "(":
+                continue
+            if i > 0 and children[i - 1].type in (".", "::", "fn", "$", "#"):
+                continue
+            name = child.text.decode("utf-8", errors="replace") if child.text else ""
+            if name:
+                found.append((name, child.start_point[0] + 1))
+    found.sort(key=lambda item: item[1])
+    return found
+
+
 def _rust_qualifier_type(path_node, source: bytes) -> str | None:
     """The type a `Type::f()` call is qualified by, or None for a module path.
 
@@ -213,6 +279,18 @@ def _rust_qualifier_type(path_node, source: bytes) -> str | None:
         return None
     last = _rust_type_last_segment(_read_text(path_node, source))
     return last if last[:1].isupper() or last in _RUST_PRIMITIVE_TYPES else None
+
+
+def _rust_is_trait_ref(node, idx: int, role: str) -> bool:
+    """Whether ref `idx` collected from a trait position is the trait itself.
+
+    A prelude trait is filtered out (`From<A>` leaves only `A`, as a generic
+    argument), and `Fn(A) -> R` sugar, bare or under `for<'a>`, lists its
+    parameter and return types as plain types: neither names the trait.
+    """
+    if node.type == "higher_ranked_trait_bound":
+        node = node.child_by_field_name("type") or node
+    return idx == 0 and role == "type" and node.type != "function_type"
 
 
 def _rust_type_last_segment(text: str) -> str:
@@ -285,6 +363,17 @@ def extract_rust(path: Path) -> dict:
     # are resolved through their own registry rather than the function/type
     # label_to_nid to avoid cross-binding.
     macro_nids_by_name: dict[str, str] = {}
+    # `mod m { .. }` blocks declared in this file, so a `m::f()` call can bind
+    # in-file; `mod m;` declares a module that lives in another file.
+    inline_mods: set[str] = set()
+    _mod_stack = [root]
+    while _mod_stack:
+        _n = _mod_stack.pop()
+        if _n.type == "mod_item" and _n.child_by_field_name("body") is not None:
+            _name = _n.child_by_field_name("name")
+            if _name is not None:
+                inline_mods.add(_read_text(_name, source))
+        _mod_stack.extend(_n.children)
 
     # (bare impl type, method name) -> the method nodes this file's `impl` blocks
     # define, so an in-file `Type::f()` / `self.f()` binds to a method of that type.
@@ -324,6 +413,7 @@ def extract_rust(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    decl_registry = DeclIdRegistry(reserved_ids=(file_nid,))
 
     # Pre-scan the struct/enum/trait names declared in this file so a type used
     # above its declaration resolves exactly as a use below it already does,
@@ -344,6 +434,15 @@ def extract_rust(path: Path) -> dict:
     # impl-scoped items have impl-qualified ids and are not counted.
     items_by_id: dict[str, set[tuple[bool, str]]] = {}
     declared_type_names: dict[str, set[str]] = {}
+
+    # (pre-registry id a member's name would fold to, inside one impl-type's
+    # members) -> every raw spelling that folds there. Keyed the same way
+    # items_by_id keys file-level items, just one level down: a name is only a
+    # collision with another member of the SAME type whose id it folds onto,
+    # not with every other member the type happens to declare (#3302's rule,
+    # impl-block shape). Populated below, inside _scan_type_items's own
+    # impl_item branch.
+    impl_method_names: dict[str, set[str]] = {}
 
     def _scan_type_items(node) -> None:
         t = node.type
@@ -367,8 +466,25 @@ def extract_rust(path: Path) -> dict:
                 refs: list[tuple[str, str]] = []
                 _rust_collect_type_refs(type_node, source, False, refs)
                 bare = next((ref for ref, role in refs if role == "type"), type_name)
-                items_by_id.setdefault(_make_id(stem, type_name), set()).add((True, bare))
+                impl_pre_nid = _make_id(stem, type_name)
+                items_by_id.setdefault(impl_pre_nid, set()).add((True, bare))
                 impl_bare_names[node.start_byte] = bare
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for child in body.children:
+                        if child.type not in (
+                            "function_item", "function_signature_item",
+                            "static_item", "const_item",
+                        ):
+                            continue
+                        member_name_node = child.child_by_field_name("name")
+                        if member_name_node is None:
+                            continue
+                        member_name = _read_text(member_name_node, source)
+                        if not member_name or member_name == "_":
+                            continue
+                        member_key = _make_id(impl_pre_nid, member_name)
+                        impl_method_names.setdefault(member_key, set()).add(member_name)
             return
         if t == "use_declaration":
             return
@@ -395,13 +511,29 @@ def extract_rust(path: Path) -> dict:
     # outcome never depends on declaration order. Repeats of one name (`#[cfg]`
     # twins, an `impl` of a local type) are one member and still share a node.
     def file_item_nid(plain_nid: str, name: str) -> str:
+        nid = plain_nid
         names = {item_name for _is_type, item_name in items_by_id.get(plain_nid, ())}
-        if len(names) < 2 or name not in names:
-            return plain_nid
-        if declared_type_names.get(plain_nid) == {name}:
-            return plain_nid
-        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-        return _make_id(plain_nid, salt)
+        if len(names) >= 2 and name in names and declared_type_names.get(plain_nid) != {name}:
+            salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+            nid = _make_id(plain_nid, salt)
+        return decl_registry.resolve(nid, name, "type", seen_ids)
+
+    # A method/const/static of one impl-block type whose name folds to a
+    # sibling's id (`fn foo` / `fn _foo`, `fn e` / `fn E`) used to mint one
+    # node: the second declaration overwrote the first's, and its own calls
+    # were credited to the survivor. Mirrors file_item_nid just above, minus
+    # the declared-type carve out (a member has no type of its own to prefer
+    # keeping stable) and the decl_registry hop (impl members are never
+    # re-declared the way a trait signature plus its impl are).
+    def impl_member_nid(parent_impl_nid: str, pre_impl_nid: str | None, name: str) -> str:
+        nid = _make_id(parent_impl_nid, name)
+        if pre_impl_nid is None:
+            return nid
+        names = impl_method_names.get(_make_id(pre_impl_nid, name), ())
+        if len(names) >= 2 and name in names:
+            salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+            nid = _make_id(nid, salt)
+        return nid
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = file_item_nid(_make_id(stem, name), name)
@@ -457,6 +589,7 @@ def extract_rust(path: Path) -> dict:
         parent_impl_nid: str | None = None,
         parent_impl_type: str | None = None,
         parent_impl_key: str | None = None,
+        parent_impl_pre_nid: str | None = None,
     ) -> None:
         t = node.type
 
@@ -466,7 +599,7 @@ def extract_rust(path: Path) -> dict:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
-                    func_nid = _make_id(parent_impl_nid, func_name)
+                    func_nid = impl_member_nid(parent_impl_nid, parent_impl_pre_nid, func_name)
                     add_node(func_nid, f".{func_name}()", line)
                     add_edge(parent_impl_nid, func_nid, "method", line)
                     if parent_impl_type:
@@ -498,7 +631,7 @@ def extract_rust(path: Path) -> dict:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
-                    func_nid = _make_id(parent_impl_nid, func_name)
+                    func_nid = impl_member_nid(parent_impl_nid, parent_impl_pre_nid, func_name)
                     add_node(func_nid, f".{func_name}()", line)
                     add_edge(parent_impl_nid, func_nid, "method", line)
                 else:
@@ -552,11 +685,11 @@ def extract_rust(path: Path) -> dict:
                                 continue
                             refs: list[tuple[str, str]] = []
                             _rust_collect_type_refs(sub, source, False, refs, local_type_names)
-                            for idx, (ref_name, _role) in enumerate(refs):
+                            for idx, (ref_name, role) in enumerate(refs):
                                 tgt = ensure_named_node(ref_name, line)
                                 if tgt == item_nid:
                                     continue
-                                rel = "inherits" if idx == 0 else "references"
+                                rel = "inherits" if _rust_is_trait_ref(sub, idx, role) else "references"
                                 if rel == "inherits":
                                     add_edge(item_nid, tgt, "inherits", line)
                                 else:
@@ -687,7 +820,7 @@ def extract_rust(path: Path) -> dict:
                     return
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
-                    item_nid = _make_id(parent_impl_nid, item_name)
+                    item_nid = impl_member_nid(parent_impl_nid, parent_impl_pre_nid, item_name)
                     add_node(item_nid, f".{item_name}", line)
                     add_edge(parent_impl_nid, item_nid, "contains", line)
                 else:
@@ -712,10 +845,12 @@ def extract_rust(path: Path) -> dict:
             impl_nid: str | None = None
             impl_type_bare: str | None = None
             impl_key: str | None = None
+            impl_pre_nid: str | None = None
             if type_node:
                 type_name = _read_text(type_node, source).strip()
+                impl_pre_nid = _make_id(stem, type_name)
                 impl_nid = file_item_nid(
-                    _make_id(stem, type_name), impl_bare_names.get(node.start_byte, type_name)
+                    impl_pre_nid, impl_bare_names.get(node.start_byte, type_name)
                 )
                 add_node(impl_nid, type_name, node.start_point[0] + 1)
                 impl_key = _rust_simple_generic_impl_key(node, source)
@@ -726,11 +861,11 @@ def extract_rust(path: Path) -> dict:
             if trait_node is not None and impl_nid is not None:
                 refs: list[tuple[str, str]] = []
                 _rust_collect_type_refs(trait_node, source, False, refs, local_type_names)
-                for idx, (ref_name, _role) in enumerate(refs):
+                for idx, (ref_name, role) in enumerate(refs):
                     tgt = ensure_named_node(ref_name, node.start_point[0] + 1)
                     if tgt == impl_nid:
                         continue
-                    if idx == 0:
+                    if _rust_is_trait_ref(trait_node, idx, role):
                         add_edge(impl_nid, tgt, "implements", node.start_point[0] + 1)
                     else:
                         add_edge(impl_nid, tgt, "references", node.start_point[0] + 1,
@@ -757,6 +892,7 @@ def extract_rust(path: Path) -> dict:
                         parent_impl_nid=impl_nid,
                         parent_impl_type=impl_type_bare,
                         parent_impl_key=impl_key,
+                        parent_impl_pre_nid=impl_pre_nid,
                     )
             return
 
@@ -805,19 +941,30 @@ def extract_rust(path: Path) -> dict:
                         use_roots.setdefault(bound, set()).add(first)
                         if reexport and bound.isidentifier():
                             edges[-1]["_rust_pub_use"] = {"label": bound, "root": first}
-                module_name = _rust_use_module(_read_text(arg, source))
+                raw_use = _read_text(arg, source)
                 grouped = arg.type in ("use_list", "scoped_use_list")
+                plain_path_info = None if grouped else _rust_use_path_info(raw_use)
+                module_name = _rust_use_module(
+                    raw_use if grouped or plain_path_info is None
+                    else plain_path_info["written"]
+                )
                 if module_name:
                     tgt_nid = _make_id(module_name)
                     add_edge(file_nid, tgt_nid, "imports_from", node.start_point[0] + 1, context="import")
-                    name_use(module_name, _read_text(arg, source))
+                    name_use(module_name, raw_use if plain_path_info is None else plain_path_info["written"])
                     if grouped:  # call evidence as in v8, then dropped (extract.py)
                         edges[-1]["_rust_use_group"] = True
+                    elif plain_path_info is not None:
+                        edges[-1]["_rust_use_module_path"] = plain_path_info
                 # A group imports what the plain `use` of each of its bindings would.
                 for binding, line in _rust_use_bindings(arg, source) if grouped else []:
-                    if binding_name := _rust_use_module(binding):
+                    path_info = _rust_use_path_info(binding)
+                    written_binding = path_info["written"] if path_info is not None else binding
+                    if binding_name := _rust_use_module(written_binding):
                         add_edge(file_nid, _make_id(binding_name), "imports_from", line, context="import")
-                        name_use(binding_name, binding)
+                        name_use(binding_name, written_binding)
+                        if path_info is not None:
+                            edges[-1]["_rust_use_module_path"] = path_info
                         edges[-1]["_rust_use_binding"] = True  # not call evidence: v8 had no such edge
             return
 
@@ -850,6 +997,7 @@ def extract_rust(path: Path) -> dict:
 
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
+    macro_arg_edges: list[dict] = []
 
     def walk_calls(
         node,
@@ -883,10 +1031,48 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-            # Fall through to the generic child recursion below rather than
-            # returning, preserving the prior traversal of the invocation's
-            # subtree (its arguments are a raw token tree, so this neither adds
-            # nor drops any nested edges relative to before).
+            # A call inside the arguments is only a token pattern, not a parsed
+            # call: bind it in-file as INFERRED, or hand it to the cross-file pass.
+            args = next((c for c in node.children if c.type == "token_tree"), None)
+            invoked = macro_node.child_by_field_name("name") if (
+                macro_node is not None and macro_node.type == "scoped_identifier") else macro_node
+            if args is None or invoked is None or (
+                    _read_text(invoked, source) not in _RUST_EXPRESSION_MACROS):
+                args = None
+            for callee_name, line in _rust_macro_arg_calls(args) if args is not None else ():
+                if (
+                    callee_name[:1].isupper()
+                    or callee_name in _LANGUAGE_BUILTIN_GLOBALS
+                    or callee_name in _RUST_BUILTIN_TYPES
+                    or callee_name.lower() in _RUST_TRAIT_METHOD_BLOCKLIST
+                ):
+                    continue
+                tgt_nid = label_to_nid.get(callee_name)
+                if tgt_nid in type_nids:
+                    continue
+                if tgt_nid:
+                    if tgt_nid != caller_nid:
+                        macro_arg_edges.append({
+                            "source": caller_nid,
+                            "target": tgt_nid,
+                            "relation": "calls",
+                            "context": "macro_argument_call",
+                            "confidence": "INFERRED",
+                            "confidence_score": 0.85,
+                            "source_file": str_path,
+                            "source_location": f"L{line}",
+                            "weight": 1.0,
+                        })
+                    continue
+                raw_calls.append({
+                    "caller_nid": caller_nid,
+                    "callee": callee_name,
+                    "is_member_call": False,
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                })
+            # Fall through to the generic child recursion below; the token tree
+            # holds no call_expression, so nothing is counted twice.
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
             callee_name: str | None = None
@@ -937,6 +1123,16 @@ def extract_rust(path: Path) -> dict:
                         tgt_nid = named if named in type_nids else None
                 elif is_member_call:
                     tgt_nid = method_label_to_nid.get(callee_name)
+                elif is_scoped_call:
+                    # `m::f()` names module m. It is in this file only for
+                    # `self::f()` or an inline `mod m { .. }` declared here; any
+                    # other module lives in another file, so the bare-name match
+                    # would bind `crate::b::helper()` to this file's own helper.
+                    path_node = func_node.child_by_field_name("path") if func_node else None
+                    qual = _read_text(path_node, source) if path_node is not None else ""
+                    head = qual.split("::")[-1].strip()
+                    tgt_nid = label_to_nid.get(callee_name) if (
+                        qual == "self" or head in inline_mods) else None
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
@@ -955,7 +1151,29 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-                elif not is_scoped_call and callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
+                elif is_scoped_call:
+                    # A module-qualified call (`crate::m::f()`, `m::f()`, `super::m::f()`)
+                    # goes to the cross-file pass with its qualifier, which binds it only
+                    # when the qualifier matches the candidate's module path and exactly
+                    # one candidate survives. Bare last-segment lookup stays off (#908).
+                    qual_node = func_node.child_by_field_name("path")
+                    qualifier = _read_text(qual_node, source) if qual_node else ""
+                    # `use std::fs; fs::read()` names std's fs, never a local `fs.rs`.
+                    first_seg = qualifier.split("::", 1)[0].split("<", 1)[0].strip()
+                    roots = use_roots.get(first_seg, {"crate"})
+                    if not roots <= {"crate", "super", "self"}:
+                        qualifier = ""
+                    if qualifier:
+                        raw_calls.append({
+                            "caller_nid": caller_nid,
+                            "callee": callee_name,
+                            "is_member_call": False,
+                            "is_scoped_call": True,
+                            "scope_qualifier": qualifier,
+                            "source_file": str_path,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                        })
+                elif callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
                     rc_entry = {
                         "caller_nid": caller_nid,
                         "callee": callee_name,
@@ -973,6 +1191,13 @@ def extract_rust(path: Path) -> dict:
 
     for caller_nid, body_node, impl_type, impl_key in function_bodies:
         walk_calls(body_node, caller_nid, impl_type, impl_key)
+    # Added last: a parsed call to the same target in the same function keeps
+    # its EXTRACTED edge instead of being deduped behind the token-pattern one.
+    for edge in macro_arg_edges:
+        pair = (edge["source"], edge["target"])
+        if pair not in seen_call_pairs:
+            seen_call_pairs.add(pair)
+            edges.append(edge)
 
     for node in nodes:
         if not node["source_file"] and node["label"] in use_roots:

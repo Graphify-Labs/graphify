@@ -1,11 +1,14 @@
 # fetch URLs (tweet/arxiv/pdf/web) and save as annotated markdown
 from __future__ import annotations
+from collections.abc import Callable
+from contextlib import suppress
 import json
 import re
 import uuid
 import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
+from os import linesep
 from pathlib import Path
 
 from graphify.security import safe_fetch, safe_fetch_text, validate_url
@@ -226,7 +229,7 @@ def _free_capture_path(target_dir: Path, filename: str) -> Path:
 
     Uses lstat so no existing directory entry is replaced, including a
     dangling symlink that a write would otherwise follow out of the corpus.
-    Selection and writing are separate; concurrent captures are not atomic.
+    The writer still needs an exclusive open to reserve the selected name.
     """
     stem, suffix = Path(filename).stem, Path(filename).suffix
     out_path = target_dir / filename
@@ -240,11 +243,32 @@ def _free_capture_path(target_dir: Path, filename: str) -> Path:
         counter += 1
 
 
+def _write_capture(target_dir: Path, filename: str, content: str | Callable[[], bytes]) -> Path:
+    """Write a capture under a unique name without clobbering another writer."""
+    out_path = _free_capture_path(target_dir, filename)
+    # Inspect the destination before fetching, and fetch at most once per capture.
+    payload = content() if callable(content) else content
+    if isinstance(payload, str):
+        # Preserve the newline translation of Path.write_text on Windows.
+        payload = payload.replace("\n", linesep).encode("utf-8")
+    while True:
+        try:
+            handle = out_path.open("xb")
+        except FileExistsError:
+            out_path = _free_capture_path(target_dir, filename)
+            continue
+        try:
+            with handle:
+                handle.write(payload)
+        except (OSError, UnicodeError):
+            with suppress(OSError):
+                out_path.unlink()
+            raise
+        return out_path
+
+
 def _download_binary(url: str, suffix: str, target_dir: Path) -> Path:
-    """Save a sequential capture without replacing an existing directory entry."""
-    out_path = _free_capture_path(target_dir, _safe_filename(url, suffix))
-    out_path.write_bytes(safe_fetch(url))
-    return out_path
+    return _write_capture(target_dir, _safe_filename(url, suffix), lambda: safe_fetch(url))
 
 
 def ingest(url: str, target_dir: Path, author: str | None = None, contributor: str | None = None) -> Path:
@@ -288,8 +312,7 @@ def ingest(url: str, target_dir: Path, author: str | None = None, contributor: s
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise RuntimeError(f"ingest: failed to fetch {url!r}: {exc}") from exc
 
-    out_path = _free_capture_path(target_dir, filename)
-    out_path.write_text(content, encoding="utf-8")
+    out_path = _write_capture(target_dir, filename, content)
     print(f"Saved {url_type}: {out_path.name}")
     return out_path
 

@@ -541,3 +541,58 @@ def test_redact_secrets_does_not_mangle_hashes_and_ids():
         "class AkiaConfigProvider implements Provider",
     ):
         assert redact_secrets(benign) == benign, benign
+
+
+def test_redact_secrets_url_userinfo_edge_cases():
+    # Empty user (redis), `@` and `/` inside the password: all redacted up to
+    # the last `@`, host kept.
+    from graphify.security import redact_secrets
+    assert redact_secrets("redis://:s3cretpass@cache.internal") == "redis://[redacted]@cache.internal"
+    assert redact_secrets("https://svc:p@ss@host/x") == "https://[redacted]@host/x"
+    assert redact_secrets("https://svc:ab/cd@host") == "https://[redacted]@host"
+
+
+def test_redact_secrets_url_without_userinfo_untouched():
+    from graphify.security import redact_secrets
+    for benign in (
+        "https://host:8080/path?email=a@b.com",
+        "see https://example.com:443/a and mail ops@example.com",
+    ):
+        assert redact_secrets(benign) == benign, benign
+
+
+def test_redact_secrets_pem_body_redacted():
+    from graphify.security import redact_secrets
+    body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"
+    full = f"key:\n-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\nafter"
+    assert redact_secrets(full) == "key:\n[redacted]\nafter"
+    # No END line (e.g. a truncated docstring): everything after the header goes.
+    assert body not in redact_secrets(f"-----BEGIN PRIVATE KEY-----\n{body}")
+
+
+def test_redact_secrets_tokens_glued_to_identifiers():
+    from graphify.security import redact_secrets
+    for secret, text in (
+        ("AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE_prod"),
+        ("ghp_" + "a" * 36, "token_ghp_" + "a" * 36),
+        ("AIza" + "b" * 35, "AIza" + "b" * 35 + "_backup"),
+    ):
+        out = redact_secrets(text)
+        assert secret not in out and "[redacted]" in out, text
+
+
+def test_redact_secrets_slack_refresh_and_short_jwt():
+    from graphify.security import redact_secrets
+    for secret in (
+        "xoxe-1-" + "c" * 40,
+        "eyJhbGciOiJIUzI1NiJ9.e30." + "d" * 43,
+    ):
+        out = redact_secrets(f"see {secret} here")
+        assert secret not in out and "[redacted]" in out, secret
+
+
+def test_redact_secrets_sk_prefix_prose_untouched():
+    from graphify.security import redact_secrets
+    benign = "# NOTE: use the sk-learn-compatible-estimator-wrapper here"
+    assert redact_secrets(benign) == benign
+    assert "[redacted]" in redact_secrets("key sk-proj-" + "a1" * 12)

@@ -1,12 +1,113 @@
 """Community detection on NetworkX graphs. Uses Leiden (graspologic) if available, falls back to Louvain (networkx). Splits oversized communities. Returns cohesion scores."""
 from __future__ import annotations
+import collections.abc
 import contextlib
+import hashlib
 import inspect
 import io
 import json
 import os
 import sys
+from collections import Counter
+from pathlib import Path
 import networkx as nx
+
+
+# Sidecar that caches the last computed community assignment next to graph.json,
+# keyed by a hash of the graph topology that produced it (see _topology_hash).
+_PARTITION_CACHE_NAME = ".graphify_partition_cache.json"
+
+
+def _topology_hash(
+    G: nx.Graph,
+    *,
+    resolution: float,
+    exclude_hubs_percentile: float | None,
+    ambiguous_scale: float,
+) -> str:
+    """Cheap, order-independent fingerprint of everything that affects the
+    partition: the node set, the weighted + confidence-tagged edge set, and the
+    clustering parameters.
+
+    Node and edge contributions are folded in by XORing each element's SHA-256,
+    so the result is independent of NetworkX's (hash-seed-dependent) iteration
+    order without paying for a global sort of nodes or edges - the whole point is
+    to be dramatically cheaper than the community detection it guards. Edge
+    endpoints are canonicalised as an unordered pair so the (A,B)/(B,A)
+    adjacency-order flip #1667 describes does not change the hash.
+
+    Raw ``weight`` and ``confidence`` are hashed (not the post-scaling effective
+    weight) together with ``ambiguous_scale``; since the reweight in cluster() is
+    a deterministic function of exactly those, equal inputs here mean an
+    identical effective graph, hence an identical partition.
+    """
+    acc_nodes = 0
+    for n in G.nodes():
+        d = hashlib.sha256(b"n\x00" + str(n).encode("utf-8", "replace")).digest()
+        acc_nodes ^= int.from_bytes(d, "big")
+    acc_edges = 0
+    for u, v, attrs in G.edges(data=True):
+        a, b = sorted((str(u), str(v)))
+        w = repr(float(attrs.get("weight", 1.0)))
+        c = str(attrs.get("confidence", ""))
+        payload = ("e\x00" + a + "\x01" + b + "\x01" + w + "\x01" + c).encode(
+            "utf-8", "replace"
+        )
+        acc_edges ^= int.from_bytes(hashlib.sha256(payload).digest(), "big")
+    h = hashlib.sha256()
+    h.update(
+        repr(
+            (
+                "topology-v1",
+                float(resolution),
+                None if exclude_hubs_percentile is None else float(exclude_hubs_percentile),
+                float(ambiguous_scale),
+                bool(G.is_directed()),
+                G.number_of_nodes(),
+                G.number_of_edges(),
+            )
+        ).encode("utf-8")
+    )
+    h.update(acc_nodes.to_bytes(32, "big"))
+    h.update(acc_edges.to_bytes(32, "big"))
+    return "v1:" + h.hexdigest()
+
+
+def _load_cached_partition(
+    cache_path: "str | Path", topo_hash: str
+) -> dict[int, list[str]] | None:
+    """Return the cached community assignment iff it was computed for exactly this
+    topology hash, else None. Any read/parse problem returns None (fail open)."""
+    try:
+        raw = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("topology_hash") != topo_hash:
+        return None
+    comms = raw.get("communities")
+    if not isinstance(comms, dict):
+        return None
+    try:
+        return {int(cid): list(nodes) for cid, nodes in comms.items()}
+    except (TypeError, ValueError):
+        return None
+
+
+def _store_cached_partition(
+    cache_path: "str | Path", topo_hash: str, communities: dict[int, list[str]]
+) -> None:
+    """Persist ``communities`` keyed by ``topo_hash`` beside the graph, atomically."""
+    from graphify.paths import write_json_atomic
+
+    write_json_atomic(
+        cache_path,
+        {
+            "version": 1,
+            "topology_hash": topo_hash,
+            "communities": {str(cid): nodes for cid, nodes in communities.items()},
+        },
+        ensure_ascii=False,
+    )
 
 
 def _suppress_output():
@@ -20,7 +121,39 @@ def _suppress_output():
     return contextlib.redirect_stdout(io.StringIO())
 
 
-def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None:
+def _sorted_native_edges(G: nx.Graph) -> list[tuple[str, str, float]] | None:
+    # A simple graph has one edge per unordered pair. The stable graph inserts
+    # nodes and edges in lexical order, so its edge iterator emits precisely
+    # these canonical pairs in the same order, including self-loops.
+    edges: list[tuple[str, str, float]] = []
+    for u, v, attrs in G.edges(data=True):
+        # Preserve the stable graph's argument validation and any custom
+        # conversions by leaving unusual attributes on the existing path.
+        if type(attrs) is not dict:
+            return None
+        weight = attrs.get("weight", 1.0)
+        if type(weight) not in (float, int, str, bool):
+            return None
+        if (
+            "self" in attrs
+            or "u_of_edge" in attrs
+            or "v_of_edge" in attrs
+            or any(type(key) is not str for key in attrs)
+        ):
+            return None
+        if v < u:
+            u, v = v, u
+        edges.append((u, v, float(weight)))
+    edges.sort()
+    return edges
+
+
+def _native_leiden(
+    G: nx.Graph,
+    resolution: float,
+    *,
+    stable_graph: collections.abc.Callable[[], nx.Graph] | None = None,
+) -> dict[str, int] | None:
     """Call graspologic_native.leiden() directly, bypassing graspologic's own
     package import.
 
@@ -35,41 +168,55 @@ def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None
 
     Returns None (the caller falls through to the graspologic.partition.leiden
     path, then to the networkx Louvain fallback) if graspologic_native isn't
-    installed, or if `stable` isn't the plain undirected, non-multigraph
-    input leiden actually supports — the same shape check
+    installed, or if the graph used for Leiden isn't undirected and simple,
+    the input Leiden actually supports — the same shape check
     graspologic.partition.leiden itself makes before calling the same native
-    function.
+    function. If provided, `stable_graph` supplies the canonically ordered
+    graph only when the direct edge preparation cannot be used.
     """
     try:
         import graspologic_native as gn
     except ImportError:
         return None
 
-    if stable.is_directed() or stable.is_multigraph():
-        return None
-
-    # graspologic_native identifies nodes by their string form; two DISTINCT
-    # node objects that happen to stringify the same way would silently merge
-    # under it (this is exactly what graspologic.partition.leiden's own
-    # _IdentityMapper guards against). Graphify's own node IDs are already
-    # unique strings by construction — extractors/resolution.py's
-    # _disambiguate_colliding_node_ids salts any two distinct nodes that would
-    # otherwise share a string id before the graph is ever built — so this is
-    # a defensive check on an assumption that should never actually trip, not
-    # an expected path. One pass over the nodes, cheaper than an
-    # _IdentityMapper-style dict-store-per-edge-endpoint.
+    edges = None
+    if stable_graph is not None and type(G) is nx.Graph and all(type(node) is str for node in G):
+        try:
+            edges = _sorted_native_edges(G)
+        except (ValueError, OverflowError):
+            pass  # Retry with the stable graph's original conversion and validation order.
     id_to_node: dict[str, object] = {}
-    for node in stable.nodes():
-        key = str(node)
-        existing = id_to_node.get(key)
-        if existing is not None and existing != node:
-            return None  # let graspologic.partition.leiden's own check handle/raise on this
-        id_to_node[key] = node
+    if edges is not None:
+        nodes = sorted(G)
+        id_to_node = {node: node for node in nodes}
+    else:
+        if stable_graph is not None:
+            G = stable_graph()
+        if G.is_directed() or G.is_multigraph():
+            return None
 
-    edges = [
-        (str(u), str(v), float(attrs.get("weight", 1.0)))
-        for u, v, attrs in stable.edges(data=True)
-    ]
+        # graspologic_native identifies nodes by their string form; two DISTINCT
+        # node objects that happen to stringify the same way would silently merge
+        # under it (this is exactly what graspologic.partition.leiden's own
+        # _IdentityMapper guards against). Graphify's own node IDs are already
+        # unique strings by construction — extractors/resolution.py's
+        # _disambiguate_colliding_node_ids salts any two distinct nodes that would
+        # otherwise share a string id before the graph is ever built — so this is
+        # a defensive check on an assumption that should never actually trip, not
+        # an expected path. One pass over the nodes, cheaper than an
+        # _IdentityMapper-style dict-store-per-edge-endpoint.
+        nodes = G.nodes()
+        for node in nodes:
+            key = str(node)
+            existing = id_to_node.get(key)
+            if existing is not None and existing != node:
+                return None  # let graspologic.partition.leiden's own check handle/raise on this
+            id_to_node[key] = node
+
+        edges = [
+            (str(u), str(v), float(attrs.get("weight", 1.0)))
+            for u, v, attrs in G.edges(data=True)
+        ]
 
     try:
         old_stderr = sys.stderr
@@ -96,26 +243,14 @@ def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None
         for node_id, community in native_partitions.items()
     }
     next_community = max(partition.values(), default=-1) + 1
-    for node in stable.nodes():
+    for node in nodes:
         if node not in partition:
             partition[node] = next_community
             next_community += 1
     return partition
 
 
-def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
-    """Run community detection. Returns {node_id: community_id}.
-
-    Tries Leiden (graspologic_native directly, then graspologic) first — best
-    quality. Falls back to Louvain (built into networkx) if neither is
-    installed.
-
-    resolution > 1.0 → more, smaller communities.
-    resolution < 1.0 → fewer, larger communities.
-
-    Output from graspologic is suppressed to prevent ANSI escape codes
-    from corrupting terminal scroll buffers on Windows PowerShell 5.1.
-    """
+def _stable_partition_graph(G: nx.Graph) -> nx.Graph:
     stable = nx.Graph()
     stable.add_nodes_from(sorted(G.nodes(), key=str))
     # Canonicalise the endpoint pair before sorting. On an undirected graph the
@@ -133,16 +268,47 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
         G.edges(data=True),
         key=lambda row: (
             *sorted((str(row[0]), str(row[1]))),
-            json.dumps(row[2], sort_keys=True, ensure_ascii=False, default=str),
+            # Tie-break only. On a non-multigraph nx.Graph the unordered endpoint
+            # pair above is already unique per edge, so this third element never
+            # actually decides the order between two distinct edges - it exists
+            # purely for determinism. A cheap float therefore produces the exact
+            # same ordering as the former json.dumps(row[2], sort_keys=True) of
+            # the whole attr dict, without re-serialising every edge in pure
+            # Python ahead of the fast native Leiden call.
+            float(row[2].get("weight", 1.0)),
         ),
     )
     for src, tgt, attrs in edge_rows:
         stable.add_edge(src, tgt, **attrs)
+    return stable
 
-    native_result = _native_leiden(stable, resolution)
+
+def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
+    """Run community detection. Returns {node_id: community_id}.
+
+    Tries Leiden (graspologic_native directly, then graspologic) first — best
+    quality. Falls back to Louvain (built into networkx) if neither is
+    installed.
+
+    resolution > 1.0 → more, smaller communities.
+    resolution < 1.0 → fewer, larger communities.
+
+    Output from graspologic is suppressed to prevent ANSI escape codes
+    from corrupting terminal scroll buffers on Windows PowerShell 5.1.
+    """
+    stable = None
+
+    def get_stable_graph() -> nx.Graph:
+        nonlocal stable
+        if stable is None:
+            stable = _stable_partition_graph(G)
+        return stable
+
+    native_result = _native_leiden(G, resolution, stable_graph=get_stable_graph)
     if native_result is not None:
         return native_result
 
+    stable = get_stable_graph()
     try:
         from graspologic.partition import leiden
         lsig = inspect.signature(leiden).parameters
@@ -235,6 +401,7 @@ def cluster(
     resolution: float = 1.0,
     exclude_hubs_percentile: float | None = None,
     ambiguous_scale: float = 0.5,
+    cache_dir: "str | Path | None" = None,
 ) -> dict[int, list[str]]:
     """Run Leiden community detection. Returns {community_id: [node_ids]}.
 
@@ -261,6 +428,14 @@ def cluster(
         graph and in `/graphify path`/`explain` output — only partitioning
         is affected). Overridden by ``GRAPHIFY_AMBIGUOUS_SCALE`` env var
         when that is set to a parseable float. See #4199.
+    cache_dir: if set, a directory (normally the graphify-out/ beside
+        graph.json) where the computed partition is persisted keyed by a hash
+        of the graph topology. When ``cluster()`` is next called with a graph
+        whose topology hash matches the cached one, the cached assignment is
+        reused instead of re-running community detection — it is exactly what a
+        recompute would produce for the same graph. Any cache miss, missing or
+        corrupt sidecar, or unwritable directory falls through to a normal
+        recompute (fail open). Omit (``None``) to disable caching entirely.
     """
     if G.number_of_nodes() == 0:
         return {}
@@ -272,12 +447,37 @@ def cluster(
     # #4199 — scale AMBIGUOUS edge weights so they do not warp partitioning.
     # Env override lets `GRAPHIFY_AMBIGUOUS_SCALE=1.0 graphify ...` restore the
     # pre-fix behavior without a code change. Malformed values are ignored.
+    # Resolved here, BEFORE the partition-cache key is computed, so the cache is
+    # keyed on the scale actually applied below.
     env_scale = os.environ.get("GRAPHIFY_AMBIGUOUS_SCALE")
     if env_scale is not None:
         try:
             ambiguous_scale = float(env_scale)
         except ValueError:
             pass
+
+    # Partition cache: cluster() is deterministic for a fixed graph + params +
+    # hash seed, so a topology-hash match means the persisted assignment is
+    # exactly what community detection would recompute — reuse it and skip the
+    # whole (full-graph) partition + split + re-index pipeline. Fail open on any
+    # problem (compute normally). The hash is cheap next to clustering.
+    _cache_path = None
+    _topo_hash = None
+    if cache_dir is not None:
+        try:
+            _cache_path = Path(cache_dir) / _PARTITION_CACHE_NAME
+            _topo_hash = _topology_hash(
+                G,
+                resolution=resolution,
+                exclude_hubs_percentile=exclude_hubs_percentile,
+                ambiguous_scale=ambiguous_scale,
+            )
+            _cached = _load_cached_partition(_cache_path, _topo_hash)
+            if _cached is not None:
+                return _cached
+        except Exception:
+            _cache_path = None
+
     if ambiguous_scale != 1.0 and any(
         d.get("confidence") == "AMBIGUOUS" for _, _, d in G.edges(data=True)
     ):
@@ -388,7 +588,17 @@ def cluster(
     # permute run-to-run - which reads as massive "community churn" in a per-node
     # cid diff even though the actual grouping is reproducible (#1090 follow-up).
     final_communities.sort(key=lambda nodes: (-len(nodes), tuple(sorted(map(str, nodes)))))
-    return {i: sorted(nodes) for i, nodes in enumerate(final_communities)}
+    result = {i: sorted(nodes) for i, nodes in enumerate(final_communities)}
+
+    # Persist the assignment keyed by this run's topology hash so an unchanged
+    # graph reuses it next time. Fail open: a write problem must never fail the
+    # build — the cache is a pure optimization.
+    if _cache_path is not None and _topo_hash is not None:
+        try:
+            _store_cached_partition(_cache_path, _topo_hash, result)
+        except Exception:
+            pass
+    return result
 
 
 def _split_community(G: nx.Graph, nodes: list[str]) -> list[list[str]]:
@@ -415,20 +625,68 @@ def cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
     if n <= 1:
         return 1.0
     subgraph = G.subgraph(community_nodes)
-    # Exclude self-loops. ``build_from_json`` deliberately keeps recursive
+    # Exclude self-loops (#3558). ``build_from_json`` deliberately keeps recursive
     # ``calls`` self-edges ("real program structure rather than
     # import-resolution artifacts"), but ``possible`` below counts distinct
     # node PAIRS only, so a self-loop adds to the numerator without adding to
     # the denominator and pushes the ratio past 1.0 -- a two-node community
     # holding one recursive function scores 2.0. Drop them so numerator and
     # denominator measure the same thing.
-    actual = subgraph.number_of_edges() - nx.number_of_selfloops(subgraph)
+    # Similarly, on a MultiGraph (parallel edges between same endpoints) or a
+    # DiGraph (reciprocal u->v and v->u edges), multiple edges joining the
+    # same pair must not inflate the numerator beyond 1 connection per pair.
+    if subgraph.is_multigraph() or subgraph.is_directed():
+        actual = len({tuple(sorted((str(u), str(v)))) for u, v in subgraph.edges() if u != v})
+    else:
+        actual = subgraph.number_of_edges() - nx.number_of_selfloops(subgraph)
     possible = n * (n - 1) / 2
-    return actual / possible if possible > 0 else 0.0
+    return min(1.0, actual / possible) if possible > 0 else 0.0
 
 
 def score_all(G: nx.Graph, communities: dict[int, list[str]]) -> dict[int, float]:
-    return {cid: cohesion_score(G, nodes) for cid, nodes in communities.items()}
+    """Compute cohesion_score for all communities in a single O(|E|) pass."""
+    if not communities:
+        return {}
+    node_comm: dict[str, int] = {}
+    for cid, nodes in communities.items():
+        if len(nodes) <= 1:
+            continue
+        for node in nodes:
+            if node in node_comm:
+                # Overlapping communities passed by a custom caller: fall back per-community.
+                return {c: cohesion_score(G, ns) for c, ns in communities.items()}
+            node_comm[node] = cid
+
+    if G.is_multigraph() or G.is_directed():
+        seen_pairs: dict[int, set[tuple[str, str]]] = {
+            cid: set() for cid, nodes in communities.items() if len(nodes) > 1
+        }
+        for u, v in G.edges():
+            if u == v:
+                continue
+            cu = node_comm.get(u)
+            if cu is not None and cu == node_comm.get(v):
+                su, sv = str(u), str(v)
+                seen_pairs[cu].add((su, sv) if su <= sv else (sv, su))
+        counts = {cid: len(pairs) for cid, pairs in seen_pairs.items()}
+    else:
+        counts = {cid: 0 for cid, nodes in communities.items() if len(nodes) > 1}
+        for u, v in G.edges():
+            if u == v:
+                continue
+            cu = node_comm.get(u)
+            if cu is not None and cu == node_comm.get(v):
+                counts[cu] += 1
+
+    result: dict[int, float] = {}
+    for cid, nodes in communities.items():
+        n = len(nodes)
+        if n <= 1:
+            result[cid] = 1.0
+        else:
+            possible = n * (n - 1) / 2
+            result[cid] = min(1.0, counts[cid] / possible) if possible > 0 else 0.0
+    return result
 
 
 def remap_communities_to_previous(
@@ -443,17 +701,16 @@ def remap_communities_to_previous(
     if not communities:
         return {}
 
-    new_sets = {cid: set(nodes) for cid, nodes in communities.items()}
-    old_sets: dict[int, set[str]] = {}
-    for node, old_cid in previous_node_community.items():
-        old_sets.setdefault(old_cid, set()).add(node)
-
+    # Count only community pairs that share a node. Deduplicate members
+    # for the overlap count to preserve the original set semantics.
     overlaps: list[tuple[int, int, int]] = []
-    for old_cid, old_nodes in old_sets.items():
-        for new_cid, new_nodes in new_sets.items():
-            overlap = len(old_nodes & new_nodes)
-            if overlap > 0:
-                overlaps.append((overlap, old_cid, new_cid))
+    for new_cid, nodes in communities.items():
+        counts = Counter(
+            previous_node_community[node]
+            for node in set(nodes)
+            if node in previous_node_community
+        )
+        overlaps.extend((count, old_cid, new_cid) for old_cid, count in counts.items())
     overlaps.sort(key=lambda x: (-x[0], x[1], x[2]))
 
     new_to_final: dict[int, int] = {}

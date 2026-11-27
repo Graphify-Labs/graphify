@@ -1109,8 +1109,9 @@ def test_sql_commented_out_create_table_is_not_recovered(tmp_path):
 def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
     """T-SQL CREATE PROCEDURE [Schema].[Name] ... AS BEGIN...END.
 
-    The grammar has no create_procedure parse for T-SQL's AS BEGIN...END body
-    idiom, so the statement lands in ERROR recovery — where a name pattern
+    Up to tree-sitter-sql 0.3.11 the grammar has no create_procedure parse for
+    T-SQL's AS BEGIN...END body idiom (0.3.12+ partially parses it, #5236), so
+    the statement lands in ERROR recovery — where a name pattern
     without a bracket-delimited alternative recovered nothing. In a T-SQL
     codebase that brackets every identifier (a common house standard), that
     made every stored procedure invisible.
@@ -1620,16 +1621,53 @@ def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
     the first closing quote truncated the recovered name to "dbo"."a" — the
     "" twin of the bracket ]] escape handled above.
 
-    The AS BEGIN body idiom keeps the whole statement in ERROR recovery: for a
-    statement the grammar CAN parse, tree-sitter-sql itself truncates the
-    object_reference at the "" escape (emitting `"b"` as a stray ERROR child),
-    which is an upstream grammar defect this extractor cannot repair."""
+    Where the grammar parses the statement (from tree-sitter-sql 0.3.12 even
+    this AS BEGIN idiom), it truncates the object_reference at the "" escape
+    and emits `"b"` as a stray ERROR child; the recovery scan's full name then
+    replaces the walk's truncated one (#5236)."""
     pytest.importorskip("tree_sitter_sql")
     p = tmp_path / "fn.sql"
     p.write_text('CREATE PROCEDURE "dbo"."a""b"\nAS\nBEGIN\n    SELECT 1;\nEND;\n')
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "fn.sql"]
     assert routine == ['"dbo"."a""b"()'], routine
+
+
+_TSQL_BODY = "\nAS\nBEGIN\n    INSERT INTO dbo.Debtors (Id) SELECT Id FROM staging.Debtors;\nEND;\n"
+
+
+@pytest.mark.parametrize("header, expected", [
+    ("CREATE PROCEDURE p @x INT", "p()"),
+    ("CREATE PROCEDURE s.p @x INT", "s.p()"),
+    ("CREATE PROCEDURE [s].[p] @x INT", "s.p()"),
+    ('CREATE PROCEDURE "a""b"', '"a""b"()'),
+    ('CREATE PROCEDURE "s"."a""b"', '"s"."a""b"()'),
+    ("CREATE PROCEDURE [a]]b]", "a]b()"),
+])
+def test_sql_partially_parsed_routine_header_yields_one_node(tmp_path, header, expected):
+    """#5236: from tree-sitter-sql 0.3.12 the grammar parses T-SQL procedure
+    headers but misreads the name (absorbs unparenthesised params, takes the
+    param type, or stops at a "" / ]] escape). The walk and the recovery scan
+    then named one declaration twice."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text(header + _TSQL_BODY)
+    r = extract_sql(p)
+    routines = [n for n in r["nodes"] if n["label"].endswith("()")]
+    assert [n["label"] for n in routines] == [expected]
+    rid = routines[0]["id"]
+    rels = sorted((e["relation"], e["target"]) for e in r["edges"] if e["source"] == rid)
+    assert rels == sorted({*rels}), rels
+    assert {rel for rel, _ in rels} == {"reads_from", "writes_to"}
+
+
+def test_sql_escaped_quote_function_name_yields_one_node(tmp_path):
+    """#5236: same truncation for CREATE FUNCTION, already broken on 0.3.11."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "fn.sql"
+    p.write_text('CREATE FUNCTION "a""b"() RETURNS INT AS $$ SELECT 1 $$ LANGUAGE sql;\n')
+    labels = [n["label"] for n in extract_sql(p)["nodes"] if n["label"].endswith("()")]
+    assert labels == ['"a""b"()']
 
 
 def test_sql_cte_is_not_read_as_a_table():
@@ -1686,6 +1724,45 @@ def test_sql_cte_shadows_same_named_table_within_its_statement(tmp_path):
     nid = {n["label"]: n["id"] for n in r["nodes"]}
     assert reads[0]["source"] == nid["v2"]
     assert reads[0]["target"] == nid["levels"]  # the real, sourced table node
+
+
+def _ts_sql_at_least(target: tuple[int, ...]) -> bool:
+    """Whether the installed tree-sitter-sql grammar is at least *target*."""
+    import importlib.metadata
+    try:
+        parts = importlib.metadata.version("tree-sitter-sql").split(".")[:3]
+        return tuple(int(x) for x in parts) >= target
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _ts_sql_at_least((0, 3, 13)),
+    reason="The spurious alias-as-table node only arises on tree-sitter-sql "
+    ">= 0.3.13, which fails to parse `LIMIT <expr> OFFSET <expr>` in a derived "
+    "table; on the pinned 0.3.11 the subquery parses and there is nothing to "
+    "guard against (#5147).",
+)
+def test_sql_unparsed_derived_table_alias_is_not_read_as_a_table(tmp_path):
+    """#5147: tree-sitter-sql 0.3.13 cannot parse `LIMIT <expr> OFFSET <expr>`
+    inside a derived table, so it returns the `( ... )` as an ERROR node and the
+    alias as a bare relation. The alias names the subquery, not a table, so it
+    must not become a reads_from target; the real table inside still resolves."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE items (val INT);\n"
+        "CREATE VIEW v AS\n"
+        "  SELECT AVG(val) FROM (SELECT val FROM items\n"
+        "  LIMIT 2 - MOD((SELECT COUNT(*) FROM items), 2)\n"
+        "  OFFSET 1) q2;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "q2" not in labels, "derived-table alias leaked into the graph as a table node"
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    reads = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "reads_from"}
+    assert (nid["v"], nid["items"]) in reads
 
 def test_sql_subquery_cte_does_not_suppress_outer_real_table(tmp_path):
     """#2577 refinement: a WITH inside a subquery is scoped to that subquery
@@ -1931,3 +2008,30 @@ def test_sql_quoted_plpgsql_file_stays_clean():
     contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
     fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
     assert fn_ids <= contains_targets
+
+
+def test_recovery_keeps_a_real_routine_sharing_the_misread_line(tmp_path):
+    """#5236 review: two routines on one line are both real.
+
+    Recovery drops the walk routine misread from a T-SQL header, but must
+    not drop a correctly parsed neighbour on the same line, nor the
+    trigger edge that runs it.
+    """
+    f = tmp_path / "s.sql"
+    f.write_text(
+        "CREATE FUNCTION b() RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$"
+        " LANGUAGE plpgsql; CREATE PROCEDURE p @x INT AS SELECT 1;\n"
+        "CREATE TABLE t (id INT);\n"
+        "CREATE TRIGGER tr AFTER INSERT ON t FOR EACH ROW EXECUTE FUNCTION b();\n"
+    )
+    r = extract_sql(f)
+    labels = sorted(n["label"] for n in r["nodes"] if n["label"].endswith("()"))
+    assert labels == ["b()", "p()"]
+    # From 0.3.12 the trigger in this file is only recovered, and recovery
+    # emits no `executes` edge, on v8 as well. The check applies where the
+    # walk parses the trigger.
+    if not _ts_sql_at_least((0, 3, 12)):
+        by_id = {n["id"]: n["label"] for n in r["nodes"]}
+        executes = [(by_id[e["source"]], by_id[e["target"]])
+                    for e in r["edges"] if e["relation"] == "executes"]
+        assert executes == [("tr", "b()")]

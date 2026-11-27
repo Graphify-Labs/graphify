@@ -701,6 +701,22 @@ def test_razor_inherits():
     assert "inherits" in _relations(r)
 
 
+def test_razor_implements(tmp_path: Path):
+    page = tmp_path / "Clock.razor"
+    page.write_text(
+        "@implements IDisposable\n@implements IAsyncDisposable\n",
+        encoding="utf-8",
+    )
+    r = extract_razor(page)
+    labels = _labels(r)
+    assert "IDisposable" in labels
+    assert "IAsyncDisposable" in labels
+    implements_targets = {
+        e["target"] for e in r["edges"] if e["relation"] == "implements"
+    }
+    assert len(implements_targets) == 2
+
+
 def test_razor_code_methods():
     r = extract_razor(FIXTURES / "sample.razor")
     labels = _labels(r)

@@ -75,18 +75,25 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
     backup_dir = out / today
     graph_src = out / "graph.json"
 
-    # Skip re-copying if today's backup already has identical graph.json content.
-    # If content differs (graph changed since the last backup today), overwrite
-    # the backup in place — one folder per day, always the latest pre-overwrite state.
-    if backup_dir.exists() and (backup_dir / "graph.json").exists():
-        src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
-        bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
-        if src_hash == bak_hash:
-            return backup_dir  # identical content, nothing to do
-
     try:
+        # Skip re-copying if today's backup already holds every artifact with an
+        # identical graph.json. graph.json alone is not proof of completeness: a
+        # snapshot missing a sidecar (an earlier copy attempt failed part-way)
+        # must fall through and retry the copy instead of reporting itself
+        # complete forever (#3769). If content differs, overwrite the backup in
+        # place — one folder per day, always the latest pre-overwrite state.
+        if backup_dir.exists() and (backup_dir / "graph.json").exists():
+            src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
+            bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
+            if src_hash == bak_hash and all(
+                (backup_dir / name).exists()
+                for name in _BACKUP_ARTIFACTS
+                if (out / name).exists()
+            ):
+                return backup_dir  # identical content, nothing to do
         backup_dir.mkdir(parents=True, exist_ok=True)
         copied = 0
+        failed: list[str] = []
         for name in _BACKUP_ARTIFACTS:
             src = out / name
             if src.exists():
@@ -94,12 +101,21 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
                     shutil.copy2(src, backup_dir / name)
                     copied += 1
                 except Exception:
-                    pass
+                    failed.append(name)
+        if failed:
+            # A partial snapshot reported as a successful backup lets a stale
+            # graph.json survive the next overwrite unnoticed (#3769). Best-effort
+            # is unchanged: warn, report no backup, do not block the write.
+            print(
+                f"[graphify] warning: backup incomplete - could not copy "
+                f"{', '.join(failed)} -> {backup_dir.name}/ - continuing with overwrite",
+                file=sys.stderr,
+            )
+            return None
         if copied:
             print(f"[graphify] backed up {reason} graph ({copied} files) -> {backup_dir.name}/")
         return backup_dir
     except Exception as exc:
-        import sys
         print(f"[graphify] warning: backup failed ({exc}) - continuing with overwrite", file=sys.stderr)
         return None
 
@@ -242,11 +258,11 @@ def _git_head(cwd: "str | Path | None" = None) -> str | None:
 MALFORMED_GRAPH = object()
 
 
-def existing_graph_node_count(path: "str | Path"):
-    """Node count of an existing graph.json.
+def _load_existing_graph_nodes(path: "str | Path"):
+    """The raw ``nodes`` list of an existing graph.json, or a sentinel.
 
     Returns:
-      - an ``int`` node count when the file parses;
+      - a ``list`` of node dicts when the file parses;
       - ``None`` when there is verifiably nothing to protect — absent, empty, or
         over the size cap (matching how :func:`to_json` lets the new graph
         replace an empty/oversized file);
@@ -254,8 +270,9 @@ def existing_graph_node_count(path: "str | Path"):
         unparseable — the caller must treat this as fail-closed (refuse to
         overwrite), mirroring to_json's #479 handling of a corrupt/mid-write file.
 
-    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
-    guard that :func:`to_json` applies inline for the clustered path.
+    Shared loading logic for :func:`existing_graph_node_count` and
+    :func:`existing_graph_node_counts_by_source`, which differ only in how
+    they summarize this same list.
     """
     p = Path(path)
     if not p.exists():
@@ -281,14 +298,58 @@ def existing_graph_node_count(path: "str | Path"):
     except Exception:
         return MALFORMED_GRAPH
     nodes = data.get("nodes") if isinstance(data, dict) else None
-    return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
+    return nodes if isinstance(nodes, list) else MALFORMED_GRAPH
+
+
+def existing_graph_node_count(path: "str | Path"):
+    """Node count of an existing graph.json.
+
+    Returns an ``int``, ``None``, or :data:`MALFORMED_GRAPH` — see
+    :func:`_load_existing_graph_nodes` for what each means.
+
+    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
+    guard that :func:`to_json` applies inline for the clustered path.
+    """
+    nodes = _load_existing_graph_nodes(path)
+    if not isinstance(nodes, list):
+        return nodes
+    return len(nodes)
+
+
+def existing_graph_node_counts_by_source(path: "str | Path"):
+    """Per-``source_file`` node counts of an existing graph.json.
+
+    Returns a ``dict`` mapping ``source_file`` to its node count, or ``None``/
+    :data:`MALFORMED_GRAPH` under the same conditions as
+    :func:`existing_graph_node_count` — see :func:`_load_existing_graph_nodes`.
+
+    Used to tell whether a failed AST source ever had anything the #479
+    shrink guard would need to protect (#5245): a source with zero saved
+    nodes here has nothing to lose, so its permanent failure alone should not
+    arm the guard against an otherwise complete, unrelated run.
+    """
+    nodes = _load_existing_graph_nodes(path)
+    if not isinstance(nodes, list):
+        return nodes
+    counts: dict[str, int] = {}
+    for n in nodes:
+        if isinstance(n, dict):
+            sf = n.get("source_file") or ""
+            counts[sf] = counts.get(sf, 0) + 1
+    return counts
 
 
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
     # Drop #3774 accounting before any write. Extract pops these first; every
     # other caller of to_json (the documented build_merge persist path) does not.
-    from graphify.build import take_shrink_accounting
+    from graphify.build import take_dedup_remap, take_shrink_accounting
+    # The guard below reads it; it is removed here so node_link_data cannot
+    # write it into graph.json (#4940).
+    dedup_remap = take_dedup_remap(G)
     take_shrink_accounting(G)
+    # Sources build_merge replaced or pruned this run: their old semantic ids
+    # are not lost. Popped so it is never written into graph.json.
+    replaced_sources = set(G.graph.pop("_replaced_sources", None) or ())
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -315,7 +376,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             else:
                 try:
                     existing_data = json.loads(raw)
+                    del raw
                     existing_nodes = existing_data.get("nodes", [])
+                    # Only the node list is compared; let the links go now.
+                    del existing_data
                     if not isinstance(existing_nodes, list):
                         existing_nodes = []
                     existing_n = len(existing_nodes)
@@ -335,12 +399,15 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     )
                     return False
             new_n = G.number_of_nodes()
-            from graphify.build import _lost_saved_semantic_nodes
+            from graphify.build import _dedup_shrink_allowance, _lost_saved_semantic_nodes
             new_node_list = [
                 {"id": node_id, **{key: value for key, value in attrs.items() if key != "id"}}
                 for node_id, attrs in G.nodes(data=True)
             ]
-            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set())
+            folded: dict[str, str] = {}
+            missing = _lost_saved_semantic_nodes(
+                existing_nodes, new_node_list, replaced_sources, folded, dedup_remap=dedup_remap,
+            )
             if missing:
                 import sys as _sys
                 ids = ", ".join(str(node.get("id")) for node in missing)
@@ -350,7 +417,17 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     file=_sys.stderr,
                 )
                 return False
-            if new_n < existing_n:
+            # A saved semantic node merged into an AST twin that was already
+            # saved is one node, not two; a reload-and-recluster folds it (#4389).
+            # A twin new to this run does not offset some other node's loss.
+            existing_ids = {n.get("id") for n in existing_nodes if isinstance(n, dict)}
+            merged = sum(twin in existing_ids for twin in folded.values())
+            # Ids entity dedup folded into a survivor are not lost either (#4940).
+            if dedup_remap:
+                merged += _dedup_shrink_allowance(
+                    existing_ids, set(G.nodes), dedup_remap,
+                )
+            if new_n < existing_n - merged:
                 import sys as _sys
                 print(
                     f"[graphify] WARNING: new graph has {new_n} nodes but existing "
@@ -363,6 +440,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     file=_sys.stderr,
                 )
                 return False
+            # The guard passed; free its copies of both graphs before export.
+            del existing_nodes, new_node_list, existing_ids
 
     node_community = _node_community_map(communities)
     _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
@@ -436,8 +515,14 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         rest = sorted(k for k in item if k not in leading)
         return {k: item[k] for k in (*leading, *rest)}
 
-    data["nodes"] = [_canonical(n, ("id", "label")) for n in data["nodes"]]
-    data["links"] = [_canonical(link, ("source", "target", "relation")) for link in data["links"]]
+    def _canonicalize_in_place(items: list, lead: tuple[str, ...]) -> None:
+        # Replace each dict in place so the old one is freed at once, instead
+        # of holding two full copies of the node/link lists.
+        for i, item in enumerate(items):
+            items[i] = _canonical(item, lead)
+
+    _canonicalize_in_place(data["nodes"], ("id", "label"))
+    _canonicalize_in_place(data["links"], ("source", "target", "relation"))
     data["nodes"].sort(key=_json_sort_key)
     data["links"].sort(key=_json_sort_key)
     if "hyperedges" not in getattr(G, "graph", {}):
@@ -458,6 +543,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 _prev = json.loads(existing_path.read_text(encoding="utf-8"))
                 if isinstance(_prev, dict):
                     _prev_hyperedges = _prev.get("hyperedges")
+                # Only the hyperedges are read; do not hold the whole parse.
+                del _prev
         except Exception:
             _prev_hyperedges = None
         if _prev_hyperedges:
@@ -552,13 +639,13 @@ def _cypher_label(raw: str, fallback: str) -> str:
 def to_cypher(G: nx.Graph, output_path: str) -> None:
     lines = ["// Neo4j Cypher import - generated by /graphify", ""]
     for node_id, data in G.nodes(data=True):
-        label = _cypher_escape(data.get("label", node_id))
+        label = _cypher_escape(data.get("label") or node_id)
         node_id_esc = _cypher_escape(node_id)
         ftype = _cypher_label(
             (data.get("file_type", "unknown") or "unknown").capitalize(),
             "Entity",
         )
-        lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
+        lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}'}}) SET n.label = '{label}';")
     lines.append("")
     for u, v, data in G.edges(data=True):
         u, v = data.get("_src", u), data.get("_tgt", v)
@@ -573,8 +660,7 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
             f"MATCH (a {{id: '{u_esc}'}}), (b {{id: '{v_esc}'}}) "
             f"MERGE (a)-[:{rel} {{confidence: '{conf}'}}]->(b);"
         )
-    with open(output_path, "w", encoding="utf-8") as f:  # nosec
-        f.write("\n".join(lines))
+    write_text_atomic(output_path, "\n".join(lines) + "\n")
 
 
 # Keep backward-compatible alias - skill.md calls generate_html
@@ -596,6 +682,8 @@ def _strip_xml_illegal(s: str) -> str:
     or the form feed some Python/Emacs sources use as a section separator
     (#2897).
     """
+    if not s or (s.isascii() and s.isprintable()):
+        return s
     return _XML_ILLEGAL_RE.sub("", s)
 
 
@@ -706,7 +794,7 @@ def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
         # goes the same way. They are not merely awkward in a filename — Windows
         # rejects them outright, so a single one aborted the whole vault export
         # rather than spoiling one note (#2897).
-        _CONTROL_TO_SPACE_RE.sub(" ", label),
+        _CONTROL_TO_SPACE_RE.sub(" ", str(label or "")),
     ).strip()
     cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
     # Obsidian treats a leading-dot filename as a hidden file (#2205). Only
@@ -746,7 +834,7 @@ def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
     node_filenames: dict[str, str] = {}
     used: set[str] = set()
     for node_id, data in G.nodes(data=True):
-        base = safe_name(data.get("label", node_id))
+        base = safe_name(data.get("label") or node_id)
         candidate = base
         n = 1
         while candidate.lower() in used:
@@ -820,7 +908,8 @@ def to_obsidian(
 
     # Cap stems against THIS vault's path, not just NAME_MAX: on Windows the
     # 200-byte default plus an ordinary vault directory overruns MAX_PATH and
-    # every note write raises FileNotFoundError (#2655). No-op on POSIX.
+    # every note write raises FileNotFoundError (#2655). On POSIX it only
+    # tightens where the vault's filesystem has a NAME_MAX below 255 (#2109).
     _stem_limit = stem_filename_budget(out, reserve=_DEDUP_SUFFIX_RESERVE)
 
     # Map node_id → safe filename so wikilinks stay consistent.
@@ -849,7 +938,7 @@ def to_obsidian(
     # Write one .md file per node
     node_notes_written = 0
     for node_id, data in G.nodes(data=True):
-        label = data.get("label", node_id)
+        label = data.get("label") or node_id
         cid = node_community.get(node_id)
         community_name = (
             community_labels.get(cid, f"Community {cid}")
@@ -888,7 +977,7 @@ def to_obsidian(
         neighbors = list(G.neighbors(node_id))
         if neighbors:
             lines.append("## Connections")
-            for neighbor in sorted(neighbors, key=lambda n: G.nodes[n].get("label", n)):
+            for neighbor in sorted(neighbors, key=lambda n: str(G.nodes[n].get("label") or n)):
                 neighbor_label = node_filename[neighbor]
                 # One bullet per parallel edge, not per neighbour: graph.json is
                 # reloaded as a MultiGraph when it carries parallel edges
@@ -1003,7 +1092,7 @@ def to_obsidian(
 
         # Members section
         lines.append("## Members")
-        for node_id in sorted(members, key=lambda n: G.nodes[n].get("label", n)):
+        for node_id in sorted(members, key=lambda n: str(G.nodes[n].get("label") or n)):
             data = G.nodes[node_id]
             node_label = node_filename[node_id]
             ftype = data.get("file_type", "")
@@ -1254,7 +1343,7 @@ def to_canvas(
         # Same dangling-member guard as the sizing loop and to_obsidian (#1236):
         # a community id absent from G / node_filenames would KeyError the sort.
         members = [m for m in members if m in G and m in node_filenames]
-        sorted_members = sorted(members, key=lambda n: G.nodes[n].get("label", n))
+        sorted_members = sorted(members, key=lambda n: str(G.nodes[n].get("label") or n))
         for m_idx, node_id in enumerate(sorted_members):
             col = m_idx % inner_cols
             row = m_idx // inner_cols
@@ -1262,7 +1351,7 @@ def to_canvas(
             nx_y = gy + 80 + row * (60 + 20)
             fname = node_filenames.get(
                 node_id,
-                _obsidian_safe_stem(G.nodes[node_id].get("label", node_id), _stem_limit),
+                _obsidian_safe_stem(G.nodes[node_id].get("label") or node_id, _stem_limit),
             )
             canvas_nodes.append({
                 "id": f"n_{node_id}",
@@ -1310,17 +1399,7 @@ def to_graphml(
     """
     H = G.copy()
     node_community = _node_community_map(communities)
-    for node_id in H.nodes():
-        H.nodes[node_id]["community"] = node_community.get(node_id, -1)
-    # Drop internal markers (e.g. the AST-provenance "_origin" tag, #1116, and
-    # the "_src"/"_tgt" direction markers) — they are persistence/runtime details,
-    # not graph data, and should not leak into the exported file.
-    for _, attrs in H.nodes(data=True):
-        for k in [k for k in attrs if k.startswith("_")]:
-            del attrs[k]
-    for _, _, attrs in H.edges(data=True):
-        for k in [k for k in attrs if k.startswith("_")]:
-            del attrs[k]
+
     # nx.write_graphml only accepts scalar attribute values: None raises, and a
     # dict/list value (e.g. a per-node `metadata` dict, or the graph-level
     # `hyperedges` list set by attach_hyperedges()) raises
@@ -1341,31 +1420,43 @@ def to_graphml(
         except (TypeError, ValueError):
             return _strip_xml_illegal(str(val))
 
-    # Node IDs become the `id` attribute of every <node> and edge endpoint, so
-    # they must be XML-representable too. Normalised ids never carry a control
-    # character, but a caller can hand us a hand-built graph, and a crash here
-    # loses the export just as completely as one in the values.
-    _id_remap = {n: _strip_xml_illegal(n) for n in H.nodes if isinstance(n, str)}
-    _id_remap = {k: v for k, v in _id_remap.items() if k != v}
+    # Drop internal markers (e.g. the AST-provenance "_origin" tag, #1116, and
+    # the "_src"/"_tgt" direction markers) and sanitize attributes in a single
+    # pass per scope; only record node IDs that actually carry XML-illegal chars.
+    _id_remap: dict[str, str] = {}
+    for node_id, attrs in H.nodes(data=True):
+        if isinstance(node_id, str):
+            cleaned_id = _strip_xml_illegal(node_id)
+            if cleaned_id != node_id:
+                _id_remap[node_id] = cleaned_id
+        attrs["community"] = node_community.get(node_id, -1)
+        for key in list(attrs):
+            if key.startswith("_"):
+                del attrs[key]
+            else:
+                attrs[key] = _graphml_safe(attrs[key])
+
+    # edges(data=True) rather than H.edges[u, v]: graph.json is loaded as a
+    # MultiGraph when it carries parallel edges (#4500), and a MultiGraph edge
+    # view needs a key, so the (u, v) form crashed the whole export.
+    for *_, attrs in H.edges(data=True):
+        for key in list(attrs):
+            if key.startswith("_"):
+                del attrs[key]
+            else:
+                attrs[key] = _graphml_safe(attrs[key])
+
     if _id_remap:
         H = nx.relabel_nodes(H, _id_remap, copy=True)
 
     for key, val in list(H.graph.items()):
         H.graph[key] = _graphml_safe(val)
-    for node_id in H.nodes():
-        for key, val in list(H.nodes[node_id].items()):
-            H.nodes[node_id][key] = _graphml_safe(val)
-    # edges(data=True) rather than H.edges[u, v]: graph.json is loaded as a
-    # MultiGraph when it carries parallel edges (#4500), and a MultiGraph edge
-    # view needs a key, so the (u, v) form crashed the whole export.
-    for *_, attrs in H.edges(data=True):
-        for key, val in list(attrs.items()):
-            attrs[key] = _graphml_safe(val)
 
     # Write atomically: a mid-serialization error otherwise leaves a 0-byte
     # .graphml on disk that downstream tooling mistakes for a completed export
     # (#1831). Write to a sibling temp file, then replace on success.
     out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     try:
         nx.write_graphml(H, str(tmp))
@@ -1427,7 +1518,7 @@ def to_svg(
     nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
                            node_size=node_sizes, alpha=0.9)
     nx.draw_networkx_labels(G, pos, ax=ax,
-                            labels={n: _strip_xml_illegal(str(G.nodes[n].get("label", n)))
+                            labels={n: _strip_xml_illegal(str(G.nodes[n].get("label") or n))
                                     for n in G.nodes()},
                             font_size=7, font_color="white")
 
@@ -1443,7 +1534,9 @@ def to_svg(
         ax.legend(handles=patches, loc="upper left", framealpha=0.7,
                   facecolor="#2a2a4e", labelcolor="white", fontsize=8)
 
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
-    plt.savefig(output_path, format="svg", bbox_inches="tight",
+    plt.savefig(str(out), format="svg", bbox_inches="tight",
                 facecolor=fig.get_facecolor())
     plt.close(fig)

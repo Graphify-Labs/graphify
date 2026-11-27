@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from graphify.hooks import (
     install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_HOOK_MARKER,
-    _REWRITE_HOOK_MARKER,
+    _REWRITE_HOOK_MARKER, _WORKTREE_GUARD, _TOPLEVEL_ANCHOR,
 )
 
 
@@ -785,6 +785,33 @@ def _is_within_repo_git(hooks: Path, main: Path) -> bool:
     return True
 
 
+def test_linked_worktree_hooks_dir_under_non_ascii_path(tmp_path, monkeypatch):
+    """git prints paths as UTF-8. Decoding them with the Windows locale codec
+    pointed hook install at a mangled copy of the path."""
+    main = tmp_path / "café" / "main"
+    main.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(main)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(main), "-c", "user.email=t@example.com", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "x"],
+        check=True, capture_output=True,
+    )
+    wt = tmp_path / "café" / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt), "-b", "wt"],
+                   check=True, capture_output=True)
+
+    real_run = subprocess.run
+
+    def cp1252_locale_run(*args, **kwargs):
+        if kwargs.get("text") and kwargs.get("encoding") is None:
+            kwargs["encoding"] = "cp1252"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", cp1252_locale_run)
+    assert _hooks_dir(wt) == (main / ".git" / "hooks").resolve()
+    assert not (tmp_path / "café".encode("utf-8").decode("cp1252")).exists()
+
+
 def test_default_hooks_dir_unaffected(tmp_path):
     """No core.hooksPath -> normal .git/hooks install, no rejection."""
     repo = _make_git_repo(tmp_path)
@@ -845,9 +872,18 @@ def _detect_run(tmp_path, home, stub_bin, env_extra=None):
     env = dict(os.environ)
     env["HOME"] = str(home)
     env.pop("UV_TOOL_DIR", None)
+    # The emitted detector prefers an active virtualenv. A contributor running
+    # `uv run pytest` has VIRTUAL_ENV pointing at the project .venv, which masks
+    # the uv-tool layout this machine fixture constructs (repo rule: tests must
+    # not depend on the contributor's ambient environment).
+    for key in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH", "CONDA_PREFIX"):
+        env.pop(key, None)
     if env_extra:
         env.update(env_extra)
-    env["PATH"] = str(stub_bin) + os.pathsep + env["PATH"]
+    # Keep the ambient PATH out too: `uv run pytest` puts the project .venv
+    # ahead of the system directories, so the detector would adopt it before
+    # reaching the uv-tool env this fixture is about.
+    env["PATH"] = str(stub_bin) + os.pathsep + os.defpath
     return subprocess.run(
         ["sh", script.name], capture_output=True, text=True,
         cwd=str(tmp_path), env=env,
@@ -2168,3 +2204,25 @@ def test_watch_rebuild_timeout_runs_off_the_main_thread():
     assert not t.is_alive(), "_rebuild_timeout blocked the worker thread"
     assert errors == [], f"_rebuild_timeout raised off the main thread: {errors!r}"
     assert ran == [True], "_rebuild_timeout never ran its body off the main thread"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires a POSIX shell")
+def test_worktree_guard_survives_exported_cdpath(tmp_path):
+    """An exported CDPATH must not corrupt the absolute git-dir capture (#4977).
+
+    ``cd`` prints the resolved directory to stdout when it resolves through
+    CDPATH, so the unguarded capture became two lines and the toplevel anchor
+    below it exited silently — every generated hook skipped its rebuild.
+    """
+    repo = _make_git_repo(tmp_path)
+    script = textwrap.dedent(f"""\
+        CDPATH=".:$HOME"
+        {_WORKTREE_GUARD}
+        {_TOPLEVEL_ANCHOR}
+        printf 'TOP=%s\\n' "$_GFY_TOP"
+    """)
+    result = subprocess.run(["bash", "-c", script], cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "TOP=" in result.stdout, f"anchor exited before printing: {result.stdout!r} {result.stderr!r}"
+    top = result.stdout.strip().split("TOP=", 1)[1]
+    assert os.path.basename(top.rstrip("/\\")) == repo.name

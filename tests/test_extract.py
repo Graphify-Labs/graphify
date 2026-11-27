@@ -2917,12 +2917,12 @@ def test_unqualified_call_binds_to_the_nearest_class_that_declares_it(tmp_path, 
     calls = _single_file_call_pairs(tmp_path, source, ext)
     assert ("svc_outer_a", "svc_outer_b") in calls
     assert ("svc_outer_a", "svc_base_ping") in calls
-    assert ("svc_inner_c", "svc_inner_b") in calls
-    assert ("svc_inner_c", "svc_outer_s") in calls
+    assert ("svc_outer_inner_c", "svc_outer_inner_b") in calls
+    assert ("svc_outer_inner_c", "svc_outer_s") in calls
     assert ("svc_child_run", "svc_child_ping") in calls
     assert not any(tgt.startswith("svc_other_") for _, tgt in calls), calls
-    assert ("svc_outer_a", "svc_inner_b") not in calls
-    assert ("svc_inner_c", "svc_outer_b") not in calls
+    assert ("svc_outer_a", "svc_outer_inner_b") not in calls
+    assert ("svc_outer_inner_c", "svc_outer_b") not in calls
     assert ("svc_child_run", "svc_base_ping") not in calls
     # the second run reads the AST cache written by the first
     assert _single_file_call_pairs(tmp_path, source, ext) == calls
@@ -2942,7 +2942,7 @@ def test_nested_class_declared_after_the_method_does_not_capture_the_call(tmp_pa
     b() in Outer.a to Inner.b."""
     calls = _single_file_call_pairs(tmp_path, _NESTED_SAME_NAME_SOURCES[ext], ext)
     assert ("svc_outer_a", "svc_outer_b") in calls
-    assert ("svc_outer_a", "svc_inner_b") not in calls
+    assert ("svc_outer_a", "svc_outer_inner_b") not in calls
 
 
 # Each fixture has a method that only one class on the caller's path declares and an
@@ -2975,8 +2975,8 @@ _TWO_LEVELS_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_TWO_LEVELS_SOURCES))
 def test_unqualified_call_walks_out_through_every_enclosing_class(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _TWO_LEVELS_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_outer_b") in calls
-    assert ("svc_inner_run", "svc_later_b") not in calls
+    assert ("svc_outer_mid_inner_run", "svc_outer_b") in calls
+    assert ("svc_outer_mid_inner_run", "svc_later_b") not in calls
 
 
 _ENCLOSING_BASE_SOURCES = {
@@ -2990,8 +2990,8 @@ _ENCLOSING_BASE_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_ENCLOSING_BASE_SOURCES))
 def test_unqualified_call_reaches_a_base_of_the_enclosing_class(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _ENCLOSING_BASE_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_base_ping") in calls
-    assert ("svc_inner_run", "svc_other_ping") not in calls
+    assert ("svc_outer_inner_run", "svc_base_ping") in calls
+    assert ("svc_outer_inner_run", "svc_other_ping") not in calls
 
 
 # Scala 3 rejects this shape (b is defined in Outer and inherited in Inner), so Scala has no fixture.
@@ -3006,9 +3006,9 @@ _OWN_BASE_FIRST_SOURCES = {
 def test_unqualified_call_prefers_the_callers_base_to_the_enclosing_class(tmp_path, ext):
     """Inner inherits b() from Base, which is nearer than the b() of the Outer around it."""
     calls = _single_file_call_pairs(tmp_path, _OWN_BASE_FIRST_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_base_b") in calls
-    assert ("svc_inner_run", "svc_outer_b") not in calls
-    assert ("svc_inner_run", "svc_other_b") not in calls
+    assert ("svc_outer_inner_run", "svc_base_b") in calls
+    assert ("svc_outer_inner_run", "svc_outer_b") not in calls
+    assert ("svc_outer_inner_run", "svc_other_b") not in calls
 
 
 # A base declared further down the file used to be invisible to the lookup, which then
@@ -3054,11 +3054,11 @@ _BASE_AFTER_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_BASE_AFTER_SOURCES))
 def test_unqualified_call_reaches_a_base_declared_after_the_class(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _BASE_AFTER_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_base_b") in calls
+    assert ("svc_outer_inner_run", "svc_base_b") in calls
     assert ("svc_child_run", "svc_base_ping") in calls
     assert ("svc_leaf_run", "svc_base_ping") in calls
     assert not any(tgt.startswith("svc_other_") for _, tgt in calls), calls
-    assert ("svc_inner_run", "svc_outer_b") not in calls
+    assert ("svc_outer_inner_run", "svc_outer_b") not in calls
 
 
 _ORDER_BLOCKS = {
@@ -3093,7 +3093,7 @@ def test_unqualified_call_targets_do_not_depend_on_declaration_order(tmp_path, e
 
     expected = {
         ("svc_outer_a", "svc_outer_b"), ("svc_outer_a", "svc_base_ping"), ("svc_outer_a", "svc_mid_pong"),
-        ("svc_inner_c", "svc_base_ping"), ("svc_inner_c", "svc_outer_b"),
+        ("svc_outer_inner_c", "svc_base_ping"), ("svc_outer_inner_c", "svc_outer_b"),
     }
     for i, order in enumerate(itertools.permutations(_ORDER_BLOCKS[ext])):
         src_dir = tmp_path / str(i)
@@ -3127,9 +3127,9 @@ _RELATION_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_RELATION_SOURCES))
 def test_unqualified_call_reaches_an_interface_default_method_or_a_mixed_in_trait(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _RELATION_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_greeter_greet") in calls
-    assert ("svc_inner_run", "svc_outer_greet") not in calls
-    assert ("svc_inner_run", "svc_other_greet") not in calls
+    assert ("svc_outer_inner_run", "svc_greeter_greet") in calls
+    assert ("svc_outer_inner_run", "svc_outer_greet") not in calls
+    assert ("svc_outer_inner_run", "svc_other_greet") not in calls
 
 
 def test_csharp_class_does_not_inherit_the_members_of_an_interface(tmp_path):
@@ -3144,10 +3144,10 @@ def test_csharp_class_does_not_inherit_the_members_of_an_interface(tmp_path):
         "interface IThing { void b() {} }\n"
         "interface Thing { void b() {} }\n"
     ), "cs")
-    assert ("svc_inner_run", "svc_outer_b") in calls
-    assert ("svc_inner_run", "svc_ithing_b") not in calls
-    assert ("svc_inner2_run2", "svc_outer_b") in calls
-    assert ("svc_inner2_run2", "svc_thing_b") not in calls
+    assert ("svc_outer_inner_run", "svc_outer_b") in calls
+    assert ("svc_outer_inner_run", "svc_ithing_b") not in calls
+    assert ("svc_outer_inner2_run2", "svc_outer_b") in calls
+    assert ("svc_outer_inner2_run2", "svc_thing_b") not in calls
 
 
 def test_csharp_base_class_named_like_an_interface_is_a_base(tmp_path):
@@ -3161,9 +3161,9 @@ def test_csharp_base_class_named_like_an_interface_is_a_base(tmp_path):
         "class IOBase { public void b() {} }\n"
         "class Other { public void b() {} }\n"
     ), "cs")
-    assert ("svc_inner_run", "svc_iobase_b") in calls
-    assert ("svc_inner_run", "svc_outer_b") not in calls
-    assert ("svc_inner_run", "svc_other_b") not in calls
+    assert ("svc_outer_inner_run", "svc_iobase_b") in calls
+    assert ("svc_outer_inner_run", "svc_outer_b") not in calls
+    assert ("svc_outer_inner_run", "svc_other_b") not in calls
 
 
 _RECEIVER_CALL_SOURCES = {
@@ -3225,24 +3225,26 @@ def test_csharp_two_classes_of_one_name_leave_a_base_unresolved(tmp_path):
     assert ("svc_n3_child_run", "svc_n2_base_ping") not in calls, calls
 
 
-def test_java_same_named_nested_classes_end_the_walk(tmp_path):
-    """Two nested classes with one simple name are one node, so which class lies
-    around it is unknown: the walk neither chooses the first nor the last, and the
-    call keeps the file-wide lookup that applies when no class on the path has the name."""
+def test_java_same_named_nested_classes_resolve_to_their_own_owner(tmp_path):
+    """Two nested classes sharing one simple name (A.Node, B.Node) are now distinct
+    owner-qualified nodes (#5185), so a call in A.Node.run resolves out through its
+    own enclosing A to A.m, never to B.m or a collapsed shared node."""
     calls = _single_file_call_pairs(tmp_path, (
         "class A { void m() {} class Node { void run() { m(); } } }\n"
         "class B { void m() {} class Node {} }\n"
         "class C { void m() {} }\n"
     ), "java")
-    assert ("svc_node_run", "svc_a_m") not in calls
-    assert ("svc_node_run", "svc_b_m") not in calls
-    # a name the shared node itself declares is still its own
+    assert ("svc_a_node_run", "svc_a_m") in calls
+    assert ("svc_a_node_run", "svc_b_m") not in calls
+    assert ("svc_a_node_run", "svc_c_m") not in calls
+    # a name the nested class itself declares is still its own, not the enclosing one
     calls = _single_file_call_pairs(tmp_path, (
         "class A { void m() {} class Node { void m() {} void run() { m(); } } }\n"
         "class B { void m() {} class Node {} }\n"
         "class C { void m() {} }\n"
     ), "java")
-    assert ("svc_node_run", "svc_node_m") in calls
+    assert ("svc_a_node_run", "svc_a_node_m") in calls
+    assert ("svc_a_node_run", "svc_a_m") not in calls
 
 
 def test_java_anonymous_class_reads_the_in_file_type_it_extends(tmp_path):
@@ -5148,7 +5150,9 @@ def test_extract_json_large_file_skipped(tmp_path):
     # Write a JSON file just over 1 MiB
     big.write_bytes(b'{"x": "' + b"a" * (1_048_576) + b'"}')
     result = extract_json(big)
-    assert "error" in result
+    # Declined by design (#1224 size cap), so it is a skip, not a failed source.
+    assert "error" not in result
+    assert "skipped" in result
     assert result["nodes"] == []
 
 
@@ -6311,6 +6315,57 @@ def test_3252_metadata_preservation(tmp_path):
     assert param_ref["source_location"] == "L2"
     assert node_by_id[param_ref["target"]]["label"] == "User"
     assert node_by_id[param_ref["target"]]["source_file"] == "models.py"
+
+
+def test_3252_repoint_visits_only_the_importing_files_edges(tmp_path, monkeypatch):
+    """#4980: the #3252 repoint pass must not scan every edge once per file.
+
+    It used to loop over all of ``all_edges`` for each Python file with import
+    targets, so the pass cost files x edges. Counting full passes over
+    ``all_edges`` shows the count no longer grows with the number of importing
+    files, and every consumer's reference is still repointed.
+    """
+    import graphify.extract as extract_mod
+
+    (tmp_path / "models.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    consumers = [tmp_path / f"service_{i}.py" for i in range(8)]
+    for i, path in enumerate(consumers):
+        path.write_text(
+            f"from models import User\ndef get_user_{i}(u: User) -> User:\n    pass\n",
+            encoding="utf-8",
+        )
+
+    class _CountingEdges(list):
+        full_passes = 0
+
+        def __iter__(self):
+            self.full_passes += 1
+            return super().__iter__()
+
+    passes: list[int] = []
+    real_resolve = extract_mod._resolve_cross_file_imports
+
+    def counting_resolve(per_file, paths, all_nodes=None, all_edges=None, **kwargs):
+        edges = _CountingEdges(all_edges or [])
+        result = real_resolve(per_file, paths, all_nodes, edges, **kwargs)
+        passes.append(edges.full_passes)
+        return result
+
+    monkeypatch.setattr(extract_mod, "_resolve_cross_file_imports", counting_resolve)
+    res = extract([tmp_path / "models.py", *consumers], root=tmp_path, cache_root=tmp_path)
+
+    assert passes, "cross-file import resolution did not run"
+    # One pass builds the per-file index; two more collect the still-referenced ids.
+    # The old code added one full pass per importing file (8 here).
+    assert max(passes) <= 3, passes
+
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+    param_refs = [
+        e for e in res["edges"]
+        if e.get("relation") == "references" and e.get("context") == "parameter_type"
+    ]
+    assert len(param_refs) == len(consumers)
+    assert all(node_by_id[e["target"]]["source_file"] == "models.py" for e in param_refs)
 
 
 def test_python_external_calls_survive_real_incremental_context(tmp_path):

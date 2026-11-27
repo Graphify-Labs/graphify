@@ -224,6 +224,30 @@ def test_step1_still_resolves_a_legitimate_path(tmp_path: Path, skill_file: str)
     assert marker_content.endswith("my project with spaces")
 
 
+def test_no_generated_skill_substitutes_input_path_into_python_code():
+    """#4762: the Python blocks must never carry a raw, agent-substituted
+    INPUT_PATH string literal (``detect(Path('INPUT_PATH'))``, ``root='INPUT_PATH'``,
+    ``generate(.., 'INPUT_PATH', ..)``). Such a literal let a scan root whose NAME
+    held a quote or ``$()`` break out and run as code. Every block now reads the
+    resolved root from the trusted ``graphify-out/.graphify_root`` sidecar, so the
+    quoted placeholder must not appear in ANY generated skill body or reference.
+    The only INPUT_PATH that survives is the bare Step 1 heredoc body line and the
+    ``INPUT_PATH = Path('graphify-out/.graphify_root')`` read assignment.
+    """
+    skill_root = REPO_ROOT / "graphify"
+    bodies = sorted(skill_root.glob("skill*.md")) + sorted(skill_root.glob("skills/*/references/*.md"))
+    assert len(bodies) >= 15, f"expected the generated skill bodies, found {len(bodies)}"
+    offenders = []
+    for body in bodies:
+        text = body.read_text(encoding="utf-8")
+        if "'INPUT_PATH'" in text:
+            offenders.append(str(body.relative_to(REPO_ROOT)))
+    assert not offenders, (
+        "a quoted 'INPUT_PATH' code literal survived in: " + ", ".join(offenders) +
+        " — the scan root must be read from graphify-out/.graphify_root, never substituted"
+    )
+
+
 @pytest.mark.parametrize("skill_file", ALL_TESTED_SKILL_FILES)
 def test_step1_still_fails_loudly_on_a_nonexistent_path(tmp_path: Path, skill_file: str):
     """A path that does not exist must still fail, matching the original

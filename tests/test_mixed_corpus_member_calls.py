@@ -506,13 +506,16 @@ def test_csharp_receiver_resolves_despite_a_same_named_python_class(tmp_path: Pa
 # already guard both directions.
 
 _CPP_CALLER = (
+    "#include \"lead.h\"\n"
     "class Runner {\n"
     "public:\n"
     "    void go() { Lead lead; lead.search(); }\n"
     "};\n"
 )
 """`Lead lead;` is a local declaration, so the C++ `cpp_type_table` types the
-receiver and the call resolves at INFERRED."""
+receiver and the call resolves at INFERRED. The `#include` is what makes the
+C++ `Lead` visible: the C++ resolver binds only to a class the caller's file
+includes, so a C++ definition in a file nothing includes is never a candidate."""
 
 _SWIFT_CALLER = (
     "class Runner {\n"
@@ -553,12 +556,12 @@ def test_cpp_receiver_resolves_despite_a_same_named_python_class(tmp_path: Path)
     """The same-named Python class must not suppress the real C++ edge."""
     calls, result = _calls(tmp_path, {
         "svc.py": _PY_DECOY,
-        "lead.cpp": "class Lead {\npublic:\n    void search() {}\n};\n",
+        "lead.h": "class Lead {\npublic:\n    void search() {}\n};\n",
         "Runner.cpp": _CPP_CALLER,
     })
 
     go = _nid(result, ".go()", "Runner.cpp")
-    cpp_search = _nid(result, ".search()", "lead.cpp")
+    cpp_search = _nid(result, ".search()", "lead.h")
     py_search = _nid(result, ".search()", "svc.py")
     assert (go, cpp_search) in calls, \
         "a same-named Python class suppressed the real C++ edge"

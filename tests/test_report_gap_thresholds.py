@@ -22,6 +22,9 @@ from __future__ import annotations
 import re
 
 import networkx as nx
+import pytest
+
+from graphify.analyze import suggest_questions
 
 from graphify.report import generate
 
@@ -233,3 +236,57 @@ def test_ast_node_with_non_contains_single_edge_still_flags():
     )
     gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0] if "## Knowledge Gaps" in text else ""
     assert "LooseHelper" in gaps
+
+
+def _suggested_questions_report(graph, communities):
+    questions = suggest_questions(graph, communities, {})
+    report = generate(
+        graph, communities, {}, {}, [], [],
+        {"total_files": 3, "total_words": 100}, {},
+        root="proj", suggested_questions=questions,
+    )
+    section = report.split("## Suggested Questions", 1)[1].split("\n## ", 1)[0]
+    return questions, section
+
+
+def test_code_only_isolated_question_explains_missing_edges():
+    graph, communities = _graph_and_communities()
+    questions, section = _suggested_questions_report(graph, communities)
+    isolated = [q for q in questions if q["type"] == "isolated_nodes"]
+
+    assert len(isolated) == 1
+    question = isolated[0]
+    assert question["question"] == (
+        "What connects `big0`, `big5`, `mid0` to the rest of the system?"
+    )
+    assert question["why"].endswith(" - possible missing edges.")
+    assert "documentation gaps" not in question["why"]
+    assert question["why"] in section
+    assert "documentation gaps" not in section
+
+
+@pytest.mark.parametrize("file_type,source_name", [
+    ("document", "guide.md"),
+    ("paper", "paper.pdf"),
+    ("image", "diagram.png"),
+])
+def test_isolated_question_keeps_documentation_reason_with_semantic_layer(
+    file_type, source_name,
+):
+    graph, communities = _graph_and_communities()
+    baseline_questions, _ = _suggested_questions_report(graph, communities)
+    baseline_isolated = next(q for q in baseline_questions if q["type"] == "isolated_nodes")
+    graph.add_node(
+        "semantic", label=source_name, file_type=file_type,
+        source_file=f"docs/{source_name}",
+    )
+    questions, section = _suggested_questions_report(graph, communities)
+    isolated = next(q for q in questions if q["type"] == "isolated_nodes")
+
+    assert [q["type"] for q in questions] == [q["type"] for q in baseline_questions]
+    assert [{k: v for k, v in q.items() if k != "why"} for q in questions] == [
+        {k: v for k, v in q.items() if k != "why"} for q in baseline_questions
+    ]
+    assert isolated["why"].split(" - ", 1)[0] == baseline_isolated["why"].split(" - ", 1)[0]
+    assert isolated["why"].endswith(" - possible documentation gaps or missing edges.")
+    assert isolated["why"] in section

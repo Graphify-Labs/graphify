@@ -289,9 +289,15 @@ def _parse_gomod(text: str) -> dict | None:
 
 
 def _parse_pom(text: str) -> dict | None:
-    # Drop the default namespace so findtext/findall don't need the {uri} prefix.
-    text = re.sub(r'\sxmlns="[^"]*"', '', text, count=1)
     root = ET.fromstring(text)
+    # XML parsing expands both default and prefixed names independently of
+    # quote style/attribute spacing. Unqualify only the root's namespace so
+    # the Maven lookups below keep their scope and ignore foreign XML tags.
+    if root.tag.startswith("{"):
+        namespace = root.tag.split("}", 1)[0] + "}"
+        for element in root.iter():
+            if isinstance(element.tag, str) and element.tag.startswith(namespace):
+                element.tag = element.tag[len(namespace):]
     aid = root.findtext("artifactId")
     gid = root.findtext("groupId") or root.findtext("parent/groupId")
     version = root.findtext("version") or root.findtext("parent/version")

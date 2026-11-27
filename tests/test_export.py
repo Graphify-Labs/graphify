@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
-from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
+from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian, to_svg
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -212,7 +212,15 @@ def test_to_cypher_contains_merge_statements():
         out = Path(tmp) / "cypher.txt"
         to_cypher(G, str(out))
         content = out.read_text()
-        assert "MERGE" in content
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Transformer';" in content
+        assert "{id: 'n_transformer', label:" not in content
+
+        G.nodes["n_transformer"]["label"] = "Renamed Transformer"
+        to_cypher(G, str(out))
+        refreshed = out.read_text()
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Renamed Transformer';" in refreshed
+        assert "{id: 'n_transformer', label:" not in refreshed
+        assert "SET n.label = 'Transformer';" not in refreshed
 
 def test_to_graphml_creates_file():
     G = make_graph()
@@ -1053,6 +1061,65 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     assert backup_if_protected(tmp_path) is None
 
 
+# ── Issue #3769: incomplete backups reported as successful ──────────────────
+
+def test_backup_failed_copy_warns_and_returns_none(tmp_path, monkeypatch, capsys):
+    """A copy that fails part-way leaves a stale snapshot; it must be warned
+    and reported as no backup, not printed as a success (#3769)."""
+    import shutil
+    from datetime import date
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[{"id":"new"}],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    # A same-day snapshot holding the pre-overwrite graph: its graph.json is
+    # stale but readable, so the copy attempt fails rather than the hash check.
+    backup_dir = tmp_path / date.today().isoformat()
+    backup_dir.mkdir()
+    stale = backup_dir / "graph.json"
+    stale.write_text('{"nodes":[{"id":"old"}],"links":[]}')
+
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src, dst):
+        if Path(src).name == "graph.json":
+            raise PermissionError("denied")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is None
+    assert "graph.json" in capsys.readouterr().err
+    # The stale snapshot must not have been silently kept.
+    assert stale.read_text() == '{"nodes":[{"id":"old"}],"links":[]}'
+
+
+def test_backup_same_day_retries_missing_sidecar(tmp_path, monkeypatch, capsys):
+    """A snapshot missing a sidecar is retried on the next call, not treated
+    as complete because graph.json already matches (#3769)."""
+    import shutil
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    (tmp_path / "cost.json").write_text('{"input_tokens": 5}')
+
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src, dst):
+        if Path(src).name == "cost.json":
+            raise PermissionError("denied")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy2)
+    assert backup_if_protected(tmp_path) is None
+    assert "cost.json" in capsys.readouterr().err
+
+    monkeypatch.setattr(shutil, "copy2", real_copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is not None
+    assert (result / "graph.json").exists()
+    assert (result / "cost.json").read_text() == '{"input_tokens": 5}'
+
+
 def _mkG(n):
     import networkx as nx
     G = nx.Graph()
@@ -1182,6 +1249,65 @@ def test_to_html_handles_null_source_file_and_label(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_to_obsidian_handles_null_label(tmp_path):
+    """A node with label=None must not crash to_obsidian during stem cleaning,
+    neighbor sorting, or member listing."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label=None, source_file="a.py")
+    G.add_node("n2", label="auth", source_file="b.py")
+    G.add_edge("n1", "n2", relation="imports")
+    out_dir = tmp_path / "vault"
+    count = to_obsidian(G, {0: ["n1", "n2"]}, str(out_dir))
+    assert count == 3
+    assert (out_dir / "n1.md").exists()
+    assert (out_dir / "auth.md").exists()
+    n1_content = (out_dir / "n1.md").read_text(encoding="utf-8")
+    assert "# n1" in n1_content
+    assert "[[auth]]" in n1_content
+
+
+def test_to_canvas_handles_null_label(tmp_path):
+    """A node with label=None must not crash to_canvas card placement or member sorting."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label=None, source_file="a.py")
+    G.add_node("n2", label="auth", source_file="b.py")
+    G.add_edge("n1", "n2", relation="calls")
+    canvas_file = tmp_path / "graph.canvas"
+    to_canvas(G, {0: ["n1", "n2"]}, str(canvas_file))
+    assert canvas_file.exists()
+    data = json.loads(canvas_file.read_text(encoding="utf-8"))
+    files = {node.get("file") for node in data.get("nodes", []) if node.get("type") == "file"}
+    assert "n1.md" in files
+    assert "auth.md" in files
+
+
+def test_obsidian_safe_stem_handles_none_and_non_string():
+    from graphify.export import _obsidian_safe_stem
+    assert _obsidian_safe_stem(None) == "unnamed"
+    assert _obsidian_safe_stem(123) == "123"
+    assert _obsidian_safe_stem("") == "unnamed"
+
+
+def test_to_cypher_and_svg_handle_null_label(tmp_path):
+    import networkx as nx
+    from graphify.export import to_svg
+    G = nx.Graph()
+    G.add_node("n1", label=None)
+    G.add_node("n2", label="auth")
+    G.add_edge("n1", "n2")
+
+    cypher_file = tmp_path / "graph.cypher"
+    to_cypher(G, str(cypher_file))
+    cypher_text = cypher_file.read_text(encoding="utf-8")
+    assert "SET n.label = 'n1';" in cypher_text
+
+    svg_file = tmp_path / "graph.svg"
+    to_svg(G, {0: ["n1", "n2"]}, str(svg_file))
+    assert svg_file.exists() and svg_file.stat().st_size > 0
+
+
 def test_existing_graph_node_count(tmp_path):
     from graphify.export import existing_graph_node_count, MALFORMED_GRAPH
     p = tmp_path / "graph.json"
@@ -1274,6 +1400,53 @@ console.log(bad);
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
+
+
+def test_hyperedge_regions_skip_hidden_members():
+    """Legend toggles set `hidden` on nodes, but getPositions() still returns
+    them. The hull must skip hidden members so a region disappears once fewer
+    than two members remain visible (#5121)."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+    from graphify.exporters.html import _hyperedge_script
+    hyperedges = json.dumps([{"nodes": ["a", "b", "c"], "label": "h"}])
+    script = _hyperedge_script(hyperedges)
+    body = script.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    harness = r"""
+let handler = null;
+const pos = {a: {x: 0, y: 0}, b: {x: 10, y: 0}, c: {x: 0, y: 10}};
+const network = {
+  on: (ev, fn) => { if (ev === 'afterDrawing') handler = fn; },
+  getPositions: ids => ({[ids[0]]: pos[ids[0]]}),
+};
+const store = {a: {id: 'a'}, b: {id: 'b'}, c: {id: 'c'}};
+const nodesDS = {get: id => store[id]};
+let fills = 0;
+const ctx = new Proxy({}, {
+  get: (t, k) => k === 'fill' ? (() => { fills++; })
+    : k === 'measureText' ? (() => ({width: 1})) : (() => {}),
+  set: () => true,
+});
+""" + body + r"""
+const out = [];
+handler(ctx); out.push(fills);
+fills = 0; store.a.hidden = true; handler(ctx); out.push(fills);
+fills = 0; store.b.hidden = true; handler(ctx); out.push(fills);
+console.log(JSON.stringify(out));
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        js = Path(tmp) / "hyperedge_hidden.js"
+        js.write_text(harness, encoding="utf-8")
+        proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    visible, one_hidden, two_hidden = json.loads(proc.stdout.strip())
+    assert visible >= 1
+    assert one_hidden >= 1
+    assert two_hidden == 0, "hull still drawn with only one visible member"
 
 
 def test_to_html_pins_vis_network_version_for_tooltip_xss_boundary():
@@ -1695,3 +1868,68 @@ console.log(JSON.stringify({
         "shortCount": ["hidden", "visible", "1 node"],
         "shortLeave": ["hidden", "hidden", ""],
     }
+
+
+def test_exporters_create_missing_parent_directories(tmp_path):
+    """to_cypher, to_graphml, and to_svg automatically create missing parent directories."""
+    G = make_graph()
+    communities = cluster(G)
+
+    cypher_path = tmp_path / "nested" / "sub_cypher" / "out.cypher"
+    assert not cypher_path.parent.exists()
+    to_cypher(G, str(cypher_path))
+    assert cypher_path.exists()
+    assert "MERGE (n:Code" in cypher_path.read_text(encoding="utf-8")
+
+    graphml_path = tmp_path / "nested" / "sub_graphml" / "out.graphml"
+    assert not graphml_path.parent.exists()
+    to_graphml(G, communities, str(graphml_path))
+    assert graphml_path.exists()
+    assert "<graphml" in graphml_path.read_text(encoding="utf-8")
+
+    svg_path = tmp_path / "nested" / "sub_svg" / "out.svg"
+    assert not svg_path.parent.exists()
+    to_svg(G, communities, str(svg_path), community_labels={0: "Core"})
+    assert svg_path.exists()
+    assert "<svg" in svg_path.read_text(encoding="utf-8")
+
+
+def test_strip_xml_illegal_fast_path_and_to_graphml_single_pass(tmp_path):
+    """_strip_xml_illegal preserves printable ASCII and valid XML whitespace, strips C0
+    controls, and to_graphml strips _-prefixed attributes and relabels illegal node IDs."""
+    import xml.etree.ElementTree as ET
+    import networkx as nx
+    from graphify.export import _strip_xml_illegal
+
+    # Fast-path printable ASCII and empty string
+    assert _strip_xml_illegal("") == ""
+    assert _strip_xml_illegal("hello_world_123") == "hello_world_123"
+    # Valid XML whitespace (\t, \n, \r) and non-ASCII preserved; C0 controls stripped
+    assert _strip_xml_illegal("a\tb\nc\rd\x00e\x0bf\x1fg") == "a\tb\nc\rdefg"
+    assert _strip_xml_illegal("café\x00") == "café"
+
+    G = nx.Graph()
+    G.add_node("bad\x00id", label="node\x07one", _internal="drop_me", _origin="file.py")
+    G.add_node("clean_id", label="café\tline\n", _internal="also_drop")
+    G.add_edge("bad\x00id", "clean_id", relation="calls\x0c", _edge_meta="secret")
+
+    out = tmp_path / "single_pass.graphml"
+    to_graphml(G, {0: ["bad\x00id", "clean_id"]}, str(out))
+
+    xml_text = out.read_text(encoding="utf-8")
+    assert "_internal" not in xml_text
+    assert "_origin" not in xml_text
+    assert "_edge_meta" not in xml_text
+    assert "drop_me" not in xml_text
+    assert "secret" not in xml_text
+
+    # Must parse cleanly as XML and have relabeled node ID without \x00
+    root = ET.fromstring(xml_text)
+    ns = {"g": "http://graphml.graphdrawing.org/xmlns"}
+    node_ids = {el.attrib["id"] for el in root.findall(".//g:node", ns)}
+    assert node_ids == {"badid", "clean_id"}
+    edge = root.find(".//g:edge", ns)
+    assert edge is not None
+    assert {edge.attrib["source"], edge.attrib["target"]} == {"badid", "clean_id"}
+
+

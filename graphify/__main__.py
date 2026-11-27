@@ -122,6 +122,7 @@ from graphify.install import (  # noqa: E402,F401
     _OPENCODE_PLUGIN_HEADER,
     _drop_opencode_config_entry,
     _opencode_config_names_plugin,
+    _opencode_dir,
     _opencode_plugin_is_v1_only,
     _PLATFORM_CONFIG,
     _skill_lock,
@@ -429,12 +430,21 @@ def _refresh_v1_opencode_plugins() -> None:
     if os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes"):
         return
     try:
-        directories = dict.fromkeys(d.resolve() for d in (Path.cwd(), Path.home()))
+        # The cwd and home .opencode dirs are where installs before #3398 wrote,
+        # ~/.config/opencode is the global install's dir since.
+        directories = dict.fromkeys(
+            d.resolve()
+            for d in (
+                _opencode_dir(project=True, project_dir=Path.cwd()),
+                _opencode_dir(project=True, project_dir=Path.home()),
+                _opencode_dir(project=False),
+            )
+        )
     except (OSError, RuntimeError):
         return
     loadable: "bool | None" = None  # asked once, and only when an old plugin is found
     for directory in directories:
-        plugin_file = directory / _OPENCODE_PLUGIN_PATH
+        plugin_file = directory / _OPENCODE_PLUGIN_PATH.relative_to(".opencode")
 
         def pending() -> "bool | None":
             """True for an old plugin, False for a stale entry only, None for neither."""
@@ -486,7 +496,7 @@ def _refresh_v1_opencode_plugins() -> None:
         elif dropped:
             print(
                 f"graphify: removed the stale graphify entry from "
-                f"{directory / _OPENCODE_CONFIG_PATH}; set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                f"{directory / _OPENCODE_CONFIG_PATH.name}; set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
                 file=sys.stderr,
             )
 
@@ -831,7 +841,7 @@ def _run_cli() -> None:
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
     _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
-    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
+    _FREE_TEXT_CMDS = {"query", "explain", "section", "path", "save-result", "install", "uninstall"}
     _help_flags = {"-h", "--help", "-?"}
     # Version and help only report, so they leave installed files alone (#4545).
     _informational = (
@@ -875,6 +885,10 @@ def _run_cli() -> None:
         print("    --undirected            ignore edge direction")
         print("  explain \"X\"             plain-language explanation of a node and its neighbors")
         print("    --all                   list every connection (default: the 20 most connected)")
+        print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("  section \"X\"             print the text of a Markdown section (heading and subsections)")
+        print("                            \"docs/api.md#X\" picks X in one file when several share it")
+        print("    --max-chars N           cap on printed characters (default 8000)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  diagnose multigraph    report same-endpoint edge collapse risk in graph.json")
         print("    --graph <path>          path to graph/extraction JSON")
@@ -923,7 +937,10 @@ def _run_cli() -> None:
         print("    --context C             explicit edge-context filter (repeatable)")
         print("    --seed X                start at node X (id, label or file path; repeatable)")
         print("                            instead of the question's keyword matches")
-        print("    --budget N              cap output at N tokens (default 2000)")
+        print("    --budget N, --budget=N  cap output at N tokens (default 2000)")
+        print("    --depth N, --depth=N    traversal depth 1-6 (default 2)")
+        print("                            absent options use the selected graph project's .graphifyrc")
+        print("                            query_budget / query_depth. Explicit options override project values.")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  query, path and explain exit 0 with an answer, 3 when a name is ambiguous")
         print("  (the candidates are listed), 4 when no node matches")
@@ -969,6 +986,8 @@ def _run_cli() -> None:
         print("                            and OPENAI_MODEL to the model name your server serves")
         print("                            claude also reaches custom Anthropic-compatible endpoints (LiteLLM")
         print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
+        print("                            GRAPHIFY_CLAUDE_PROMPT_CACHE=0 disables Claude system-prompt caching")
+        print("                            (default: enabled; set 1 to explicitly enable)")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
         print("    --force                 full re-scan and re-dispatch: skip the incremental")
@@ -1016,7 +1035,7 @@ def _run_cli() -> None:
         print("  gemini uninstall        remove GEMINI.md section + BeforeTool hook")
         print("  cursor install          write .cursor/rules/graphify.mdc (Cursor)")
         print("  cursor uninstall        remove .cursor/rules/graphify.mdc")
-        print("  claude install          write graphify section to CLAUDE.md + PreToolUse hook (Claude Code)")
+        print("  claude install          write graphify section to CLAUDE.md (or the AGENTS.md Claude Code reads) + PreToolUse hook")
         print("  claude uninstall        remove graphify section from CLAUDE.md + PreToolUse hook")
         print("  codebuddy install       write graphify section to CODEBUDDY.md + PreToolUse hook (CodeBuddy)")
         print("  codebuddy uninstall     remove graphify section from CODEBUDDY.md + PreToolUse hook")
@@ -1080,8 +1099,8 @@ def _run_cli() -> None:
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
         print()
-        print("Prefer a hosted version? Try the graphify platform free for 14 days:")
-        print("https://app.graphify.com")
+        print("Prefer a hosted version? Graphify Cloud has a free plan, no card required:")
+        print("https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=help")
         print()
         return
 

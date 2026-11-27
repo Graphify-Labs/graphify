@@ -5,6 +5,8 @@ import re
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_source_text
+from graphify.extractors.engine import _underscore_salted_nid
+from graphify.ids import normalize_id
 
 # A match starting with `typedef` is declared in step 2.5, so the variable and
 # method passes skip it. Precompiled: those passes test every match they make.
@@ -203,35 +205,45 @@ def extract_dart(path: Path) -> dict:
             header_end = len(rest)
         header = rest[:header_end]
 
-        base_class = None
-        generics = None
         mixins_list = []
         interfaces_list = []
 
-        # Parse extends or on
-        extends_m = re.search(r"^\s*(?:extends|on)\s+([a-zA-Z0-9_.]+)", header)
+        def _consume_generic_args(text: str) -> tuple[str | None, str]:
+            if not text.strip().startswith("<"):
+                return None, text
+            start_idx = text.find("<")
+            depth = 1
+            i = start_idx + 1
+            while i < len(text) and depth > 0:
+                if text[i] == "<":
+                    depth += 1
+                elif text[i] == ">":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start_idx + 1 : i], text[i + 1:]
+                i += 1
+            return None, text
+
+        # Parse extends or on. A mixin's `on` clause may list several
+        # superclass constraints, comma-separated (`mixin Foo on A, B {}`);
+        # `extends` never does, since Dart classes have single inheritance.
+        base_entries: list[tuple[str, str | None]] = []
+        extends_m = re.search(r"^\s*(extends|on)\s+([a-zA-Z0-9_.]+)", header)
         if extends_m:
-            base_class = extends_m.group(1)
-            rest_header = header[extends_m.end():]
-            if rest_header.strip().startswith("<"):
-                start_idx = rest_header.find("<")
-                depth = 1
-                i = start_idx + 1
-                while i < len(rest_header) and depth > 0:
-                    if rest_header[i] == "<":
-                        depth += 1
-                    elif rest_header[i] == ">":
-                        depth -= 1
-                        if depth == 0:
-                            generics = rest_header[start_idx + 1 : i]
-                            break
-                    i += 1
-                if generics is not None:
-                    header = rest_header[i + 1:]
-                else:
-                    header = rest_header
-            else:
-                header = rest_header
+            is_on = extends_m.group(1) == "on"
+            base_class = extends_m.group(2)
+            header = header[extends_m.end():]
+            generics, header = _consume_generic_args(header)
+            base_entries.append((base_class, generics))
+
+            if is_on:
+                while True:
+                    comma_m = re.match(r"\s*,\s*([a-zA-Z0-9_.]+)", header)
+                    if not comma_m:
+                        break
+                    header = header[comma_m.end():]
+                    extra_generics, header = _consume_generic_args(header)
+                    base_entries.append((comma_m.group(1), extra_generics))
 
         # Parse with
         with_m = re.search(r"^\s*with\s+", header)
@@ -251,8 +263,8 @@ def extract_dart(path: Path) -> dict:
         if impl_m:
             interfaces_list = _split_types(header[impl_m.end():])
 
-        # Map extends inheritance relation
-        if base_class:
+        # Map extends/on inheritance relation(s)
+        for base_class, generics in base_entries:
             base_nid = _make_id(base_class)
             add_node(base_nid, base_class, source_file=None)
             add_edge(class_nid, base_nid, "inherits", line=class_line)
@@ -408,8 +420,12 @@ def extract_dart(path: Path) -> dict:
     typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([^;]+);"
     # Return-type tokens are whitespace-separated runs that cannot contain
     # whitespace themselves, so a long line that never reaches `(` fails in
-    # linear time instead of trying every way to split it into tokens.
-    legacy_typedef_pattern = r"^[ \t]*typedef[ \t]+(?:[\w<>,.?]+[ \t]+)*?(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\("
+    # linear time instead of trying every way to split it into tokens. A token
+    # may carry one parameter list, so a function-typed return type
+    # (`typedef int Function(int) Make();`) is skipped as a whole, and the
+    # name is never `Function`: that is the return type's head, not the alias.
+    legacy_typedef_pattern = (r"^[ \t]*typedef[ \t]+(?:[\w<>,.?]+(?:\([^()\n]*\)[\w<>,.?]*)?[ \t]+)*?"
+                              r"(?!Function\b)(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\(")
     typedef_builtins = {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}
     # Most files declare no typedef: skip both scans with one substring test.
     for pattern in (typedef_pattern, legacy_typedef_pattern) if "typedef" in src_clean else ():
@@ -489,6 +505,7 @@ def extract_dart(path: Path) -> dict:
     # 5. Top-level and member functions/methods (supports typed/generic/record return types and Riverpod/Bloc references)
     # Restrict indentation to 0-2 spaces to avoid matching nested local functions or methods inside multiline switch statements
     method_pattern = r"^\s{0,2}(?:factory\s+|static\s+|async\s+|external\s+|abstract\s+)?(?:\([^)]+\)|[a-zA-Z0-9_<>,.?]+)(?:\s+[a-zA-Z0-9_<>,.?]+){0,3}\s+(\w+(?:\.\w+)?)\s*\("
+    method_matches: list[tuple[re.Match, str]] = []
     for m in re.finditer(method_pattern, src_clean, re.MULTILINE):
         if _TYPEDEF_LINE.match(m.group(0)):  # legacy alias, declared in 2.5
             continue
@@ -498,8 +515,24 @@ def extract_dart(path: Path) -> dict:
             continue
         if re.match(r"^[A-Z]", name):
             continue
+        method_matches.append((m, name))
+    # A function's id is the file stem plus its name, and `make_id` drops a
+    # leading `_` and folds case, so the library-private `_dispose()` and
+    # `dispose()` of one file (in one class or in two) minted one id and the
+    # second vanished. Group the names by the id they would get and apply
+    # `_underscore_salted_nid`, the Python/C#/Solidity/Java rule (#3302,
+    # #4415, #5058, #5151): a unique public name keeps the plain id, every
+    # other colliding name is salted; a name that collides with nothing keeps
+    # its old id. A `_UpperCamel` name is a private type the pattern caught
+    # in a constructor call (`return _Page(`), not a function: it joins no group.
+    method_names: dict[str, set[str]] = {}
+    for _, name in method_matches:
+        if normalize_id(name) and not re.match(r"^_+[A-Z]", name):
+            method_names.setdefault(_make_id(stem, name), set()).add(name)
+    method_groups = {nid: names for nid, names in method_names.items() if len(names) >= 2}
+    for m, name in method_matches:
         method_line = _line_at(m.start(1))
-        nid = _make_id(stem, name)
+        nid = _underscore_salted_nid(_make_id(stem, name), name, method_groups)
         add_node(nid, name, line=method_line)
         add_edge(file_nid, nid, "defines", line=method_line)
 

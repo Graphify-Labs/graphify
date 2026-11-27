@@ -53,6 +53,45 @@ def _out_from_env() -> str:
 GRAPHIFY_OUT = _out_from_env()
 
 
+# --- Per-file raw-bytes handoff between the cache-key hash and the parse read ---
+#
+# On a cold build each source file was read from disk twice: once by
+# cache.file_hash() to compute the SHA256 cache key, and again by
+# extractors.base._read_source_bytes() to parse it. The two live in different
+# call scopes (load_cached() runs before the extractor), so the bytes are passed
+# between them through this one-slot, context-local handoff: file_hash() stashes
+# the raw bytes it just read, and _read_source_bytes() consumes them for the same
+# path, halving cold-build file I/O. The cache-key value is unchanged — it is the
+# SHA256 of exactly these raw bytes, as before.
+#
+# A ContextVar, not a module global: extraction runs concurrently — a
+# ThreadPoolExecutor in tests, process pools in production — and each thread
+# starts with its own empty context, so a value stashed on one thread is never
+# visible to another (mirrors extractors.base._ACTIVE_SCAN_ROOT). Single slot and
+# keyed by path string: the last writer wins so memory stays bounded to one
+# file's bytes, and a key mismatch simply re-reads from disk — another file's
+# bytes can never be returned. On a warm build file_hash() takes its stat
+# fastpath and never reads, so nothing is stashed and no eager read is forced.
+from contextvars import ContextVar as _ContextVar
+
+_PREREAD_RAW: "_ContextVar[tuple[str, bytes] | None]" = _ContextVar(
+    "_PREREAD_RAW", default=None
+)
+
+
+def stash_preread_bytes(path: "str | Path", raw: bytes) -> None:
+    """Record ``raw`` as the just-read raw bytes of ``path`` for this context."""
+    _PREREAD_RAW.set((str(path), raw))
+
+
+def take_preread_bytes(path: "str | Path") -> "bytes | None":
+    """Return raw bytes stashed for ``path`` in this context, else ``None``."""
+    slot = _PREREAD_RAW.get()
+    if slot is not None and slot[0] == str(path):
+        return slot[1]
+    return None
+
+
 def os_long_path(path: "str | Path") -> str:
     r"""Return an OS path string safe for open()/stat() on Windows long paths.
 
@@ -241,17 +280,66 @@ def write_text_atomic_if_changed(path: "str | Path", text: str) -> bool:
     return True
 
 
+_JSON_STREAM_THRESHOLD = 1024
+_JSON_STREAM_CHUNK = 2048
+
+
+def _write_json_payload(
+    f,
+    obj,
+    *,
+    indent: "int | None",
+    ensure_ascii: bool,
+    separators: "tuple[str, str] | None",
+) -> None:
+    """Encode ``obj`` using C-backed ``json.dumps`` while chunking large top-level lists."""
+    if (
+        indent is None
+        and isinstance(obj, dict)
+        and all(isinstance(k, str) for k in obj)
+        and any(isinstance(v, list) and len(v) >= _JSON_STREAM_THRESHOLD for v in obj.values())
+    ):
+        item_sep, kv_sep = separators if separators is not None else (", ", ": ")
+        f.write("{")
+        for idx, (k, v) in enumerate(obj.items()):
+            if idx:
+                f.write(item_sep)
+            f.write(json.dumps(k, ensure_ascii=ensure_ascii))
+            f.write(kv_sep)
+            if isinstance(v, list) and len(v) >= _JSON_STREAM_THRESHOLD:
+                f.write("[")
+                for start in range(0, len(v), _JSON_STREAM_CHUNK):
+                    if start:
+                        f.write(item_sep)
+                    encoded = json.dumps(
+                        v[start : start + _JSON_STREAM_CHUNK],
+                        ensure_ascii=ensure_ascii,
+                        separators=(item_sep, kv_sep),
+                    )
+                    f.write(encoded[1:-1])
+                f.write("]")
+            else:
+                f.write(json.dumps(v, ensure_ascii=ensure_ascii, separators=separators))
+        f.write("}")
+        return
+    f.write(json.dumps(obj, indent=indent, ensure_ascii=ensure_ascii, separators=separators))
+
+
 def write_json_atomic(
     path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True, compact: bool = False
 ) -> None:
-    """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
-    temp file rather than materializing the whole string first (matters for very
-    large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
-    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. ``compact`` writes one
-    line with no padding after ``,``/``:`` (graph.json, #3413). See :func:`_atomic_replace`."""
+    """Atomically write ``obj`` as JSON to ``path``, streaming large top-level lists
+    in C-encoded chunks rather than materializing the whole string first (matters
+    for very large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that
+    emit raw UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. ``compact``
+    writes one line with no padding after ``,``/``:`` (graph.json, #3413). See
+    :func:`_atomic_replace`."""
     separators = (",", ":") if compact else None
     _atomic_replace(
-        path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii, separators=separators)
+        path,
+        lambda f: _write_json_payload(
+            f, obj, indent=indent, ensure_ascii=ensure_ascii, separators=separators
+        ),
     )
 
 # Directory segments that, when they appear as a whole path component, mark the
@@ -465,6 +553,33 @@ def out_path(*parts: str) -> Path:
     return Path(GRAPHIFY_OUT, *parts)
 
 
+def graph_root_for(gp: Path) -> Path:
+    """Resolve the selected graph's project without interpreting paths via CWD."""
+    try:
+        text = (gp.parent / ".graphify_root").read_text(encoding="utf-8-sig").strip()
+        if text:
+            root = Path(text)
+            if root.is_absolute():
+                try:
+                    resolved = root.resolve()
+                except RuntimeError:
+                    pass  # Path resolution can report a symlink loop this way.
+                else:
+                    if resolved.is_dir():
+                        return resolved
+    except (OSError, UnicodeError, ValueError):
+        pass
+
+    # CLI-written absolute markers cover shared output. Otherwise strip only
+    # an exact, traversal-free relative output suffix, never a CWD-resolved one.
+    output = Path(GRAPHIFY_OUT)
+    parts = output.parts
+    if (parts and not output.is_absolute() and ".." not in parts
+            and gp.parent.parts[-len(parts):] == parts):
+        return gp.parent.parents[len(parts) - 1]
+    return gp.parent
+
+
 def default_graph_json() -> str:
     """Default ``graph.json`` path under the configured output dir.
 
@@ -524,6 +639,26 @@ _WINDOWS_MAX_PATH = 260
 _MIN_STEM_BUDGET = 16
 
 
+def _component_name_max(directory: "str | Path") -> int | None:
+    """``PC_NAME_MAX`` (bytes per path component) of the filesystem holding
+    ``directory``, or ``None`` when it cannot be determined.
+
+    The export directory may not exist yet, so ask its nearest existing
+    ancestor, which is on the same filesystem unless something is mounted in
+    between.
+    """
+    path = Path(directory)
+    for candidate in (path, *path.parents):
+        try:
+            name_max = os.pathconf(str(candidate), "PC_NAME_MAX")
+        except FileNotFoundError:
+            continue
+        except (AttributeError, OSError, ValueError):
+            return None
+        return name_max if name_max > 0 else None
+    return None
+
+
 def stem_filename_budget(output_dir: "str | Path", *, reserve: int = 0, limit: int = 200) -> int:
     """Largest filename stem an exporter may write directly into ``output_dir``.
 
@@ -535,18 +670,27 @@ def stem_filename_budget(output_dir: "str | Path", *, reserve: int = 0, limit: i
     ``C:\\Users\\me\\projects\\svc\\graphify-out\\obsidian`` exceeds MAX_PATH and
     the write dies with ``FileNotFoundError``, aborting the export mid-vault.
 
-    Returns ``limit`` unchanged on POSIX, so existing output is byte-for-byte
-    stable there. On Windows it returns the smaller of ``limit`` and whatever
-    still fits inside MAX_PATH once ``output_dir``, the separator, ``reserve``
-    (room for caller-added prefixes/collision suffixes) and the ``.md``
-    extension are accounted for.
+    On POSIX it returns the smaller of ``limit`` and the target filesystem's
+    real ``PC_NAME_MAX`` less ``reserve`` and the ``.md`` extension. Under the
+    conventional 255 that is still ``limit``, so existing output is
+    byte-for-byte stable; it only shrinks where the filesystem reports less,
+    e.g. eCryptfs, whose filename encryption leaves ~143 bytes (#2109). On
+    Windows it returns the smaller of ``limit`` and whatever still fits inside
+    MAX_PATH once ``output_dir``, the separator, ``reserve`` (room for
+    caller-added prefixes/collision suffixes) and the ``.md`` extension are
+    accounted for.
 
-    The budget is a CHARACTER count, but callers that cap UTF-8 BYTES may pass
-    it straight through: a string's UTF-8 length is never below its character
-    length, so a byte-capped stem always satisfies the character ceiling too.
+    The Windows budget is a CHARACTER count, but callers that cap UTF-8 BYTES
+    may pass it straight through: a string's UTF-8 length is never below its
+    character length, so a byte-capped stem always satisfies the character
+    ceiling too. The POSIX NAME_MAX budget is in BYTES, which a byte-capping
+    caller meets exactly.
     """
     if os.name != "nt":
-        return limit
+        name_max = _component_name_max(output_dir)
+        if name_max is None:
+            return limit
+        return max(_MIN_STEM_BUDGET, min(limit, name_max - reserve - len(".md")))
     try:
         base = os.path.abspath(str(output_dir))
     except (OSError, ValueError):
@@ -569,6 +713,35 @@ def nfc(s: str) -> str:
     """
     import unicodedata
     return unicodedata.normalize("NFC", s)
+
+
+def read_graph_json(path) -> dict:
+    """A graph file's data with one copy of each string its rows repeat."""
+    shared: dict[str, str] = {}
+
+    def share(row: dict) -> dict:
+        for field, value in row.items():
+            if type(value) is str:
+                row[field] = shared.setdefault(value, value)
+        return row
+
+    return json.loads(Path(path).read_text(encoding="utf-8"), object_hook=share)
+
+
+def consumed(rows: list):
+    """Each row in order, let go as it is taken, so a graph built from them never holds both."""
+    rows.reverse()
+    while rows:
+        yield rows.pop()
+
+
+def consumed_graph_rows(data: dict) -> dict:
+    """``data`` for networkx to build a graph from once, stamped as ``restore_arc_direction`` stamps it."""
+    for link in data["links"]:
+        if isinstance(link, dict):
+            link["_src"] = link.get("_src", link.get("source"))
+            link["_tgt"] = link.get("_tgt", link.get("target"))
+    return dict(data, nodes=consumed(data["nodes"]), links=consumed(data["links"]))
 
 
 def restore_arc_direction(data: dict) -> dict:
@@ -606,16 +779,14 @@ def load_node_link_graph(path_or_data):
     """
     from networkx.readwrite import json_graph
     data = path_or_data
-    if not isinstance(data, dict):
+    owned = not isinstance(data, dict)
+    if owned:
         p = Path(data)
         from graphify.security import check_graph_file_size_cap  # lazy: security imports paths
         check_graph_file_size_cap(p)
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = read_graph_json(p)
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     if isinstance(data, dict):
-        data = restore_arc_direction(data)
-    try:
-        return json_graph.node_link_graph(data, edges="links")
-    except TypeError:  # networkx too old for the edges kwarg; default is "links"
-        return json_graph.node_link_graph(data)
+        data = consumed_graph_rows(data) if owned and isinstance(data.get("links"), list) else restore_arc_direction(data)
+    return json_graph.node_link_graph(data, edges="links")
