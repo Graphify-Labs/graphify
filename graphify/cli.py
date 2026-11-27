@@ -4053,7 +4053,7 @@ def dispatch_command(cmd: str) -> None:
             elif a == "--no-viz":
                 no_viz = True; i += 1
             elif a == "--dir" and i + 1 < len(args):
-                obsidian_dir = Path(args[i + 1]); i += 2
+                obsidian_dir = Path(args[i + 1]).expanduser(); i += 2
             elif a == "--push" and i + 1 < len(args):
                 push_uri = args[i + 1]; i += 2
             elif a == "--user" and i + 1 < len(args):

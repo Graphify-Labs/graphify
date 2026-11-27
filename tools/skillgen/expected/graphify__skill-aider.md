@@ -507,15 +507,15 @@ communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
 
-# LABELS - replace these with the names you chose above
-labels = LABELS_DICT
+# LABELS - the names you wrote to .graphify_labels.json above
+labels = {int(k): v for k, v in json.loads(Path('graphify-out/.graphify_labels.json').read_text(encoding=\"utf-8-sig\")).items()}
 
 # Regenerate questions with real community labels (labels affect question phrasing)
 questions = suggest_questions(G, communities, labels)
 
 report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, INPUT_PATH, suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report)
-Path('.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}))
+Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}))
 # Re-export so graph.json nodes carry the curated community_name (#2490).
 # Same extraction as Step 4, so the #479 shrink-guard passes on node count;
 # if it still refuses, surface the guard message - do not force past it.
@@ -526,7 +526,7 @@ print('Report updated with community labels')
 "
 ```
 
-Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
+Write the labels dict you constructed to `graphify-out/.graphify_labels.json` as JSON before running the block (e.g. `{"0": "Attention Mechanism", "1": "Training Pipeline"}`) — never paste it into the Python source, since a community name containing a quote or brace would break the literal.
 INPUT_PATH is read from `graphify-out/.graphify_root`; there is no path to substitute.
 
 ### Step 6 - Generate Obsidian vault (opt-in) + HTML
@@ -544,7 +544,7 @@ from pathlib import Path
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
-labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
+labels_raw = json.loads(Path('graphify-out/.graphify_labels.json').read_text()) if Path('graphify-out/.graphify_labels.json').exists() else {}
 
 G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
@@ -575,7 +575,7 @@ from pathlib import Path
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
-labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
+labels_raw = json.loads(Path('graphify-out/.graphify_labels.json').read_text()) if Path('graphify-out/.graphify_labels.json').exists() else {}
 
 G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
@@ -639,7 +639,7 @@ from pathlib import Path
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
-labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
+labels_raw = json.loads(Path('graphify-out/.graphify_labels.json').read_text()) if Path('graphify-out/.graphify_labels.json').exists() else {}
 
 G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
@@ -757,7 +757,7 @@ cost_path.write_text(json.dumps(cost, indent=2))
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
-rm -f .graphify_detect.json .graphify_extract.json .graphify_ast.json .graphify_semantic.json .graphify_analysis.json .graphify_labels.json; find . -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
+rm -f .graphify_detect.json .graphify_extract.json .graphify_ast.json .graphify_semantic.json .graphify_analysis.json graphify-out/.graphify_labels.json; find . -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
 rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
 
@@ -1261,19 +1261,33 @@ import sys
 from graphify.ingest import ingest
 from pathlib import Path
 
+def _opt(name):
+    p = Path('graphify-out') / name
+    if not p.exists():
+        return None
+    return p.read_text(encoding='utf-8-sig').strip() or None
+
 try:
-    out = ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')
+    out = ingest(Path('graphify-out/.graphify_add_url').read_text(encoding='utf-8-sig').strip(),
+        Path('./raw'), author=_opt('.graphify_add_author'),
+        contributor=_opt('.graphify_add_contributor'))
     print(f'Saved to {out}')
+except FileNotFoundError:
+    print('error: graphify-out/.graphify_add_url was not written - write the URL to that file first', file=sys.stderr)
+    sys.exit(1)
 except ValueError as e:
     print(f'error: {e}', file=sys.stderr)
     sys.exit(1)
 except RuntimeError as e:
     print(f'error: {e}', file=sys.stderr)
     sys.exit(1)
+finally:
+    for _f in ('.graphify_add_url', '.graphify_add_author', '.graphify_add_contributor'):
+        (Path('graphify-out') / _f).unlink(missing_ok=True)
 "
 ```
 
-Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
+Write the URL to `graphify-out/.graphify_add_url` before running the block — never paste it into the Python, since a URL containing a quote would break out of the literal. When the user gave a name, write it to `graphify-out/.graphify_add_author` or `graphify-out/.graphify_add_contributor`; a file that does not exist means the option was not given. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
 
 Supported URL types (auto-detected):
 - Twitter/X → fetched via oEmbed, saved as `.md` with tweet text and author

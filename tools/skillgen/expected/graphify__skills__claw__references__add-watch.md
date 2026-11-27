@@ -12,19 +12,33 @@ import sys
 from graphify.ingest import ingest
 from pathlib import Path
 
+def _opt(name):
+    p = Path('graphify-out') / name
+    if not p.exists():
+        return None
+    return p.read_text(encoding='utf-8-sig').strip() or None
+
 try:
-    out = ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')
+    out = ingest(Path('graphify-out/.graphify_add_url').read_text(encoding='utf-8-sig').strip(),
+        Path('./raw'), author=_opt('.graphify_add_author'),
+        contributor=_opt('.graphify_add_contributor'))
     print(f'Saved to {out}')
+except FileNotFoundError:
+    print('error: graphify-out/.graphify_add_url was not written - write the URL to that file first', file=sys.stderr)
+    sys.exit(1)
 except ValueError as e:
     print(f'error: {e}', file=sys.stderr)
     sys.exit(1)
 except RuntimeError as e:
     print(f'error: {e}', file=sys.stderr)
     sys.exit(1)
+finally:
+    for _f in ('.graphify_add_url', '.graphify_add_author', '.graphify_add_contributor'):
+        (Path('graphify-out') / _f).unlink(missing_ok=True)
 "
 ```
 
-Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
+Write the URL to `graphify-out/.graphify_add_url` before running the block — never paste it into the Python, since a URL containing a quote would break out of the literal. When the user gave a name, write it to `graphify-out/.graphify_add_author` or `graphify-out/.graphify_add_contributor`; a file that does not exist means the option was not given. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
 
 Supported URL types (auto-detected):
 - YouTube / any video URL → audio downloaded via yt-dlp, transcribed to `.txt` on next run (requires `pip install 'graphifyy[video]'`)

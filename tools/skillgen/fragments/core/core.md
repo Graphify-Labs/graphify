@@ -523,8 +523,8 @@ communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
 
-# LABELS - replace these with the names you chose above
-labels = LABELS_DICT
+# LABELS - the names you wrote to .graphify_labels.json above
+labels = {int(k): v for k, v in json.loads(Path('graphify-out/.graphify_labels.json').read_text(encoding=\"utf-8-sig\")).items()}
 
 # Regenerate questions with real community labels (labels affect question phrasing)
 questions = suggest_questions(G, communities, labels)
@@ -543,7 +543,7 @@ print('Report updated with community labels')
 "
 ```
 
-Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
+Write the labels dict you constructed to `graphify-out/.graphify_labels.json` as JSON before running the block (e.g. `{"0": "Attention Mechanism", "1": "Training Pipeline"}`) — never paste it into the Python source, since a community name containing a quote or brace would break the literal.
 INPUT_PATH is read from `graphify-out/.graphify_root`; there is no path to substitute.
 
 ### Step 6 - Generate Obsidian vault (opt-in) + HTML
@@ -552,11 +552,17 @@ INPUT_PATH is read from `graphify-out/.graphify_root`; there is no path to subst
 
 If `--obsidian` was given:
 
-- If `--obsidian-dir <path>` was also given, pass it via `--dir`. Otherwise defaults to `graphify-out/obsidian`.
+- If `--obsidian-dir <path>` was also given, write that path to `graphify-out/.graphify_obsidian_dir` and pass `--dir "$(cat graphify-out/.graphify_obsidian_dir)"`. Otherwise defaults to `graphify-out/obsidian`.
 
 ```bash
 graphify export obsidian
-# or with custom dir: graphify export obsidian --dir ~/vaults/my-project
+```
+
+With a custom dir the user named (already written to `.graphify_obsidian_dir` above), pass it through instead — and drop the sidecar so a later run cannot inherit a stale dir:
+
+```bash
+graphify export obsidian --dir "$(cat graphify-out/.graphify_obsidian_dir)"
+rm -f graphify-out/.graphify_obsidian_dir
 ```
 
 Generate the HTML graph (always, unless `--no-viz`):
