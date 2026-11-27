@@ -461,6 +461,19 @@ class _Collector:
                 "source_file": str(self.path), "source_location": f"L{self.blocks_line}", "weight": 1.0,
             })
 
+    def add_selectors(self, nodes_edges: tuple[list[dict], list[dict]]) -> None:
+        """Merge CSS selector nodes and their ``contains`` edges from this file."""
+        nodes, edges = nodes_edges
+        for node in nodes:
+            self._declare(node)
+        self.edges.extend(edges)
+
+    def stylesheet(self, body: str, first_line: int) -> None:
+        """Selectors of a ``{% stylesheet %}`` body, with absolute lines (``first_line`` is where the body starts)."""
+        from graphify.extractors.css import css_selectors, selector_nodes_edges
+
+        self.add_selectors(selector_nodes_edges(self.path, self.file_id, css_selectors(body), first_line - 1))
+
     def _declare(self, node: dict) -> None:
         if node["id"] not in self._node_ids:
             self._node_ids.add(node["id"])
@@ -954,6 +967,9 @@ def _scan(src: str, out: _Collector) -> None:
             continue
         if name == "comment":
             comment_depth = 1
+        elif name == "stylesheet" and (end := _find_end_tag(src, i, "endstylesheet")) is not None:
+            out.stylesheet(src[i:end[0]], line_of(i))
+            i = end[1]
         elif name in _SKIP_UNTIL:
             skip_until = _SKIP_UNTIL[name]
         elif name == "schema":
@@ -1023,4 +1039,80 @@ def extract_liquid(path: Path) -> dict:
         _scan(src, out)
         out.inferred_theme_blocks()
         out.resolve_settings()
+        if path.name.endswith(".css.liquid"):
+            from graphify.extractors.css import css_selectors, selector_nodes_edges
+
+            out.add_selectors(selector_nodes_edges(path, out.file_id, css_selectors(_strip_liquid(src))))
     return {"nodes": out.nodes, "edges": out.edges}
+
+
+_BLANK_NON_NEWLINE = re.compile(r"[^\n]")
+
+
+def _strip_liquid(src: str) -> str:
+    """``src`` with every Liquid tag, output and ``comment``/``doc`` body replaced by spaces, newlines kept.
+
+    Tokenizes like ``_scan`` (nested ``comment``, an opener without closer is text); ``raw`` bodies stay,
+    since Liquid emits them verbatim. Line and column of everything that survives are unchanged.
+    """
+    n = len(src)
+    pieces: list[str] = []
+    pos = 0          # start of the text not yet emitted
+    i = 0
+    depth = 0        # open {% comment %} blocks
+    next_t = next_o = -2
+    tag_close = out_close = 0
+
+    def emit(upto: int, keep: bool) -> None:
+        nonlocal pos
+        chunk = src[pos:upto]
+        pieces.append(chunk if keep else _BLANK_NON_NEWLINE.sub(" ", chunk))
+        pos = upto
+
+    while i < n:
+        if next_t != -1 and next_t < i:
+            next_t = src.find("{%", i)
+        if next_o != -1 and next_o < i:
+            next_o = src.find("{{", i)
+        if next_t == -1 and next_o == -1:
+            break
+        is_tag = next_t != -1 and (next_o == -1 or next_t < next_o)
+        start = next_t if is_tag else next_o
+        if is_tag:
+            if tag_close != -2 and tag_close < start + 2:
+                tag_close = src.find("%}", start + 2)
+                if tag_close == -1:
+                    tag_close = -2
+            close = tag_close
+        else:
+            if out_close != -2 and out_close < start + 2:
+                out_close = src.find("}}", start + 2)
+                if out_close == -1:
+                    out_close = -2
+            close = out_close
+        if close == -2:
+            i = start + 2
+            if is_tag and next_o == -1:
+                break
+            continue
+        end = close + 2
+        i = end
+        emit(start, depth == 0)
+        emit(end, False)
+        if not is_tag:
+            continue
+        body_start = start + 3 if src[start + 2:start + 3] == "-" else start + 2
+        head = _STMT_NAME.match(src, body_start, close)
+        name = head.group(1) if head else ""
+        if depth:
+            depth += (name == "comment") - (name == "endcomment")
+        elif name == "comment":
+            depth = 1
+        elif name in ("raw", "doc"):
+            span = _find_end_tag(src, end, "end" + name)
+            if span is not None:
+                emit(span[0], name == "raw")
+                emit(span[1], False)
+                i = span[1]
+    emit(n, depth == 0)
+    return "".join(pieces)

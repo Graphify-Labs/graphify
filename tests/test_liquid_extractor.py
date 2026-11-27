@@ -893,3 +893,45 @@ def test_settings_in_snippets_and_unknown_ids_are_ambiguous(tmp_path):
     assert [(e["confidence"], e["node"]["ref_kind"]) for e in snippet] == [("AMBIGUOUS", "setting")] * 2
     (missing,) = _setting_edges(root, "sections/s.liquid")
     assert (missing["confidence"], missing["node"]["label"]) == ("AMBIGUOUS", "section.settings.nope")
+
+
+def _css_nodes(root: Path, rel: str) -> dict[str, str]:
+    result = extract_liquid(root / rel)
+    assert "error" not in result
+    return {n["label"]: n["source_location"] for n in result["nodes"] if n["label"][:1] in ".#"}
+
+
+def test_css_liquid_selectors_keep_source_lines(tmp_path):
+    body = (
+        "{{ settings.c }}\n"
+        ".first { color: {{ settings.c }}; }\n"
+        "{% comment %}\n"
+        "  .masked {}\n"
+        "  {% comment %} .inner {} {% endcomment %}\n"
+        "  .hidden {}\n"
+        "{% endcomment %}\n"
+        "{% if x %}\n"
+        ".after { margin: 0 }\n"
+        "{% endif %}\n"
+    )
+    root = _theme(tmp_path, {"assets/x.css.liquid": body})
+    assert _css_nodes(root, "assets/x.css.liquid") == {".first": "L2", ".after": "L9"}
+
+
+def test_css_liquid_keeps_raw_content_and_blanks_tags(tmp_path):
+    body = "{% raw %}.lit {}{% endraw %}\n.real{% if a %}-x{% endif %} {}\n"
+    root = _theme(tmp_path, {"assets/y.css.liquid": body})
+    nodes = _css_nodes(root, "assets/y.css.liquid")
+    assert ".lit" in nodes
+    assert ".real" in nodes
+
+
+def test_css_liquid_strip_preserves_line_structure():
+    from graphify.extractors.liquid import _strip_liquid
+
+    src = "a{% comment %}\nb{% comment %}\nc{% endcomment %}\nd{% endcomment %}\ne {{ x\n}} f\n{% if %}"
+    out = _strip_liquid(src)
+    assert out.count("\n") == src.count("\n")
+    assert len(out) == len(src)
+    assert "b" not in out and "c" not in out and "d" not in out
+    assert out.startswith("a") and "e" in out and "f" in out
