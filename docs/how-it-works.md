@@ -88,8 +88,35 @@ The output `graph.json` uses NetworkX's node-link format. Each node has:
 - `file_type` — `code`, `document`, `paper`, `image`, `rationale`
 - `source_file` — where it came from
 
-See [RFC: file-level node summaries](node-summaries-rfc.md) for two proposed
-ways to add compact optional summaries for AI navigation.
+`graphify summarize` adds an optional short summary per file for AI
+navigation. It is written to `graphify-out/node-summaries.json`, not into
+`graph.json`, and `graphify explain` shows it as a `Summary:` line.
+`graphify summarize "<file>"` prints the summary of one file without writing
+anything. The design is in [RFC: file-level node summaries](node-summaries-rfc.md).
+
+By default the summary is made by fixed rules and no model is called. For
+documents that only identifies the file: its title, number and version. With
+`graphify summarize --backend NAME` a model reads the opening pages of each
+document, PDFs included, and writes the summary; code files keep their
+rule-based one.
+
+```bash
+graphify summarize --backend claude --dry-run      # documents, tokens, cost; sends nothing
+graphify summarize --backend claude                # write the summaries
+graphify summarize "protocol.pdf" --backend claude # try one document; writes nothing
+```
+
+- `--pages N` sets how much of each document is sent (default 15 pages).
+- `--model NAME` picks the model; the default is the backend's default.
+- `--profile NAME` uses your own rules for what a summary must say, read from
+  `.graphify/summaries/NAME.md` in the project or in your home directory.
+- A document that has not changed is not sent again on the next run; `--force`
+  sends everything again.
+
+This sends the opening pages of your documents to the provider you name. Use a
+local backend such as `ollama` to keep them on your machine. A PDF has no node
+in the graph unless it was extracted by a model, so its summary is stored by
+path in a `files` section of `node-summaries.json`, next to `nodes`.
 
 Each edge has:
 - `source`, `target` — node IDs

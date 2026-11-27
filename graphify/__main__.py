@@ -841,7 +841,7 @@ def _run_cli() -> None:
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
     _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
-    _FREE_TEXT_CMDS = {"query", "explain", "section", "path", "save-result", "install", "uninstall"}
+    _FREE_TEXT_CMDS = {"query", "explain", "section", "summarize", "path", "save-result", "install", "uninstall"}
     _help_flags = {"-h", "--help", "-?"}
     # Version and help only report, so they leave installed files alone (#4545).
     _informational = (
@@ -890,6 +890,21 @@ def _run_cli() -> None:
         print("                            \"docs/api.md#X\" picks X in one file when several share it")
         print("    --max-chars N           cap on printed characters (default 8000)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("  summarize               write a one-line summary of every file to node-summaries.json")
+        print("                            by fixed rules, no LLM unless --backend is given;")
+        print("                            `explain` shows it as a Summary line")
+        print("  summarize \"X\"           print the summary of file X only; nothing is written")
+        print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    --out <path>            output path (default node-summaries.json next to the graph)")
+        print("    --max-chars N           longest a summary may be (default 250 for code, 500 for documents)")
+        print("    --backend NAME          have a model write the summary of each document, PDFs included;")
+        print("                            sends the opening pages to that provider. Off unless given")
+        print("    --model NAME            model for --backend (default: the backend's default)")
+        print("    --profile NAME          your own rules for a summary: .graphify/summaries/NAME.md")
+        print("                            in the project, else in your home directory")
+        print("    --pages N               pages of each document --backend sends (default 15, 1 to 100)")
+        print("    --dry-run               with --backend: print documents, tokens and cost; send nothing")
+        print("    --force                 with --backend: send every document again")
         print("  diagnose multigraph    report same-endpoint edge collapse risk in graph.json")
         print("    --graph <path>          path to graph/extraction JSON")
         print("                            (default graphify-out/graph.json)")

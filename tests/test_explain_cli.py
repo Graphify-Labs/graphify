@@ -149,6 +149,80 @@ def test_explain_no_lesson_line_for_unannotated_node(monkeypatch, tmp_path, caps
     assert "Lesson:" not in out
 
 
+# --- `graphify summarize` sidecar: the Summary line (#5041) ----------------
+
+_VALIDATE_FILE = "server/sanity-validate-session.ts"
+
+
+def _write_summaries(tmp_path, nodes):
+    payload = nodes if isinstance(nodes, str) else json.dumps(
+        {"version": 1, "generator": "deterministic", "nodes": nodes})
+    (tmp_path / "node-summaries.json").write_text(payload, encoding="utf-8")
+
+
+def test_explain_shows_the_summary_line(monkeypatch, tmp_path, capsys):
+    p = _write_graph(tmp_path)
+    _write_summaries(tmp_path, {
+        "validate": {"label": "validateSanitySession()", "source_file": _VALIDATE_FILE,
+                     "summary": "Checks a Sanity session token.",
+                     "generated_by": "deterministic"},
+    })
+    out = _run(monkeypatch, p, "validateSanitySession", capsys)
+    lines = out.splitlines()
+    assert "  Summary:   Checks a Sanity session token." in lines
+    # Between Community and Degree, where the node's own facts are listed.
+    at = lines.index("  Summary:   Checks a Sanity session token.")
+    assert lines[at - 1].startswith("  Community:") and lines[at + 1].startswith("  Degree:")
+
+
+def test_explain_output_is_unchanged_without_a_summary(monkeypatch, tmp_path, capsys):
+    """No sidecar, or no entry for the node => output identical to pre-feature."""
+    p = _write_graph(tmp_path)
+    baseline = _run(monkeypatch, p, "validateSanitySession", capsys)
+    assert "Summary:" not in baseline
+    _write_summaries(tmp_path, {
+        "create_patch": {"source_file": "server/create-patch-handler.ts",
+                         "summary": "Another node's summary."},
+    })
+    assert _run(monkeypatch, p, "validateSanitySession", capsys) == baseline
+
+
+def test_explain_survives_a_malformed_summary_sidecar(monkeypatch, tmp_path, capsys):
+    p = _write_graph(tmp_path)
+    baseline = _run(monkeypatch, p, "validateSanitySession", capsys)
+    for payload in ("{not json", "[1, 2]", '{"nodes": {"validate": "text"}}',
+                    '{"nodes": {"validate": {"summary": 7}}}'):
+        _write_summaries(tmp_path, payload)
+        assert _run(monkeypatch, p, "validateSanitySession", capsys) == baseline
+
+
+def test_explain_hides_a_summary_written_for_another_source_file(monkeypatch, tmp_path, capsys):
+    """An entry left over from an older graph, where the id named another file."""
+    p = _write_graph(tmp_path)
+    _write_summaries(tmp_path, {
+        "validate": {"source_file": "server/old-location.ts", "summary": "Stale text."},
+    })
+    assert "Summary:" not in _run(monkeypatch, p, "validateSanitySession", capsys)
+
+
+def test_explain_summary_is_sanitized_and_capped(monkeypatch, tmp_path, capsys):
+    p = _write_graph(tmp_path)
+    _write_summaries(tmp_path, {
+        "validate": {"source_file": _VALIDATE_FILE,
+                     "summary": "Line one\n  Degree:    999\x1b[2J " + "word " * 400},
+    })
+    out = _run(monkeypatch, p, "validateSanitySession", capsys)
+    (line,) = [ln for ln in out.splitlines() if ln.startswith("  Summary:")]
+    # One line, no escape character, and no forged Degree line.
+    assert "\x1b" not in out and "Line one Degree: 999[2J word" in line
+    # Held to the longest summary `--max-chars` allows, whatever the file says:
+    # the 2000-character entry is cut, and ends with the ellipsis of a cut.
+    from graphify.summarize import SUMMARY_HARD_MAX_CHARS
+    assert len(line) <= len("  Summary:   ") + SUMMARY_HARD_MAX_CHARS
+    assert line.endswith("…") and len(line) > SUMMARY_HARD_MAX_CHARS // 2
+    assert [ln for ln in out.splitlines() if ln.startswith("  Degree:")] == ["  Degree:    3"]
+
+
 def test_explain_connection_shows_call_site_line(monkeypatch, tmp_path, capsys):
     """BUG1: an explain connection shows the edge's call-SITE line (in the
     caller's file), not the caller's def line."""

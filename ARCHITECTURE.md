@@ -204,6 +204,73 @@ never leaves a stale range. Reads are confined to the project root, the body
 goes through `redact_secrets`, and the text never enters graph.json, so graphs
 built before this existed work without a rebuild.
 
+`graphify summarize` writes one short summary per file-level node to
+`graphify-out/node-summaries.json` (`graphify/summarize.py`): at most 250
+characters for a code file and 500 for a document, or one limit for both with
+`--max-chars N` (50 to 1000). It runs only when asked, calls no model unless
+`--backend` is given, and never modifies graph.json; the file has no timestamp
+and lists entries in node-id order, so the same graph and files give the same
+bytes.
+
+A code file is summarized from the graph alone: its module docstring, the
+symbols it contains and what it imports, plus the community's name when the
+file has no docstring and someone has named the community. A Markdown document,
+which includes a converted Word file, is summarized from its title page when it
+has one, otherwise from its heading outline. The title page is the text before
+the first top-level heading, or the first top-level section when that text has
+no fields. It is recognised by its labelled fields, which are `Label: value`
+lines and the rows of a two-column table that opens the page, and it is read
+with the same confinement as `graphify section`. The summary is the title, then
+the fields; when they leave room, the short unlabelled lines above the first
+field (a document type, a study number) follow the title. The rules identify a
+file; they do not describe what a long document says.
+
+`graphify explain` shows the entry as a `Summary:` line when one exists for the
+node and its source file. `graphify summarize "<file>"` prints one file's
+summary, computed fresh, and writes nothing.
+
+`graphify summarize --backend NAME` has a model write the summary of each
+document (`graphify/summarize_llm.py`); code files keep their rule-based
+summary. It is off unless the flag is given: an API key in the environment
+alone never turns it on, and `GRAPHIFY_BACKEND=none` refuses it. One call is
+made per document through `llm._call_llm`, so every backend graphify supports
+works, a local one included.
+
+- **What is sent.** The opening of the document: its first `--pages N` pages
+  (default 15, where a page of a Markdown or converted Word file is 500 words
+  and a page of a PDF is a real page), with table-of-contents lines left out
+  and credential-shaped tokens removed. The text goes inside the same
+  untrusted-data wrapper as extraction uses, after fixed rules: plain text, one
+  paragraph, at most `--max-chars` characters, only what the document states.
+  The command prints how many documents, how many pages and which model before
+  the first call. `--dry-run` prints the documents, an estimate of the tokens
+  and the cost, and sends nothing.
+- **Profiles.** `--profile NAME` replaces the built-in description of what a
+  summary says with the text of `.graphify/summaries/NAME.md` in the project,
+  else in the home directory. The name is a plain name, the file is limited in
+  size, and a project profile must be a real file inside its folder. A profile
+  cannot replace the fixed rules. Graphify ships none.
+- **PDFs.** The graph has no node for a PDF unless a model extracted it, so
+  PDFs are found on disk with the scan's own ignore rules, and only the first
+  N pages are read. A PDF with no node has no rule-based summary; its entry is
+  stored by path in a `files` section of the sidecar, which is written only
+  when there is one. A PDF with no text (a scan) is skipped with a warning.
+- **Entries.** A model-written entry records `generated_by`
+  (`<backend>:<model>`), `pages`, the profile name when one was used,
+  `input_sha256` (the text that was sent) and `prompt_sha256` (the whole
+  prompt); a PDF entry also records `file_sha256`. The sidecar's `generator`
+  is `mixed` when any entry is model-written.
+- **Reruns.** A `--backend` run does not send a document whose stored summary
+  came from the same model and the same prompt, which also keeps summaries
+  stable from run to run; `--force` sends everything again. A run without
+  `--backend` keeps a model-written entry while the opening of its document is
+  unchanged; otherwise a node's entry is rule-based again and a file's entry is
+  removed, and the command says how many.
+- **Failures.** A call that fails or returns nothing leaves the document with
+  the summary it had and is reported as a warning. After three failures in a
+  row the run stops. Ctrl-C keeps what was finished, so the next run continues
+  from there. Tokens used are added to `graphify-out/cost.json`.
+
 Validation reports list/object enum values as schema errors. Graph assembly
 repairs structured `file_type` values to `concept` and structured `confidence`
 values to `INFERRED`, without fabricating a confidence score, so malformed

@@ -3,6 +3,49 @@
 This RFC proposes an optional way for graphify to expose compact file-level
 summaries for AI coding agents.
 
+## Status
+
+The first part is implemented as `graphify summarize` (#5041), with these
+choices from the options below:
+
+- **Sidecar** (Option B): `graphify-out/node-summaries.json`. `graph.json` is
+  not modified.
+- **Explicit command only.** Nothing is generated while building a graph.
+- **Name and budget:** `summary`, at most 250 characters for a code file and
+  500 for a document, whose title alone can take 150 characters.
+  `--max-chars N` sets one limit for both, from 50 to 1000.
+- **Deterministic.** No model is called. A code file is summarized from its
+  module docstring, symbols and imports; a Markdown document (or a converted
+  Word file) from its title page when it has one (its title and labelled
+  fields, including the rows of a two-column table, and when room is left the
+  short unlabelled lines above the first field), otherwise from its heading
+  outline.
+- **Shown in** `graphify explain` as a `Summary:` line.
+- **One file at a time:** `graphify summarize "<file>"` prints that file's
+  summary and writes nothing.
+
+Each entry carries `generated_by`, so summaries from different generators share
+the file.
+
+The opt-in LLM backend is implemented as `graphify summarize --backend NAME`
+(#5041), for documents only:
+
+- **Explicit.** No model is called unless `--backend` is given. `--dry-run`
+  shows the documents, tokens and estimated cost first.
+- **Input.** The first `--pages N` pages of each document (default 15), with
+  table-of-contents lines left out. PDFs are included; a PDF with no node in
+  the graph is stored by path in a `files` section of the sidecar.
+- **Shape.** A built-in description of what a summary says, or the user's own
+  with `--profile NAME`. The same length limit applies as for rule-based
+  summaries.
+- **Freshness.** Each model-written entry records hashes of the text and of
+  the prompt it came from. An unchanged document is not sent again, and a run
+  without `--backend` drops a model-written summary whose document changed.
+
+Not implemented yet: model-written summaries for code files, summaries in
+`graphify query` and the MCP server, and freshness metadata for rule-based
+summaries (rerun `graphify summarize` after updating the graph).
+
 ## Problem
 
 `graph.json` gives agents graph structure, source files, node labels, and
