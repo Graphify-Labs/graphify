@@ -233,6 +233,8 @@ Output exactly this JSON (no other text):
 {"nodes":[{"id":"filestem_entityname","label":"Human Readable Name","file_type":"code|document|paper|image","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path"}],"input_tokens":0,"output_tokens":0}
 ```
 
+LANGUAGE RULE: Write all human-readable text (node labels, hyperedge labels) in the dominant language of the source content. Chinese source content MUST produce Chinese labels with verbatim Chinese concepts (e.g. 道德义务论, 绝对命令) — do NOT translate them to English. Node IDs stay ASCII per the format rules above.
+
 **Step B3 - Collect, cache, and merge**
 
 Wait for all subagents. For each result:
