@@ -26,7 +26,7 @@ Run once per project to make graphify always-on in Claude Code sessions:
 graphify claude install
 ```
 
-This writes a `## graphify` section to the local `CLAUDE.md` that instructs Claude to check the graph before answering codebase questions and rebuild it after code changes. No manual `/graphify` needed in future sessions.
+This writes a `## graphify` section to the local `CLAUDE.md` that instructs Claude to check the graph before answering codebase questions and rebuild it after code changes. If the project has an `AGENTS.md` and neither it nor any parent directory has a `CLAUDE.md` or `CLAUDE.local.md`, the section goes into that `AGENTS.md` instead and no `CLAUDE.md` is created, because one would hide `AGENTS.md` from Claude Code. No manual `/graphify` needed in future sessions.
 
 ```bash
 graphify claude uninstall  # remove the section

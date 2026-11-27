@@ -197,3 +197,80 @@ def test_fallback_output_budget_still_truncates(tmp_path, monkeypatch):
     )
 
     assert "truncated at ~1 token budget" in output
+
+
+# The inline `explain` fallback ships in the query reference and, inline, in the
+# aider and devin monoliths; all three copies must behave the same (#5340).
+EXPLAIN_FRAGMENTS = [
+    QUERY_FRAGMENT,
+    REPO_ROOT / "tools/skillgen/fragments/core/aider.md",
+    REPO_ROOT / "tools/skillgen/fragments/core/devin.md",
+]
+
+
+def _run_explain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fragment_path: Path,
+    graph: nx.Graph,
+    term: str,
+) -> str:
+    fragment = fragment_path.read_text(encoding="utf-8")
+    marker = fragment.index("term = 'NODE_NAME'")
+    start = fragment.rindex(FALLBACK_OPEN, 0, marker) + len(FALLBACK_OPEN)
+    script = fragment[start:fragment.index(FALLBACK_END, marker)]
+    script = script.replace(chr(92) + '"', '"')
+    script = script.replace("term = 'NODE_NAME'", f"term = {term!r}")
+
+    try:
+        data = json_graph.node_link_data(graph, edges="links")
+    except TypeError:  # NetworkX before the ``edges`` keyword.
+        data = json_graph.node_link_data(graph)
+    output_dir = tmp_path / "graphify-out"
+    output_dir.mkdir()
+    (output_dir / "graph.json").write_text(json.dumps(data), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    output = io.StringIO()
+    with redirect_stdout(output):
+        exec(compile(script, str(fragment_path), "exec"), {"__name__": "__main__"})
+    return output.getvalue()
+
+
+def _call_chain(graph: nx.Graph) -> nx.Graph:
+    graph.add_node("c", label="Caller", source_file="caller.py")
+    graph.add_node("t", label="Target", source_file="target.py")
+    graph.add_node("d", label="Dep", source_file="dep.py")
+    graph.add_edge("c", "t", relation="calls", confidence="EXTRACTED")
+    graph.add_edge("t", "d", relation="imports", confidence="INFERRED")
+    return graph
+
+
+@pytest.mark.parametrize("graph_cls", [nx.DiGraph, nx.MultiDiGraph])
+@pytest.mark.parametrize("fragment_path", EXPLAIN_FRAGMENTS, ids=lambda p: p.name)
+def test_explain_fallback_lists_incoming_edges_of_a_directed_graph(
+    tmp_path, monkeypatch, fragment_path, graph_cls
+):
+    """neighbors() is successors-only on a directed graph: callers must still show."""
+    output = _run_explain(
+        tmp_path, monkeypatch, fragment_path, _call_chain(graph_cls()), "target"
+    )
+
+    assert "NODE: Target" in output
+    assert "  --imports--> Dep [INFERRED] (dep.py)" in output
+    assert "  <--calls-- Caller [EXTRACTED] (caller.py)" in output
+
+
+@pytest.mark.parametrize("fragment_path", EXPLAIN_FRAGMENTS, ids=lambda p: p.name)
+def test_explain_fallback_output_is_unchanged_for_an_undirected_graph(
+    tmp_path, monkeypatch, fragment_path
+):
+    output = _run_explain(
+        tmp_path, monkeypatch, fragment_path, _call_chain(nx.Graph()), "target"
+    )
+
+    connections = output.split("CONNECTIONS:\n", 1)[1].splitlines()
+    assert sorted(connections) == [
+        "  --calls--> Caller [EXTRACTED] (caller.py)",
+        "  --imports--> Dep [INFERRED] (dep.py)",
+    ]

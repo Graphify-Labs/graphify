@@ -315,10 +315,25 @@ import json, glob
 from pathlib import Path
 from graphify.cache import drop_unreported_chunk_sources
 
+def pdf_pages(p):  # a PDF is reported in pages (extraction-spec); 0 = count unknown, not checked
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(str(p)).pages) if p.stat().st_size <= 50 * 1024 * 1024 else 0  # detect's 50 MiB parse cap
+    except Exception:
+        return 0
+
 INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
-covered = {}
+covered, skipped = {}, 0
 for c in sorted(glob.glob('graphify-out/.graphify_chunk_*.json')):
-    d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
+    try:
+        d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
+        if not isinstance(d, dict):
+            raise ValueError('not a JSON object')
+    except ValueError as e:  # Step B3: an invalid chunk is skipped with a warning, never fatal (#5340)
+        print(f'WARNING: skipping invalid chunk {c} ({e}); its files are retried on the next --update')
+        Path(c).unlink()  # so the unread-file check below and the merge never parse it
+        skipped += 1
+        continue
     for src, n in (d.get('coverage') or {}).items():
         covered[src] = max(covered.get(src, 0), int(n))
 
@@ -329,7 +344,7 @@ for src, n in sorted(covered.items()):
         p = Path(INPUT_PATH) / src
     if not p.is_file():
         continue
-    total = sum(1 for _ in p.open(encoding='utf-8', errors='replace'))
+    total = pdf_pages(p) if p.suffix.lower() == '.pdf' else sum(1 for _ in p.open(encoding='utf-8', errors='replace'))
     if total and n < total:
         partial.append((src, n, total))
 
@@ -340,13 +355,13 @@ if unread:
 if partial:
     print(f'WARNING: {len(partial)} file(s) were only partly read. They are cached as partial and retried on the next --update:')
     for src, n, total in partial:
-        print(f'  {src}: read {n} of {total} lines')
-elif not unread:
+        print(f'  {src}: read {n} of {total}', 'pages' if src.lower().endswith('.pdf') else 'lines')
+elif not unread and not skipped:
     print('Coverage OK - every file a subagent reported was read to its last line')
 "
 ```
 
-Tell the user which files came up short and what was lost (the line counts are printed above). The nodes already extracted for those files are kept - they are still true - but the file is cached as partial and left unstamped in the manifest below, so the next `--update` re-dispatches it and replace-on-re-extract swaps the partial node set for a complete one. This is the same mechanism the library path uses for a truncated LLM response (#933, #1950), so both paths now recover instead of silently keeping a half-read file forever. A dispatched file with no coverage entry, or 0, was never opened, so whatever its chunk holds for it was guessed from its name: those items are dropped and the file is flagged the same way (#2225).
+Tell the user which files came up short and what was lost (the line or page counts are printed above). The nodes already extracted for those files are kept - they are still true - but the file is cached as partial and left unstamped in the manifest below, so the next `--update` re-dispatches it and replace-on-re-extract swaps the partial node set for a complete one. This is the same mechanism the library path uses for a truncated LLM response (#933, #1950), so both paths now recover instead of silently keeping a half-read file forever. A dispatched file with no coverage entry, or 0, was never opened, so whatever its chunk holds for it was guessed from its name: those items are dropped and the file is flagged the same way (#2225).
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash

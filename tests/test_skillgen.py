@@ -976,6 +976,30 @@ def test_claude_flavored_hosts_keep_their_hooks_text_unchanged():
         assert "## For the commit hook and native CLAUDE.md integration" in core, f"[{key}] pointer drifted"
 
 
+def test_claude_install_text_names_the_agents_md_it_writes_when_there_is_no_claude_md():
+    """#5340: `graphify claude install` writes to the project's AGENTS.md, and creates no
+    CLAUDE.md, when the project has an AGENTS.md and no CLAUDE.md-style file
+    (install._claude_instructions_file). Every rendered text describing the command
+    must say so, or an agent following it by hand creates the CLAUDE.md that hides
+    AGENTS.md from Claude Code."""
+    sentence = "This writes a `## graphify` section to the local `CLAUDE.md`"
+    arts = [a for a in gen.render_all(gen.load_platforms()) if sentence in a.content]
+    assert any(a.path == "graphify/skill-aider.md" for a in arts)
+    assert any(a.path.endswith("/references/hooks.md") for a in arts)
+    for a in arts:
+        assert "the section goes into that `AGENTS.md` instead" in a.content, a.path
+        assert "no `CLAUDE.md` is created" in a.content, a.path
+
+
+def test_query_reference_does_not_claim_the_inline_fallback_weights_by_idf():
+    """#5340: the CLI scores matches with IDF weights; the inline fallback counts plain
+    substring hits. The reference must not say the two match the same way."""
+    _, refs = _platform_artifacts("claude")
+    step0 = refs["query.md"].split("### Step 0", 1)[1].split("### Step 1", 1)[0]
+    assert "matches the same way" not in step0
+    assert "no IDF weighting" in step0
+
+
 # --- the amp native AGENTS.md integration (the 13th split host) ----------------
 
 
@@ -1293,6 +1317,113 @@ def test_coverage_check_flags_a_partly_read_file_and_clears_a_complete_one(
     printed = capsys.readouterr().out
     assert "Coverage OK" in printed, printed
     assert (out / ".graphify_partial.txt").read_text(encoding="utf-8") == ""
+
+
+def test_coverage_check_counts_a_pdf_in_pages_not_lines(tmp_path, capsys, monkeypatch):
+    """#5340: the extraction spec has a subagent report a PDF in pages, so Step B3.5
+    must compare against the page count. Counting the binary file's newlines made a
+    PDF read to its last page look partly read, so it was retried on every run."""
+    pypdf = pytest.importorskip("pypdf")
+    monkeypatch.chdir(tmp_path)
+    core, _ = _platform_artifacts("claude")
+    body = _substituted(_step_body(core, "covered[src] = max("), tmp_path)
+    out = tmp_path / "graphify-out"
+
+    pdf = tmp_path / "paper.pdf"
+    writer = pypdf.PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=72, height=72)
+    with pdf.open("wb") as fh:
+        writer.write(fh)
+    assert pdf.read_bytes().count(b"\n") > 3, "fixture must have more newlines than pages"
+
+    _write_chunk(out, {"coverage": {str(pdf): 3}, "nodes": []})
+    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "Coverage OK" in printed, printed
+    assert (out / ".graphify_partial.txt").read_text(encoding="utf-8") == ""
+
+    _write_chunk(out, {"coverage": {str(pdf): 2}, "nodes": []})
+    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "read 2 of 3 pages" in printed, printed
+    assert (out / ".graphify_partial.txt").read_text(encoding="utf-8").splitlines() == [str(pdf)]
+
+
+def test_coverage_check_skips_a_pdf_whose_page_count_is_unknown(tmp_path, capsys, monkeypatch):
+    """Without pypdf (or with an unreadable PDF) the page count is unknown: the PDF is
+    not judged at all, rather than judged against its newline count."""
+    monkeypatch.setitem(sys.modules, "pypdf", None)  # import fails, whatever is installed
+    monkeypatch.chdir(tmp_path)
+    core, _ = _platform_artifacts("claude")
+    body = _substituted(_step_body(core, "covered[src] = max("), tmp_path)
+    out = tmp_path / "graphify-out"
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n" + b"stream\n" * 40 + b"%%EOF\n")
+    _write_chunk(out, {"coverage": {str(pdf): 1}, "nodes": []})
+    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "Coverage OK" in printed, printed
+    assert (out / ".graphify_partial.txt").read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.parametrize(
+    "bad_chunk", ['{"nodes": [{"id": "cut', "[1, 2]"], ids=["truncated", "not-an-object"]
+)
+def test_coverage_check_skips_an_invalid_chunk_instead_of_aborting(
+    tmp_path, capsys, monkeypatch, bad_chunk
+):
+    """#5340: Step B3 says an invalid chunk is skipped with a warning, never fatal.
+
+    Step B3.5 is the first step to parse every chunk, so one bad chunk used to raise
+    there. It must warn, take the chunk out of the way of the unread-file check and
+    the merge that follow, and leave the files it held to be retried.
+    """
+    import json as _json
+
+    monkeypatch.chdir(tmp_path)
+    core, _ = _platform_artifacts("claude")
+    coverage = _substituted(_step_body(core, "covered[src] = max("), tmp_path)
+    merge = _substituted(_step_body(core, "'input_tokens': total_in"), tmp_path)
+    out = tmp_path / "graphify-out"
+
+    read = tmp_path / "read.md"
+    read.write_text("r\n" * 10, encoding="utf-8")
+    lost = tmp_path / "lost.md"  # dispatched in the chunk that came back invalid
+    lost.write_text("l\n" * 10, encoding="utf-8")
+    (out / ".graphify_uncached.txt").write_text(f"{read}\n{lost}\n", encoding="utf-8")
+    node = {"id": "read_a", "label": "A", "file_type": "document", "source_file": str(read)}
+    _write_chunk(out, {"nodes": [node], "edges": [], "coverage": {str(read): 10}})
+    bad = out / ".graphify_chunk_02.json"
+    bad.write_text(bad_chunk, encoding="utf-8")
+
+    exec(compile(coverage, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "skipping invalid chunk" in printed and "chunk_02" in printed, printed
+    assert not bad.exists(), "the invalid chunk must not reach the merge"
+    flagged = (out / ".graphify_partial.txt").read_text(encoding="utf-8").splitlines()
+    assert flagged == [str(lost)], f"the invalid chunk's file must be retried, got {flagged}"
+
+    exec(compile(merge, "step-b3-merge", "exec"), {"__name__": "__main__"})
+    assert "Merged 1 chunks" in capsys.readouterr().out
+    merged = _json.loads((out / ".graphify_semantic_new.json").read_text(encoding="utf-8"))
+    assert [n["id"] for n in merged["nodes"]] == ["read_a"]
+
+
+def test_coverage_check_does_not_report_ok_after_skipping_a_chunk(tmp_path, capsys, monkeypatch):
+    """#5340: when the only chunk was invalid, B3.5 must not follow its skip warning
+    with 'Coverage OK - every file a subagent reported was read to its last line'."""
+    monkeypatch.chdir(tmp_path)
+    core, _ = _platform_artifacts("claude")
+    coverage = _substituted(_step_body(core, "covered[src] = max("), tmp_path)
+    out = tmp_path / "graphify-out"
+    (out / ".graphify_chunk_01.json").write_text('{"nodes": [', encoding="utf-8")
+
+    exec(compile(coverage, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "skipping invalid chunk" in printed, printed
+    assert "Coverage OK" not in printed, printed
 
 
 def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
