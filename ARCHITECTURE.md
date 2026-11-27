@@ -77,6 +77,13 @@ when no changed file is eligible for extraction. Changes to in-scope ignore
 files also refresh the eligible AST corpus so newly included files can enter
 the graph.
 
+`graphify extract` re-extracts all in-scope code when a tracked JS/TS resolver
+input is added, edited, deleted or leaves the scan. The resolvers read the
+fresh AST batch without context from the saved graph, and the usual merge
+preserves existing semantic records. Recognized lockfiles are tracked in the
+manifest and stay outside the extraction corpus. An incomplete AST refresh
+leaves the previous manifest in place so the refresh can retry.
+
 Wiki community audits and relationships on directed graphs include incoming
 and outgoing edges. Each incident edge contributes once per community,
 including distinct reciprocal and parallel edges.

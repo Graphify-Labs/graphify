@@ -12086,7 +12086,7 @@ def _worker_init(language_overrides: dict[str, str]) -> None:
     set_language_overrides(language_overrides)
 
 
-def _extract_single_file(args: tuple) -> tuple[int, dict]:
+def _extract_single_file(args: tuple, *, refresh_astro_cache: bool = False) -> tuple[int, dict]:
     """Worker function for parallel extraction. Runs in a subprocess.
 
     Must be at module level (not a closure) so it can be pickled by
@@ -12110,10 +12110,11 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     root = Path(root_str)
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+    suffix = effective_suffix(path)
+    bypass_cache = suffix in _JS_CACHE_BYPASS_SUFFIXES
 
     # Check cache first (avoid re-extraction)
-    if not bypass_cache:
+    if not bypass_cache and not (refresh_astro_cache and suffix == ".astro"):
         cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
         if cached is not None:
             return idx, cached
@@ -12217,6 +12218,8 @@ def _extract_parallel(
     max_workers: int | None,
     total_files: int,
     cache_location: Path | None = None,
+    *,
+    refresh_astro_cache: bool = False,
 ) -> bool:
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
@@ -12252,6 +12255,10 @@ def _extract_parallel(
     root_str = str(root)
     cache_loc_str = str(cache_location if cache_location is not None else root)
     work_items = [(idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
+    extract_file: Callable[[tuple], tuple[int, dict]] = _extract_single_file
+    if refresh_astro_cache:
+        from functools import partial
+        extract_file = partial(_extract_single_file, refresh_astro_cache=True)
 
     done_count = 0
     failed: list[int] = []  # positions into uncached_work whose future failed
@@ -12263,7 +12270,7 @@ def _extract_parallel(
             initargs=(get_language_overrides(),),
         ) as pool:
             futures = {
-                pool.submit(_extract_single_file, item): pos
+                pool.submit(extract_file, item): pos
                 for pos, item in enumerate(work_items)
             }
             for future in concurrent.futures.as_completed(futures):
@@ -12392,6 +12399,7 @@ def extract(
     resolution_context_nodes: list[dict] | None = None,
     resolution_context_edges: list[dict] | None = None,
     release_parse_memo: bool = False,
+    refresh_astro_cache: bool = False,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -12435,6 +12443,8 @@ def extract(
         release_parse_memo: no effect; kept so existing callers still work.
             Python resolution no longer memoizes parsed trees, so there is
             nothing to release.
+        refresh_astro_cache: reparse Astro files after a JS/TS resolver input
+            changes. Fresh results replace the ordinary per-file AST cache.
     """
     paths = [Path(p) for p in paths]
     if resolution_context_nodes:
@@ -12551,8 +12561,8 @@ def extract(
             per_file[i] = {"nodes": [], "edges": []}
             no_extractor += 1
             continue
-        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
-        if not bypass_cache:
+        suffix = effective_suffix(path)
+        if suffix not in _JS_CACHE_BYPASS_SUFFIXES and not (refresh_astro_cache and suffix == ".astro"):
             cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
             if cached is not None:
                 per_file[i] = cached
@@ -12595,8 +12605,9 @@ def extract(
             parallel = False
         ran_parallel = False
         if parallel and len(uncached_work) >= _PARALLEL_THRESHOLD:
+            refresh_options = {"refresh_astro_cache": True} if refresh_astro_cache else {}
             ran_parallel = _extract_parallel(
-                uncached_work, per_file, root, max_workers, total, cache_location
+                uncached_work, per_file, root, max_workers, total, cache_location, **refresh_options
             )
         if not ran_parallel:
             # #2444: only re-extract what the pool didn't finish. A pool that
