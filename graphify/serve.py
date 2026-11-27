@@ -3204,6 +3204,37 @@ def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
     return lines
 
 
+# MCP tool annotations (title, openWorldHint). Every tool only reads, so all are
+# readOnlyHint=True, except query_graph while query logging is enabled (it then
+# appends to the query log). The PR tools shell out to `gh` (GitHub), so they are
+# open-world.
+_TOOL_ANNOTATIONS: dict[str, tuple[str, bool]] = {
+    "query_graph": ("Query graph", False),
+    "get_node": ("Get node", False),
+    "get_section": ("Get Markdown section", False),
+    "get_neighbors": ("Get neighbors", False),
+    "get_community": ("Get community", False),
+    "god_nodes": ("God nodes", False),
+    "graph_stats": ("Graph stats", False),
+    "shortest_path": ("Shortest path", False),
+    "list_prs": ("List PRs", True),
+    "get_pr_impact": ("Get PR impact", True),
+    "triage_prs": ("Triage PRs", True),
+}
+
+_SERVER_INSTRUCTIONS = (
+    "Graphify serves a knowledge graph built from this project's code and docs. "
+    "Prefer it to grep or reading many files for structural questions: how "
+    "concepts connect, what calls what, which community a symbol belongs to, or "
+    "the path between two things. Start with query_graph for a question, get_node "
+    "or get_neighbors to inspect a result, and shortest_path to trace a "
+    "connection. Use grep for exact strings or text the graph may not index. "
+    "All tools are read-only, except that query_graph appends to the query log "
+    "when query logging is enabled (GRAPHIFY_QUERY_LOG). list_prs, get_pr_impact "
+    "and triage_prs call GitHub through the gh CLI."
+)
+
+
 def _build_server(graph_path: str):
     """Build the configured low-level MCP Server (shared by every transport).
 
@@ -3490,12 +3521,19 @@ def _build_server(graph_path: str):
         # Injected here (rather than repeated in 11 literal schemas) so the set
         # stays in lockstep as tools are added. Omitting it keeps the historical
         # single-graph behaviour, so this is purely additive for existing callers.
+        from graphify import querylog as _querylog
+        _query_log_enabled = _querylog.is_enabled()
         for _t in _tools:
             # The constructor accepts the camelCase alias in both majors, but
             # attribute access is inputSchema on mcp 1.x and input_schema on 2.x.
             _schema = getattr(_t, "inputSchema", None)
             if _schema is None:
                 _schema = _t.input_schema
+            _title, _open_world = _TOOL_ANNOTATIONS.get(_t.name, (None, False))
+            _read_only = not (_t.name == "query_graph" and _query_log_enabled)
+            _t.annotations = types.ToolAnnotations(
+                title=_title, readOnlyHint=_read_only, openWorldHint=_open_world,
+            )
             _schema.setdefault("properties", {})["project_path"] = {
                 "type": "string",
                 "description": (
@@ -3932,7 +3970,7 @@ def _build_server(graph_path: str):
     if hasattr(Server, "list_tools"):
         # mcp 1.x: decorator-based registration. The SDK wraps the raw returns
         # (list[Tool] -> ListToolsResult, str -> resource contents) itself.
-        server = Server("graphify")
+        server = Server("graphify", instructions=_SERVER_INSTRUCTIONS)
         server.list_tools()(list_tools)
         server.call_tool()(call_tool)
         server.list_resources()(list_resources)
@@ -3972,6 +4010,7 @@ def _build_server(graph_path: str):
         server = Server(
             "graphify",
             version=_version,
+            instructions=_SERVER_INSTRUCTIONS,
             on_list_tools=_on_list_tools,
             on_call_tool=_on_call_tool,
             on_list_resources=_on_list_resources,
