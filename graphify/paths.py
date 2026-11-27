@@ -374,27 +374,14 @@ def _graph_json_lines_text(obj: dict) -> str:
     for index, key in enumerate(keys):
         separator = "," if index < len(keys) - 1 else ""
         value = obj[key]
-        if key == "nodes" and isinstance(value, list):
-            value = sorted(
-                value,
-                key=lambda item: (
-                    str(item.get("id", "")),
-                    _graph_json_item(item),
-                ),
-            )
-        elif key == "links" and isinstance(value, list):
-            value = sorted(
-                value,
-                key=lambda item: (
-                    str(item.get("source", "")),
-                    str(item.get("target", "")),
-                    str(item.get("relation", "")),
-                    _graph_json_item(item),
-                ),
-            )
-        elif key == "hyperedges" and isinstance(value, list):
-            value = sorted(value, key=_graph_json_item)
         if key in _GRAPH_JSON_ARRAY_KEYS and isinstance(value, list):
+            fields = {"nodes": ("id",), "links": ("source", "target", "relation")}.get(key, ())
+
+            def record_order(item):
+                record = item if isinstance(item, dict) else {}
+                return (*[str(record.get(field, "")) for field in fields], _graph_json_item(item))
+
+            value = sorted(value, key=record_order)
             if not value:
                 lines.append(f"{json.dumps(key)}:[]{separator}")
                 continue
@@ -434,7 +421,7 @@ def write_graph_json_atomic(path: "str | Path", obj: dict) -> None:
     if not graph_json_lines_enabled():
         write_json_atomic(path, obj, compact=True)
         return
-    _atomic_replace(path, lambda f: f.write(_graph_json_lines_text(obj)))
+    write_text_atomic(path, _graph_json_lines_text(obj))
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw

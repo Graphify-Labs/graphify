@@ -2331,6 +2331,8 @@ def _build_state_matches(out: Path, state: dict) -> bool:
         return False
     if not isinstance(prev, dict):
         return False
+    # Stamps written before the opt-in used the compact layout.
+    prev.setdefault("graph_json_lines", False)
     for key, value in state.items():
         if prev.get(key) != value:
             return False
@@ -2944,7 +2946,9 @@ def _rebuild_code(
                 except (OSError, ValueError):
                     previous_build_state = {}
 
-                if previous_build_state.get("graph_json_lines") != graph_json_lines_enabled():
+                if not isinstance(previous_build_state, dict):
+                    previous_build_state = {}
+                if previous_build_state.get("graph_json_lines", False) != graph_json_lines_enabled():
                     # Only the graph layout changed: extract all code so graph.json
                     # is rewritten in the requested layout (#4942).
                     extract_targets = [
