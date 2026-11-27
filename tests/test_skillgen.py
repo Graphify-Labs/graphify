@@ -1374,14 +1374,18 @@ def test_step4_skill_honors_force_flag_on_shrink(tmp_path, capsys, monkeypatch):
     (out / ".graphify_detect.json").write_text(_json.dumps({"files": {"code": [f"f{i}.py" for i in range(10)]}, "total_files": 10, "total_words": 100}), encoding="utf-8")
 
     # 1. When IS_FORCE is False, Step 4 must refuse to shrink and raise SystemExit(1)
-    body_no_force = body.replace("IS_DIRECTED", "False").replace("IS_FORCE", "False")
+    body_no_force = (
+        body.replace("IS_DIRECTED", "False").replace("IS_FORCE", "False").replace("IS_NO_CLUSTER", "False")
+    )
     with pytest.raises(SystemExit) as exc_info:
         exec(compile(body_no_force, "step-4-no-force", "exec"), {"__name__": "__main__"})
     assert exc_info.value.code == 1
     assert "refused to shrink" in capsys.readouterr().out
 
     # 2. When IS_FORCE is True, Step 4 must overwrite and succeed
-    body_force = body.replace("IS_DIRECTED", "False").replace("IS_FORCE", "True")
+    body_force = (
+        body.replace("IS_DIRECTED", "False").replace("IS_FORCE", "True").replace("IS_NO_CLUSTER", "False")
+    )
     exec(compile(body_force, "step-4-force", "exec"), {"__name__": "__main__"})
     out_text = capsys.readouterr().out
     assert "Graph: 10 nodes" in out_text
@@ -1619,3 +1623,167 @@ def test_extraction_specs_require_a_coverage_entry_for_every_file():
     assert seen_variants == {"verbose", "compact", "compact-disk"}, (
         "this test must cover every spec variant, not just one"
     )
+
+
+def test_step4_skill_honors_no_cluster_flag(tmp_path, capsys, monkeypatch):
+    """#1619 C1: --no-cluster must actually skip clustering in Step 4.
+
+    Step 2 already suggests --no-cluster for a flat corpus, but until now Step 4
+    called cluster(G) unconditionally regardless of the flag, so it was a ghost
+    flag the skill referenced but could not act on. Step 4 now branches on
+    IS_NO_CLUSTER to build a single "Full Corpus" placeholder community instead,
+    and Step 5 (labeling) is skipped when there is nothing but that placeholder
+    to label.
+    """
+    import json as _json
+
+    monkeypatch.chdir(tmp_path)
+    core, _ = _platform_artifacts("claude")
+    assert "--no-cluster" in core
+    assert "if IS_NO_CLUSTER:" in core
+    assert "communities = {0: list(G.nodes())}" in core
+    assert "Skip this step entirely if `--no-cluster` was given in Step 4" in core
+
+    body = _substituted(
+        _step_body(core, "wrote = to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE)"),
+        tmp_path,
+    )
+    out = tmp_path / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+    nodes = [{"id": f"n{i}", "label": f"n{i}", "source_file": f"f{i}.py", "file_type": "code"} for i in range(6)]
+    (out / ".graphify_extract.json").write_text(_json.dumps({"nodes": nodes, "edges": [], "hyperedges": []}), encoding="utf-8")
+    (out / ".graphify_detect.json").write_text(
+        _json.dumps({"files": {"code": [f"f{i}.py" for i in range(6)]}, "total_files": 6, "total_words": 60}),
+        encoding="utf-8",
+    )
+
+    # IS_NO_CLUSTER=True must skip cluster() and build exactly one placeholder
+    # community covering every node (verified via the analysis sidecar Step 4
+    # writes; Step 4 doesn't stamp community_name onto graph.json -- only the
+    # curated Step 5 re-export does, and --no-cluster skips Step 5 entirely).
+    body_no_cluster = (
+        body.replace("IS_DIRECTED", "False").replace("IS_FORCE", "False").replace("IS_NO_CLUSTER", "True")
+    )
+    exec(compile(body_no_cluster, "step-4-no-cluster", "exec"), {"__name__": "__main__"})
+    out_text = capsys.readouterr().out
+    assert "1 communities" in out_text, f"--no-cluster must yield exactly one community, got: {out_text!r}"
+    analysis = _json.loads((out / ".graphify_analysis.json").read_text(encoding="utf-8"))
+    assert set(analysis["communities"].keys()) == {"0"}
+    assert sorted(analysis["communities"]["0"]) == sorted(n["id"] for n in nodes), (
+        "--no-cluster's single community must cover every node"
+    )
+
+    # IS_NO_CLUSTER=False must still run the real clustering path.
+    body_clustered = (
+        body.replace("IS_DIRECTED", "False").replace("IS_FORCE", "True").replace("IS_NO_CLUSTER", "False")
+    )
+    exec(compile(body_clustered, "step-4-clustered", "exec"), {"__name__": "__main__"})
+    out_text = capsys.readouterr().out
+    assert "Graph: 6 nodes" in out_text
+
+
+def test_step1_install_has_a_failure_gate():
+    """#1619 B4: a failed install must stop with an actionable error, not fall
+    through and write a broken interpreter path.
+
+    Previously, if both the uv/pip install attempts failed, Step 1 still wrote
+    whatever PYTHON (or $GRAPHIFY_PYTHON) pointed at into .graphify_python and
+    moved on silently -- every later step then failed far from the real cause.
+    Step 1 now re-checks the import right after the install attempt and exits
+    with a message naming both install commands.
+    """
+    platforms = gen.load_platforms()
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    aider_body = gen.render(platforms["aider"])[0].content
+    devin_body = gen.render(platforms["devin"])[0].content
+
+    for key, body in (
+        ("claude", claude_core),
+        ("aider", aider_body),
+        ("devin", devin_body),
+    ):
+        lines = body.splitlines()
+        install_block = [
+            i for i, l in enumerate(lines)
+            if "pip install graphifyy -q --break-system-packages" in l
+        ]
+        assert install_block, f"[{key}] could not locate the pip install fallback line"
+        gate_lines = [i for i, l in enumerate(lines) if "could not install or locate a Python interpreter" in l]
+        write_lines = [
+            i for i, l in enumerate(lines)
+            if "open('graphify-out/.graphify_python', 'w'" in l
+        ]
+        assert gate_lines, f"[{key}] missing the actionable install-failure error"
+        assert write_lines, f"[{key}] could not locate the .graphify_python write"
+        assert install_block[0] < gate_lines[0] < write_lines[0], (
+            f"[{key}] failure gate must run after the install attempt and before "
+            "the interpreter path is persisted"
+        )
+        assert "exit 1" in body
+        assert "stop and tell the user what happened - do not proceed to Step 2" in body
+
+    # PowerShell (windows) uses the $GRAPHIFY_PYTHON null-check form instead.
+    assert "if (-not $GRAPHIFY_PYTHON) {" in windows_core
+    assert "could not install or locate a Python interpreter with graphify" in windows_core
+    w_lines = windows_core.splitlines()
+    w_gate = next(i for i, l in enumerate(w_lines) if "could not install or locate a Python interpreter" in l)
+    w_save = next(i for i, l in enumerate(w_lines) if "Save interpreter path" in l)
+    assert w_gate < w_save, "[windows] failure gate must run before the interpreter path is saved"
+
+
+def test_update_backup_precedes_merge_and_diff():
+    """#1619 C4: the pre-merge backup must be instructed before the merge block
+    and the diff block that reads it, not after both.
+
+    The backup line ("Before the merge step...") used to appear after the
+    merge block AND the diff block that consumes .graphify_old.json, so an
+    agent executing top to bottom never created the backup before the merge
+    ran -- the diff's `if old_data:` then silently no-opped on every update.
+    """
+    platforms = gen.load_platforms()
+    _, claude_refs = _platform_artifacts("claude")
+    aider_body = gen.render(platforms["aider"])[0].content
+    devin_body = gen.render(platforms["devin"])[0].content
+
+    # Each body's actual merge-execution line differs: the shared reference
+    # uses build_merge(); the monoliths inline a simpler NetworkX G.update().
+    bodies = {
+        "claude/update.md": (claude_refs["update.md"], "from graphify.build import build_merge"),
+        "aider": (aider_body, "G_existing.update(G_new)"),
+        "devin": (devin_body, "G_existing.update(G_new)"),
+    }
+    for key, (body, merge_anchor) in bodies.items():
+        lines = body.splitlines()
+        backup_i = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("Before the merge step below")
+        )
+        merge_i = next(i for i, l in enumerate(lines) if merge_anchor in l)
+        diff_i = next(
+            i for i, l in enumerate(lines) if "graphify_old.json').read_text(" in l or ".graphify_old.json').read_text(" in l
+        )
+        assert backup_i < merge_i < diff_i, (
+            f"[{key}] backup instruction (line {backup_i}) must precede both the "
+            f"merge block (line {merge_i}) and the diff block (line {diff_i})"
+        )
+        # The trailing cleanup line no longer doubles as the backup instruction.
+        assert "Clean up the backup after:" in body
+        assert "Before the merge step, save the old graph:" not in body
+
+
+def test_no_unquoted_interpreter_cat_substitution_anywhere():
+    """#1619 B5: every $(cat .../.graphify_python) invocation must be quoted.
+
+    Unquoted, an interpreter path containing a space (e.g. a venv under a
+    directory with a space in its name) word-splits into multiple arguments
+    and fails to exec. Every call site, and the prose line describing the
+    substitution, must use the quoted "$(cat ...)" form.
+    """
+    import re
+
+    platforms = gen.load_platforms()
+    unquoted_pattern = re.compile(r'(?<!")\$\(cat graphify-out/\.graphify_python\)')
+    for art in gen.render_all(platforms):
+        assert not unquoted_pattern.search(art.content), (
+            f"{art.path}: found an unquoted $(cat graphify-out/.graphify_python) substitution"
+        )

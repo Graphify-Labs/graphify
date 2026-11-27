@@ -13,7 +13,7 @@ from networkx.readwrite import json_graph
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUERY_FRAGMENT = REPO_ROOT / "tools/skillgen/fragments/references/query/default.md"
-FALLBACK_OPEN = '$(cat graphify-out/.graphify_python) -c "\n'
+FALLBACK_OPEN = '"$(cat graphify-out/.graphify_python)" -c "\n'
 FALLBACK_LOCATOR = (
     FALLBACK_OPEN
     + "import sys, json\nfrom networkx.readwrite import json_graph\n"
