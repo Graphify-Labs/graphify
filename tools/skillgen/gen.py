@@ -1471,6 +1471,72 @@ def _is_get_section_tool_line(line: str) -> bool:
     }
 
 
+def _is_pip_upgrade_fix_line(line: str) -> bool:
+    """Whether a line is part of Step 1's pip-upgrade fix (#5235).
+
+    The no-uv fallback ran ``pip install graphifyy``, which answers
+    "Requirement already satisfied" over an older install and leaves it in
+    place, so a stale graphify was never upgraded. It now passes ``-U``. Both
+    the old (removed) and new (added) forms match here.
+    """
+    s = line.strip()
+    return '-m pip install graphifyy -q' in s or '-m pip install -U graphifyy -q' in s
+
+
+# Step 1 lines the #5235 symbol probe adds, removes, or re-indents. Matched on
+# the stripped text so the nested fallback's re-indented lines count too.
+_STEP1_SYMBOL_PROBE_LINES = frozenset({
+    '_GRAPHIFY_PROBE=\'import importlib, sys',
+    'def has(sym):',
+    'mod, _, name = sym.rpartition(".")',
+    'try: return hasattr(importlib.import_module("graphify." + mod), name)',
+    'except ImportError: return False',
+    'sys.exit("missing: " + ", ".join(missing) if missing else 0)\'',
+    'if [ -n "$_UV_PY" ] && "$_UV_PY" -c "$_GRAPHIFY_PROBE" 2>/dev/null; then PYTHON="$_UV_PY"; fi',
+    'if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi',
+    '*) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;',
+    '*) "$_SHEBANG" -c "$_GRAPHIFY_PROBE" 2>/dev/null && PYTHON="$_SHEBANG" ;;',
+    '# 3. Fall back to python3',
+    '# 3. Fall back to python3. A PYTHON set above has already passed the probe.',
+    'if [ -z "$PYTHON" ]; then PYTHON="python3"; fi',
+    'if [ -z "$PYTHON" ]; then',
+    'PYTHON="python3"',
+    'if ! "$PYTHON" -c "import graphify" 2>/dev/null; then',
+    'if ! "$PYTHON" -c "$_GRAPHIFY_PROBE" 2>/dev/null; then',
+    'if command -v uv >/dev/null 2>&1; then',
+    'uv tool install --upgrade graphifyy -q 2>&1 | tail -3',
+    'if ! _GRAPHIFY_MISSING=$("$PYTHON" -c "$_GRAPHIFY_PROBE" 2>&1); then',
+    'echo "graphify at $PYTHON is older than this skill ($_GRAPHIFY_MISSING)." >&2',
+    'echo "Upgrade it with \'uv tool install --upgrade graphifyy\' or \'pip install -U graphifyy\', then run /graphify again." >&2',
+    'exit 1',
+    'else',
+    'fi',
+    'If the import succeeds, print nothing and move straight to Step 2.',
+})
+
+
+def _is_step1_symbol_probe_fix_line(line: str) -> bool:
+    """Whether a line is part of the Step 1 symbol-probe fix (#5235).
+
+    Step 1 accepted any interpreter where ``import graphify`` worked, so an
+    install older than the skill (a uv tool pinned to 0.9.25 under a 0.9.111
+    skill) passed and every later ``from graphify.X import Y`` that it lacked
+    failed with ImportError several steps in. Each candidate interpreter must
+    now have every symbol the skill imports; a failing one is upgraded and
+    Step 1 stops before writing anything if the upgrade does not help. The
+    re-indented pip lines are covered by ``_is_pip_upgrade_fix_line``. These
+    are the probe, the re-gated
+    tiers, the nested fallback, its re-indented lines, and the Step 1 prose.
+    """
+    s = line.strip()
+    return (
+        s in _STEP1_SYMBOL_PROBE_LINES
+        or s.startswith("# Every symbol later steps import; `import graphify` alone passes a stale install (#5235).")
+        or s.startswith('missing = [s for s in "analyze.')
+        or s.startswith('If the block succeeds, print nothing and move straight to Step 2. If it exits with "older than this skill"')
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1506,6 +1572,8 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
+    _is_pip_upgrade_fix_line,
+    _is_step1_symbol_probe_fix_line,
 )
 
 
