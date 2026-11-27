@@ -682,6 +682,8 @@ def _strip_xml_illegal(s: str) -> str:
     or the form feed some Python/Emacs sources use as a section separator
     (#2897).
     """
+    if not s or (s.isascii() and s.isprintable()):
+        return s
     return _XML_ILLEGAL_RE.sub("", s)
 
 
@@ -1397,17 +1399,7 @@ def to_graphml(
     """
     H = G.copy()
     node_community = _node_community_map(communities)
-    for node_id in H.nodes():
-        H.nodes[node_id]["community"] = node_community.get(node_id, -1)
-    # Drop internal markers (e.g. the AST-provenance "_origin" tag, #1116, and
-    # the "_src"/"_tgt" direction markers) — they are persistence/runtime details,
-    # not graph data, and should not leak into the exported file.
-    for _, attrs in H.nodes(data=True):
-        for k in [k for k in attrs if k.startswith("_")]:
-            del attrs[k]
-    for _, _, attrs in H.edges(data=True):
-        for k in [k for k in attrs if k.startswith("_")]:
-            del attrs[k]
+
     # nx.write_graphml only accepts scalar attribute values: None raises, and a
     # dict/list value (e.g. a per-node `metadata` dict, or the graph-level
     # `hyperedges` list set by attach_hyperedges()) raises
@@ -1428,26 +1420,37 @@ def to_graphml(
         except (TypeError, ValueError):
             return _strip_xml_illegal(str(val))
 
-    # Node IDs become the `id` attribute of every <node> and edge endpoint, so
-    # they must be XML-representable too. Normalised ids never carry a control
-    # character, but a caller can hand us a hand-built graph, and a crash here
-    # loses the export just as completely as one in the values.
-    _id_remap = {n: _strip_xml_illegal(n) for n in H.nodes if isinstance(n, str)}
-    _id_remap = {k: v for k, v in _id_remap.items() if k != v}
+    # Drop internal markers (e.g. the AST-provenance "_origin" tag, #1116, and
+    # the "_src"/"_tgt" direction markers) and sanitize attributes in a single
+    # pass per scope; only record node IDs that actually carry XML-illegal chars.
+    _id_remap: dict[str, str] = {}
+    for node_id, attrs in H.nodes(data=True):
+        if isinstance(node_id, str):
+            cleaned_id = _strip_xml_illegal(node_id)
+            if cleaned_id != node_id:
+                _id_remap[node_id] = cleaned_id
+        attrs["community"] = node_community.get(node_id, -1)
+        for key in list(attrs):
+            if key.startswith("_"):
+                del attrs[key]
+            else:
+                attrs[key] = _graphml_safe(attrs[key])
+
+    # edges(data=True) rather than H.edges[u, v]: graph.json is loaded as a
+    # MultiGraph when it carries parallel edges (#4500), and a MultiGraph edge
+    # view needs a key, so the (u, v) form crashed the whole export.
+    for *_, attrs in H.edges(data=True):
+        for key in list(attrs):
+            if key.startswith("_"):
+                del attrs[key]
+            else:
+                attrs[key] = _graphml_safe(attrs[key])
+
     if _id_remap:
         H = nx.relabel_nodes(H, _id_remap, copy=True)
 
     for key, val in list(H.graph.items()):
         H.graph[key] = _graphml_safe(val)
-    for node_id in H.nodes():
-        for key, val in list(H.nodes[node_id].items()):
-            H.nodes[node_id][key] = _graphml_safe(val)
-    # edges(data=True) rather than H.edges[u, v]: graph.json is loaded as a
-    # MultiGraph when it carries parallel edges (#4500), and a MultiGraph edge
-    # view needs a key, so the (u, v) form crashed the whole export.
-    for *_, attrs in H.edges(data=True):
-        for key, val in list(attrs.items()):
-            attrs[key] = _graphml_safe(val)
 
     # Write atomically: a mid-serialization error otherwise leaves a 0-byte
     # .graphml on disk that downstream tooling mistakes for a completed export

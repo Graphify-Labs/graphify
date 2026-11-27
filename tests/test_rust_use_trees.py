@@ -103,12 +103,12 @@ def test_each_binding_gets_the_plain_use_target(tmp_path: Path):
                    if e.get("context") == "import")
     assert edges == sorted([
         # `parse` and `render` are declared once in the corpus, so they land there (#4439)
-        ("imports_from", "util", "L1"), ("imports_from", "src_util_parse", "L1"), ("imports_from", "src_util_render", "L1"),
+        ("imports_from", "src_util", "L1"), ("imports_from", "src_util_parse", "L1"), ("imports_from", "src_util_render", "L1"),
         ("imports_from", "deep", "L1"), ("imports_from", "nested", "L1"), ("imports_from", "b", "L2"),
         ("imports_from", "c", "L2"),
         # plain declarations, exactly as v8 emits them
         ("imports_from", "src_util_parse", "L3"), ("imports_from", "read", "L4"), ("imports_from", "bar_as_baz", "L5"),
-        ("imports_from", "util", "L6"), ("imports_from", "fmt", "L7")])
+        ("imports_from", "src_util", "L6"), ("imports_from", "fmt", "L7")])
     sources = {e["source"] for e in result["edges"] if e.get("context") == "import"}
     file_node = next(n["id"] for n in result["nodes"] if n.get("label") == "user.rs")
     assert sources == {file_node}

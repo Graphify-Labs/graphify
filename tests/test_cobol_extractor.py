@@ -16,6 +16,8 @@ from pathlib import Path
 
 
 
+import pytest
+
 from graphify.extract import extract
 
 
@@ -292,6 +294,313 @@ def test_cobol_go_to_without_depending_has_one_target(tmp_path):
     }
 
 
+def test_cobol_procedure_copybook_without_division_header_has_paragraphs(tmp_path):
+    """A copybook of procedure code is pasted into the PROCEDURE DIVISION of the
+    program that copies it, so it has no such header of its own. It was read as
+    data from top to bottom: no paragraph, no PERFORM edge."""
+    copybook = tmp_path / "ERRORS.cpy"
+    copybook.write_text(
+        "      * error handling, copied into the procedure division\n"
+        "       ERR-CHECK.\n"
+        "           IF WS-STATUS NOT = '00'\n"
+        "               PERFORM ERR-REPORT\n"
+        "           END-IF.\n"
+        "       ERR-REPORT.\n"
+        "           EXEC CICS\n"
+        "               PERFORM NOT-A-PARA\n"
+        "           END-EXEC.\n"
+        "           DISPLAY 'status ' WS-STATUS.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([copybook], cache_root=tmp_path)
+
+    kinds = {node["label"]: node["metadata"]["kind"] for node in result["nodes"]}
+    assert kinds == {
+        "ERRORS.cpy": "file", "ERR-CHECK": "paragraph", "ERR-REPORT": "paragraph",
+    }
+    assert _edge_labels(result, "calls") == {("ERR-CHECK", "ERR-REPORT")}
+    assert _edge_labels(result, "contains") == {
+        ("ERRORS.cpy", "ERR-CHECK"), ("ERRORS.cpy", "ERR-REPORT"),
+    }
+
+
+def test_cobol_data_copybook_is_still_read_as_data(tmp_path):
+    """A data copybook has no statements, so a lone `NAME.` line in it (a VALUE
+    clause that runs on to the next line) is not a paragraph, and the items
+    after it are still data items."""
+    copybook = tmp_path / "RECORD.cpy"
+    copybook.write_text(
+        "       01  WS-RECORD.\n"
+        "           05  WS-FILL             PIC X(10) VALUE\n"
+        "               SPACES.\n"
+        "           05  WS-STATUS           PIC XX.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([copybook], cache_root=tmp_path)
+
+    kinds = {node["label"]: node["metadata"]["kind"] for node in result["nodes"]}
+    assert kinds == {
+        "RECORD.cpy": "file", "WS-RECORD": "data_item", "WS-FILL": "data_item",
+        "WS-STATUS": "data_item",
+    }
+
+
+def _program(name: str, *body: str) -> str:
+    return "".join(
+        f"       {line}\n"
+        for line in ("IDENTIFICATION DIVISION.", f"PROGRAM-ID. {name}.", "PROCEDURE DIVISION.", *body)
+    )
+
+
+def _copybook(*body: str) -> str:
+    return "".join(f"       {line}\n" for line in body)
+
+
+def _copybook_performs(result: dict) -> set[tuple[str, str]]:
+    """(caller, target) of every cross-file PERFORM edge, each end as `file:LABEL`."""
+    names = {
+        node["id"]: f"{Path(node['source_file']).name}:{node['label']}"
+        for node in result["nodes"]
+        if node.get("source_file")
+    }
+    return {
+        (names[edge["source"]], names[edge["target"]])
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and edge.get("context") == "copybook_perform"
+    }
+
+
+def test_cobol_perform_resolves_between_a_program_and_its_copybook(tmp_path):
+    """A copybook is pasted into the program that copies it, so a PERFORM can
+    name a paragraph in the other file, in either direction. Each file was
+    resolved on its own, so both PERFORMs were dropped."""
+    program = tmp_path / "billing.cbl"
+    program.write_text(_program(
+        "BILLING",
+        "MAIN-PARA.",
+        "    PERFORM ERR-CHECK.",
+        "    STOP RUN.",
+        "CLEANUP.",
+        "    DISPLAY 'cleanup'.",
+        "COPY ERRORS.",
+    ), encoding="utf-8")
+    copybook = tmp_path / "ERRORS.cpy"
+    copybook.write_text(_copybook(
+        "ERR-CHECK.",
+        "    PERFORM CLEANUP.",
+    ), encoding="utf-8")
+
+    result = extract([program, copybook], cache_root=tmp_path)
+
+    assert _copybook_performs(result) == {
+        ("billing.cbl:MAIN-PARA", "ERRORS.cpy:ERR-CHECK"),
+        ("ERRORS.cpy:ERR-CHECK", "billing.cbl:CLEANUP"),
+    }
+    # The second run reads both files from the AST cache; the unresolved
+    # PERFORMs must come back with them.
+    cached = extract([program, copybook], cache_root=tmp_path)
+    assert _copybook_performs(cached) == _copybook_performs(result)
+
+
+def test_cobol_perform_is_not_matched_by_name_across_programs(tmp_path):
+    """A paragraph name is visible only inside its own program. A program that
+    does not copy the copybook gets no edge to its paragraph, nor to a
+    same-named paragraph of another program."""
+    copier = tmp_path / "copier.cbl"
+    copier.write_text(_program(
+        "COPIER", "MAIN-PARA.", "    PERFORM ERR-CHECK.", "COPY ERRORS.",
+    ), encoding="utf-8")
+    stranger = tmp_path / "stranger.cbl"
+    stranger.write_text(_program(
+        "STRANGER", "MAIN-PARA.", "    PERFORM ERR-CHECK.", "    PERFORM ONLY-HERE.",
+    ), encoding="utf-8")
+    other = tmp_path / "other.cbl"
+    other.write_text(_program(
+        "OTHER", "ONLY-HERE.", "    DISPLAY 'in another program'.",
+    ), encoding="utf-8")
+    copybook = tmp_path / "ERRORS.cpy"
+    copybook.write_text(_copybook("ERR-CHECK.", "    DISPLAY 'error'."), encoding="utf-8")
+
+    result = extract([copier, stranger, other, copybook], cache_root=tmp_path)
+
+    assert _copybook_performs(result) == {
+        ("copier.cbl:MAIN-PARA", "ERRORS.cpy:ERR-CHECK"),
+    }
+    names = {node["id"]: node["label"] for node in result["nodes"]}
+    stranger_calls = {
+        names.get(edge["target"])
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and edge["source_file"].endswith("stranger.cbl")
+    }
+    assert stranger_calls == set()
+
+
+def test_cobol_shared_copybook_performs_into_each_program_that_copies_it(tmp_path):
+    """A copybook two programs copy is part of both, so its PERFORM of a
+    paragraph each program defines gets an edge into each."""
+    for name in ("ALPHA", "BETA"):
+        (tmp_path / f"{name.lower()}.cbl").write_text(_program(
+            name, "MAIN-PARA.", "    PERFORM SHARED-STEP.", "CLEANUP.", "    EXIT.", "COPY SHARED.",
+        ), encoding="utf-8")
+    copybook = tmp_path / "SHARED.cpy"
+    copybook.write_text(_copybook("SHARED-STEP.", "    PERFORM CLEANUP."), encoding="utf-8")
+
+    result = extract(
+        [tmp_path / "alpha.cbl", tmp_path / "beta.cbl", copybook], cache_root=tmp_path
+    )
+
+    assert _copybook_performs(result) == {
+        ("alpha.cbl:MAIN-PARA", "SHARED.cpy:SHARED-STEP"),
+        ("beta.cbl:MAIN-PARA", "SHARED.cpy:SHARED-STEP"),
+        ("SHARED.cpy:SHARED-STEP", "alpha.cbl:CLEANUP"),
+        ("SHARED.cpy:SHARED-STEP", "beta.cbl:CLEANUP"),
+    }
+
+
+def test_cobol_perform_reaches_a_copybook_copied_by_a_copybook(tmp_path):
+    program = tmp_path / "nested.cbl"
+    program.write_text(_program(
+        "NESTED", "MAIN-PARA.", "    PERFORM INNER-STEP.", "COPY OUTER.",
+    ), encoding="utf-8")
+    (tmp_path / "OUTER.cpy").write_text(_copybook(
+        "OUTER-STEP.", "    PERFORM INNER-STEP.", "COPY INNER.",
+    ), encoding="utf-8")
+    (tmp_path / "INNER.cpy").write_text(_copybook(
+        "INNER-STEP.", "    DISPLAY 'inner'.",
+    ), encoding="utf-8")
+
+    result = extract(
+        [program, tmp_path / "OUTER.cpy", tmp_path / "INNER.cpy"], cache_root=tmp_path
+    )
+
+    assert _copybook_performs(result) == {
+        ("nested.cbl:MAIN-PARA", "INNER.cpy:INNER-STEP"),
+        ("OUTER.cpy:OUTER-STEP", "INNER.cpy:INNER-STEP"),
+    }
+
+
+def test_cobol_perform_of_a_name_two_copybooks_define_is_left_unlinked(tmp_path):
+    """Two copybooks of one program with a paragraph of the same name: which one
+    the PERFORM means cannot be told, so no edge is guessed."""
+    program = tmp_path / "twice.cbl"
+    program.write_text(_program(
+        "TWICE", "MAIN-PARA.", "    PERFORM SAME-NAME.", "    PERFORM ONLY-FIRST.",
+        "COPY FIRST.", "COPY SECOND.",
+    ), encoding="utf-8")
+    for name in ("FIRST", "SECOND"):
+        (tmp_path / f"{name}.cpy").write_text(_copybook(
+            "SAME-NAME.", f"    DISPLAY '{name}'.",
+            f"ONLY-{name}.", f"    DISPLAY 'only {name}'.",
+        ), encoding="utf-8")
+
+    result = extract(
+        [program, tmp_path / "FIRST.cpy", tmp_path / "SECOND.cpy"], cache_root=tmp_path
+    )
+
+    # The name only one copybook defines is linked, so the resolver did run.
+    assert _copybook_performs(result) == {("twice.cbl:MAIN-PARA", "FIRST.cpy:ONLY-FIRST")}
+
+
+def test_cobol_perform_resolves_for_upper_case_file_extensions(tmp_path):
+    """Source delivered as `PROG.CBL` with `BOOK.CPY`: with no lower-case COBOL
+    extension in the corpus the resolver was never started."""
+    program = tmp_path / "BILLING.CBL"
+    program.write_text(_program(
+        "BILLING", "MAIN-PARA.", "    PERFORM ERR-CHECK.", "    STOP RUN.", "COPY 'ERRORS.CPY'.",
+    ), encoding="utf-8")
+    copybook = tmp_path / "ERRORS.CPY"
+    copybook.write_text(_copybook("ERR-CHECK.", "    DISPLAY 'check'."), encoding="utf-8")
+
+    result = extract([program, copybook], cache_root=tmp_path)
+
+    assert _copybook_performs(result) == {("BILLING.CBL:MAIN-PARA", "ERRORS.CPY:ERR-CHECK")}
+
+def test_cobol_perform_thru_links_the_paragraphs_inside_the_range(tmp_path):
+    """`PERFORM A THRU Z` runs every paragraph written from A to Z. Only the
+    two ends were linked, so a paragraph in the middle of the range had no
+    inbound `calls` edge."""
+    source = tmp_path / "middle.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. MIDDLE.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           PERFORM A-PARA THRU Z-PARA.\n"
+        "           STOP RUN.\n"
+        "       BEFORE-PARA.\n"
+        "           PERFORM Z-PARA THRU A-PARA.\n"
+        "           PERFORM A-PARA THRU MISSING-PARA.\n"
+        "       A-PARA.\n"
+        "           DISPLAY 'A'.\n"
+        "       M-PARA.\n"
+        "           DISPLAY 'M'.\n"
+        "       N-PARA.\n"
+        "           DISPLAY 'N'.\n"
+        "       Z-PARA.\n"
+        "           DISPLAY 'Z'.\n"
+        "       AFTER-PARA.\n"
+        "           DISPLAY 'after'.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    assert {target for caller, target in calls if caller == "MAIN-PARA"} == {
+        "A-PARA", "M-PARA", "N-PARA", "Z-PARA",
+    }
+    # Z written before A is not a range, and a range whose end is not a
+    # paragraph of the program is unknown: BEFORE-PARA gets the ends it names
+    # and nothing between them.
+    assert {target for caller, target in calls if caller == "BEFORE-PARA"} == {
+        "A-PARA", "Z-PARA",
+    }
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    in_range = {
+        (labels[edge["source"]], labels[edge["target"]])
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and edge.get("context") == "perform_range"
+    }
+    assert in_range == {("MAIN-PARA", "M-PARA"), ("MAIN-PARA", "N-PARA")}
+
+
+def test_cobol_perform_thru_a_section_runs_to_the_end_of_that_section(tmp_path):
+    """A range that ends on a section runs through that section's paragraphs,
+    and stops at the next section."""
+    source = tmp_path / "sections.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. SECTIONS.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-SEC SECTION.\n"
+        "       MAIN-PARA.\n"
+        "           PERFORM FIRST-SEC THRU LAST-SEC.\n"
+        "           STOP RUN.\n"
+        "       FIRST-SEC SECTION.\n"
+        "       F-PARA.\n"
+        "           DISPLAY 'F'.\n"
+        "       LAST-SEC SECTION.\n"
+        "       L1-PARA.\n"
+        "           DISPLAY 'L1'.\n"
+        "       L2-PARA.\n"
+        "           DISPLAY 'L2'.\n"
+        "       OTHER-SEC SECTION.\n"
+        "       O-PARA.\n"
+        "           DISPLAY 'O'.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    assert {target for caller, target in calls if caller == "MAIN-PARA"} == {
+        "FIRST-SEC", "F-PARA", "LAST-SEC", "L1-PARA", "L2-PARA",
+    }
+
+
+
 def test_cobol_nested_program_restores_enclosing_scope_after_end_program(tmp_path):
     """A contained (nested) program's own PROGRAM-ID switches the active
     program with no record of what it switched from, so code physically back
@@ -352,3 +661,62 @@ def test_cobol_sibling_programs_with_end_program_are_unaffected(tmp_path):
     assert ("TWO", "TWO-PARA") in contains
     assert ("ONE", "TWO-PARA") not in contains
     assert ("TWO", "ONE-PARA") not in contains
+
+
+@pytest.mark.parametrize("statement", [
+    "SORT WORK-FILE ON ASCENDING KEY WS-KEY USING IN-FILE GIVING OUT-FILE.",
+    "SEARCH WS-ROW AT END MOVE 1 TO WS-FLAG.",
+    "NEXT SENTENCE.",
+    "INSPECT WS-TEXT TALLYING WS-COUNT FOR ALL 'X'.",
+    "STOP RUN.",
+    "EXEC SQL COMMIT END-EXEC.",
+    "EXEC SQL\n               COMMIT\n           END-EXEC.",
+])
+def test_cobol_procedure_copybook_is_known_by_any_statement(tmp_path, statement):
+    """The statement that shows a headerless copybook to be procedure code can
+    be any verb. With a short list of verbs, a copybook whose only statement
+    was a SORT or a SEARCH stayed data and lost its paragraph."""
+    copybook = tmp_path / "ROUTINE.cpy"
+    copybook.write_text(
+        "       ONLY-PARA.\n"
+        f"           {statement}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([copybook], cache_root=tmp_path)
+
+    kinds = {node["label"]: node["metadata"]["kind"] for node in result["nodes"]}
+    assert kinds == {"ROUTINE.cpy": "file", "ONLY-PARA": "paragraph"}
+
+
+@pytest.mark.parametrize("line", [
+    # A name that begins with a verb is not a statement.
+    "               OPEN-FILES.",
+    # A declaration, which the DATA DIVISION has as well.
+    "           EXEC SQL INCLUDE SQLCA END-EXEC.",
+    "           EXEC SQL\n               INCLUDE SQLCA\n           END-EXEC.",
+    # A quoted value is text, whatever it says.
+    "               'EXEC SQL COMMIT END-EXEC'.",
+    "               'MOVE A TO B'.",
+])
+def test_cobol_data_copybook_with_a_statement_lookalike_stays_data(tmp_path, line):
+    """After a lone `SPACES.` line, a data copybook was read as procedure code
+    when a later line looked like a statement, and lost its data items."""
+    copybook = tmp_path / "RECORD.cpy"
+    copybook.write_text(
+        "       01  WS-RECORD.\n"
+        "           05  WS-FILL             PIC X(10) VALUE\n"
+        "               SPACES.\n"
+        "           05  WS-NAME             PIC X(10) VALUE\n"
+        f"{line}\n"
+        "       01  WS-STATUS               PIC XX.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([copybook], cache_root=tmp_path)
+
+    kinds = {node["label"]: node["metadata"]["kind"] for node in result["nodes"]}
+    assert kinds == {
+        "RECORD.cpy": "file", "WS-RECORD": "data_item", "WS-FILL": "data_item",
+        "WS-NAME": "data_item", "WS-STATUS": "data_item",
+    }

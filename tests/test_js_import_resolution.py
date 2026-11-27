@@ -117,8 +117,6 @@ def test_ts_directory_import_resolves_index_ts(tmp_path: Path):
     ("specifier", "target_path"),
     [
         ("./missing", None),
-        ("./directory", "directory/index.d.ts"),
-        ("./type", "type.d.ts"),
     ],
 )
 @pytest.mark.parametrize(
@@ -151,6 +149,59 @@ def test_unresolved_ts_reexport_ids_are_portable_across_checkout_paths(
         assert _make_id(str(root)) not in serialized
 
         expected_target = _unresolved_reexport_id(Path(specifier.removeprefix("./")))
+        reexport_targets = {
+            edge["target"]
+            for edge in result["edges"]
+            if edge["relation"] == "re_exports"
+        }
+        assert expected_target in reexport_targets
+        return projection
+
+    first = build(Path("checkout-a"))
+    second = build(Path("nested/checkout-b"))
+
+    assert first == second
+
+
+@pytest.mark.parametrize(
+    ("specifier", "target_path"),
+    [
+        ("./directory", "directory/index.d.ts"),
+        ("./type", "type.d.ts"),
+    ],
+)
+@pytest.mark.parametrize("extract_target", [False, True])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "export * from {specifier!r}\n",
+        "export * as values from {specifier!r}\n",
+        "export {{ Value }} from {specifier!r}\n",
+    ],
+)
+def test_declaration_reexport_ids_are_portable_across_checkout_paths(
+    tmp_path: Path,
+    specifier: str,
+    target_path: str,
+    statement: str,
+    extract_target: bool,
+):
+    def build(checkout: Path) -> dict:
+        root = tmp_path / checkout
+        target = _write(root / target_path, "export interface Value { id: string }\n")
+        barrel = _write(root / "index.ts", statement.format(specifier=specifier))
+
+        paths = [barrel, target] if extract_target else [barrel]
+        result = _extract_for(paths, root)
+        projection = {
+            "nodes": result["nodes"],
+            "edges": result["edges"],
+        }
+        serialized = json.dumps(projection, sort_keys=True)
+        assert str(root) not in serialized
+        assert _make_id(str(root)) not in serialized
+
+        expected_target = _file_node_id(Path(target_path))
         reexport_targets = {
             edge["target"]
             for edge in result["edges"]

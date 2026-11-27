@@ -321,3 +321,28 @@ def test_watch_relative_roots_receive_config_events_without_rebasing_source_path
     graph = json.loads((root / "graphify-out" / "graph.json").read_text())
     paths = {node["source_file"] for node in graph["nodes"] if node["label"] == "watched()"}
     assert paths == {str(Path(argument) / "page.tpl")}
+
+
+def test_watch_symlinked_root_processes_events_under_manual_observer(tmp_path, monkeypatch):
+    import sys
+    events = pytest.importorskip("watchdog.events")
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    symlink_dir = tmp_path / "symlink"
+    try:
+        symlink_dir.symlink_to(real_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlinks not supported on this platform/filesystem")
+
+    (symlink_dir / ".graphifyrc").write_text("language.tpl=php\n")
+    source = symlink_dir / "page.tpl"
+
+    def change():
+        source.write_text("<?php function watched() {}\n")
+        return events.FileModifiedEvent(str(source))
+
+    # Simulate Linux where manual observer tree walking is active (#5033)
+    monkeypatch.setattr(sys, "platform", "linux")
+    drive_watch(symlink_dir, monkeypatch, [change])
+    assert "watched()" in graph_labels(symlink_dir)
+
