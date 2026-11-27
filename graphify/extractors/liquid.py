@@ -53,7 +53,7 @@ _BLOCK_TYPE = re.compile(r"""\btype\s*:\s*(['"])([^'"\n]*)\1""")
 # A quoted literal directly piped into asset_url or into the t / translate filter.
 _FILTER = re.compile(r"""(['"])([^'"\n]+)\1\s*\|\s*(asset_url|t|translate)(?![\w])""")
 _ASSET_SUFFIX = re.compile(r"[?#]")
-_LEADING_COMMENT = re.compile(r"\A\s*/\*.*?\*/", re.DOTALL)
+_JSON_COMMENT = re.compile(r'"(?:[^"\\\n]|\\.)*"|//[^\n]*|/\*.*?\*/', re.DOTALL)
 
 _SKIP_UNTIL = {
     "raw": "endraw",
@@ -97,6 +97,11 @@ def _inside(root: Path, target: Path) -> bool:
     return True
 
 
+def _strip_json_comments(text: str) -> str:
+    """Drop ``//`` and ``/* */`` comments outside strings (Shopify locale files carry them)."""
+    return _JSON_COMMENT.sub(lambda m: m.group(0) if m.group(0).startswith('"') else " ", text)
+
+
 def _default_locale(root: Path) -> tuple[Path, dict] | None:
     """The parsed ``locales/*.default.json`` when exactly one exists, else None."""
     candidates = sorted((root / "locales").glob("*.default.json")) if (root / "locales").is_dir() else []
@@ -116,7 +121,7 @@ def _default_locale(root: Path) -> tuple[Path, dict] | None:
         if stat.st_size <= _MAX_LOCALE_BYTES:
             try:
                 text = _read_source_text(locale_path)
-                parsed = json.loads(_LEADING_COMMENT.sub("", text, count=1))
+                parsed = json.loads(_strip_json_comments(text))
                 data = parsed if isinstance(parsed, dict) else None
             except (OSError, ValueError):
                 data = None

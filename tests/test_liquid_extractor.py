@@ -195,6 +195,43 @@ def test_translation_keys(tmp_path):
     assert key_nodes["general.cart"]["id"] == _make_id("liquid_t", "general.cart")
 
 
+def test_translation_keys_with_line_comments_in_the_locale(tmp_path):
+    # Shopify locale files start with a `//` header; a URL inside a string must survive.
+    locale = (
+        "// Do not edit, generated file\n"
+        "{\n"
+        "  /* section */\n"
+        '  "general": {"cart": "Cart", "link": "https://example.com/a // b"}, // trailing\n'
+        '  "q": {"say": "He said \\"hi\\" // not a comment"}\n'
+        "}\n"
+    )
+    root = _theme(tmp_path, {
+        "locales/en.default.json": locale,
+        "sections/a.liquid": "{{ 'general.cart' | t }}\n{{ 'general.link' | t }}\n{{ 'q.say' | t }}\n",
+    })
+    assert [(r, loc) for r, _, loc in _targets(root, "sections/a.liquid")] == [
+        ("references", "L1"), ("references", "L2"), ("references", "L3"),
+    ]
+
+
+def test_asset_edges_survive_the_build_when_siblings_share_a_stem(tmp_path):
+    from graphify.build import build_from_json
+
+    root = _theme(tmp_path, {
+        "assets/app.css": "a{}\n",
+        "assets/app.js": "var x = 1;\n",
+        "sections/a.liquid": "{{ 'app.css' | asset_url }}\n{{ 'app.js' | asset_url }}\n",
+    })
+    files = sorted(p for p in root.rglob("*") if p.is_file())
+    G = build_from_json(extract(files), root=root)
+    liquid = [n for n, d in G.nodes(data=True) if d["source_file"].endswith("a.liquid")]
+    reached = {
+        Path(G.nodes[v]["source_file"]).name
+        for u in liquid for v in G.neighbors(u)
+    }
+    assert {"app.css", "app.js"} <= reached
+
+
 def test_translation_needs_exactly_one_default_locale(tmp_path):
     root = _theme(tmp_path, {
         "locales/en.default.json": LOCALE,

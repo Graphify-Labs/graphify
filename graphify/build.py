@@ -2301,7 +2301,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # imports/references: drop only when BOTH endpoints are known code
                 # languages of different families, so a config->code reference
                 # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
-                if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam:
+                # A .liquid file legitimately references assets of other languages
+                # (assets/x.js); the Liquid extractor only emits file-verified edges.
+                if (
+                    src_fam is not None and tgt_fam is not None and src_fam != tgt_fam
+                    and src_fam != "liquid"
+                ):
                     continue
         # A file-level import or re-export cannot carry useful connectivity when
         # both endpoints resolve to the same node.  This most often happens when
