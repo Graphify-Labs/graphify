@@ -1,6 +1,6 @@
 # graphify
 
-[![CI](https://github.com/safishamsi/graphify/actions/workflows/ci.yml/badge.svg?branch=v1)](https://github.com/safishamsi/graphify/actions/workflows/ci.yml)
+[![CI](https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v1)](https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml)
 
 **A Claude Code skill.** Type `/graphify` in Claude Code - it reads your files, builds a knowledge graph, and gives you back structure you didn't know was there.
 
@@ -27,10 +27,11 @@ graphify-out/
 **Requires:** [Claude Code](https://claude.ai/code) and Python 3.10+
 
 ```bash
-pip install graphifyy && graphify install
+uv tool install --python 3.12 graphifyy
+graphify install
 ```
 
-> The PyPI package is temporarily named `graphifyy` while the `graphify` name is being reclaimed. The CLI and skill command are still `graphify`.
+> The official PyPI package is `graphifyy` (double-y). The CLI and skill command are still `graphify`.
 
 > **Windows:** If `graphify` is not recognized after install, add the Python Scripts folder to your PATH: `%APPDATA%\Python\Python3xx\Scripts` (replace `3xx` with your Python version, e.g. `313`). Or use `pipx install graphifyy` which handles PATH automatically.
 > **macOS (externally managed):** Use `pipx install graphifyy` if `pip install` fails with an "externally-managed-environment" error.
@@ -46,7 +47,7 @@ Then open Claude Code in any directory and type:
 
 ```bash
 mkdir -p ~/.claude/skills/graphify
-curl -fsSL https://raw.githubusercontent.com/safishamsi/graphify/v1/skills/graphify/skill.md \
+curl -fsSL https://raw.githubusercontent.com/Graphify-Labs/graphify/v1/skills/graphify/skill.md \
   > ~/.claude/skills/graphify/SKILL.md
 ```
 
