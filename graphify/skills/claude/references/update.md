@@ -103,7 +103,6 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from pathlib import Path
 from graphify.build import build_merge
-from graphify.detect import save_manifest
 
 # Load new extraction and incremental state
 new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
@@ -154,17 +153,65 @@ merged_out = {
 Path('graphify-out/.graphify_extract.json').write_text(json.dumps(merged_out, ensure_ascii=False), encoding=\"utf-8\")
 print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])} nodes, {len(merged_out[\"edges\"])} edges)')
 
+# Keep this run's own extraction for the manifest stamp that runs after Step 4
+# (.graphify_extract.json now holds the full merged graph; stamping from that would
+# mark a changed doc whose chunk failed as done, losing its content forever, #2015),
+# and record graph.json's state so the stamp can prove Step 4 rewrote it (#5097).
+_graph = Path('graphify-out/graph.json')
+_graph_stat = _graph.stat() if _graph.exists() else None
+Path('graphify-out/.graphify_update_extract.json').write_text(json.dumps({
+    'extraction': new_extraction,
+    'graph_mtime_ns': _graph_stat.st_mtime_ns if _graph_stat else None,
+    'graph_size': _graph_stat.st_size if _graph_stat else None,
+}, ensure_ascii=False), encoding=\"utf-8\")
+"
+```
+
+Then run Steps 4–8 on the merged graph as normal.
+
+Run this stamp immediately after Step 4 has written `graph.json`, before Steps 5–8:
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+from graphify.detect import save_manifest
+
+INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=\"utf-8-sig\").strip()
+# The merge block saved this run's fresh extraction before it overwrote
+# .graphify_extract.json with the full merged graph; stamp from this copy so a
+# changed doc whose chunk failed stays unstamped and is re-queued (#2015).
+_update_state = json.loads(Path('graphify-out/.graphify_update_extract.json').read_text(encoding=\"utf-8\"))
+new_extraction = _update_state['extraction']
+incremental = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding=\"utf-8\"))
+
+# Step 4 must have rewritten graph.json this run. It exits non-zero instead of
+# overwriting a graph it refuses, but an agent that reached this block anyway would
+# mark the changed files done while graph.json still held the old content (#5097).
+# The merge block recorded graph.json's stat before Step 4; an unchanged stat means
+# Step 4 never wrote it, so refuse to stamp and leave the files queued.
+_graph = Path('graphify-out/graph.json')
+if not _graph.exists():
+    raise SystemExit('[graphify update] Refusing to stamp the manifest: graphify-out/graph.json is missing.')
+_graph_stat = _graph.stat()
+if (_graph_stat.st_mtime_ns == _update_state.get('graph_mtime_ns')
+        and _graph_stat.st_size == _update_state.get('graph_size')):
+    raise SystemExit(
+        '[graphify update] Refusing to stamp the manifest: Step 4 did not rewrite '
+        'graphify-out/graph.json. Run Step 4 again (with --force if the shrink is '
+        'intentional), then re-run this block. The changed files stay queued.'
+    )
+
 # Save manifest so next --update diffs against today's state, not the
 # prior run's baseline (prevents ghost-node reports on subsequent updates).
-# root= matches the build_merge call above so the manifest keys stay relative to
-# the scan root — portable across clones/machines, so --update keeps matching
-# cached files instead of missing every one after a move (#1417).
+# root= matches the merge block's build_merge call so the manifest keys stay
+# relative to the scan root — portable across clones/machines, so --update keeps
+# matching cached files instead of missing every one after a move (#1417).
 #
 # Only stamp semantic files (docs/papers/images) that ACTUALLY produced output
-# THIS run (new_extraction is this run's fresh extraction, read above before the
-# merge overwrote the file): a changed doc whose chunk failed must stay unstamped
-# so the next --update re-queues it, otherwise it is marked done and its content
-# is lost forever (#2015). Mirrors the library extract path
+# THIS run: a changed doc whose chunk failed must stay unstamped so the next
+# --update re-queues it, otherwise it is marked done and its content is lost
+# forever (#2015). Mirrors the library extract path
 # (cli._stamped_manifest_files + clear_semantic + scan_corpus).
 from graphify.cli import _stamped_manifest_files
 # A file a subagent only partly read (Step B3.5 lists it) DID produce output, so the
@@ -188,7 +235,13 @@ print('[graphify update] Manifest saved.')
 "
 ```
 
-Then run Steps 4–8 on the merged graph as normal.
+This stamp must stay after Step 4. Step 4 refuses to overwrite a larger graph
+(#479), and a stamp written before it ran would mark the changed files done while
+`graph.json` still held the old content, so the next `--update` would report nothing
+to do (#5097). The block also checks that `graph.json` changed since the merge block
+and exits non-zero without stamping if it did not, so even a misordered run leaves
+the changed files queued. The library path does the same: `graphify/watch.py` checks
+the shrink before it writes the manifest.
 
 After Step 4, show the graph diff:
 
@@ -218,7 +271,7 @@ if old_data:
 ```
 
 Before the merge step, save the old graph: `cp graphify-out/graph.json graphify-out/.graphify_old.json`
-Clean up after: `rm -f graphify-out/.graphify_old.json`
+Clean up after: `rm -f graphify-out/.graphify_old.json graphify-out/.graphify_update_extract.json`
 
 ---
 
