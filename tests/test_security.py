@@ -32,10 +32,18 @@ from graphify.security import (
 # validate_url
 # ---------------------------------------------------------------------------
 
-def test_validate_url_accepts_http():
+@pytest.fixture
+def public_dns(monkeypatch):
+    """Resolve every hostname to a public IP, so these tests never need real DNS."""
+    monkeypatch.setattr(
+        "socket.getaddrinfo", lambda host, *a, **k: [(2, 1, 6, "", ("93.184.215.14", 0))]
+    )
+
+
+def test_validate_url_accepts_http(public_dns):
     assert validate_url("http://example.com/page") == "http://example.com/page"
 
-def test_validate_url_accepts_https():
+def test_validate_url_accepts_https(public_dns):
     assert validate_url("https://arxiv.org/abs/1706.03762") == "https://arxiv.org/abs/1706.03762"
 
 def test_validate_url_rejects_file():
@@ -107,7 +115,7 @@ def test_safe_fetch_rejects_ftp_url():
     with pytest.raises(ValueError, match="ftp"):
         safe_fetch("ftp://example.com/file.zip")
 
-def test_safe_fetch_returns_bytes(tmp_path):
+def test_safe_fetch_returns_bytes(tmp_path, public_dns):
     mock_resp = _make_mock_response(b"hello world")
     with patch("graphify.security._build_opener") as mock_opener_fn:
         mock_opener = MagicMock()
@@ -116,7 +124,7 @@ def test_safe_fetch_returns_bytes(tmp_path):
         result = safe_fetch("https://example.com/")
     assert result == b"hello world"
 
-def test_safe_fetch_raises_on_non_2xx():
+def test_safe_fetch_raises_on_non_2xx(public_dns):
     mock_resp = _make_mock_response(b"Not Found", status=404)
     with patch("graphify.security._build_opener") as mock_opener_fn:
         mock_opener = MagicMock()
@@ -125,7 +133,7 @@ def test_safe_fetch_raises_on_non_2xx():
         with pytest.raises(urllib.error.HTTPError):
             safe_fetch("https://example.com/missing")
 
-def test_safe_fetch_raises_on_size_exceeded():
+def test_safe_fetch_raises_on_size_exceeded(public_dns):
     # Build a response larger than max_bytes
     big_chunk = b"x" * 65_537
     mock_resp = MagicMock()
@@ -148,7 +156,7 @@ def test_safe_fetch_raises_on_size_exceeded():
 # safe_fetch_text
 # ---------------------------------------------------------------------------
 
-def test_safe_fetch_text_decodes_utf8():
+def test_safe_fetch_text_decodes_utf8(public_dns):
     content = "héllo wörld".encode("utf-8")
     mock_resp = _make_mock_response(content)
     with patch("graphify.security._build_opener") as mock_opener_fn:
@@ -158,7 +166,7 @@ def test_safe_fetch_text_decodes_utf8():
         result = safe_fetch_text("https://example.com/")
     assert result == "héllo wörld"
 
-def test_safe_fetch_text_replaces_bad_bytes():
+def test_safe_fetch_text_replaces_bad_bytes(public_dns):
     bad = b"hello \xff world"
     mock_resp = _make_mock_response(bad)
     with patch("graphify.security._build_opener") as mock_opener_fn:
