@@ -829,6 +829,19 @@ def main() -> None:
             raise
 
 
+def _has_detailed_help_handler(cmd: str, args: list[str]) -> bool:
+    """Return whether this invocation has a side-effect-free help handler."""
+    help_flags = {"-h", "--help"}
+    if cmd in {"prs", "reflect", "tree"}:
+        return any(arg in help_flags for arg in args)
+    return (
+        cmd == "export"
+        and len(args) >= 2
+        and args[0] == "callflow-html"
+        and any(arg in help_flags for arg in args[1:])
+    )
+
+
 def _run_cli() -> None:
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
@@ -1111,7 +1124,12 @@ def _run_cli() -> None:
     # (e.g. "cursor install --help" was silently installing into Cursor, #821).
     # Exempt: free-text commands (user string may contain these tokens), and
     # "install"/"uninstall" which have their own per-subcommand help handlers.
-    if cmd not in _FREE_TEXT_CMDS and any(a in _help_flags for a in sys.argv[2:]):
+    _command_args = sys.argv[2:]
+    if (
+        cmd not in _FREE_TEXT_CMDS
+        and not _has_detailed_help_handler(cmd, _command_args)
+        and any(a in _help_flags for a in _command_args)
+    ):
         print(f"Run 'graphify --help' for full usage.")
         return
 
