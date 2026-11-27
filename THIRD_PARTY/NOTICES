@@ -1,3 +1,15 @@
+Third-party and historical license notices for Graphify
+=======================================================
+
+Graphify itself is licensed under the Apache License, Version 2.0 (see LICENSE
+in the repository root). The project is not dual-licensed.
+
+Portions of this software were contributed under the MIT License prior to the
+relicensing and remain available under those terms. The original MIT license
+text follows. This file used to live at the repository root as LICENSE-MIT;
+it was moved here so GitHub license detection does not present the project as
+MIT-licensed.
+
 MIT License
 
 Copyright (c) 2026 Safi Shamsi
