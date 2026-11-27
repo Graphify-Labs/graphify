@@ -937,6 +937,67 @@ def test_css_liquid_strip_preserves_line_structure():
     assert out.startswith("a") and "e" in out and "f" in out
 
 
+def test_js_liquid_import_has_no_cycle_in_a_clean_process(tmp_path):
+    root = _theme(tmp_path, {"assets/a.js.liquid": "function f() {}\n"})
+    code = (
+        "import sys; from pathlib import Path; "
+        "from graphify.extractors.liquid import extract_liquid; "
+        "r = extract_liquid(Path(sys.argv[1])); "
+        "assert 'error' not in r, r; "
+        "assert any(n['label'] == 'f()' for n in r['nodes']), r['nodes']"
+    )
+    done = subprocess.run([sys.executable, "-c", code, str(root / "assets/a.js.liquid")], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+
+def _js_nodes(root: Path, rel: str) -> dict[str, tuple[str, str]]:
+    result = extract_liquid(root / rel)
+    assert "error" not in result
+    return {n["label"]: (n["source_location"], n["source_file"]) for n in result["nodes"] if n.get("source_location")}
+
+
+_APP_JS = (
+    "(function () {\n"
+    "var u = {{ 'x.js' | asset_url | json }};\n"
+    "{% if a %}\n"
+    "\n"
+    "class CartDrawer extends HTMLElement {}\n"
+    "{% endif %}\n"
+    "{% comment %}\n"
+    "function ghost() {}\n"
+    "{% endcomment %}\n"
+    "function openCart() {}\n"
+    "})();\n"
+)
+
+
+def test_js_liquid_symbols_keep_source_lines_and_file(tmp_path):
+    root = _theme(tmp_path, {"assets/app.js.liquid": _APP_JS, "assets/x.js": "// x\n"})
+    nodes = _js_nodes(root, "assets/app.js.liquid")
+    path = str(root / "assets/app.js.liquid")
+    assert nodes["CartDrawer"] == ("L5", path)
+    assert nodes["openCart()"] == ("L10", path)
+    assert not any("ghost" in label for label in nodes)
+
+
+def test_js_liquid_keeps_liquid_references(tmp_path):
+    root = _theme(tmp_path, {"assets/app.js.liquid": _APP_JS, "assets/x.js": "// x\n"})
+    result = extract_liquid(root / "assets/app.js.liquid")
+    assert any(e["relation"] == "references" and e["target_file"].endswith("assets/x.js") for e in result["edges"])
+
+
+def test_js_liquid_uses_no_temporary_file(tmp_path, monkeypatch):
+    import tempfile
+
+    def boom(*args, **kwargs):
+        raise AssertionError("tempfile used")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", boom)
+    monkeypatch.setattr(tempfile, "mkstemp", boom)
+    root = _theme(tmp_path, {"assets/app.js.liquid": _APP_JS})
+    assert "CartDrawer" in _js_nodes(root, "assets/app.js.liquid")
+
+
 def test_stylesheet_selectors_carry_the_absolute_line_of_the_liquid_file(tmp_path):
     body = (
         "<div class=\"sec-x\">{{ section.settings.a }}</div>\n"

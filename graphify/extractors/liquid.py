@@ -1043,17 +1043,37 @@ def extract_liquid(path: Path) -> dict:
             from graphify.extractors.css import css_selectors, selector_nodes_edges
 
             out.add_selectors(selector_nodes_edges(path, out.file_id, css_selectors(_strip_liquid(src))))
+        elif path.name.endswith(".js.liquid"):
+            _add_js_symbols(path, src, out)
     return {"nodes": out.nodes, "edges": out.edges}
+
+
+def _add_js_symbols(path: Path, src: str, out: _Collector) -> None:
+    """Run the Liquid-stripped source of a ``.js.liquid`` asset through the JS extractor, in memory.
+
+    Line numbers match the Liquid file; a JS extraction error leaves the Liquid result untouched.
+    """
+    # Local imports: graphify.extract imports this module at load time.
+    from graphify.extract import _JS_CONFIG
+    from graphify.extractors.engine import _extract_generic
+
+    result = _extract_generic(path, _JS_CONFIG, source_override=_strip_liquid(src, "0").encode("utf-8"))
+    if "error" in result:
+        return
+    for node in result.get("nodes", []):
+        out._declare(node)
+    out.edges.extend(result.get("edges", []))
 
 
 _BLANK_NON_NEWLINE = re.compile(r"[^\n]")
 
 
-def _strip_liquid(src: str) -> str:
+def _strip_liquid(src: str, output_fill: str = "") -> str:
     """``src`` with every Liquid tag, output and ``comment``/``doc`` body replaced by spaces, newlines kept.
 
     Tokenizes like ``_scan`` (nested ``comment``, an opener without closer is text); ``raw`` bodies stay,
     since Liquid emits them verbatim. Line and column of everything that survives are unchanged.
+    ``output_fill`` replaces the first character of each ``{{ }}`` (``"0"`` keeps JS expressions parseable).
     """
     n = len(src)
     pieces: list[str] = []
@@ -1098,7 +1118,11 @@ def _strip_liquid(src: str) -> str:
         end = close + 2
         i = end
         emit(start, depth == 0)
-        emit(end, False)
+        if not is_tag and output_fill and depth == 0:
+            pieces.append(output_fill + _BLANK_NON_NEWLINE.sub(" ", src[start:end])[len(output_fill):])
+            pos = end
+        else:
+            emit(end, False)
         if not is_tag:
             continue
         body_start = start + 3 if src[start + 2:start + 3] == "-" else start + 2
