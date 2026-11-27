@@ -129,6 +129,8 @@ def god_nodes(G: nx.Graph, top_n: int = 10,
     suppresses utility hubs in the ranking AND in community resolution,
     instead of only the latter. ``None`` keeps the historical ranking.
     """
+    if top_n <= 0:
+        return []
     degree = dict(G.degree())
     hub_threshold: float | None = None
     if exclude_hubs_percentile is not None:
@@ -173,6 +175,8 @@ def surprising_connections(
     Concept nodes (empty source_file, or injected semantic annotations) are excluded
     from surprising connections because they are intentional, not discovered.
     """
+    if top_n <= 0:
+        return []
     # Identify unique source files (ignore empty/null source_file)
     source_files = {
         data.get("source_file", "")
@@ -198,7 +202,7 @@ def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
     """
     data = G.nodes[node_id]
     source = data.get("source_file", "")
-    if not source:
+    if not isinstance(source, str) or not source:
         return True
     # Has no file extension → probably a concept label, not a real file
     if "." not in source.split("/")[-1]:
@@ -403,6 +407,8 @@ def _cross_community_surprises(
 
     Falls back to high-betweenness edges if no community info is provided.
     """
+    if top_n <= 0:
+        return []
     if not communities:
         # No community info - use edge betweenness centrality
         if G.number_of_edges() == 0:

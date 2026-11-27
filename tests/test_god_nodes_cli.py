@@ -74,3 +74,14 @@ def test_god_nodes_cli_missing_graph_errors(monkeypatch, tmp_path, capsys):
         _run(monkeypatch, ["graphify", "god-nodes", "--graph", str(tmp_path / "nope.json")])
     assert exc.value.code == 1
     assert "graph file not found" in capsys.readouterr().err
+
+
+def test_god_nodes_cli_top_zero_and_negative(monkeypatch, tmp_path, capsys):
+    gp = _write_graph(tmp_path)
+    _run(monkeypatch, ["graphify", "god-nodes", "--graph", str(gp), "--top", "0", "--json"])
+    assert json.loads(capsys.readouterr().out) == []
+
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, ["graphify", "god-nodes", "--graph", str(gp), "--top", "-1"])
+    assert exc.value.code == 1
+    assert "--top must be >= 0" in capsys.readouterr().err
