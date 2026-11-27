@@ -65,7 +65,21 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $InputPathRaw = @'
 INPUT_PATH
 '@
-[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path $InputPathRaw.Trim()).Path, $Utf8NoBom)
+$ResolvedRoot = (Resolve-Path $InputPathRaw.Trim() -ErrorAction Stop).Path
+[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), $ResolvedRoot, $Utf8NoBom)
+# The extraction-spec path travels the same way: Steps B0/B3 hand it to the
+# semantic cache as prompt_file, and a path pasted into those calls breaks
+# (or executes) on a quote exactly like a hostile scan root would. SPEC_PATH
+# is the absolute path of the references\extraction-spec.md that ships beside
+# this SKILL.md. Resolve-Path -ErrorAction Stop keeps a bad INPUT_PATH loud:
+# the step dies before .graphify_root is written. The spec path is resolved
+# the same way before it is stored, so a pasted path that does not resolve
+# fails here instead of silently mis-attributing B0/B3 cache entries (#1939).
+$SpecPathRaw = @'
+SPEC_PATH
+'@
+$ResolvedSpec = (Resolve-Path $SpecPathRaw.Trim() -ErrorAction Stop).Path
+[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_spec'), $ResolvedSpec, $Utf8NoBom)
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.

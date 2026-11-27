@@ -1116,12 +1116,22 @@ def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
     for a in bodies:
         for call in ("check_semantic_cache(", "save_semantic_cache("):
             line = next(ln for ln in a.content.splitlines() if call in ln and "import" not in ln)
-            assert "prompt_file='SPEC_PATH'" in line, (
+            assert "prompt_file=SPEC_PATH" in line, (
                 f"{a.path}: {call} must pass prompt_file so entries are attributed "
                 f"to the extraction prompt (#1939) — got: {line.strip()}"
             )
-        # The placeholder is inert unless the body tells the agent what to substitute.
-        assert "SPEC_PATH below is the **absolute** path" in a.content, a.path
+            assert "prompt_file='SPEC_PATH'" not in line, (
+                f"{a.path}: {call} must read the spec path from .graphify_spec — "
+                f"a quoted placeholder literal is paste-into-code (#4762 class)"
+            )
+        # The value travels by file like the scan root: Step 1 writes it through
+        # a quoted heredoc/here-string, the cache calls read it back. The read is
+        # guarded: --update skips Step 1, so a graph built by an older skill or the
+        # bare CLI has no marker and must fall back to prompt_file=None rather than
+        # crash on FileNotFoundError.
+        assert "Path('graphify-out/.graphify_spec')" in a.content, a.path
+        assert "_spec_marker.read_text(" in a.content, a.path
+        assert "_spec_marker.exists() else None" in a.content, a.path
 
 
 def test_windows_skill_writes_marker_files_without_a_bom():
@@ -1135,7 +1145,7 @@ def test_windows_skill_writes_marker_files_without_a_bom():
     the writer from producing the BOM in the first place.
     """
     core, _ = _platform_artifacts("windows")
-    for marker in (".graphify_python", ".graphify_root"):
+    for marker in (".graphify_python", ".graphify_root", ".graphify_spec"):
         assert f"Out-File -FilePath graphify-out\\{marker} -Encoding utf8" not in core, (
             f"the windows render still writes {marker} with a BOM-emitting Out-File"
         )
@@ -1182,16 +1192,19 @@ def _step_body(core: str, marker: str) -> str:
 
 
 def _substituted(body: str, root: Path) -> str:
-    """Apply the substitution the skill still asks the agent to make (SPEC_PATH),
-    and simulate Step 1 writing the trusted scan root to .graphify_root, which the
-    blocks read for INPUT_PATH since #4762 (callers chdir to ``root`` so the
-    relative ``graphify-out/.graphify_root`` resolves there)."""
+    """Simulate Step 1 writing the trusted values: the scan root to
+    .graphify_root and the spec path to .graphify_spec, which the blocks read
+    back for INPUT_PATH and SPEC_PATH (callers chdir to ``root`` so the
+    relative ``graphify-out/`` paths resolve there). No substitution remains:
+    a pasted value containing a quote executed as code (#4762 class), so both
+    travel by file."""
     spec = root / "extraction-spec.md"
     spec.write_text("extraction prompt fixture\n", encoding="utf-8")
     out = root / "graphify-out"
     out.mkdir(parents=True, exist_ok=True)
     (out / ".graphify_root").write_text(str(root), encoding="utf-8")
-    return body.replace("'SPEC_PATH'", repr(str(spec)))
+    (out / ".graphify_spec").write_text(str(spec), encoding="utf-8")
+    return body
 
 
 def _write_chunk(out_dir: Path, payload: dict) -> None:
