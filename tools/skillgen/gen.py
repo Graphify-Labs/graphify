@@ -1394,6 +1394,43 @@ def _is_update_detect_populate_fix_line(line: str) -> bool:
     )
 
 
+def _is_free_text_heredoc_fix_line(line: str) -> bool:
+    """Whether a line is part of the #5234 free-text transport fix.
+
+    The monoliths' query/path/explain blocks pasted questions, answers and node
+    names into ``"..."`` shell arguments and ``'...'`` Python literals inside
+    ``-c "..."``. Bash runs backticks and ``$(...)`` there, and an apostrophe ends
+    the Python string. Values now travel through quoted heredocs: written to files
+    for ``save-result --*-file``, or read from stdin by the inline fallbacks. The
+    old lines (removed), the heredoc lines, their placeholder bodies and the
+    reworded "Replace ..." sentences (added) are sanctioned here.
+    """
+    s = line.strip()
+    py = "$(cat graphify-out/.graphify_python) -m graphify save-result "
+    return (
+        (s.startswith(py) and ('--answer "ANSWER"' in s or "--answer-file graphify-out/.save_answer.md" in s))
+        or (s.startswith("cat > graphify-out/.save_") and s.endswith("_EOF'"))
+        or s in (
+            "QUESTION", "ANSWER", "NODE1", "NODE2", "NODE_A", "NODE_B", "NODE_NAME",
+            "Explain NODE_NAME", "Path from NODE_A to NODE_B",
+            "GRAPHIFY_Q_EOF", "GRAPHIFY_A_EOF", "GRAPHIFY_N_EOF", "GRAPHIFY_TERMS_EOF",
+            "\" <<'GRAPHIFY_TERMS_EOF'",
+            "question = 'QUESTION'", "question = sys.stdin.read().strip()",
+            "a_term = 'NODE_A'", "b_term = 'NODE_B'", "term = 'NODE_NAME'",
+            "a_term = sys.stdin.readline().rstrip('\\n')",
+            "b_term = sys.stdin.readline().rstrip('\\n')",
+            "term = sys.stdin.readline().rstrip('\\n')",
+        )
+        or s.startswith((
+            "Replace `NODE_A` and `NODE_B` ",
+            "Replace `NODE_NAME` ",
+            "Replace `QUESTION` with the user's actual question, `MODE`",
+            "Replace `QUESTION` (the line before `GRAPHIFY_TERMS_EOF`)",
+            "Replace `QUESTION` with the question, `ANSWER` with your full answer text",
+        ))
+    )
+
+
 def _is_skip_steps_clarification_line(line: str) -> bool:
     """Whether a line is part of the #4061 fast-path clarification.
 
@@ -1506,6 +1543,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
+    _is_free_text_heredoc_fix_line,
 )
 
 
