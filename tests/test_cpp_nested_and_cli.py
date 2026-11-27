@@ -470,3 +470,48 @@ def test_cpp_export_macro_all_caps_class_final(tmp_path):
     labels = [n["label"] for n in result["nodes"]]
     assert "MY_WIDGET" in labels, "MY_WIDGET was stripped as a macro!"
     assert "Foo" in labels
+
+
+@pytest.mark.parametrize("decl", [
+    "MYLIB_EXPORT uint64_t compute(int x);\n",
+    "extern MYLIB_API int counter;\n",
+    "namespace n {\nMYLIB_EXPORT\nuint64_t\ncompute(int x);\n}\n",
+])
+def test_cpp_export_macro_on_declaration_is_not_a_syntax_error(decl):
+    """#5550: an export macro before a prototype must not report an ERROR."""
+    import tree_sitter as ts
+    import tree_sitter_cpp as tscpp
+
+    from graphify.extract import _normalize_cpp_export_macros
+
+    src = _normalize_cpp_export_macros(decl.encode())
+    tree = ts.Parser(ts.Language(tscpp.language())).parse(src)
+    assert not tree.root_node.has_error
+
+
+def test_cpp_export_macro_on_definition_adds_no_phantom_node(tmp_path):
+    """#5550: the macro must not become a node next to the real function."""
+    body = "uint64_t helper(int x)\n{\n    return x;\n}\n\nvoid plain() {}\n"
+    (tmp_path / "b.cpp").write_text("MYLIB_EXPORT " + body)
+    (tmp_path / "c.cpp").write_text(body)
+    with_macro = sorted(n["label"] for n in extract_cpp(tmp_path / "b.cpp")["nodes"])
+    control = sorted(n["label"] for n in extract_cpp(tmp_path / "c.cpp")["nodes"])
+    assert "MYLIB_EXPORT" not in with_macro
+    assert len(with_macro) == len(control)
+
+
+def test_cpp_export_decl_macro_keeps_offsets_and_defines():
+    """Blanking keeps every byte offset; #define lines and lookalikes are untouched."""
+    from graphify.extract import _normalize_cpp_export_macros
+
+    src = (b"#define MYLIB_API __declspec(dllexport)\n"
+           b"MYLIB_API int f();\n"
+           b"DWORD WINAPI run(void*);\n"
+           b"EXPORT int g();\n")
+    out = _normalize_cpp_export_macros(src)
+    assert len(out) == len(src)
+    lines = out.split(b"\n")
+    assert lines[0] == b"#define MYLIB_API __declspec(dllexport)"
+    assert lines[1] == b"          int f();"
+    assert lines[2] == b"DWORD WINAPI run(void*);"
+    assert lines[3] == b"EXPORT int g();"
