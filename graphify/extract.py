@@ -346,6 +346,7 @@ def _suppress_ambiguous_python_imports(
     ambiguous_modules: set[str],
     module_alias_files: dict[str, set[str]],
     root: Path,
+    sys_path_entries_by_file: dict[str, list[str]] | None = None,
 ) -> None:
     """Keep ambiguous Python imports dangling instead of choosing one file.
 
@@ -355,6 +356,17 @@ def _suppress_ambiguous_python_imports(
     ``import helper`` resolved to a scanned loose sibling in the importer's own
     non-package directory is an exception: that directory-local target is
     unambiguous even when another loose directory has its own ``helper.py``.
+
+    A plain import reaching one candidate through the importer's own recorded
+    ``sys.path.insert``/``append`` roots is the same kind of exception (#5252): two
+    independent trees each naming a module the same way (``a/bin/lib.py``,
+    ``b/bin/lib.py``) collide in ``module_alias_files`` globally, but only one of
+    them sits where THIS file's own dynamic sys.path entries actually point, same as
+    the loose-sibling case trusts only a candidate in the importer's own directory.
+    Left to run unresolved instead of forced to an ``ambiguous_python_import_*`` stub
+    here, ``_repoint_python_sys_path_imports`` (#5253, runs right after this) does the
+    real id assignment — this only has to stop the id from being minted first and
+    foreclosing that.
     """
     node_ids = {n.get("id") for n in nodes if isinstance(n, dict)}
     ambiguous_bindings_by_file: dict[str, set[str]] = {}
@@ -429,7 +441,15 @@ def _suppress_ambiguous_python_imports(
             module_is_ambiguous
             and is_module_binding
             and "." not in module_name
-            and _is_resolved_loose_sibling(edge, module_id)
+            and (
+                _is_resolved_loose_sibling(edge, module_id)
+                or _sys_path_resolves_one_alias(
+                    str(edge.get("source_file", "")),
+                    (sys_path_entries_by_file or {}).get(str(edge.get("source_file", "")), []),
+                    module_alias_files.get(module_id, set()),
+                    root,
+                )
+            )
         ):
             module_is_ambiguous = False
         if is_module_binding:
@@ -713,6 +733,94 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
                 e["target"] = repointed
 
 
+def _python_sys_path_target_dirs(file_dir: Path, entries: list[str], root_path: Path) -> list[Path]:
+    """Directories a file's own recorded ``sys.path.insert``/``append`` entries reach:
+    each entry probed relative to the file's own directory and every ancestor up to the
+    scan root, plus the root itself (``sys.path.insert(0, "../../bin")`` run from deep
+    inside the tree still means the same directory wherever within the tree it runs).
+    Shared by ``_repoint_python_sys_path_imports`` (#5253) and the ambiguity exemption
+    in ``_suppress_ambiguous_python_imports`` (#5252), which both need to ask the same
+    "where does this file's own sys.path tinkering actually point" question."""
+    target_dirs: list[Path] = []
+    for entry in entries:
+        curr = file_dir
+        while True:
+            try:
+                cand_dir = (curr / entry).resolve()
+                if cand_dir.is_dir() and cand_dir not in target_dirs:
+                    target_dirs.append(cand_dir)
+            except OSError:
+                pass
+            if curr == root_path or curr == curr.parent:
+                break
+            curr = curr.parent
+        try:
+            cand_dir = (root_path / entry).resolve()
+            if cand_dir.is_dir() and cand_dir not in target_dirs:
+                target_dirs.append(cand_dir)
+        except OSError:
+            pass
+    return target_dirs
+
+
+def _python_sys_path_entries_by_source_file(per_file) -> dict[str, list[str]]:
+    """``source_file`` -> that file's own recorded ``sys.path.insert``/``append`` entries
+    (#5253), keyed the same way ``_repoint_python_sys_path_imports`` already looks per-file
+    results up, so the ambiguity exemption in ``_suppress_ambiguous_python_imports`` can ask
+    the identical question before an ``ambiguous_python_import_*`` id is minted instead of
+    only after, which is too late to stop it (#5252)."""
+    out: dict[str, list[str]] = {}
+    for r in per_file or []:
+        if not r or not r.get("_python_sys_path_entries"):
+            continue
+        sf = ""
+        for n in r.get("nodes", []):
+            if n.get("source_file"):
+                sf = str(n["source_file"])
+                break
+        if sf:
+            out[sf] = r["_python_sys_path_entries"]
+    return out
+
+
+def _sys_path_resolves_one_alias(
+    source_file: str, entries: list[str], candidates: set[str], root: Path,
+) -> bool:
+    """True when exactly one of a colliding bare import's candidate files
+    (``module_alias_files[module_id]``) sits in a directory this importing file's own
+    recorded ``sys.path.insert``/``append`` entries reach (#5252). Only existence is asked
+    here: the actual id assignment is left to ``_repoint_python_sys_path_imports``, which
+    runs after this and already does that resolution; this only has to know whether to
+    let the edge through unresolved instead of forcing it to the one-node-fewer
+    ``ambiguous_python_import_*`` stub that forecloses that later repointing."""
+    if not entries or not candidates:
+        return False
+    try:
+        sf_p = Path(source_file)
+        if not sf_p.is_absolute():
+            sf_p = (root / sf_p).resolve()
+        else:
+            sf_p = sf_p.resolve()
+    except OSError:
+        return False
+    try:
+        root_path = Path(root).resolve()
+    except OSError:
+        root_path = Path(root)
+    target_dirs = _python_sys_path_target_dirs(sf_p.parent, entries, root_path)
+    if not target_dirs:
+        return False
+    hits = set()
+    for candidate in candidates:
+        try:
+            candidate_dir = Path(candidate).resolve().parent
+        except OSError:
+            continue
+        if candidate_dir in target_dirs:
+            hits.add(candidate)
+    return len(hits) == 1
+
+
 def _repoint_python_sys_path_imports(per_file, all_nodes, all_edges, root) -> None:
     """Repoint Python plain-import edges targeting modules in directories dynamically
     added to sys.path via sys.path.insert / sys.path.append (#5253).
@@ -776,27 +884,7 @@ def _repoint_python_sys_path_imports(per_file, all_nodes, all_edges, root) -> No
         except OSError:
             continue
 
-        file_dir = sf_p.parent
-        target_dirs: list[Path] = []
-        for entry in r["_python_sys_path_entries"]:
-            curr = file_dir
-            while True:
-                try:
-                    cand_dir = (curr / entry).resolve()
-                    if cand_dir.is_dir() and cand_dir not in target_dirs:
-                        target_dirs.append(cand_dir)
-                except OSError:
-                    pass
-                if curr == root_path or curr == curr.parent:
-                    break
-                curr = curr.parent
-            try:
-                cand_dir = (root_path / entry).resolve()
-                if cand_dir.is_dir() and cand_dir not in target_dirs:
-                    target_dirs.append(cand_dir)
-            except OSError:
-                pass
-
+        target_dirs = _python_sys_path_target_dirs(sf_p.parent, r["_python_sys_path_entries"], root_path)
         if not target_dirs:
             continue
 
@@ -2007,6 +2095,105 @@ def _is_autogenerated_python(source: bytes) -> bool:
     return False
 
 
+def _python_file_dirname_call(node, source) -> bool:
+    """True for ``os.path.dirname(__file__)`` exactly: the argument shape
+    ``os.path.join(os.path.dirname(__file__), ...)`` names relative to (#5252)."""
+    if node.type != "call":
+        return False
+    fn = node.child_by_field_name("function")
+    if fn is None or source[fn.start_byte:fn.end_byte] != b"os.path.dirname":
+        return False
+    args = node.child_by_field_name("arguments")
+    arg_nodes = [c for c in args.children if c.type not in ("(", ")", ",")] if args else []
+    return len(arg_nodes) == 1 and source[arg_nodes[0].start_byte:arg_nodes[0].end_byte] == b"__file__"
+
+
+def _python_file_parent_depth(node, source) -> int | None:
+    """Hops from the file's own directory up through a ``Path(__file__).parent`` chain
+    (0 for the directory itself, matching ``os.path.dirname(__file__)``), or None if
+    ``node`` is not that exact shape (#5252)."""
+    depth = -1
+    cur = node
+    while cur.type == "attribute":
+        attr = cur.child_by_field_name("attribute")
+        obj = cur.child_by_field_name("object")
+        if attr is None or obj is None or source[attr.start_byte:attr.end_byte] != b"parent":
+            return None
+        depth += 1
+        cur = obj
+    if cur.type != "call" or depth < 0:
+        return None
+    fn = cur.child_by_field_name("function")
+    if fn is None or source[fn.start_byte:fn.end_byte] not in (b"Path", b"pathlib.Path"):
+        return None
+    args = cur.child_by_field_name("arguments")
+    arg_nodes = [c for c in args.children if c.type not in ("(", ")", ",")] if args else []
+    if len(arg_nodes) != 1 or source[arg_nodes[0].start_byte:arg_nodes[0].end_byte] != b"__file__":
+        return None
+    return depth
+
+
+def _python_sys_path_literal_arg(node, source) -> str | None:
+    """A ``sys.path.insert``/``append`` argument as a relative-path string, or None if its
+    shape is not one of the three this recognizes (#5252). A bare string or
+    ``concatenated_string`` is returned as-is (pre-existing, #5253). The other two spell the
+    file's own directory differently (``os.path.join(os.path.dirname(__file__), ...)``,
+    ``Path(__file__).parent`` chains) but both ultimately describe a path relative to that
+    same directory, so each is folded into the identical ``".."``-joined relative string the
+    plain-string case already produces: _repoint_python_sys_path_imports resolves every entry
+    against the file's own directory already and needs no change of its own to pick these up.
+    Anything else (a variable, an f-string, an unrecognized call) is left unresolved rather
+    than guessed at, keeping today's fail-closed behaviour for dynamic paths.
+    """
+    if node.type in ("string", "concatenated_string"):
+        text = source[node.start_byte:node.end_byte].decode("utf-8", errors="replace").strip("\"'")
+        return text or None
+
+    if node.type == "call":
+        fn = node.child_by_field_name("function")
+        if fn is None:
+            return None
+        if source[fn.start_byte:fn.end_byte] == b"str":
+            # `str(Path(__file__).parent / "bin")`: sys.path wants a str, so the
+            # pathlib form is routinely wrapped in one; unwrap and recurse.
+            args = node.child_by_field_name("arguments")
+            arg_nodes = [c for c in args.children if c.type not in ("(", ")", ",")] if args else []
+            return _python_sys_path_literal_arg(arg_nodes[0], source) if len(arg_nodes) == 1 else None
+        if source[fn.start_byte:fn.end_byte] != b"os.path.join":
+            return None
+        args = node.child_by_field_name("arguments")
+        arg_nodes = [c for c in args.children if c.type not in ("(", ")", ",")] if args else []
+        if len(arg_nodes) < 2 or not _python_file_dirname_call(arg_nodes[0], source):
+            return None
+        parts: list[str] = []
+        for a in arg_nodes[1:]:
+            if a.type not in ("string", "concatenated_string"):
+                return None
+            text = source[a.start_byte:a.end_byte].decode("utf-8", errors="replace").strip("\"'")
+            if not text:
+                return None
+            parts.append(text)
+        return "/".join(parts)
+
+    if node.type == "binary_operator":
+        left = node.child_by_field_name("left")
+        op = node.child_by_field_name("operator")
+        right = node.child_by_field_name("right")
+        if left is None or op is None or right is None:
+            return None
+        if source[op.start_byte:op.end_byte] != b"/" or right.type not in ("string", "concatenated_string"):
+            return None
+        segment = source[right.start_byte:right.end_byte].decode("utf-8", errors="replace").strip("\"'")
+        if not segment:
+            return None
+        depth = _python_file_parent_depth(left, source)
+        if depth is None:
+            return None
+        return "/".join([".."] * depth + [segment])
+
+    return None
+
+
 def _extract_python_rationale(path: Path, result: dict) -> None:
     """Post-pass: extract docstrings and rationale comments from Python source.
     Mutates result in-place by appending to result['nodes'] and result['edges'].
@@ -2044,11 +2231,9 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
                             args = child.child_by_field_name("arguments")
                             if args:
                                 for a in args.children:
-                                    if a.type in ("string", "concatenated_string"):
-                                        val = source[a.start_byte:a.end_byte].decode("utf-8", errors="replace")
-                                        val = val.strip("\"'")
-                                        if val:
-                                            sys_path_entries.append(val)
+                                    val = _python_sys_path_literal_arg(a, source)
+                                    if val:
+                                        sys_path_entries.append(val)
     if sys_path_entries:
         result["_python_sys_path_entries"] = sys_path_entries
 
@@ -12905,6 +13090,7 @@ def extract(
     _suppress_ambiguous_python_imports(
         all_edges, all_nodes, all_raw_calls, ambiguous_python_modules,
         python_module_alias_files, root,
+        _python_sys_path_entries_by_source_file(per_file),
     )
     _augment_symbol_resolution_edges(
         paths, all_nodes, all_edges, root,
