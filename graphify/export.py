@@ -1489,7 +1489,7 @@ def to_svg(
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
     except ImportError as e:
-        raise ImportError("matplotlib not installed. Run: pip install matplotlib") from e
+        raise ImportError('matplotlib not installed. Run: pip install "graphifyy[svg]"') from e
 
     node_community = _node_community_map(communities)
 
