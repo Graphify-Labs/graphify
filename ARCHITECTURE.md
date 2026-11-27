@@ -84,6 +84,10 @@ Go resolves a selector against its visible lexical binding before considering
 a same-named import. An unknown local receiver does not resolve as a package.
 AST cache schema 54 retires older call facts.
 
+Required extraction fields use string IDs, labels, relations and source paths.
+Assembly retains numeric-ID compatibility, skips malformed identities or
+relations and uses existing fallback rules for missing display and source data.
+
 ## Extraction output schema
 
 `extracted_sources` authorizes replacement only for successful AST extractions

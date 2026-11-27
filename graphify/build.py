@@ -867,6 +867,56 @@ def _coerce_non_string_ids(extraction: dict) -> None:
                 he[key] = [_coerce_id(ref) for ref in members]
 
 
+def _repair_extraction_field_types(extraction: dict) -> None:
+    """Keep valid records usable before deduplication or graph assembly."""
+    dropped_nodes = dropped_edges = repaired_fields = 0
+    nodes = []
+    for node in extraction.get("nodes", []):
+        if isinstance(node, dict):
+            node_id = node.get("id")
+            if "id" in node and not isinstance(node_id, str):
+                dropped_nodes += 1
+                continue
+            if "label" in node and not isinstance(node["label"], str):
+                alias = node.get("name")
+                node["label"] = alias if isinstance(alias, str) and alias else node_id or ""
+                repaired_fields += 1
+            if "source_file" in node and not isinstance(node["source_file"], str):
+                node["source_file"] = ""
+                repaired_fields += 1
+        nodes.append(node)
+    if "nodes" in extraction:
+        extraction["nodes"] = nodes
+
+    edges = []
+    for edge in extraction.get("edges", []):
+        if isinstance(edge, dict):
+            if "relation" in edge and not isinstance(edge["relation"], str):
+                _fold_edge_aliases(edge)
+            if (
+                ("relation" in edge and not isinstance(edge["relation"], str))
+                or any(
+                    canonical in edge or alias in edge
+                    for canonical, alias in (("source", "from"), ("target", "to"))
+                    if not isinstance(edge.get(canonical, edge.get(alias)), str)
+                )
+            ):
+                dropped_edges += 1
+                continue
+            if "source_file" in edge and not isinstance(edge["source_file"], str):
+                edge["source_file"] = ""
+                repaired_fields += 1
+        edges.append(edge)
+    if "edges" in extraction:
+        extraction["edges"] = edges
+    if dropped_nodes or dropped_edges or repaired_fields:
+        print(
+            f"[graphify] WARNING: malformed field types: skipped {dropped_nodes} node(s) "
+            f"and {dropped_edges} edge(s), repaired {repaired_fields} field(s).",
+            file=sys.stderr,
+        )
+
+
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
     """Normalize path separators and relativize absolute paths.
 
@@ -1798,6 +1848,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if isinstance(edge, dict):
             _fold_edge_aliases(edge)
 
+    _repair_extraction_field_types(extraction)
     errors = validate_extraction(extraction)
     # Dangling edges (stdlib/external imports) are expected - only warn about real schema errors.
     real_errors = [e for e in errors if "does not match any node id" not in e]
@@ -2545,6 +2596,7 @@ def build(
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
         # coerces too, but that runs after dedup — too late for this path.
         _coerce_non_string_ids(combined)
+        _repair_extraction_field_types(combined)
         # Fold legacy node field aliases before dedup (#2194): dedup runs BEFORE
         # build_from_json and keys on `label`, so a `name`/`file`/`path` alias node
         # would be invisible to it and only label-dedup one build later, after
