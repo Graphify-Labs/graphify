@@ -9,7 +9,7 @@ block":
 * ``sections 'x'``                      -> ``sections/x.json``        (``imports``)
 * ``content_for 'block', type: 'x'``    -> ``blocks/x.liquid``        (``imports``)
 * ``{% schema %}`` ``blocks[]`` entries -> ``blocks/<type>.liquid``   (``imports``)
-* ``'x' | asset_url``                   -> ``assets/x[.liquid]``      (``references``)
+* ``'x' | asset_url`` / ``inline_asset_content`` -> ``assets/x[.liquid]`` (``references``)
 * ``'a.b' | t`` / ``| translate``       -> key ``a.b`` of the default locale (``references``)
 
 Gates and limits, all fail-closed:
@@ -51,7 +51,8 @@ _STMT_NAME = re.compile(r"\s*([A-Za-z_]\w*)")
 _NAME_ARG = re.compile(r"""\s*(['"])([^'"\n]*)\1""")
 _BLOCK_TYPE = re.compile(r"""\btype\s*:\s*(['"])([^'"\n]*)\1""")
 # A quoted literal directly piped into asset_url or into the t / translate filter.
-_FILTER = re.compile(r"""(['"])([^'"\n]+)\1\s*\|\s*(asset_url|t|translate)(?![\w])""")
+_FILTER = re.compile(r"""(['"])([^'"\n]+)\1\s*\|\s*(asset_url|inline_asset_content|t|translate)(?![\w])""")
+_ASSET_FILTERS = frozenset({"asset_url", "inline_asset_content"})
 _ASSET_SUFFIX = re.compile(r"[?#]")
 _JSON_COMMENT = re.compile(r'"(?:[^"\\\n]|\\.)*"|//[^\n]*|/\*.*?\*/', re.DOTALL)
 
@@ -291,7 +292,7 @@ class _Collector:
         """Handle one tag body or one line of a ``{% liquid %}`` block."""
         for m in _FILTER.finditer(text):
             name, kind = m.group(2), m.group(3)
-            if kind == "asset_url":
+            if kind in _ASSET_FILTERS:
                 self._asset(name, line)
             else:
                 self.key_edge(name, line)

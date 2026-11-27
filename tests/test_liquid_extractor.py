@@ -474,3 +474,13 @@ def test_two_megabyte_file_is_fast(tmp_path):
     start = time.perf_counter()
     extract_liquid(root / "sections/a.liquid")
     assert time.perf_counter() - start < 2
+
+
+def test_inline_asset_content_filter_links_the_asset(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/icon.svg": "<svg/>",
+        "sections/a.liquid": "{{ 'icon.svg' | inline_asset_content }}\n{{ 'gone.svg' | inline_asset_content }}\n",
+    })
+    assert _targets(root, "sections/a.liquid") == [("references", "assets/icon.svg", "L1")]
+    unresolved = [e for e in _edges(root, "sections/a.liquid") if e["confidence"] == "AMBIGUOUS"]
+    assert len(unresolved) == 1 and unresolved[0]["source_location"] == "L2"
