@@ -429,3 +429,32 @@ def test_affected_absolute_seed_with_graph_not_under_out_dir(tmp_path, monkeypat
     assert "Affected nodes for Foo" in out
     assert "X()" in out
 
+
+
+def test_affected_lists_every_call_line_of_an_edge_ascending(monkeypatch, tmp_path, capsys):
+    """An edge folded from several call sites shows all its lines, sorted numerically."""
+    g = nx.DiGraph()
+    g.add_node("caller", label="caller.liquid", source_file="snippets/caller.liquid", source_location="L1")
+    g.add_node("callee", label="callee.liquid", source_file="snippets/callee.liquid", source_location="L1")
+    g.add_edge("caller", "callee", relation="renders", confidence="EXTRACTED",
+               source_file="snippets/caller.liquid", source_location="L100",
+               also_seen=[{"confidence": "EXTRACTED", "source_file": "snippets/caller.liquid", "source_location": "L58"},
+                          {"confidence": "EXTRACTED", "source_file": "snippets/other.liquid", "source_location": "L7"}])
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", "callee.liquid", "--relation", "renders", "--graph", str(gp)])
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "snippets/caller.liquid:L58,L100" in out
+    assert "L7" not in out
+
+
+def test_affected_single_line_edge_keeps_plain_format(monkeypatch, tmp_path, capsys):
+    gp = _write_callsite_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", "transition_state", "--graph", str(gp)])
+    mainmod.main()
+    assert "apollo_pipeline_status.py:L158\n" in capsys.readouterr().out + "\n"

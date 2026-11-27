@@ -8,6 +8,8 @@ import unicodedata
 
 import networkx as nx
 
+from graphify.build import edge_lines
+
 
 DEFAULT_AFFECTED_RELATIONS = (
     "calls",
@@ -55,6 +57,8 @@ class AffectedHit:
     # existing constructors/tests working; None falls back to the node's def line.
     via_file: "str | None" = None
     via_location: "str | None" = None
+    # Every line of the traversed edge in via_file (source_location + also_seen).
+    via_lines: "tuple[int, ...]" = ()
 
 
 def _node_label(graph: nx.Graph, node_id: str) -> str:
@@ -457,6 +461,7 @@ def affected_nodes(
                 source, current_depth + 1, relation,
                 via_file=str(data.get("source_file") or "") or None,
                 via_location=str(data.get("source_location") or "") or None,
+                via_lines=tuple(edge_lines(data)),
             )
             hits.append(hit)
             if not queued:
@@ -516,7 +521,8 @@ def format_affected(
         if hit.via_location:
             # The relation SITE in this node's file (call/import/reference line),
             # labeled by [via_relation] so it's never mistaken for a def line.
-            location = f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
+            where = ",".join(f"L{n}" for n in hit.via_lines) if len(hit.via_lines) > 1 else hit.via_location
+            location = f"{hit.via_file or data.get('source_file') or '-'}:{where}"
         else:
             location = _format_location(data)  # honest fallback: the node's own def line
         lines.append(

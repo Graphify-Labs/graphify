@@ -300,6 +300,19 @@ def edge_evidence(d: dict) -> list[dict]:
     return [d, *(a for a in also if isinstance(a, dict))] if isinstance(also, list) else [d]
 
 
+def edge_lines(d: dict) -> list[int]:
+    """Every line of an edge's own file where it was seen, ascending: ``source_location`` plus ``also_seen``."""
+    own = d.get("source_file")
+    lines: set[int] = set()
+    for ev in edge_evidence(d):
+        if ev is not d and ev.get("source_file") not in (None, "", own):
+            continue
+        m = re.fullmatch(r"L(\d+)", str(ev.get("source_location") or ""))
+        if m:
+            lines.add(int(m.group(1)))
+    return sorted(lines)
+
+
 def _fold_also_seen(winner: dict, loser: dict) -> None:
     """Record ``loser``'s provenance on ``winner`` when the two collapse (#4881).
 
