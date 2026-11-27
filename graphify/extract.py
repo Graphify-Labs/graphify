@@ -14,6 +14,107 @@ def _make_id(*parts: str) -> str:
     return cleaned.strip("_").lower()
 
 
+# Patterns for markdown link / wikilink extraction. Kept conservative:
+#  - _MD_LINK_RE matches [text](target); we then filter out images (![...])
+#    and external URLs (http://, https://, mailto:, ftp://) in code.
+#  - _WIKILINK_RE matches [[Page Name]] and [[Page Name|Display Text]].
+_MD_LINK_RE = re.compile(r"(?<!\!)\[([^\]]+)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
+
+
+def _resolve_md_link(target: str, source: Path) -> Path | None:
+    """Resolve a markdown link target to an existing file in the same directory,
+    trying common extensions. Returns None for external URLs or unresolvable refs.
+    """
+    if not target:
+        return None
+    if re.match(r"^[a-z]+://", target) or target.startswith(("mailto:", "tel:")):
+        return None
+    # Strip anchor
+    target = target.split("#", 1)[0]
+    if not target:
+        return None
+    base = source.parent / target
+    if base.is_file():
+        return base
+    for ext in (".md", ".mdx", ".qmd", ".txt", ".html"):
+        candidate = base.with_suffix(ext) if not base.suffix else base
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def extract_markdown(path: Path) -> dict:
+    """Extract markdown links and wikilinks as links_to edges from a .md/.mdx/.qmd file.
+
+    Emits one file-level node and one links_to edge per resolved reference.
+    Unresolved links (external URLs, broken refs) are silently skipped so the
+    graph only contains EXTRACTED, real cross-references.
+    """
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    file_nid = _make_id(path.stem)
+    nodes: list[dict] = [{
+        "id": file_nid,
+        "label": path.name,
+        "file_type": "doc",
+        "source_file": str(path),
+        "source_location": "L1",
+    }]
+    edges: list[dict] = []
+
+    # Strip fenced code blocks so their [..](..) and [[..]] don't leak as edges
+    in_code = False
+    cleaned_lines: list[str] = []
+    for line in source.splitlines():
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+            cleaned_lines.append("")
+            continue
+        cleaned_lines.append("" if in_code else line)
+    cleaned = "\n".join(cleaned_lines)
+
+    for line_no, line in enumerate(cleaned.splitlines(), start=1):
+        for m in _MD_LINK_RE.finditer(line):
+            target_str = m.group(2)
+            target = _resolve_md_link(target_str, path)
+            if target is None:
+                continue
+            target_nid = _make_id(target.stem)
+            if target_nid != file_nid:  # don't self-link
+                edges.append({
+                    "source": file_nid,
+                    "target": target_nid,
+                    "relation": "links_to",
+                    "confidence": "EXTRACTED",
+                    "source_file": str(path),
+                    "source_location": f"L{line_no}",
+                    "context": m.group(1),
+                    "weight": 1.0,
+                })
+        for m in _WIKILINK_RE.finditer(line):
+            target = _resolve_md_link(m.group(1).strip() + ".md", path)
+            if target is None:
+                continue
+            target_nid = _make_id(target.stem)
+            if target_nid != file_nid:
+                edges.append({
+                    "source": file_nid,
+                    "target": target_nid,
+                    "relation": "links_to",
+                    "confidence": "EXTRACTED",
+                    "source_file": str(path),
+                    "source_location": f"L{line_no}",
+                    "context": m.group(1).strip(),
+                    "weight": 1.0,
+                })
+
+    return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
+
+
 def extract_python(path: Path) -> dict:
     """Extract classes, functions, and imports from a .py file via tree-sitter AST."""
     try:
@@ -2389,6 +2490,15 @@ def extract(paths: list[Path]) -> dict:
             if "error" not in result:
                 save_cached(path, result, root)
             per_file.append(result)
+        elif path.suffix in {".md", ".mdx", ".qmd"}:
+            cached = load_cached(path, root)
+            if cached is not None:
+                per_file.append(cached)
+                continue
+            result = extract_markdown(path)
+            if "error" not in result:
+                save_cached(path, result, root)
+            per_file.append(result)
 
     all_nodes: list[dict] = []
     all_edges: list[dict] = []
@@ -2417,6 +2527,7 @@ def collect_files(target: Path) -> list[Path]:
         "*.py", "*.js", "*.ts", "*.tsx", "*.go", "*.rs",
         "*.java", "*.c", "*.h", "*.cpp", "*.cc", "*.cxx", "*.hpp",
         "*.rb", "*.cs", "*.kt", "*.kts", "*.scala", "*.php",
+        "*.md", "*.mdx", "*.qmd",
     )
     results: list[Path] = []
     for pattern in _EXTENSIONS:
