@@ -49,6 +49,13 @@ def test_mask_nested_comment_with_intermediate_endcomment():
     assert "'x'" not in out and "'y'" in out
 
 
+def test_mask_comment_hides_output_tags_and_text_between_its_delimiters():
+    text = "{% comment %}<li>{{ settings.a }}\n{{ product.metafields.n.k }}</li>{% endcomment %}{{ settings.b }}"
+    out = gate.mask_inactive(text)
+    assert "settings.a" not in out and "metafields" not in out and "settings.b" in out
+    assert out.count("\n") == text.count("\n")
+
+
 def test_mask_raw_inside_comment_hides_its_endcomment():
     text = "{% comment %}{% raw %}{% endcomment %}{% endraw %}{% render 'x' %}{% endcomment %}{% render 'y' %}"
     out = gate.mask_inactive(text)

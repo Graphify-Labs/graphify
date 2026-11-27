@@ -61,6 +61,7 @@ def mask_inactive(text: str) -> str:
     """
     out = list(text)
     depth = 0
+    comment_from = 0  # where the outermost open comment started; its whole body is blanked when it closes
     resume = 0  # tags before this offset were consumed by a raw/doc/schema skip
     for m in _TAG.finditer(text):
         if m.start() < resume:
@@ -73,6 +74,8 @@ def mask_inactive(text: str) -> str:
                 depth += 1
             elif name == "endcomment":
                 depth -= 1
+                if depth == 0:
+                    _blank(text, comment_from, m.end(), out)
             elif name == "raw":
                 end = _END_RAW.search(text, m.end())
                 resume = end.end() if end else len(text)
@@ -80,6 +83,7 @@ def mask_inactive(text: str) -> str:
             continue
         if name == "comment":
             depth = 1
+            comment_from = m.start()
             _blank(text, m.start(), m.end(), out)
         elif name == "#":
             _blank(text, m.start(), m.end(), out)
@@ -90,6 +94,8 @@ def mask_inactive(text: str) -> str:
             _blank(text, m.start(), resume, out)
         elif name == "liquid":
             _mask_liquid_tag_body(text, m.start() + 2, m.end() - 2, out)
+    if depth:
+        _blank(text, comment_from, len(text), out)
     return "".join(out)
 
 
@@ -394,6 +400,30 @@ def _schema_ids(text: str) -> set[str]:
     return ids
 
 
+def _schema_scoped(text: str) -> tuple[set[str], set[str]]:
+    """(``settings[]`` ids, ``blocks[].settings[]`` ids) of the ``{% schema %}`` of a Liquid file."""
+    m = re.search(r"\{%-?\s*schema\s*-?%\}(.*?)\{%-?\s*endschema\s*-?%\}", text, re.S)
+    if not m:
+        return set(), set()
+    try:
+        data = json.loads(m.group(1))
+    except (ValueError, RecursionError):
+        return set(), set()
+
+    def ids(entries: object) -> set[str]:
+        return {
+            e["id"] for e in entries if isinstance(e, dict) and isinstance(e.get("id"), str) and "type" in e
+        } if isinstance(entries, list) else set()
+
+    if not isinstance(data, dict):
+        return set(), set()
+    blocks: set[str] = set()
+    for b in data.get("blocks") if isinstance(data.get("blocks"), list) else []:
+        if isinstance(b, dict):
+            blocks |= ids(b.get("settings"))
+    return ids(data.get("settings")), blocks
+
+
 def _global_setting_ids(root: Path) -> set[str]:
     p = root / "config" / "settings_schema.json"
     if not p.is_file():
@@ -508,11 +538,19 @@ def measure(root: Path, graph: Graph, cats: str) -> dict[str, dict]:
             callers = _callers(root)
             schema_cache: dict[str, set[str]] = {}
 
-            def schema_of(f: str) -> set[str]:
+            def schema_of(f: str, scope: str) -> set[str]:
+                """Ids ``scope`` (section|block) can read from the schema of ``f``: a section's ``settings`` are
+                ``section.settings``, its ``blocks[].settings`` are ``block.settings``; a block file's own
+                ``settings`` are ``block.settings``."""
                 if f not in schema_cache:
                     p = root / f
-                    schema_cache[f] = _schema_ids(_read(p)) if p.is_file() else set()
-                return schema_cache[f]
+                    schema_cache[f] = _schema_scoped(_read(p)) if p.is_file() else (set(), set())
+                own, blocks = schema_cache[f]
+                if f.startswith("sections/"):
+                    return own if scope == "section.settings" else blocks
+                if f.startswith("blocks/"):
+                    return own if scope == "block.settings" else set()
+                return set()
 
             for file, line, key in cases_d(root):
                 cases.append(1)
@@ -520,7 +558,8 @@ def measure(root: Path, graph: Graph, cats: str) -> dict[str, dict]:
                 if scope == "settings":
                     definers = ["config/settings_schema.json"] if sid in glob_ids else []
                 else:
-                    definers = [f for f in (file, *sorted(callers.get(file, ()))) if sid in schema_of(f)]
+                    own_file = (file,) if not file.startswith("snippets/") else ()
+                    definers = [f for f in (*own_file, *sorted(callers.get(file, ()))) if sid in schema_of(f, scope)]
                 targets = [n for n in graph.targets(file, line) if norm(n.get("label")) == key]
                 if definers:
                     ok = any(not _is_unresolved(n) and graph.rel(n.get("source_file")) in definers for n in targets)

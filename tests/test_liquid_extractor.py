@@ -660,3 +660,110 @@ def test_settings_regex_is_linear_on_a_huge_line(tmp_path):
     start = time.perf_counter()
     extract_liquid(root / "layout/password.liquid")
     assert time.perf_counter() - start < 2
+
+
+def _schema_text(**data) -> str:
+    return "{% schema %}\n" + json.dumps(data, indent=2) + "\n{% endschema %}\n"
+
+
+def _setting_edges(root: Path, rel: str) -> list[dict]:
+    return [e for e in _used(root, rel) if ".settings." in e["node"]["label"]]
+
+
+def test_settings_section_links_to_schema_declared_after_the_use(tmp_path):
+    schema = _schema_text(name="S", settings=[{"type": "text", "id": "title", "label": "T"}])
+    src = "<h1>{{ section.settings.title }}</h1>\n{{ section.settings['title'] }}\n" + schema
+    root = _theme(tmp_path, {"sections/s.liquid": src})
+    edges = _setting_edges(root, "sections/s.liquid")
+    assert [(e["node"]["label"], e["confidence"], e["source_location"]) for e in edges] == [
+        ("section.settings.title", "EXTRACTED", "L1"),
+        ("section.settings.title", "EXTRACTED", "L2"),
+    ]
+    node = edges[0]["node"]
+    assert Path(node["source_file"]) == root / "sections" / "s.liquid"
+    needle = '"id": "title"'
+    assert node["source_location"] == f"L{_line_of(src, needle)}"
+
+
+def test_settings_block_file_links_to_its_own_schema(tmp_path):
+    src = "{{ block.settings.width }}\n" + _schema_text(name="B", settings=[{"type": "range", "id": "width"}])
+    root = _theme(tmp_path, {"blocks/b.liquid": src})
+    (edge,) = _setting_edges(root, "blocks/b.liquid")
+    assert (edge["node"]["label"], edge["confidence"]) == ("block.settings.width", "EXTRACTED")
+    assert Path(edge["node"]["source_file"]) == root / "blocks" / "b.liquid"
+
+
+def test_settings_block_in_section_extracted_when_one_block_defines_it(tmp_path):
+    schema = _schema_text(name="S", blocks=[
+        {"type": "a", "name": "A", "settings": [{"type": "text", "id": "icon"}]},
+        {"type": "b", "name": "B", "settings": [{"type": "text", "id": "other"}]},
+    ])
+    root = _theme(tmp_path, {"sections/s.liquid": "{{ block.settings.icon }}\n" + schema})
+    (edge,) = _setting_edges(root, "sections/s.liquid")
+    assert (edge["node"]["label"], edge["confidence"]) == ("block.settings.icon", "EXTRACTED")
+
+
+def test_settings_block_in_section_inferred_when_several_blocks_define_it(tmp_path):
+    schema = _schema_text(name="S", blocks=[
+        {"type": "a", "name": "A", "settings": [{"type": "text", "id": "icon"}]},
+        {"type": "b", "name": "B", "settings": [{"type": "text", "id": "icon"}]},
+    ])
+    root = _theme(tmp_path, {"sections/s.liquid": "{{ block.settings.icon }}\n" + schema})
+    edges = _setting_edges(root, "sections/s.liquid")
+    assert [(e["confidence"], e["confidence_score"]) for e in edges] == [("INFERRED", 0.55)] * 2
+    assert len({e["target"] for e in edges}) == 2
+
+
+def test_settings_section_in_block_follows_the_static_parent_section(tmp_path):
+    one = _schema_text(name="S", settings=[{"type": "text", "id": "a"}])
+    files = {
+        "blocks/b.liquid": "{{ section.settings.a }}\n",
+        "sections/one.liquid": "{% content_for 'block', type: 'b', id: 'x' %}\n" + one,
+    }
+    root = _theme(tmp_path, files)
+    (edge,) = _setting_edges(root, "blocks/b.liquid")
+    assert (edge["node"]["label"], edge["confidence"]) == ("section.settings.a", "EXTRACTED")
+    assert Path(edge["node"]["source_file"]) == root / "sections" / "one.liquid"
+
+    files["sections/two.liquid"] = _schema_text(name="T", settings=[{"type": "text", "id": "a"}], blocks=[{"type": "b"}])
+    second = tmp_path / "two"
+    second.mkdir()
+    root = _theme(second, files)
+    edges = _setting_edges(root, "blocks/b.liquid")
+    assert [e["confidence"] for e in edges] == ["INFERRED", "INFERRED"]
+    assert sorted(Path(e["node"]["source_file"]).name for e in edges) == ["one.liquid", "two.liquid"]
+
+
+def test_settings_section_in_block_without_a_parent_is_ambiguous(tmp_path):
+    root = _theme(tmp_path, {"blocks/b.liquid": "{{ section.settings.a }}\n"})
+    (edge,) = _setting_edges(root, "blocks/b.liquid")
+    assert edge["confidence"] == "AMBIGUOUS"
+    assert (edge["node"]["ref_kind"], edge["node"]["label"]) == ("setting", "section.settings.a")
+
+
+def test_settings_in_snippet_follow_the_sections_that_render_it(tmp_path):
+    schema = _schema_text(
+        name="S", settings=[{"type": "text", "id": "a"}],
+        blocks=[{"type": "k", "name": "K", "settings": [{"type": "text", "id": "b"}]}],
+    )
+    root = _theme(tmp_path, {
+        "snippets/outer.liquid": "{% render 'inner' %}\n",
+        "snippets/inner.liquid": "{{ section.settings.a }}{{ block.settings.b }}{{ block.settings.none }}\n",
+        "sections/s.liquid": "{% render 'outer' %}\n" + schema,
+    })
+    edges = _setting_edges(root, "snippets/inner.liquid")
+    resolved = [e for e in edges if e["confidence"] == "INFERRED"]
+    assert sorted(e["node"]["label"] for e in resolved) == ["block.settings.b", "section.settings.a"]
+    assert {Path(e["node"]["source_file"]).name for e in resolved} == {"s.liquid"}
+    assert [e["node"]["label"] for e in edges if e["confidence"] == "AMBIGUOUS"] == ["block.settings.none"]
+
+
+def test_settings_in_snippets_and_unknown_ids_are_ambiguous(tmp_path):
+    root = _theme(tmp_path, {
+        "snippets/x.liquid": "{{ block.settings.a }}{{ section.settings.a }}\n",
+        "sections/s.liquid": "{{ section.settings.nope }}{{ block.settings[var] }}\n" + _schema_text(name="S", settings=[]),
+    })
+    snippet = _setting_edges(root, "snippets/x.liquid")
+    assert [(e["confidence"], e["node"]["ref_kind"]) for e in snippet] == [("AMBIGUOUS", "setting")] * 2
+    (missing,) = _setting_edges(root, "sections/s.liquid")
+    assert (missing["confidence"], missing["node"]["label"]) == ("AMBIGUOUS", "section.settings.nope")

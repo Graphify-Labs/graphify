@@ -210,6 +210,157 @@ def setting_node(root: Path, sid: str, line: int) -> dict:
     }
 
 
+_MAX_SCHEMA_DEPTH = 32
+
+
+def _schema_setting_ids(data: dict, body: str, first_line: int) -> tuple[dict[str, int], list[dict[str, int]]]:
+    """Setting ids of a ``{% schema %}``: ``settings[]`` and, per ``blocks[]`` entry, its ``settings[]``; id -> line.
+
+    Walks ``data`` in source order alongside the ``"id"`` occurrences of ``body`` so each id gets its own line.
+    """
+    matches: list[tuple[str, int]] = []
+    pos = line = 0
+    for m in _ID_PROP.finditer(body):
+        line += body.count("\n", pos, m.start())
+        pos = m.start()
+        matches.append((m.group(1), first_line + line))
+    first_of: dict[str, int] = {}
+    for sid, at in matches:
+        first_of.setdefault(sid, at)
+    own: dict[str, int] = {}
+    blocks_raw = data.get("blocks")
+    per_block: list[dict[str, int]] = [{} for _ in blocks_raw] if isinstance(blocks_raw, list) else []
+    counter = 0
+
+    def walk(node: object, path: tuple, depth: int) -> None:
+        nonlocal counter
+        if depth > _MAX_SCHEMA_DEPTH:
+            return
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "id" and isinstance(value, str):
+                    index, counter = counter, counter + 1
+                    at = matches[index][1] if index < len(matches) and matches[index][0] == value else first_of.get(value, first_line)
+                    if "type" not in node:
+                        continue
+                    if len(path) == 2 and path[0] == "settings":
+                        own.setdefault(value, at)
+                    elif len(path) == 4 and path[0] == "blocks" and path[2] == "settings" and path[1] < len(per_block):
+                        per_block[path[1]].setdefault(value, at)
+                else:
+                    walk(value, path + (key,), depth + 1)
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                walk(value, path + (i,), depth + 1)
+
+    walk(data, (), 0)
+    return own, per_block
+
+
+# theme root -> (signature of sections/blocks/snippets, _ThemeIndex)
+_THEME_INDEX: dict[str, tuple[tuple, "_ThemeIndex"]] = {}
+_INDEXED_AREAS = ("sections", "blocks", "snippets")
+_MAX_INDEXED_FILES = 4000
+
+
+class _FileInfo:
+    """What the settings resolver needs from one theme file: its schema ids and what it places or renders."""
+
+    __slots__ = ("path", "own", "block_ids", "static_blocks")
+
+    def __init__(self, path: Path, own: dict[str, int], block_ids: list[dict[str, int]], static_blocks: set[str]) -> None:
+        self.path = path
+        self.own = own
+        self.block_ids = block_ids
+        self.static_blocks = static_blocks
+
+
+class _ThemeIndex:
+    """Settings and call graph of a theme's sections, blocks and snippets, built once per root."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, _FileInfo] = {}
+        self.callers: dict[str, set[str]] = {}   # "snippets/x.liquid" -> files that render it
+
+    def parents_of_block(self, name: str) -> list[_FileInfo]:
+        """Sections that place theme block ``name`` statically."""
+        return [i for r, i in self.files.items() if r.startswith("sections/") and name in i.static_blocks]
+
+    def callers_closure(self, rel: str) -> list[str]:
+        """Every file that renders ``rel``, directly or through other snippets, in sorted order."""
+        seen: set[str] = set()
+        todo = [rel]
+        while todo:
+            for caller in self.callers.get(todo.pop(), ()):
+                if caller not in seen:
+                    seen.add(caller)
+                    todo.append(caller)
+        return sorted(seen)
+
+
+def _theme_index(root: Path) -> _ThemeIndex:
+    """Index of ``sections/``, ``blocks/`` and ``snippets/`` Liquid files, cached per root until one changes."""
+    files: list[Path] = []
+    for area in _INDEXED_AREAS:
+        folder = root / area
+        if folder.is_dir() and _inside(root, folder):
+            files.extend(sorted(folder.glob("*.liquid"))[:_MAX_INDEXED_FILES])
+    signature: list[tuple[str, int, int]] = []
+    for f in files:
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        signature.append((f.name, st.st_mtime_ns, st.st_size))
+    cached = _THEME_INDEX.get(str(root))
+    if cached is not None and cached[0] == tuple(signature):
+        return cached[1]
+    index = _ThemeIndex()
+    for f in files:
+        if not f.is_file():
+            continue
+        try:
+            collector = _Collector(f, root)
+            _scan(_read_source_text(f), collector)
+        except (OSError, RecursionError):
+            continue
+        rel = f.relative_to(root).as_posix()
+        index.files[rel] = _FileInfo(f, collector.own_settings, collector.block_settings, collector.static_blocks)
+        for edge in collector.edges:
+            target = edge.get("target_file")
+            if target and edge["relation"] == "imports" and edge["confidence"] == "EXTRACTED" \
+                    and Path(target).parent.name == "snippets":
+                index.callers.setdefault(f"snippets/{Path(target).name}", set()).add(rel)
+    _THEME_INDEX[str(root)] = (tuple(signature), index)
+    return index
+
+
+def _snippet_hits(index: _ThemeIndex, callers: list[str], scope: str, sid: str) -> list[tuple[Path, tuple[str, ...], int]]:
+    """Schema declarations of ``sid`` reachable from the files that render a snippet (directly or transitively)."""
+    hits: list[tuple[Path, tuple[str, ...], int]] = []
+    sections: dict[str, _FileInfo] = {}
+    for rel in callers:
+        info = index.files.get(rel)
+        if info is None:
+            continue
+        if rel.startswith("sections/"):
+            sections[rel] = info
+        elif rel.startswith("blocks/"):
+            if scope == "block":
+                if sid in info.own:
+                    hits.append((info.path, ("block",), info.own[sid]))
+            else:
+                for parent in index.parents_of_block(Path(rel).stem):
+                    sections.setdefault(parent.path.relative_to(parent.path.parents[1]).as_posix(), parent)
+    for info in sections.values():
+        if scope == "section":
+            if sid in info.own:
+                hits.append((info.path, ("section",), info.own[sid]))
+        else:
+            hits.extend((info.path, ("block", str(i)), d[sid]) for i, d in enumerate(info.block_ids) if sid in d)
+    return hits
+
+
 class _Collector:
     """Accumulates nodes and de-duplicated edges for one file, in source order."""
 
@@ -229,6 +380,9 @@ class _Collector:
         self._schema_locale: tuple[Path, dict] | None | _Unset = _UNSET
         self._settings: dict[str, int] | None | _Unset = _UNSET
         self.pending: list[tuple[str, str, int]] = []   # (section|block, setting id, line) resolved after the schema
+        self.own_settings: dict[str, int] = {}          # schema ``settings[]`` ids -> line
+        self.block_settings: list[dict[str, int]] = []  # schema ``blocks[].settings`` ids -> line, one dict per block entry
+        self.static_blocks: set[str] = set()            # theme block names placed by ``content_for 'block'`` or ``blocks[]``
         self.blocks_line: int | None = None   # first static ``content_for 'blocks'``
         self.accepts_theme = False            # schema ``blocks`` lists ``@theme``
 
@@ -403,15 +557,80 @@ class _Collector:
             "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
         })
 
+    def _schema_setting_edge(
+        self, scope: str, file: Path, parts: tuple[str, ...], sid: str, at: int, line: int, inferred: bool,
+    ) -> None:
+        """Edge to the ``<scope>.settings.<sid>`` declared at line ``at`` of the ``{% schema %}`` of ``file``."""
+        label = f"{scope}.settings.{sid}"
+        target_id = _make_id("liquid_schema_setting", str(file), *parts, sid)
+        if not self._first(target_id, "references", line):
+            return
+        self._declare({
+            "id": target_id, "label": label, "file_type": "concept",
+            "source_file": str(file), "source_location": f"L{at}",
+        })
+        self.edges.append({
+            "source": self.file_id, "target": target_id, "relation": "references",
+            "confidence": "INFERRED" if inferred else "EXTRACTED", "confidence_score": 0.55 if inferred else 1.0,
+            "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+        })
+
+    def resolve_settings(self) -> None:
+        """Resolve the pending ``section.settings.x`` / ``block.settings.x`` once the file's schema is known.
+
+        A section reads its own ``settings`` and the ``blocks[].settings`` of its blocks; a theme block reads its own
+        ``settings`` and the ``settings`` of the sections that place it statically. Anything else, or an id nobody
+        defines, is an AMBIGUOUS unresolved reference.
+        """
+        if not self.pending:
+            return
+        try:
+            area = self.path.relative_to(self.root).parts[0]
+        except (ValueError, IndexError):
+            area = ""
+        index: _ThemeIndex | None = None
+        parents: list[_FileInfo] = []
+        callers: list[str] = []
+        for scope, sid, line in self.pending:
+            if index is None and (area == "snippets" or (scope == "section" and area == "blocks")):
+                index = _theme_index(self.root)
+                parents = index.parents_of_block(self.path.stem)
+                callers = index.callers_closure(f"snippets/{self.path.stem}.liquid") if area == "snippets" else []
+            label = f"{scope}.settings.{sid}"
+            if scope == "section" and area == "sections":
+                hits = [(self.path, ("section",), self.own_settings[sid])] if sid in self.own_settings else []
+                inferred = False
+            elif scope == "block" and area == "blocks":
+                hits = [(self.path, ("block",), self.own_settings[sid])] if sid in self.own_settings else []
+                inferred = False
+            elif scope == "block" and area == "sections":
+                hits = [(self.path, ("block", str(i)), d[sid]) for i, d in enumerate(self.block_settings) if sid in d]
+                inferred = len(hits) > 1
+            elif scope == "section" and area == "blocks":
+                hits = [(s.path, ("section",), s.own[sid]) for s in parents if sid in s.own]
+                inferred = len(parents) > 1 or len(hits) > 1
+            elif area == "snippets" and index is not None:
+                # A snippet has no schema: the sections that render it (transitively) are the only candidates.
+                hits = _snippet_hits(index, callers, scope, sid)
+                inferred = True
+            else:
+                hits, inferred = [], False
+            if not hits:
+                self._unresolved("references", "setting", label, label, line)
+                continue
+            for file, parts, at in hits:
+                self._schema_setting_edge(scope, file, parts, sid, at, line, inferred)
+
     def statement(self, text: str, line: int) -> None:
         """Handle one tag body or one line of a ``{% liquid %}`` block."""
         if "settings" in text:
             for m in _SETTING_USE.finditer(text):
                 scope, sid = m.group(1), m.group(2) or m.group(4)
+                at = line + text.count("\n", 0, m.start())   # a tag body can span lines
                 if scope == "settings":
-                    self.setting_edge(sid, line)
+                    self.setting_edge(sid, at)
                 else:
-                    self.pending.append((scope.split(".", 1)[0], sid, line))
+                    self.pending.append((scope.split(".", 1)[0], sid, at))
         for m in _FILTER.finditer(text):
             name, kind = m.group(2), m.group(3)
             if kind in _ASSET_FILTERS:
@@ -442,6 +661,7 @@ class _Collector:
                 m = _BLOCK_TYPE.search(rest[arg.end():])
                 if m and _safe_component(m.group(2)):
                     block = m.group(2)
+                    self.static_blocks.add(block)
                     self.file_edge("imports", "block", block, self.root / "blocks" / f"{block}.liquid", line)
 
     def _asset(self, name: str, line: int) -> None:
@@ -515,11 +735,12 @@ class _Collector:
         """``blocks[]`` entries of a section/block schema that name a theme block file."""
         try:
             data = json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):
             return
         self.schema_keys(data, body, line)
         if not isinstance(data, dict):
             return
+        self.own_settings, self.block_settings = _schema_setting_ids(data, body, line)
         self._preset_blocks(data, body, line)
         self._availability(data, body, line)
         blocks = data.get("blocks")
@@ -536,6 +757,7 @@ class _Collector:
                 continue
             if not _safe_component(block_type):
                 continue
+            self.static_blocks.add(block_type)
             entry_line = line
             if search_from >= 0:
                 m = re.compile(r'"type"\s*:\s*"' + re.escape(block_type) + '"').search(body, search_from)
@@ -691,4 +913,5 @@ def extract_liquid(path: Path) -> dict:
     if root is not None:
         _scan(src, out)
         out.inferred_theme_blocks()
+        out.resolve_settings()
     return {"nodes": out.nodes, "edges": out.edges}
