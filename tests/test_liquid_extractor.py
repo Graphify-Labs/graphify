@@ -935,3 +935,18 @@ def test_css_liquid_strip_preserves_line_structure():
     assert len(out) == len(src)
     assert "b" not in out and "c" not in out and "d" not in out
     assert out.startswith("a") and "e" in out and "f" in out
+
+
+def test_stylesheet_selectors_carry_the_absolute_line_of_the_liquid_file(tmp_path):
+    body = (
+        "<div class=\"sec-x\">{{ section.settings.a }}</div>\n"
+        "\n"
+        "{% stylesheet %}\n"
+        ".sec-x { color: red; }\n"
+        "\n"
+        "@media (min-width: 750px) { .sec-y:hover { color: blue } }\n"
+        "{% endstylesheet %}\n"
+        ".not-css {}\n"
+    )
+    root = _theme(tmp_path, {"sections/s.liquid": body})
+    assert _css_nodes(root, "sections/s.liquid") == {".sec-x": "L4", ".sec-y": "L6"}

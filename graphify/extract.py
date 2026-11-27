@@ -62,6 +62,7 @@ from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.cobol import extract_cobol, resolve_cobol_copybook_performs  # noqa: F401
 from graphify.extractors.liquid import extract_liquid  # noqa: F401
+from graphify.extractors.css import extract_css  # noqa: F401
 from graphify.extractors.shopify_theme_json import (  # noqa: F401
     extract_shopify_theme_json,
     is_shopify_theme_json_path,
@@ -11778,6 +11779,7 @@ _DISPATCH: dict[str, Any] = {
     ".cobol": extract_cobol,
     ".cpy": extract_cobol,
     ".liquid": extract_liquid,
+    ".css": extract_css,
     ".vb": extract_vbnet,
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,

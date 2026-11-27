@@ -123,3 +123,14 @@ def test_non_theme_repo_graph_is_unchanged_by_css_support(tmp_path: Path) -> Non
     without_css = extract([repo / "app.py"])
     assert len(with_css["nodes"]) == len(without_css["nodes"])
     assert len(with_css["edges"]) == len(without_css["edges"])
+
+
+def test_css_is_registered_for_extraction_and_detection(tmp_path: Path) -> None:
+    from graphify.detect import CODE_EXTENSIONS
+    from graphify.extract import extract
+
+    assert ".css" in CODE_EXTENSIONS
+    css = _theme_with(tmp_path, "assets/base.css", ".top {}\n.btn:hover {}\n")
+    result = extract([css])
+    labels = {n["label"] for n in result["nodes"]}
+    assert {".top", ".btn"} <= labels
