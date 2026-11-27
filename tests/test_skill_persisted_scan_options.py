@@ -23,7 +23,10 @@ def _scan_blocks():
             m = re.search(r' -c "\n(.*)\n"', block, re.S)
             if m:
                 found.append((art.path, m.group(1).replace('\\"', '"')))
-    assert len(found) == 31
+    # 31 host scan blocks, plus the skills CLI bundle repeating the two claude
+    # scans (skills/graphify/SKILL.md and its update reference). The bundle is a
+    # byte copy, so those two blocks have to keep the same contract.
+    assert len(found) == 33
     return found
 
 
