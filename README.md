@@ -27,7 +27,7 @@ graphify-out/
 **Requires:** [Claude Code](https://claude.ai/code) and Python 3.10+
 
 ```bash
-uv tool install --python 3.12 graphifyy
+uv tool install graphifyy
 graphify install
 ```
 
