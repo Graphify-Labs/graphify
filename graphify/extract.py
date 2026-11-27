@@ -2523,12 +2523,12 @@ def _normalize_ts_tag_and_import_annotations(source: bytes, *, tsx: bool = False
 
 
 def extract_js(path: Path) -> dict:
-    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
+    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts/.ets file."""
     suffix = effective_suffix(path).lower()
-    is_ts = suffix in (".ts", ".tsx", ".mts", ".cts")
+    is_ts = suffix in (".ts", ".tsx", ".mts", ".cts", ".ets")
     if suffix == ".tsx":
         config = _TSX_CONFIG
-    elif suffix in (".ts", ".mts", ".cts"):
+    elif suffix in (".ts", ".mts", ".cts", ".ets"):
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
@@ -11749,6 +11749,7 @@ _DISPATCH: dict[str, Any] = {
     ".tsx": extract_js,
     ".mts": extract_js,
     ".cts": extract_js,
+    ".ets": extract_js,
     ".go": extract_go,
     ".rs": extract_rust,
     ".r": extract_r,
@@ -12680,7 +12681,7 @@ def extract(
                 _failed_seen.add(_key)
 
     # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
-    # extractor wired up (e.g. .ets — there is no ArkTS dispatch) silently
+    # extractor wired up (e.g. a MATLAB-style .m, whose extractor is ObjC-only) silently
     # contributes zero nodes. The #1666 warning above deliberately skips these (it
     # only fires when an extractor exists), so surface them explicitly, grouped by
     # extension, rather than reporting success as if the language were mapped.
