@@ -87,6 +87,21 @@ _SETTING_USE = re.compile(
 )
 
 
+# Names the HTML Standard ("valid custom element name") lists as hyphenated but never custom elements.
+_RESERVED_ELEMENTS = frozenset({
+    "annotation-xml", "color-profile", "font-face", "font-face-src", "font-face-uri",
+    "font-face-format", "font-face-name", "missing-glyph",
+})
+# Separators are never part of a segment (``[a-z0-9_.]`` has no ``-``), so these stay linear on hostile input.
+_CE_NAME = r"[a-z][a-z0-9_.]*(?:-[a-z0-9_.]+)+(?![\w.-])"
+_CE_USE = re.compile(rf"<({_CE_NAME})|(?<![\w-])is\s*=\s*([\"'])({_CE_NAME})\2")
+_CE_DEFINE = re.compile(r"""customElements\s*\.\s*define\s*\(\s*(['"])([a-z][\w.]*(?:-[\w.]*)+)\1""")
+_JAVASCRIPT_OPEN = re.compile(r"\{%-?\s*javascript\s*-?%\}")
+_THEME_LIQUID_DIRS = ("layout", "sections", "blocks", "snippets", "templates")
+# root -> (signature, {element name: (file, line)})
+_CE_CACHE: dict[str, tuple[tuple, dict[str, tuple[Path, int]]]] = {}
+
+
 def _find_theme_root(path: Path) -> Path | None:
     """Nearest ancestor within three levels that holds ``layout/theme.liquid``."""
     for parent in list(path.parents)[:_THEME_ROOT_LEVELS]:
@@ -374,6 +389,7 @@ def _theme_index(root: Path) -> _ThemeIndex:
             continue
         try:
             collector = _Collector(f, root)
+            collector.want_html = False
             _scan(_read_source_text(f), collector)
         except (OSError, RecursionError):
             continue
@@ -439,6 +455,7 @@ class _Collector:
         self.static_blocks: set[str] = set()            # theme block names placed by ``content_for 'block'`` or ``blocks[]``
         self.blocks_line: int | None = None   # first static ``content_for 'blocks'``
         self.accepts_theme = False            # schema ``blocks`` lists ``@theme``
+        self.want_html = True                 # the settings index scans many files and has no use for HTML uses
 
     def inferred_theme_blocks(self) -> None:
         """INFERRED ``imports`` to every public ``blocks/*.liquid`` when ``content_for 'blocks'``
@@ -473,6 +490,52 @@ class _Collector:
         from graphify.extractors.css import css_selectors, selector_nodes_edges
 
         self.add_selectors(selector_nodes_edges(self.path, self.file_id, css_selectors(body), first_line - 1))
+
+    def html(self, text: str, line: int) -> None:
+        """Custom-element uses (``<x-y`` and ``is="x-y"``) in an HTML segment of rendered output starting at ``line``."""
+        if not self.want_html or ("-" not in text):
+            return
+        last_offset, current = 0, line
+        for m in _CE_USE.finditer(text):
+            current += text.count("\n", last_offset, m.start())
+            last_offset = m.start()
+            self.custom_element_edge(m.group(1) or m.group(3), current)
+
+    def custom_element_edge(self, name: str, line: int) -> None:
+        """``references`` edge to the ``<name>`` node placed at its ``customElements.define``, else an unresolved one.
+
+        The node also hangs from the JS file by ``contains``, so ``affected`` on that file reaches its users.
+        """
+        if name in _RESERVED_ELEMENTS:
+            return
+        hit = _custom_element_defines(self.root).get(name)
+        if hit is None:
+            self._unresolved("references", "custom_element", name, f"<{name}>", line)
+            return
+        js_path, js_line = hit
+        node_id = _make_id("liquid_ce", str(self.root), name)
+        if not self._first(node_id, "references", line):
+            return
+        if node_id not in self._node_ids:
+            js_id = _make_id(str(js_path))
+            if js_path != self.path:
+                self._declare({
+                    "id": js_id, "label": js_path.name, "file_type": "code",
+                    "source_file": str(js_path), "source_location": None,
+                })
+            self._declare({
+                "id": node_id, "label": f"<{name}>", "file_type": "code",
+                "source_file": str(js_path), "source_location": f"L{js_line}",
+            })
+            self.edges.append({
+                "source": js_id, "target": node_id, "relation": "contains", "confidence": "EXTRACTED",
+                "confidence_score": 1.0, "source_file": str(js_path), "source_location": f"L{js_line}", "weight": 1.0,
+            })
+        self.edges.append({
+            "source": self.file_id, "target": node_id, "relation": "references",
+            "confidence": "EXTRACTED", "confidence_score": 1.0,
+            "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+        })
 
     def _declare(self, node: dict) -> None:
         if node["id"] not in self._node_ids:
@@ -888,6 +951,77 @@ class _Collector:
             self.file_edge("imports", "block", block_type, self.root / "blocks" / f"{block_type}.liquid", entry_line)
 
 
+def _theme_sources(root: Path, asset_patterns: tuple[str, ...], liquid: bool) -> list[Path]:
+    """Sorted theme files: ``assets/`` matches of ``asset_patterns`` plus, when ``liquid``, the Liquid directories."""
+    files: list[Path] = []
+    assets = root / "assets"
+    if assets.is_dir() and _inside(root, assets):
+        for pattern in asset_patterns:
+            files.extend(sorted(assets.glob(pattern)))
+    if liquid:
+        for area in _THEME_LIQUID_DIRS:
+            folder = root / area
+            if folder.is_dir() and _inside(root, folder):
+                files.extend(sorted(folder.glob("*.liquid"))[:_MAX_INDEXED_FILES])
+    return [f for f in files if f.is_file()]
+
+
+def _signature(files: list[Path]) -> tuple[int, int]:
+    """``(file count, newest mtime_ns)`` of ``files``: the cheap change test for a per-root index."""
+    newest = 0
+    for f in files:
+        try:
+            newest = max(newest, f.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return len(files), newest
+
+
+def _line_numbers(text: str, offsets: list[int], first_line: int = 1) -> list[int]:
+    """Line of each ascending offset in ``text``, the first line being ``first_line``."""
+    lines: list[int] = []
+    line, last = first_line, 0
+    for offset in offsets:
+        line += text.count("\n", last, offset)
+        last = offset
+        lines.append(line)
+    return lines
+
+
+def _custom_element_defines(root: Path) -> dict[str, tuple[Path, int]]:
+    """``{name: (file, line)}`` of every ``customElements.define('x-y', …)`` in the theme's JS.
+
+    Looks in ``assets/*.js``, ``assets/*.js.liquid`` and ``{% javascript %}`` bodies; the first one in sorted
+    order wins. Cached per root until a scanned file is added or touched.
+    """
+    files = _theme_sources(root, ("*.js", "*.js.liquid"), True)
+    signature = _signature(files)
+    cached = _CE_CACHE.get(str(root))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    found: dict[str, tuple[Path, int]] = {}
+    for f in files:
+        try:
+            text = _read_source_text(f)
+        except OSError:
+            continue
+        if "customElements" not in text:
+            continue
+        if f.suffix == ".liquid" and f.parent.name != "assets":
+            spans = []
+            for opener in _JAVASCRIPT_OPEN.finditer(text):
+                end = _find_end_tag(text, opener.end(), "endjavascript")
+                spans.append((opener.end(), end[0] if end else len(text)))
+        else:
+            spans = [(0, len(text))]
+        for begin, stop in spans:
+            matches = list(_CE_DEFINE.finditer(text, begin, stop))
+            for m, line in zip(matches, _line_numbers(text, [m.start() for m in matches])):
+                found.setdefault(m.group(2), (f, line))
+    _CE_CACHE[str(root)] = (signature, found)
+    return found
+
+
 class _Unset:
     """Sentinel: the locale has not been looked up yet."""
 
@@ -912,6 +1046,7 @@ def _scan(src: str, out: _Collector) -> None:
     out_close = 0
     comment_depth = 0
     skip_until: str | None = None
+    seg = 0   # start of the HTML text not yet handed to ``out.html``
     next_t = next_o = -2  # cached next opener offsets (-1 = none left)
     while i < n:
         if next_t != -1 and next_t < i:
@@ -948,7 +1083,9 @@ def _scan(src: str, out: _Collector) -> None:
         if body_end > body_start and src[body_end - 1] == "-":
             body_end -= 1
         body = src[body_start:body_end]
-        i = close + 2
+        if start > seg and comment_depth == 0 and skip_until is None:
+            out.html(src[seg:start], line_of(seg))
+        i = seg = close + 2
         if not is_tag:
             if comment_depth == 0 and skip_until is None:
                 out.statement(body, line_of(start))
@@ -969,20 +1106,22 @@ def _scan(src: str, out: _Collector) -> None:
             comment_depth = 1
         elif name == "stylesheet" and (end := _find_end_tag(src, i, "endstylesheet")) is not None:
             out.stylesheet(src[i:end[0]], line_of(i))
-            i = end[1]
+            i = seg = end[1]
         elif name in _SKIP_UNTIL:
             skip_until = _SKIP_UNTIL[name]
         elif name == "schema":
             end = _find_end_tag(src, i, "endschema")
             if end is not None:
                 out.schema(src[i:end[0]], line_of(i))
-                i = end[1]
+                i = seg = end[1]
         elif name == "liquid":
             _liquid_block(body, head.end() if head else 0, line_of(body_start), out)
         elif body.lstrip().startswith("#"):
             continue
         else:
             out.statement(body, line_of(start))
+    if seg < n and comment_depth == 0 and skip_until is None:
+        out.html(src[seg:], line_of(seg))
 
 
 _END_TAG = re.compile(r"\{%-?\s*(\w+)")

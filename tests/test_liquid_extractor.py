@@ -1011,3 +1011,60 @@ def test_stylesheet_selectors_carry_the_absolute_line_of_the_liquid_file(tmp_pat
     )
     root = _theme(tmp_path, {"sections/s.liquid": body})
     assert _css_nodes(root, "sections/s.liquid") == {".sec-x": "L4", ".sec-y": "L6"}
+
+
+# -- custom elements (R3) ----------------------------------------------------
+
+_EL_JS = "// el\n\ncustomElements.define('x-popover', class extends HTMLElement {});\n"
+
+
+def _ce_graph(root: Path):
+    from graphify.build import build_from_json
+
+    files = sorted([*root.rglob("*.liquid"), *root.rglob("*.js")])
+    return build_from_json(extract(files, cache_root=root, root=root, parallel=False), directed=True)
+
+
+def _ce_edges(root: Path, rel: str) -> list[tuple[dict, dict]]:
+    """(edge, target node) for the ``<x-y>`` edges leaving ``rel``."""
+    result = extract_liquid(root / rel)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    return [
+        (e, nodes[e["target"]]) for e in result["edges"]
+        if e["source"] == _make_id(str(root / rel)) and nodes.get(e["target"], {}).get("label", "").startswith("<")
+    ]
+
+
+def test_custom_element_tag_links_to_its_define(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/el.js": _EL_JS,
+        "snippets/pop.liquid": "<div>\n{% if a %}\n{% endif %}\n<x-popover open>hi</x-popover>\n",
+    })
+    [(edge, node)] = _ce_edges(root, "snippets/pop.liquid")
+    assert (edge["relation"], edge["confidence"], edge["source_location"]) == ("references", "EXTRACTED", "L4")
+    assert node["label"] == "<x-popover>"
+    assert node["source_file"] == str(root / "assets/el.js") and node["source_location"] == "L3"
+
+
+def test_custom_element_in_comment_schema_and_closing_tag_makes_nothing(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/el.js": _EL_JS,
+        "snippets/pop.liquid": (
+            "{% comment %}\n<x-popover>\n{% comment %}<x-popover>{% endcomment %}\n<x-popover>\n{% endcomment %}\n"
+            "</x-popover>\n{% schema %}{\"name\": \"<x-popover>\"}{% endschema %}\n"
+        ),
+    })
+    assert _ce_edges(root, "snippets/pop.liquid") == []
+
+
+def test_custom_element_affected_from_the_js_lists_the_liquid(tmp_path):
+    from graphify.affected import affected_nodes
+
+    root = _theme(tmp_path, {
+        "assets/el.js": _EL_JS,
+        "snippets/pop.liquid": "<x-popover></x-popover>\n",
+    })
+    graph = _ce_graph(root)
+    seed = next(n for n, d in graph.nodes(data=True) if d.get("label") == "el.js")
+    sources = {str(graph.nodes[h.node_id].get("source_file")) for h in affected_nodes(graph, seed)}
+    assert any(s.endswith("snippets/pop.liquid") for s in sources), sources
