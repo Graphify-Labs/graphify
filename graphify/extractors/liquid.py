@@ -202,6 +202,59 @@ def _has_key(locale: dict, key: str) -> bool:
     return isinstance(node, (str, dict))
 
 
+_METAFIELD_OWNERS = frozenset({
+    "product", "variant", "collection", "shop", "article", "page", "blog", "order", "customer", "company",
+    "location", "market", "company_location",
+})
+# ``<var>.metafields.<ns>.<key>`` and ``[<var>.]metafields['<ns>']['<key>']``.
+_METAFIELD_USE = re.compile(
+    r"""\b(\w+)\.metafields\.(\w+)\.(\w+)|(?:\b(\w+)\.)?metafields\[['"]([\w-]+)['"]\]\[['"]([\w-]+)['"]\]"""
+)
+# (theme root, metafields.json path) -> (mtime_ns, {(owner, ns, key): {name, type, line}} or None)
+_METAFIELD_CACHE: dict[tuple[str, str], tuple[int, dict | None]] = {}
+_KEY_PROP = re.compile(r'"key"\s*:\s*"((?:[^"\\\n]|\\.)*)"')
+
+
+def _metafield_defs(root: Path) -> dict[tuple[str, str, str], dict] | None:
+    """Definitions of ``.shopify/metafields.json`` keyed ``(owner, namespace, key)``; None if absent or hostile."""
+    path = root / ".shopify" / "metafields.json"
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    cache_key = (str(root), str(path))
+    cached = _METAFIELD_CACHE.get(cache_key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    defs: dict[tuple[str, str, str], dict] | None = None
+    data = _read_theme_json(path)
+    if isinstance(data, dict):
+        try:
+            text = _strip_json_comments(_read_source_text(path))
+        except OSError:
+            text = ""
+        lines = [(m.group(1), text.count("\n", 0, m.start()) + 1) for m in _KEY_PROP.finditer(text)]
+        defs = {}
+        index = 0
+        for owner, entries in data.items():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("key"), str) \
+                        or not isinstance(entry.get("namespace"), str):
+                    continue
+                at = lines[index][1] if index < len(lines) and lines[index][0] == entry["key"] else 1
+                index += 1
+                kind = entry.get("type")
+                defs.setdefault((owner, entry["namespace"], entry["key"]), {
+                    "name": str(entry.get("name") or ""),
+                    "type": str(kind.get("name")) if isinstance(kind, dict) and kind.get("name") else "",
+                    "line": at,
+                })
+    _METAFIELD_CACHE[cache_key] = (mtime, defs)
+    return defs
+
+
 def setting_node(root: Path, sid: str, line: int) -> dict:
     """The node of global setting ``sid``; shared by the Liquid and the settings-schema extractors."""
     return {
@@ -379,6 +432,7 @@ class _Collector:
         self._locale: tuple[Path, dict] | None | _Unset = _UNSET
         self._schema_locale: tuple[Path, dict] | None | _Unset = _UNSET
         self._settings: dict[str, int] | None | _Unset = _UNSET
+        self._metafields: dict[tuple[str, str, str], dict] | None | _Unset = _UNSET
         self.pending: list[tuple[str, str, int]] = []   # (section|block, setting id, line) resolved after the schema
         self.own_settings: dict[str, int] = {}          # schema ``settings[]`` ids -> line
         self.block_settings: list[dict[str, int]] = []  # schema ``blocks[].settings`` ids -> line, one dict per block entry
@@ -440,16 +494,64 @@ class _Collector:
             "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
         })
 
-    def _unresolved(self, relation: str, kind: str, name: str, label: str, line: int) -> None:
+    def metafield_edge(self, var: str, ns: str, key: str, line: int) -> None:
+        """Usage node ``metafields.<ns>.<key>`` linked to its definition(s) in ``.shopify/metafields.json``.
+
+        EXTRACTED when ``var`` names the owner type that defines it; INFERRED to every definition of ``(ns, key)``
+        otherwise; no definition leaves an unresolved node carrying a ``warning``.
+        """
+        if self._metafields is _UNSET:
+            self._metafields = _metafield_defs(self.root)
+        defs = self._metafields
+        label = f"metafields.{ns}.{key}"
+        if not isinstance(defs, dict):
+            self._unresolved("references", "metafield", f"{ns}.{key}", label, line, "no .shopify/metafields.json")
+            return
+        owner = var if var in _METAFIELD_OWNERS else None
+        exact = (owner, ns, key) if owner is not None and (owner, ns, key) in defs else None
+        found = [exact] if exact else sorted(k for k in defs if k[1] == ns and k[2] == key)
+        if not found:
+            self._unresolved("references", "metafield", f"{ns}.{key}", label, line, "not defined in .shopify/metafields.json")
+            return
+        use_id = _make_id("liquid_metafield", str(self.root), ns, key)
+        if self._first(use_id, "references", line):
+            self._declare({
+                "id": use_id, "label": label, "file_type": "concept",
+                "source_file": str(self.path), "source_location": f"L{line}",
+            })
+            self.edges.append({
+                "source": self.file_id, "target": use_id, "relation": "references",
+                "confidence": "EXTRACTED", "confidence_score": 1.0,
+                "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+            })
+        for definition in found:
+            info = defs[definition]
+            def_id = _make_id("liquid_metafield_def", str(self.root), *definition)
+            self._declare({
+                "id": def_id, "label": f"{label}@{definition[0]}", "file_type": "concept",
+                "source_file": str(self.root / ".shopify" / "metafields.json"), "source_location": f"L{info['line']}",
+                "owner": definition[0], "metafield_type": info["type"], "name": info["name"],
+            })
+            if self._first(f"{use_id}>{def_id}", "references", line):
+                self.edges.append({
+                    "source": use_id, "target": def_id, "relation": "references",
+                    "confidence": "EXTRACTED" if exact else "INFERRED", "confidence_score": 1.0 if exact else 0.55,
+                    "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+                })
+
+    def _unresolved(self, relation: str, kind: str, name: str, label: str, line: int, warning: str | None = None) -> None:
         """AMBIGUOUS edge to a declared ``unresolved`` node for a missing target."""
         target_id = _make_id("ref", "liquid", kind, name)
         if not self._first(target_id, relation, line):
             return
-        self._declare({
+        node = {
             "id": target_id, "label": label, "file_type": "concept",
             "source_file": str(self.path), "source_location": f"L{line}",
             "unresolved": True, "ref_kind": kind,
-        })
+        }
+        if warning:
+            node["warning"] = warning
+        self._declare(node)
         self.edges.append({
             "source": self.file_id, "target": target_id, "relation": relation,
             "confidence": "AMBIGUOUS", "confidence_score": 0.2,
@@ -623,6 +725,13 @@ class _Collector:
 
     def statement(self, text: str, line: int) -> None:
         """Handle one tag body or one line of a ``{% liquid %}`` block."""
+        if "metafields" in text:
+            for m in _METAFIELD_USE.finditer(text):
+                at = line + text.count("\n", 0, m.start())
+                if m.group(2) is not None:
+                    self.metafield_edge(m.group(1), m.group(2), m.group(3), at)
+                else:
+                    self.metafield_edge(m.group(4) or "", m.group(5), m.group(6), at)
         if "settings" in text:
             for m in _SETTING_USE.finditer(text):
                 scope, sid = m.group(1), m.group(2) or m.group(4)

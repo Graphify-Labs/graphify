@@ -758,6 +758,132 @@ def test_settings_in_snippet_follow_the_sections_that_render_it(tmp_path):
     assert [e["node"]["label"] for e in edges if e["confidence"] == "AMBIGUOUS"] == ["block.settings.none"]
 
 
+# -- metafields (R6) ---------------------------------------------------------
+
+_METAFIELDS = """{
+  "product": [
+    {"key": "video_plp", "namespace": "custom", "name": "Video PLP", "description": "",
+     "type": {"name": "boolean", "category": "TRUE_FALSE"}},
+    {"key": "shared", "namespace": "custom", "name": "Shared on product", "type": {"name": "json", "category": "JSON"}}
+  ],
+  "variant": [
+    {"key": "shared", "namespace": "custom", "name": "Shared on variant", "type": {"name": "json", "category": "JSON"}}
+  ],
+  "shop": [
+    {"key": "only_shop", "namespace": "ns", "name": "Only shop", "type": {"name": "single_line_text_field"}}
+  ],
+  "page": []
+}
+"""
+
+
+def _metafield_theme(tmp_path: Path, liquid: str, metafields: str | None = _METAFIELDS) -> Path:
+    files = {"snippets/m.liquid": liquid}
+    if metafields is not None:
+        files[".shopify/metafields.json"] = metafields
+    return _theme(tmp_path, files)
+
+
+def _metafield_graph(root: Path) -> tuple[list[dict], dict[str, dict], list[dict]]:
+    """(Liquid->use edges, nodes by id, every edge) of snippets/m.liquid."""
+    result = extract_liquid(root / "snippets/m.liquid")
+    nodes = {n["id"]: n for n in result["nodes"]}
+    fid = _make_id(str(root / "snippets/m.liquid"))
+    return [e for e in result["edges"] if e["source"] == fid], nodes, result["edges"]
+
+
+def test_metafield_use_links_to_its_definition(tmp_path):
+    root = _metafield_theme(tmp_path, "{{ product.metafields.custom.video_plp.value }}\n")
+    uses, nodes, edges = _metafield_graph(root)
+    (use,) = uses
+    node = nodes[use["target"]]
+    assert (node["label"], use["relation"], use["confidence"], use["source_location"]) == (
+        "metafields.custom.video_plp", "references", "EXTRACTED", "L1")
+    (link,) = [e for e in edges if e["source"] == node["id"]]
+    definition = nodes[link["target"]]
+    assert (link["relation"], link["confidence"]) == ("references", "EXTRACTED")
+    assert definition["label"] == "metafields.custom.video_plp@product"
+    assert (definition["owner"], definition["metafield_type"], definition["name"]) == ("product", "boolean", "Video PLP")
+    assert Path(definition["source_file"]) == root / ".shopify" / "metafields.json"
+    needle = '"key": "video_plp"'
+    assert definition["source_location"] == f"L{_line_of(_METAFIELDS, needle)}"
+
+
+def test_metafield_unknown_owner_variable_is_inferred_from_a_single_definition(tmp_path):
+    root = _metafield_theme(tmp_path, "{{ thing.metafields.ns.only_shop }}\n")
+    uses, nodes, edges = _metafield_graph(root)
+    (link,) = [e for e in edges if e["source"] == uses[0]["target"]]
+    assert (link["confidence"], link["confidence_score"]) == ("INFERRED", 0.55)
+    assert nodes[link["target"]]["owner"] == "shop"
+
+
+def test_metafield_owner_variable_picks_its_own_definition_among_several(tmp_path):
+    root = _metafield_theme(tmp_path, "{{ variant.metafields.custom.shared }}{{ item.metafields.custom.shared }}\n")
+    uses, nodes, edges = _metafield_graph(root)
+    use_id = uses[0]["target"]
+    links = [e for e in edges if e["source"] == use_id]
+    by_owner = {nodes[e["target"]]["owner"]: e["confidence"] for e in links}
+    assert by_owner == {"variant": "EXTRACTED", "product": "INFERRED"}
+
+
+def test_metafield_bracket_form_shares_the_use_node(tmp_path):
+    root = _metafield_theme(
+        tmp_path, "{{ product.metafields.custom.video_plp }}{{ product.metafields['custom']['video_plp'] }}\n")
+    uses, nodes, _ = _metafield_graph(root)
+    assert len({e["target"] for e in uses}) == 1 and nodes[uses[0]["target"]]["label"] == "metafields.custom.video_plp"
+
+
+def test_metafield_multiline_tag_gets_the_line_of_the_use(tmp_path):
+    root = _metafield_theme(tmp_path, "{% render 'x',\n  a: 1,\n  b: product.metafields.custom.video_plp %}\n")
+    uses, _, _ = _metafield_graph(root)
+    assert [e["source_location"] for e in uses if e["confidence"] == "EXTRACTED"] == ["L3"]
+
+
+def test_metafield_without_definition_warns_instead_of_raising(tmp_path):
+    root = _metafield_theme(tmp_path, "{{ product.metafields.nope.missing }}\n")
+    uses, nodes, _ = _metafield_graph(root)
+    (use,) = uses
+    node = nodes[use["target"]]
+    assert use["confidence"] == "AMBIGUOUS"
+    assert (node["label"], node["ref_kind"], node["unresolved"]) == ("metafields.nope.missing", "metafield", True)
+    assert node["warning"] == "not defined in .shopify/metafields.json"
+
+
+def test_metafield_without_definitions_file_or_with_a_hostile_one_warns(tmp_path, monkeypatch):
+    from graphify.extractors import liquid
+
+    for i, content in enumerate((None, "{[", "x" * 64)):
+        sub = tmp_path / f"t{i}"
+        sub.mkdir()
+        if content is not None and len(content) == 64:
+            monkeypatch.setattr(liquid, "_MAX_LOCALE_BYTES", 10)
+        root = _metafield_theme(sub, "{{ product.metafields.custom.video_plp }}\n", content)
+        uses, nodes, _ = _metafield_graph(root)
+        assert nodes[uses[0]["target"]]["warning"] == "no .shopify/metafields.json"
+
+
+def test_metafield_regex_is_linear_on_a_huge_line(tmp_path):
+    root = _metafield_theme(tmp_path, "{{ " + "a.metafields x " * 40000 + " metafields[ " * 20000 + "a" * 500000 + " }}\n")
+    start = time.perf_counter()
+    extract_liquid(root / "snippets/m.liquid")
+    assert time.perf_counter() - start < 2
+
+
+def test_metafield_warning_shows_in_explain(tmp_path):
+    graph = tmp_path / "graph.json"
+    graph.write_text(json.dumps({
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [{"id": "ref_a", "label": "metafields.ns.k", "file_type": "concept", "warning": "not defined in .shopify/metafields.json"}],
+        "links": [],
+    }), encoding="utf-8")
+    out = subprocess.run(
+        [sys.executable, "-m", "graphify", "explain", "metafields.ns.k", "--graph", str(graph)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    assert "warning: not defined in .shopify/metafields.json" in out.stdout
+
+
 def test_settings_in_snippets_and_unknown_ids_are_ambiguous(tmp_path):
     root = _theme(tmp_path, {
         "snippets/x.liquid": "{{ block.settings.a }}{{ section.settings.a }}\n",
