@@ -438,3 +438,26 @@ def test_score_all_single_pass_parity_and_no_subgraph_allocations(monkeypatch):
         cid: cohesion_score(G, nodes) for cid, nodes in overlapping.items()
     }
     assert score_all(G, {}) == {}
+
+
+def test_cohesion_score_avoids_subgraph_allocation_across_graph_types(monkeypatch):
+    import pytest
+
+    for cls in (nx.Graph, nx.DiGraph, nx.MultiGraph):
+        G = cls()
+        G.add_edge("a", "b")
+        G.add_edge("a", "a")  # self-loop must be excluded
+        G.add_edge("b", "c")
+        G.add_edge("c", "external")
+        if cls is nx.DiGraph:
+            G.add_edge("b", "a")  # reciprocal edge
+        elif cls is nx.MultiGraph:
+            G.add_edge("a", "b")  # parallel edge
+
+        def _forbid_subgraph(_nodes):
+            raise AssertionError("cohesion_score must not allocate SubGraphView")
+
+        monkeypatch.setattr(G, "subgraph", _forbid_subgraph)
+        # 2 unique pairs ({a,b}, {b,c}) out of 3 possible in {a, b, c}
+        assert cohesion_score(G, ["a", "b", "c"]) == pytest.approx(2 / 3)
+        assert cohesion_score(G, ["a", "b", "missing"]) == pytest.approx(1 / 3)
