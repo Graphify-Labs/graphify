@@ -134,3 +134,7 @@ def test_css_is_registered_for_extraction_and_detection(tmp_path: Path) -> None:
     result = extract([css])
     labels = {n["label"] for n in result["nodes"]}
     assert {".top", ".btn"} <= labels
+
+
+def test_escaped_class_names_are_returned_unescaped():
+    assert css_selectors(".md\\:flex { a: b }\n.w-1\\/2 { a: b }\n") == [(".md:flex", 1), (".w-1/2", 2)]

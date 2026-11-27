@@ -1092,7 +1092,7 @@ _STYLESHEET_OPEN = re.compile(r"\{%-?\s*stylesheet\s*-?%\}")
 # ``class="…"`` / ``class='…'``; a ``-`` before the name excludes ``data-class``.
 _CLASS_ATTR = re.compile(r"""(?<![\w-])class\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 _CLASS_TOKEN = re.compile(r"\S+")
-_CLASS_NAME = re.compile(r"[A-Za-z_-][\w-]*")
+_CLASS_NAME = re.compile(r"[A-Za-z_-][\w:/.%-]*")
 # root -> (signature, {class name: [(selector node id, file, line)]})
 _CSS_CACHE: dict[str, tuple[tuple, dict[str, list[tuple[str, Path, int]]]]] = {}
 

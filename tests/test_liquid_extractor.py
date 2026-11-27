@@ -1153,6 +1153,16 @@ def test_css_class_tokens_link_to_selectors_in_css_and_css_liquid(tmp_path):
     ]
 
 
+def test_css_class_with_escaped_characters_links_by_its_unescaped_name(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/u.css": ".md\\:flex { display: flex }\n.w-1\\/2 { width: 50% }\n",
+        "snippets/a.liquid": "<div class=\"md:flex w-1/2\"></div>\n",
+    })
+    assert _class_edges(root, "snippets/a.liquid") == [
+        (".md:flex", "assets/u.css", "L1", 0.55), (".w-1/2", "assets/u.css", "L1", 0.55),
+    ]
+
+
 def test_css_class_defined_in_two_files_links_to_both(tmp_path):
     root = _theme(tmp_path, {
         "assets/a.css": ".card {}\n", "assets/b.css": "\n.card {}\n",

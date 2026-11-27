@@ -20,12 +20,13 @@ _SELECTOR_PSEUDOS = frozenset({"is", "where", "not", "has", "matches", "-webkit-
 _NOISE_START = re.compile(r"/\*|\"|'")
 _BOUNDARY = re.compile(r"[{};]")
 _ATTRIBUTE = re.compile(r"\[[^\]\n]*\]")
-_PSEUDO = re.compile(r"::?([\w-]+)(\()?")
+_PSEUDO = re.compile(r"(?<!\\)::?([\w-]+)(\()?")
 # ``.x`` / ``#x`` anywhere; a type selector only when it is a hyphenated custom element name.
 _TOKEN = re.compile(
-    r"(?<!\\)[.#][A-Za-z_-][\w-]*"
+    r"(?<!\\)[.#](?:[A-Za-z_-]|\\.)(?:[\w-]|\\.)*"
     r"|(?<![\w.#\\-])[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+(?![\w-])"
 )
+_ESCAPE = re.compile(r"\\(.)")
 _NOT_NEWLINE = re.compile(r"[^\n]")
 
 
@@ -102,7 +103,7 @@ def css_selectors(text: str) -> list[tuple[str, int]]:
         if not prelude.lstrip().startswith("@"):
             view = _blank_pseudos(prelude)
             for tm in _TOKEN.finditer(view):
-                found.append((tm.group(0), bisect.bisect_left(newlines, start + tm.start()) + 1))
+                found.append((_ESCAPE.sub(r"\1", tm.group(0)), bisect.bisect_left(newlines, start + tm.start()) + 1))
         start = m.end()
     return found
 
