@@ -6500,3 +6500,22 @@ def test_julia_qualified_functor_uses_type_not_variable(tmp_path):
     call_nodes = [n for n in r["nodes"] if n["id"].endswith("_call")]
     # Module-qualified receiver types resolve to the bare type, never the variable.
     assert [n["label"] for n in call_nodes] == ["(Box)()"]
+
+
+# Vala (.vala): routed through the C# grammar (Vala is C#-like). Signals, delegates
+# and owned/nullable types are not modelled, so only structure is asserted here.
+def test_vala_is_code_extension():
+    from graphify.detect import CODE_EXTENSIONS
+    assert ".vala" in CODE_EXTENSIONS
+
+def test_vala_no_error():
+    r = extract_csharp(FIXTURES / "sample.vala")
+    assert "error" not in r
+
+def test_vala_finds_class():
+    r = extract_csharp(FIXTURES / "sample.vala")
+    assert any("Processor" in l for l in _labels(r))
+
+def test_vala_finds_methods():
+    r = extract_csharp(FIXTURES / "sample.vala")
+    assert any("process" in l for l in _labels(r))
