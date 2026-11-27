@@ -1007,15 +1007,16 @@ def _theme_sources(root: Path, asset_patterns: tuple[str, ...], liquid: bool) ->
     return [f for f in files if f.is_file()]
 
 
-def _signature(files: list[Path]) -> tuple[int, int]:
-    """``(file count, newest mtime_ns)`` of ``files``: the cheap change test for a per-root index."""
-    newest = 0
+def _signature(files: list[Path]) -> tuple[tuple[str, int, int], ...]:
+    """``(path, mtime_ns, size)`` of every file: the change test for a per-root index, blind to no add, remove or swap."""
+    out: list[tuple[str, int, int]] = []
     for f in files:
         try:
-            newest = max(newest, f.stat().st_mtime_ns)
+            st = f.stat()
         except OSError:
             continue
-    return len(files), newest
+        out.append((str(f), st.st_mtime_ns, st.st_size))
+    return tuple(sorted(out))
 
 
 def _line_numbers(text: str, offsets: list[int], first_line: int = 1) -> list[int]:

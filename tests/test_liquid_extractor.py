@@ -1163,6 +1163,43 @@ def test_css_class_with_escaped_characters_links_by_its_unescaped_name(tmp_path)
     ]
 
 
+def test_class_index_recomputes_when_a_file_is_swapped_or_keeps_an_old_mtime(tmp_path):
+    import os
+
+    root = _theme(tmp_path, {
+        "assets/a.css": ".one {}\n",
+        "snippets/s.liquid": "<i class=\"one two\"></i>\n",
+    })
+    old = (1_000_000_000, 1_000_000_000)
+    os.utime(root / "assets/a.css", old)
+    assert [c[0] for c in _class_edges(root, "snippets/s.liquid")] == [".one"]
+    # Same (old) mtime, different content and size.
+    (root / "assets/a.css").write_text(".two  {}\n")
+    os.utime(root / "assets/a.css", old)
+    assert [c[0] for c in _class_edges(root, "snippets/s.liquid")] == [".two"]
+    # Delete one file and add another: the file count is unchanged.
+    (root / "assets/a.css").unlink()
+    (root / "assets/b.css").write_text(".one {}\n")
+    os.utime(root / "assets/b.css", old)
+    assert [(c[0], c[1]) for c in _class_edges(root, "snippets/s.liquid")] == [(".one", "assets/b.css")]
+
+
+def test_custom_element_index_recomputes_when_a_file_is_swapped(tmp_path):
+    import os
+
+    root = _theme(tmp_path, {
+        "assets/a.js": "customElements.define('x-aa', class {});\n",
+        "snippets/s.liquid": "<x-aa></x-aa><x-bb></x-bb>\n",
+    })
+    old = (1_000_000_000, 1_000_000_000)
+    os.utime(root / "assets/a.js", old)
+    assert [n["label"] for _, n in _ce_edges(root, "snippets/s.liquid") if n["source_file"].endswith(".js")] == ["<x-aa>"]
+    (root / "assets/a.js").unlink()
+    (root / "assets/b.js").write_text("customElements.define('x-bb', class {});\n")
+    os.utime(root / "assets/b.js", old)
+    assert [n["label"] for _, n in _ce_edges(root, "snippets/s.liquid") if n["source_file"].endswith(".js")] == ["<x-bb>"]
+
+
 def test_css_class_defined_in_two_files_links_to_both(tmp_path):
     root = _theme(tmp_path, {
         "assets/a.css": ".card {}\n", "assets/b.css": "\n.card {}\n",
