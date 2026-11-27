@@ -58,6 +58,7 @@ from graphify.extractors.base import (  # noqa: F401
     set_active_scan_root,
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
+from graphify.extractors.apexlang import DatabaseMirror, extract_apexlang  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.cobol import extract_cobol, resolve_cobol_copybook_performs  # noqa: F401
@@ -4995,6 +4996,33 @@ def _is_top_level_function_definition(node: dict) -> bool:
     )
 
 
+def _oracle_reference_outside_scope(
+    edge: dict, stub: dict, candidate: dict, scan_root: Path | None,
+) -> bool:
+    """Avoid replacing an Oracle mirror reference with a same-name object in another schema."""
+    if edge.get("relation") not in {"reads_from", "writes_to", "calls", "foreign_key", "references"}:
+        return False
+    origin = Path(str(edge.get("source_file", "")))
+    if origin.suffix.lower() == ".apx":
+        source = DatabaseMirror.for_application_file(origin)
+    elif origin.suffix.lower() == ".sql":
+        source = DatabaseMirror.for_database_file(origin)
+    else:
+        return False
+    if source.root is None or not candidate.get("source_file"):
+        return False
+    target = DatabaseMirror.for_database_file(Path(str(candidate["source_file"])))
+    if target.root is None or not target.schema:
+        return True
+    anchor = scan_root or Path()
+    if anchor / source.root != anchor / target.root:
+        return True
+    label = _sql_norm_ident(str(stub.get("label", ""))).split(".")
+    qualified = len(label) == (3 if edge.get("relation") == "calls" else 2)
+    schema = label[0] if qualified else source.schema
+    return not schema or schema.casefold() != target.schema.casefold()
+
+
 def _rewire_unique_stub_nodes(
     nodes: list[dict], edges: list[dict], root: Path | None = None,
 ) -> None:
@@ -5531,7 +5559,10 @@ def _rewire_unique_stub_nodes(
                 and _is_cs_file(str(by_id.get(remapped_target, {}).get("source_file", "")))
             ) and not _names_own_builtin_base(
                 edge, str(target), remapped_target
-            ) and not _cross_language_candidate(edge, remapped_target):
+            ) and not _cross_language_candidate(edge, remapped_target) and not (
+                _oracle_reference_outside_scope(edge, by_id.get(target, {}),
+                                                by_id.get(remapped_target, {}), scan_root)
+            ):
                 edge["target"] = remapped_target
                 if target in rust_by_name_only:
                     edge["confidence"] = "INFERRED"
@@ -11856,6 +11887,7 @@ _DISPATCH: dict[str, Any] = {
     ".resource": extract_robot,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".apx": extract_apexlang,
 }
 
 
@@ -12086,6 +12118,10 @@ def _worker_init(language_overrides: dict[str, str]) -> None:
     set_language_overrides(language_overrides)
 
 
+# APEXlang edges depend on sibling mirror files outside the cache's source hash.
+_AST_CACHE_BYPASS_SUFFIXES = _JS_CACHE_BYPASS_SUFFIXES | {".apx"}
+
+
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
     """Worker function for parallel extraction. Runs in a subprocess.
 
@@ -12110,7 +12146,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     root = Path(root_str)
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+    bypass_cache = effective_suffix(path) in _AST_CACHE_BYPASS_SUFFIXES
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
@@ -12365,7 +12401,7 @@ def _extract_sequential(
         if extractor is None:
             per_file[idx] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = effective_suffix(path) in _AST_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
@@ -12551,7 +12587,7 @@ def extract(
             per_file[i] = {"nodes": [], "edges": []}
             no_extractor += 1
             continue
-        bypass_cache = effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = effective_suffix(path) in _AST_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
             if cached is not None:

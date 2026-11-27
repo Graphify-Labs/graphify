@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from graphify.extractors.apex import extract_apex
+from graphify.extractors.apexlang import extract_apexlang
 from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.cobol import extract_cobol
@@ -41,6 +42,7 @@ from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "apex": extract_apex,
+    "apexlang": extract_apexlang,
     "bash": extract_bash,
     "blade": extract_blade,
     "cobol": extract_cobol,

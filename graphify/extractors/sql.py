@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
@@ -74,11 +75,122 @@ _TRIGGER_RECOVERY_RX = re.compile(
 # (the same delimited-identifier shape); the label is the bare name, with no
 # `()` suffix — a table is not callable either.
 _TABLE_RECOVERY_RX = re.compile(
-    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?TABLE\s+"
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?TABLE\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"(" + _TRIGGER_IDENT + r")",
     re.IGNORECASE,
 )
+
+# CREATE VIEW recovery for Oracle DDL (`CREATE OR REPLACE FORCE EDITIONABLE VIEW
+# "S"."V" ("C1", "C2") AS SELECT ...`). `FORCE` and `[NON]EDITIONABLE` are not in
+# tree-sitter-sql's create_view rule, so the whole statement lands in an ERROR
+# node and walk() never sees it.
+_VIEW_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?"
+    r"(?:(?:NO)?FORCE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(?:(?:NO)?FORCE\s+)?VIEW\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(" + _TRIGGER_IDENT + r")",
+    re.IGNORECASE,
+)
+_VIEW_AS_RX = re.compile(r'(?<!")\bAS\b(?!")', re.IGNORECASE)
+
+# ORDS export scripts use PL/SQL literals, including multiline and national
+# alternative quotes. Keep this mask separate from the generic SQL recovery
+# scanner, whose line-scoped literal handling is deliberate.
+_ORDS_LITERAL = (
+    r"(?<![\w$#])N?Q'(?:\[.*?\]'|\{.*?\}'|\(.*?\)'|<.*?>'"
+    r"|(?P<delimiter>[^\s'\[{(<]).*?(?-i:(?P=delimiter))')"
+    r"|(?:(?<![\w$#])N)?'(?:''|[^'])*'"
+)
+_ORDS_LEXICAL_RX = re.compile(
+    rf"(?P<comment>--[^\n]*|/\*.*?(?:\*/|\Z))|(?P<literal>{_ORDS_LITERAL})"
+    r'|(?P<identifier>"(?:[^"]|"")*")',
+    re.IGNORECASE | re.DOTALL,
+)
+_ORDS_WORD_RX = re.compile(r"(?<![\w$#])ORDS(?![\w$#])", re.IGNORECASE)
+_ORDS_CALL_RX = re.compile(
+    r"(?<![\w$#])ORDS\s*\.\s*(DEFINE_MODULE|DEFINE_HANDLER)\s*\(", re.IGNORECASE
+)
+_ORDS_ARG_BOUNDARY_RX = re.compile(r"[(),]")
+_ORDS_ARG_NAME_RX = re.compile(r"\s*([A-Za-z_][\w$#]*)\s*=>\s*")
+_ORDS_STATIC_PART_RX = re.compile(
+    rf"\s*(?:(?P<literal>{_ORDS_LITERAL})|CHR\s*\(\s*(?P<ascii>[0-9]{{1,3}})\s*\))\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+_ORDS_CONCAT_RX = re.compile(r"\|\|")
+_ORDS_NULL_RX = re.compile(r"\s*NULL\s*", re.IGNORECASE)
+_ORDS_STATEMENT_END_RX = re.compile(r"\s*;")
+
+
+def _mask_ords_sql(text: str, *, literals: bool = False, identifiers: bool = False) -> str:
+    """Blank PL/SQL comments and selected quoted tokens without moving offsets."""
+    parts = []
+    start = 0
+    for match in _ORDS_LEXICAL_RX.finditer(text):
+        kind = match.lastgroup
+        if kind == "comment" or (literals and kind == "literal") or (
+            identifiers and kind == "identifier"
+        ):
+            parts.append(text[start:match.start()])
+            parts.append("".join("\n" if ch == "\n" else " " for ch in match.group()))
+            start = match.end()
+    parts.append(text[start:])
+    return "".join(parts)
+
+
+def _ords_static_value(text: str, start: int, end: int) -> str | None:
+    """Decode literal concatenation and ASCII CHR calls in generated ORDS exports."""
+    if _ORDS_NULL_RX.fullmatch(text, start, end):
+        return ""
+    pieces: list[str] = []
+    while match := _ORDS_STATIC_PART_RX.match(text, start, end):
+        literal = match.group("literal")
+        if literal is not None:
+            prefix, _, body = literal.partition("'")
+            if prefix.upper().endswith("Q"):
+                pieces.append(body[1:-2])
+            else:
+                pieces.append(body[:-1].replace("''", "'"))
+        else:
+            code = int(match.group("ascii"))
+            if code > 127:
+                return None
+            pieces.append(chr(code))
+        if match.end() == end:
+            return "".join(pieces)
+        concat = _ORDS_CONCAT_RX.match(text, match.end(), end)
+        if concat is None:
+            break
+        start = concat.end()
+    return None
+
+
+def _iter_ords_calls(src_text: str) -> Iterator[tuple[str, int, dict[str, str | None]]]:
+    """Yield module and handler calls, marking nonliteral named arguments as unknown."""
+    args_text = _mask_ords_sql(src_text)
+    structure = _mask_ords_sql(args_text, literals=True, identifiers=True)
+    for call in _ORDS_CALL_RX.finditer(structure):
+        args: dict[str, str | None] = {}
+        depth = 0
+        start = call.end()
+        for boundary in _ORDS_ARG_BOUNDARY_RX.finditer(structure, start):
+            token = boundary.group()
+            if token == "(":
+                depth += 1
+            elif token == ")" and depth:
+                depth -= 1
+            elif depth == 0:
+                arg = _ORDS_ARG_NAME_RX.match(args_text, start, boundary.start())
+                if arg is not None:
+                    args[arg.group(1).lower()] = _ords_static_value(
+                        args_text, arg.end(), boundary.start(),
+                    )
+                if token == ")":
+                    if _ORDS_STATEMENT_END_RX.match(structure, boundary.end()):
+                        yield call.group(1).upper(), src_text.count("\n", 0, call.start()) + 1, args
+                    break
+                start = boundary.end()
+
 
 # _mask_sql_comments is a linear character scanner, not a regex: the four
 # span kinds interact in ways a single pattern cannot express safely —
@@ -1148,6 +1260,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 continue
             table_nids.setdefault(
                 _norm_ident(m.group(1)), _make_id(stem, m.group(1)))
+        for m in _VIEW_RECOVERY_RX.finditer(_masked):
+            if any(s <= m.start() < e for s, e in _ident_spans):
+                continue
+            table_nids.setdefault(
+                _norm_ident(m.group(1)), _make_id(stem, m.group(1)))
 
     # Secondary bare-name aliases: a reference written without a schema
     # (`REFERENCES users`) should resolve to a schema-qualified definition
@@ -1359,5 +1476,76 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # Clean the label (brackets/quotes) for display but key the id off the
             # raw name so it matches the pre-pass registration the FK edges resolved to.
             _add_node(_make_id(stem, tbl_name), _clean_ident(tbl_name), tbl_line)
+
+        # Views the grammar dropped into an ERROR node (e.g. Oracle FORCE /
+        # EDITIONABLE VIEW). Pre-registered above in table_nids; scan the body
+        # after the optional column list + AS keyword so quoted column aliases
+        # before AS are not mistaken for table references.
+        for m in _VIEW_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            view_name = m.group(1)
+            view_nid = _make_id(stem, view_name)
+            if view_nid in seen_ids:
+                continue
+            view_line = src_text[: m.start()].count("\n") + 1
+            _add_node(view_nid, _clean_ident(view_name), view_line)
+            end = _BODY_END_RX.search(masked_src, m.end())
+            limit = end.start() if end else len(masked_src)
+            as_match = _VIEW_AS_RX.search(masked_src, m.end(), limit)
+            body_start = as_match.end() if as_match else m.end()
+            semi = masked_src.find(";", body_start, limit)
+            if semi != -1:
+                limit = semi
+            seen_refs: set[tuple[str, str]] = set()
+            for relation, tbl, pos in _routine_body_refs(masked_src[body_start:limit], plsql=True):
+                if relation != "reads_from":
+                    continue
+                tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
+                if (relation, tbl_nid) in seen_refs:
+                    continue
+                seen_refs.add((relation, tbl_nid))
+                _add_edge(view_nid, tbl_nid, relation, masked_src.count("\n", 0, body_start + pos) + 1)
+
+    # Oracle REST Data Services (ORDS) module and handler definitions (`ORDS.DEFINE_MODULE`,
+    # `ORDS.DEFINE_HANDLER`). Runs outside `if root.has_error:` because ORDS blocks
+    # can also appear in scripts that parse cleanly.
+    if _ORDS_WORD_RX.search(src_text):
+        ords_calls = list(_iter_ords_calls(src_text))
+        module_paths: dict[str, str | None] = {}
+        for call_name, _line, args in ords_calls:
+            if call_name == "DEFINE_MODULE":
+                mod_name = args.get("p_module_name", "")
+                if mod_name:
+                    module_paths[mod_name.upper()] = args.get("p_base_path", "")
+        for call_name, handler_line, args in ords_calls:
+            if call_name != "DEFINE_HANDLER":
+                continue
+            mod_name = args.get("p_module_name", "")
+            pattern = args.get("p_pattern", "")
+            method = args.get("p_method", "")
+            handler_sql = args.get("p_source", "")
+            if not pattern or mod_name is None or method is None:
+                continue
+            base_path = module_paths.get(
+                mod_name.upper(), f"/{mod_name.lower()}/" if mod_name else "/"
+            )
+            if base_path is None:
+                continue
+            method = (method or "GET").upper()
+            full_route = "/" + "/".join(
+                part for part in (base_path.strip("/"), pattern.strip("/")) if part
+            )
+            handler_nid = _make_id(stem, "ords", method, full_route)
+            _add_node(handler_nid, f"ORDS {method} {full_route}", handler_line)
+            if handler_sql:
+                masked_handler = _mask_ords_sql(handler_sql, literals=True)
+                seen_refs: set[tuple[str, str]] = set()
+                for relation, tbl, _pos in _routine_body_refs(masked_handler, plsql=True):
+                    tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(_clean_ident(tbl))
+                    if (relation, tbl_nid) in seen_refs:
+                        continue
+                    seen_refs.add((relation, tbl_nid))
+                    _add_edge(handler_nid, tbl_nid, relation, handler_line)
 
     return {"nodes": nodes, "edges": edges}

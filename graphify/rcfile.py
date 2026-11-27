@@ -44,6 +44,7 @@ LANGUAGE_ALIASES: dict[str, str] = {
     "php": ".php",
     "pascal": ".pas", "delphi": ".pas", "freepascal": ".pas",
     "sql": ".sql",
+    "apexlang": ".apx",
     "python": ".py",
     "javascript": ".js", "js": ".js",
     "typescript": ".ts", "ts": ".ts",

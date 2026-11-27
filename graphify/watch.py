@@ -2915,8 +2915,12 @@ def _rebuild_code(
                     # File was deleted or renamed away inside the watched root.
                     # Evict preserved nodes that still claim this source path.
                     _add_deleted_source(deleted_in_root)
+            from graphify.extractors.apexlang import refresh_apexlang_paths
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
+            wanted = refresh_apexlang_paths(
+                wanted, code_files, [Path(p) for p in deleted_source_identities], root=watch_root,
+            )
             # Ignore changes can introduce sources absent from the prior graph.
             # Cached extraction still avoids reparsing unchanged ASTs.
             if ignore_rules_changed:

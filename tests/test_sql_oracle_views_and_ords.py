@@ -1,0 +1,247 @@
+"""Tests for Oracle EDITIONABLE/FORCE VIEW recovery and ORDS REST handler extraction."""
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("tree_sitter_sql")
+
+from graphify.extractors.sql import extract_sql  # noqa: E402
+
+
+ORACLE_VIEW = """\
+CREATE OR REPLACE FORCE EDITIONABLE VIEW "HR"."EMP_DEPT_V" ("EMP_ID", "DEPT_NAME") AS
+  SELECT e.emp_id, d.dept_name
+    FROM "HR"."EMPLOYEES" e
+    JOIN "HR"."DEPARTMENTS" d ON d.dept_id = e.dept_id;
+"""
+
+ORDS_EXPORT = """\
+DECLARE
+  l_roles     OWA.VC_ARR;
+  l_modules   OWA.VC_ARR;
+  l_patterns  OWA.VC_ARR;
+BEGIN
+  ORDS.DEFINE_MODULE(
+      p_module_name    => 'hr_api',
+      p_base_path      => '/hr-public/',
+      p_items_per_page => 25,
+      p_status         => 'PUBLISHED',
+      p_comments       => NULL);
+
+  ORDS.DEFINE_TEMPLATE(
+      p_module_name    => 'hr_api',
+      p_pattern        => 'employees/transfer');
+
+  ORDS.DEFINE_HANDLER(
+      p_module_name    => 'hr_api',
+      p_pattern        => 'employees/transfer',
+      p_method         => 'POST',
+      p_source_type    => 'plsql/block',
+      p_mimes_allowed  => 'application/json',
+      p_comments       => NULL,
+      p_source         =>
+'BEGIN
+   INSERT INTO hr.transfer_audit (emp_id)
+   SELECT e.emp_id FROM hr.employees e WHERE e.active = ''Y'';
+END;');
+
+  COMMIT;
+END;
+/
+"""
+
+
+def _graph(tmp_path: Path, name: str, src: str):
+    path = tmp_path / name
+    path.write_text(src, encoding="utf-8")
+    result = extract_sql(path)
+    label = {n["id"]: n["label"] for n in result["nodes"]}
+    edges = sorted(
+        (label[e["source"]], e["relation"], label[e["target"]])
+        for e in result["edges"]
+    )
+    return sorted(label.values()), edges
+
+
+@pytest.mark.parametrize(
+    "modifiers",
+    [
+        "FORCE EDITIONABLE ",
+        "NOFORCE EDITIONABLE ",
+        "EDITIONABLE ",
+        "NONEDITIONABLE ",
+        "FORCE ",
+    ],
+)
+def test_oracle_view_modifiers_recover_view_and_reads_from(tmp_path, modifiers):
+    ddl = ORACLE_VIEW.replace("FORCE EDITIONABLE ", modifiers)
+    labels, edges = _graph(tmp_path, "emp_dept_v.sql", ddl)
+
+    assert '"HR"."EMP_DEPT_V"' in labels
+    assert ('"HR"."EMP_DEPT_V"', "reads_from", '"HR"."EMPLOYEES"') in edges
+    assert ('"HR"."EMP_DEPT_V"', "reads_from", '"HR"."DEPARTMENTS"') in edges
+    # Column list identifiers before AS must not be treated as table references.
+    assert not any(tgt in ('"EMP_ID"', '"DEPT_NAME"') for _s, _r, tgt in edges)
+
+
+def test_oracle_view_with_quoted_as_column_and_trailing_select(tmp_path):
+    ddl = (
+        'CREATE OR REPLACE FORCE EDITIONABLE VIEW "HR"."EMP_V" ("AS", "ID") '
+        'DEFAULT COLLATION "USING_NLS_COMP" AS\n'
+        '  SELECT id FROM "HR"."EMPLOYEES";\n'
+        'SELECT * FROM "HR"."UNRELATED";\n'
+    )
+    labels, edges = _graph(tmp_path, "emp_v.sql", ddl)
+
+    assert '"HR"."EMP_V"' in labels
+    assert ('"HR"."EMP_V"', "reads_from", '"HR"."EMPLOYEES"') in edges
+    assert ('"HR"."EMP_V"', "reads_from", '"HR"."UNRELATED"') not in edges
+
+
+def test_editionable_table_recovery_when_file_has_error(tmp_path):
+    ddl = (
+        'CREATE EDITIONABLE TABLE "HR"."AUDIT_LOG" ("ID" NUMBER);\n'
+        "CREATE OR REPLACE EDITIONABLE PROCEDURE hr.p IS BEGIN NULL; END;\n/\n"
+    )
+    labels, edges = _graph(tmp_path, "tbl.sql", ddl)
+
+    assert '"HR"."AUDIT_LOG"' in labels
+    assert ("tbl.sql", "contains", '"HR"."AUDIT_LOG"') in edges
+
+
+def test_ords_define_module_and_handler_extraction(tmp_path):
+    labels, edges = _graph(tmp_path, "ords.sql", ORDS_EXPORT)
+
+    assert "ORDS POST /hr-public/employees/transfer" in labels
+    assert ("ords.sql", "contains", "ORDS POST /hr-public/employees/transfer") in edges
+    assert ("ORDS POST /hr-public/employees/transfer", "reads_from", "hr.employees") in edges
+    assert ("ORDS POST /hr-public/employees/transfer", "writes_to", "hr.transfer_audit") in edges
+
+
+def test_ords_ignores_comments_and_strings_and_handles_q_quotes_and_concat(tmp_path):
+    ddl = """\
+DECLARE
+  v_doc VARCHAR2(200) := 'ORDS.DEFINE_HANDLER(p_module_name => ''fake'', p_pattern => ''str'', p_source => ''SELECT * FROM hr.fake_tbl'');';
+BEGIN
+  /*
+  ORDS.DEFINE_MODULE(p_module_name => 'ghost_api', p_base_path => '/ghost/');
+  ORDS.DEFINE_HANDLER(
+      p_module_name => 'ghost_api',
+      p_pattern     => 'fake',
+      p_method      => 'DELETE',
+      p_source      => 'DELETE FROM hr.employees;');
+  */
+  -- ORDS.DEFINE_HANDLER(p_module_name => 'hr_api', p_pattern => 'line_comment', p_source => 'SELECT * FROM hr.employees');
+  ORDS.DEFINE_MODULE(p_module_name => 'hr_api', p_base_path => '/hr-public/');
+  ORDS.DEFINE_HANDLER(
+      p_module_name => 'hr_api',
+      -- p_pattern => 'commented_arg',
+      p_pattern     => 'roster',
+      p_method      => 'GET',
+      p_source      => q'[SELECT * FROM hr.roster WHERE status = 'ACTIVE']');
+  ORDS.DEFINE_HANDLER(
+      p_module_name => 'hr_api',
+      p_pattern     => 'roster/sync',
+      p_method      => 'POST',
+      p_source      => 'BEGIN ' || CHR(10) ||
+                       '  INSERT INTO hr.roster_audit (id) ' || CHR(10) ||
+                       '  SELECT id FROM hr.roster; END;');
+END;
+/
+"""
+    labels, edges = _graph(tmp_path, "ords_q.sql", ddl)
+
+    assert "ORDS GET /hr-public/roster" in labels
+    assert ("ORDS GET /hr-public/roster", "reads_from", "hr.roster") in edges
+    assert "ORDS POST /hr-public/roster/sync" in labels
+    assert ("ORDS POST /hr-public/roster/sync", "reads_from", "hr.roster") in edges
+    assert ("ORDS POST /hr-public/roster/sync", "writes_to", "hr.roster_audit") in edges
+    assert not any("ghost" in lbl or "fake" in lbl or "line_comment" in lbl or "str" in lbl for lbl in labels)
+
+
+def test_ords_extracted_even_when_tree_has_no_error(tmp_path, monkeypatch):
+    """ORDS extraction must not depend on tree-sitter-sql raising an ERROR node."""
+    import tree_sitter
+
+    parsed_sources = []
+
+    class CleanParser:
+        def __init__(self, language):
+            pass
+
+        def parse(self, source):
+            parsed_sources.append(source)
+            return SimpleNamespace(
+                root_node=SimpleNamespace(type="program", has_error=False, children=[])
+            )
+
+    monkeypatch.setattr(tree_sitter, "Parser", CleanParser)
+
+    labels, edges = _graph(tmp_path, "clean_ords.sql", ORDS_EXPORT)
+
+    assert len(parsed_sources) == 1 and b"ORDS.DEFINE_HANDLER" in parsed_sources[0]
+    assert "ORDS POST /hr-public/employees/transfer" in labels
+    assert ("ORDS POST /hr-public/employees/transfer", "reads_from", "hr.employees") in edges
+    assert ("ORDS POST /hr-public/employees/transfer", "writes_to", "hr.transfer_audit") in edges
+
+
+def test_ords_masks_multiline_literals_and_accepts_comments_between_tokens(tmp_path):
+    ddl = """\
+DECLARE
+  q_doc VARCHAR2(400) := q'{Example 'with quotes'
+    ORDS.DEFINE_HANDLER(p_pattern => 'ghost-q', p_source => 'SELECT * FROM GHOST');
+  }';
+  doc VARCHAR2(400) := 'Example
+    ORDS.DEFINE_HANDLER(p_pattern => ''ghost-standard'', p_source => ''SELECT * FROM GHOST'');
+  ';
+BEGIN
+  ORDS /* separator */ . DEFINE_MODULE(p_module_name => 'hr', p_base_path => '/api/');
+  ORDS. /* separator */ DEFINE_HANDLER(
+      p_module_name => 'hr',
+      p_pattern /* separator */ => 'staff',
+      p_source => q'[SELECT * FROM STAFF]');
+END;
+/
+"""
+    labels, edges = _graph(tmp_path, "ords.sql", ddl)
+    assert [label for label in labels if label.startswith("ORDS ")] == ["ORDS GET /api/staff"]
+    assert ("ORDS GET /api/staff", "reads_from", "STAFF") in edges
+
+
+@pytest.mark.parametrize("prefix", ["q", "nq", "NQ"])
+@pytest.mark.parametrize(("opener", "closer"), [("[", "]"), ("{", "}"), ("!", "!")])
+def test_ords_alternative_literals_keep_inner_parentheses(tmp_path, prefix, opener, closer):
+    source = f"{prefix}'{opener}SELECT ')' AS VAL FROM STAFF{closer}'"
+    ddl = f"""\
+BEGIN
+  ORDS.DEFINE_HANDLER(p_pattern => 'staff', p_source => {source});
+END;
+/
+"""
+    labels, edges = _graph(tmp_path, "ords.sql", ddl)
+    assert "ORDS GET /staff" in labels
+    assert ("ORDS GET /staff", "reads_from", "STAFF") in edges
+
+
+def test_ords_source_decodes_static_pieces_without_guessing_dynamic_values(tmp_path):
+    ddl = """\
+BEGIN
+  ORDS.DEFINE_HANDLER(p_pattern => 'static',
+      p_source => CHR(10) || N'SELECT ' || CHR(42) || ' FROM STAFF');
+  ORDS.DEFINE_HANDLER(p_pattern => 'dynamic',
+      p_source => get_source('SELECT * FROM GHOST'));
+  ORDS.DEFINE_HANDLER(p_pattern => 'unknown-method', p_method => get_method(),
+      p_source => 'SELECT * FROM GHOST');
+END;
+/
+"""
+    labels, edges = _graph(tmp_path, "ords.sql", ddl)
+    assert {label for label in labels if label.startswith("ORDS ")} == {
+        "ORDS GET /static", "ORDS GET /dynamic",
+    }
+    assert [edge for edge in edges if edge[1] == "reads_from"] == [
+        ("ORDS GET /static", "reads_from", "STAFF"),
+    ]
