@@ -2392,3 +2392,23 @@ def test_who_calls_question_reaches_a_caller_in_another_repo():
     text = _query_graph_text(_make_two_repo_graph(), "who calls charge", mode="bfs", depth=1, token_budget=2000)
     assert "Context: call (heuristic)" in text
     assert "Checkout" in text
+
+
+def test_shortest_path_handles_mixed_int_and_str_node_ids():
+    """Mixed int/str node IDs must not raise TypeError in _path_search_graph."""
+    G = nx.DiGraph()
+    G.add_node(1, label="alpha", source_file="a.py")
+    G.add_node("n2", label="beta", source_file="b.py")
+    G.add_node(3, label="gamma", source_file="c.py")
+    G.add_edge(1, "n2", relation="calls", confidence="EXTRACTED")
+    G.add_edge("n2", 3, relation="contains", confidence="EXTRACTED")
+
+    directed_out = _shortest_path_text(G, {"source": "alpha", "target": "gamma"})
+    assert "alpha" in directed_out and "gamma" in directed_out
+
+    # Reverse `contains` hop also works in directed mode: gamma -> n2
+    rev_out = _shortest_path_text(G, {"source": "gamma", "target": "beta"})
+    assert "gamma" in rev_out and "beta" in rev_out
+
+    undirected_out = _shortest_path_text(G, {"source": "gamma", "target": "alpha", "undirected": True})
+    assert "gamma" in undirected_out and "alpha" in undirected_out
