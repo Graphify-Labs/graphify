@@ -136,6 +136,44 @@ def test_prune_repo_returns_zero_if_not_present():
     assert G.number_of_nodes() == 1
 
 
+def test_prune_repo_removes_dangling_hyperedge_members_and_drops_empty():
+    from graphify.build import prune_repo_from_graph
+    G = nx.Graph()
+    G.add_node("repoA::u1", repo="repoA")
+    G.add_node("repoA::u2", repo="repoA")
+    G.add_node("repoB::v1", repo="repoB")
+    G.add_node("repoB::v2", repo="repoB")
+
+    G.graph["hyperedges"] = [
+        {"id": "he_a", "nodes": ["repoA::u1", "repoA::u2"]},
+        {"id": "he_cross", "nodes": ["repoA::u1", "repoB::v1"]},
+        {"id": "he_b", "nodes": ["repoB::v1", "repoB::v2"]},
+    ]
+
+    removed = prune_repo_from_graph(G, "repoA")
+    assert removed == 2
+    assert "repoA::u1" not in G.nodes
+    assert "repoA::u2" not in G.nodes
+    assert "repoB::v1" in G.nodes
+    assert "repoB::v2" in G.nodes
+
+    hes = G.graph.get("hyperedges")
+    assert hes is not None
+    # he_a had only repoA nodes, so it must be dropped
+    he_ids = [h["id"] for h in hes if isinstance(h, dict)]
+    assert "he_a" not in he_ids
+    assert "he_cross" in he_ids
+    assert "he_b" in he_ids
+
+    # he_cross must have had repoA::u1 removed and repoB::v1 kept
+    cross = next(h for h in hes if h.get("id") == "he_cross")
+    assert cross["nodes"] == ["repoB::v1"]
+
+    # he_b must be untouched
+    b = next(h for h in hes if h.get("id") == "he_b")
+    assert b["nodes"] == ["repoB::v1", "repoB::v2"]
+
+
 # ── global_graph.py ───────────────────────────────────────────────────────────
 
 def test_global_add_creates_global_graph(tmp_path):
@@ -220,6 +258,35 @@ def test_global_remove(tmp_path):
         from graphify.global_graph import global_list
         repos = global_list()
     assert "repoA" not in repos
+
+
+def test_global_add_and_remove_preserves_and_prunes_hyperedges(tmp_path):
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([
+        {"id": "userservice", "label": "UserService", "source_file": "src/user.py"},
+        {"id": "authservice", "label": "AuthService", "source_file": "src/auth.py"},
+    ])
+    G.graph["hyperedges"] = [{"id": "he_auth_flow", "nodes": ["userservice", "authservice"]}]
+    _graph_to_json(G, src_graph)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, global_remove, _load_global_graph
+        global_add(src_graph, "repoA")
+        G_global = _load_global_graph()
+        hes = G_global.graph.get("hyperedges")
+        assert hes is not None
+        assert len(hes) == 1
+        assert hes[0]["id"] == "repoA::he_auth_flow"
+        assert set(hes[0]["nodes"]) == {"repoA::userservice", "repoA::authservice"}
+
+        # Now remove repoA and ensure hyperedge was pruned
+        global_remove("repoA")
+        G_after = _load_global_graph()
+        assert len(G_after.nodes) == 0
+        assert G_after.graph.get("hyperedges") == []
 
 
 def test_global_remove_unknown_tag_raises(tmp_path):
