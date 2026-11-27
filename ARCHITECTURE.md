@@ -87,6 +87,10 @@ AST cache schema 54 retires older call facts.
 Required extraction fields use string IDs, labels, relations and source paths.
 Assembly retains numeric-ID compatibility, skips malformed identities or
 relations and uses existing fallback rules for missing display and source data.
+Cypher file export preserves node and relationship source attribution.
+Parallel relationships receive distinct ordinals within each directed
+endpoint pair and relationship type, so the same script can be replayed.
+The ordinals apply to that exported snapshot.
 
 ## Extraction output schema
 
