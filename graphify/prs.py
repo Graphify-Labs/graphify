@@ -138,7 +138,13 @@ def _ci_icon(status: str) -> str:
 
 # ── GitHub data fetching ──────────────────────────────────────────────────────
 
-def _gh(*args: str) -> list | dict | None:
+def _gh(*args: str, cwd: str | Path | None = None) -> list | dict | None:
+    """Run ``gh`` and parse JSON stdout. Returns None on any failure.
+
+    ``cwd`` selects the repository when ``--repo`` is not in *args*. Without it,
+    gh resolves the repo from the process working directory, which breaks MCP
+    servers started outside the graph's repo (#5535).
+    """
     try:
         result = subprocess.run(
             ["gh", *args],
@@ -146,7 +152,8 @@ def _gh(*args: str) -> list | dict | None:
             # Decode gh's output as UTF-8, not the Windows cp1252 locale codec: gh
             # emits UTF-8 JSON with non-Latin1 titles/logins (emoji, فارسی), and the
             # default text=True decode crashes on those (#1505 fixed the same in llm).
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+            cwd=str(cwd) if cwd is not None else None,
         )
         if result.returncode != 0:
             return None
@@ -155,14 +162,14 @@ def _gh(*args: str) -> list | dict | None:
         return None
 
 
-def _detect_default_branch(repo: str | None = None) -> str:
+def _detect_default_branch(repo: str | None = None, cwd: str | Path | None = None) -> str:
     """Auto-detect the repo's default branch via gh, then git, then fall back to 'main'."""
     # Try gh first — works for any repo, not just the current directory
     args = ["repo", "view"]
     if repo:
         args.append(repo)
     args += ["--json", "defaultBranchRef"]
-    data = _gh(*args)
+    data = _gh(*args, cwd=cwd)
     if data and data.get("defaultBranchRef", {}).get("name"):
         return data["defaultBranchRef"]["name"]
     # Fall back to git symbolic-ref for the current repo (only when repo is not specified)
@@ -171,7 +178,8 @@ def _detect_default_branch(repo: str | None = None) -> str:
             result = subprocess.run(
                 ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
                 stdin=subprocess.DEVNULL,
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                cwd=str(cwd) if cwd is not None else None,
             )
             if result.returncode == 0:
                 # refs/remotes/origin/main → main. Strip the prefix rather than
@@ -239,8 +247,13 @@ def _parse_pr_dict(item: dict, expected_base: str) -> PRInfo:
     )
 
 
-def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50) -> list[PRInfo]:
-    resolved_base = base or _detect_default_branch(repo)
+def fetch_prs(
+    repo: str | None = None,
+    base: str | None = None,
+    limit: int = 50,
+    cwd: str | Path | None = None,
+) -> list[PRInfo]:
+    resolved_base = base or _detect_default_branch(repo, cwd=cwd)
     args = [
         "pr", "list", "--state", "open", "--limit", str(limit),
         "--json", _PR_JSON_FIELDS,
@@ -248,15 +261,20 @@ def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50)
     if repo:
         args += ["--repo", repo]
 
-    raw = _gh(*args)
+    raw = _gh(*args, cwd=cwd)
     if raw is None:
         raise RuntimeError("gh CLI not found or not authenticated. Run: gh auth login")
 
     return [_parse_pr_dict(item, resolved_base) for item in raw]
 
 
-def fetch_pr(number: int, repo: str | None = None, base: str | None = None) -> PRInfo | None:
-    resolved_base = base or _detect_default_branch(repo)
+def fetch_pr(
+    number: int,
+    repo: str | None = None,
+    base: str | None = None,
+    cwd: str | Path | None = None,
+) -> PRInfo | None:
+    resolved_base = base or _detect_default_branch(repo, cwd=cwd)
     args = [
         "pr", "view", str(number),
         "--json", _PR_JSON_FIELDS,
@@ -264,7 +282,7 @@ def fetch_pr(number: int, repo: str | None = None, base: str | None = None) -> P
     if repo:
         args += ["--repo", repo]
 
-    raw = _gh(*args)
+    raw = _gh(*args, cwd=cwd)
     if raw is None or not isinstance(raw, dict):
         return None
     if raw.get("state") != "OPEN":
@@ -274,7 +292,11 @@ def fetch_pr(number: int, repo: str | None = None, base: str | None = None) -> P
 
 
 
-def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
+def fetch_pr_files(
+    number: int,
+    repo: str | None = None,
+    cwd: str | Path | None = None,
+) -> list[str]:
     args = ["pr", "diff", str(number), "--name-only"]
     if repo:
         args += ["--repo", repo]
@@ -282,7 +304,8 @@ def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
         result = subprocess.run(
             ["gh", *args],
             stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+            cwd=str(cwd) if cwd is not None else None,
         )
         if result.returncode != 0:
             return []
@@ -349,13 +372,18 @@ def format_prs_text(prs: list["PRInfo"], base: str) -> str:
 
 # ── Worktree mapping ──────────────────────────────────────────────────────────
 
-def fetch_worktrees() -> dict[str, str]:
-    """Returns {branch: worktree_path}."""
+def fetch_worktrees(cwd: str | Path | None = None) -> dict[str, str]:
+    """Returns {branch: worktree_path}.
+
+    ``cwd`` selects the repository when the process working directory is not
+    the graph's repo (MCP servers started outside the project, #5535).
+    """
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
             stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            cwd=str(cwd) if cwd is not None else None,
         )
         if result.returncode != 0:
             return {}

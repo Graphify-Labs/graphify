@@ -815,3 +815,45 @@ class TestCmdPrsDetail:
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "PR #999 not found in open PRs." in captured.err
+
+
+class TestGhCwdOutsideRepo:
+    """Regression for #5535: gh must resolve the graph's repo, not process cwd."""
+
+    def test_gh_passes_cwd_to_subprocess(self, tmp_path):
+        with patch("graphify.prs.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="[]")
+            _gh("pr", "list", cwd=tmp_path)
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs.get("cwd") == str(tmp_path)
+
+    def test_gh_omits_cwd_when_not_provided(self):
+        with patch("graphify.prs.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="[]")
+            _gh("pr", "list")
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs.get("cwd") is None
+
+    def test_fetch_prs_forwards_cwd(self, tmp_path):
+        with patch("graphify.prs._gh", return_value=[]) as mock_gh, \
+             patch("graphify.prs._detect_default_branch", return_value="v8"):
+            fetch_prs(cwd=tmp_path)
+        assert mock_gh.call_args.kwargs.get("cwd") == tmp_path
+
+    def test_fetch_worktrees_forwards_cwd(self, tmp_path):
+        with patch("graphify.prs.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            fetch_worktrees(cwd=tmp_path)
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs.get("cwd") == str(tmp_path)
+
+    def test_detect_default_branch_git_fallback_uses_cwd(self, tmp_path):
+        with patch("graphify.prs._gh", return_value=None), \
+             patch("graphify.prs.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="refs/remotes/origin/v8\n"
+            )
+            branch = _detect_default_branch(cwd=tmp_path)
+        assert branch == "v8"
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs.get("cwd") == str(tmp_path)
