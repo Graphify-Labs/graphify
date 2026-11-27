@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Pangkas pengeluaran token agen hingga 80%.</b> Graphify Cloud adalah memori yang selalu aktif yang mengatur agen Anda, menjaga kualitas kode tetap tinggi, dan membuktikan kebenaran dengan verifikasi formal. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Mulai gratis, tanpa kartu &rarr;</b></a>
+  <b>Konteks codebase bersama untuk agen dan manusia.</b>
+  <br/>
+  Ubah codebase Anda menjadi knowledge graph yang dapat di-query. Telusuri dependency, pahami bagaimana komponen terhubung, dan beri agen pengkodean Anda konteks yang dapat digunakan kembali lintas sesi.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Mulai gratis, tanpa kartu &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> menjaga graf itu selalu aktif di sepanjang seluruh SDLC Anda.
 </p>
 
 Ketik `/graphify` di asisten pengkodean AI Anda dan ia akan memetakan seluruh proyek Anda (kode, dokumen, PDF, gambar, video) menjadi sebuah **knowledge graph** yang dapat Anda **query alih-alih grep** melalui berkas.
@@ -41,18 +47,27 @@ Ketik `/graphify` di asisten pengkodean AI Anda dan ia akan memetakan seluruh pr
 > **Ingin ini selalu aktif?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) menjaga graf tetap hidup di sepanjang SDLC Anda: dukungan monorepo dan cross-repo, verifikasi formal, dan tinjauan kode dengan pandangan menyeluruh atas SDLC Anda, plus konektor untuk Sentry, Jira, dan lainnya sehingga insiden dan tiket berada di graf yang sama dengan kode Anda. **[Mulai gratis, tanpa kartu](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>Codebase FastAPI yang dipetakan oleh graphify. Setiap node adalah sebuah konsep, warna adalah komunitas yang terdeteksi, dan semuanya dapat diklik di graph.html.</em>
+  <em>Codebase FastAPI yang dipetakan oleh graphify. Setiap node adalah sebuah konsep, warna adalah subsistem yang terdeteksi, dan semuanya dapat diklik di graph.html.</em>
 </p>
 
-**Mulai** (30 detik). Membutuhkan Python 3.10+ dan uv (atau pipx):
+**Mulai** (30 detik). Membutuhkan Python 3.11.5–3.14 dan uv (atau pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Menggunakan asisten yang berbeda? Sebutkan secara eksplisit:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Lihat [pilih platform Anda](#install) untuk semua 20+ asisten.
 
 Kemudian, di asisten AI Anda:
 
@@ -114,8 +129,8 @@ Apa yang Anda dapatkan langsung dari awal:
 
 | Kemampuan | Apa yang Anda dapatkan |
 |---|---|
-| **God nodes** | Konsep yang paling banyak terhubung, sehingga Anda melihat ke mana semuanya mengalir |
-| **Communities** | Graf dibagi menjadi subsistem (Leiden), dengan label tanpa LLM |
+| **Komponen yang paling banyak terhubung** | Konsep yang dilalui oleh segalanya — hub dari graf (juga disebut *god nodes*) |
+| **Subsistem** | Graf yang dibagi menjadi kelompok-kelompok yang kohesif (Leiden *komunitas*), masing-masing dengan label tanpa LLM |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` diselesaikan lintas berkas di ~40 bahasa melalui tree-sitter AST |
 | **Query, path, explain** | Ajukan pertanyaan, telusuri jalur antara dua hal, atau jelaskan satu konsep, semuanya terhadap `graph.json` |
 | **Rationale + doc refs** | Komentar `# NOTE:` / `# WHY:` dan kutipan ADR/RFC menjadi node kelas satu yang tertaut ke kode |
@@ -124,6 +139,19 @@ Apa yang Anda dapatkan langsung dari awal:
 
 > [!TIP]
 > Menjalankan ini di banyak repo atau sebuah monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) melakukannya secara terus-menerus dan memangkas pengeluaran token agen hingga 80%, dengan tautan cross-repo, tinjauan kode seluruh SDLC, verifikasi formal, dan konektor Sentry/Jira. [Mulai gratis, tanpa kartu &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## Kapan harus menggunakan Graphify
+
+Gunakan graf ketika Anda perlu memahami sebuah codebase, bukan hanya membacanya:
+
+| Situasi | Apa yang harus ditanyakan ke Graphify |
+|---|---|
+| Bergabung dengan proyek yang tidak dikenal | "Jelaskan bagaimana komponen utama terhubung." |
+| Mengubah komponen bersama | "Telusuri callers dan dependencies-nya." |
+| Menyelidiki sebuah bug | "Tunjukkan jalur antara endpoint ini dan storage." |
+| Meninjau kembali pekerjaan sebelumnya | "Temukan design decisions dan catatan yang relevan." |
 
 ---
 
@@ -159,7 +187,7 @@ Panduan lengkap dan referensi tersedia di **[docs.graphify.com](https://docs.gra
 
 | Persyaratan | Minimum | Periksa | Instal |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(disarankan)* | apa saja | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternatif)* | apa saja | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +255,7 @@ misalnya `graphify claude install --project` atau `graphify codex install --proj
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (panggil dengan `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -306,7 +334,7 @@ Ini menulis berkas konfigurasi kecil yang memberi tahu asisten Anda untuk berkon
 
 `GRAPH_REPORT.md` tetap tersedia untuk tinjauan arsitektur secara luas.
 
-Berkas apa yang persisnya ditulis setiap platform (`CODEBUDDY.md` + `PreToolUse` hooks milik CodeBuddy, `AGENTS.md` milik Codex, plugin `.kilo` native milik Kilo, aturan `alwaysApply` milik Cursor, dan seterusnya) dibahas di **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+Berkas apa yang persisnya ditulis setiap platform (`CODEBUDDY.md` + `PreToolUse` hooks milik CodeBuddy, `AGENTS.md` milik Codex, plugin `.kilo` native milik Kilo, aturan `alwaysApply` milik Cursor, dan seterusnya) dibahas di **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Untuk menghapus graphify dari semua platform sekaligus: `graphify uninstall` (tambahkan `--purge` untuk juga menghapus `graphify-out/`). Atau gunakan perintah per platform (mis. `graphify claude uninstall`).
 
@@ -325,9 +353,43 @@ Keduanya mendorong query graf yang dibatasi cakupannya sebelum pencarian sumber 
 
 ---
 
+## Hubungkan agen Anda melalui MCP
+
+Arahkan agen apa pun yang berkemampuan MCP ke sebuah graf Graphify dan ia akan meng-query graf secara langsung alih-alih mem-grep berkas. Hubungkan ke graf yang di-host (Graphify Cloud, paket gratis, tanpa kartu):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+Lebih suka tetap lokal? Instal server stdio dengan `uv tool install "graphifyy[mcp]"` dan jalankan `graphify-mcp` terhadap `graph.json` Anda sendiri — tanpa perlu akun.
+
+Setelah terhubung, agen Anda mendapatkan tool berikut:
+
+| Tool | Apa yang dilakukannya |
+|---|---|
+| `query_graph` | Ajukan pertanyaan dalam bahasa biasa, dapatkan kembali subgraf yang relevan |
+| `shortest_path` | Telusuri bagaimana dua node terhubung |
+| `get_node` / `get_neighbors` | Cari sebuah node dan apa yang bersinggungan dengannya |
+| `get_community` / `god_nodes` | Klaster yang terdeteksi dan hub yang paling banyak terhubung |
+| `get_section` | Baca sebuah region graf yang berlabel |
+| `graph_stats` | Ukuran, bahasa, dan rincian edge dari graf |
+
+Server juga mengekspos tooling PR (`list_prs`, `get_pr_impact`, `triage_prs`) sehingga agen Anda dapat meninjau pull request dengan konteks graf.
+
+---
+
 ## Apa yang ada di laporan
 
-`GRAPH_REPORT.md` merangkum god nodes, komunitas, dan jalur utama untuk tinjauan arsitektur secara luas. Bagaimana graf dibangun dan apa isinya: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` merangkum komponen yang paling banyak terhubung, subsistem, dan jalur utama untuk tinjauan arsitektur secara luas. Bagaimana graf dibangun dan apa isinya: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -343,8 +405,8 @@ graphify mengurai ~40 bahasa pemrograman secara lokal dengan tree-sitter AST, da
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -362,7 +424,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Lihat [referensi perintah lengkap](#full-command-reference) di bawah.

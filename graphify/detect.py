@@ -332,9 +332,15 @@ def _looks_like_paper(path: Path) -> bool:
     """Heuristic: does this text file read like an academic paper?"""
     try:
         # Only scan first 3000 chars for speed
-        text = path.read_text(encoding="utf-8", errors="ignore")[:3000]
-        hits = sum(1 for pattern in _PAPER_SIGNALS if pattern.search(text))
-        return hits >= _PAPER_SIGNAL_THRESHOLD
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            text = f.read(3000)
+        hits = 0
+        for pattern in _PAPER_SIGNALS:
+            if pattern.search(text):
+                hits += 1
+                if hits >= _PAPER_SIGNAL_THRESHOLD:
+                    return True
+        return False
     except Exception:
         return False
 
@@ -1431,9 +1437,7 @@ def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
         if not raw:
             continue
         path = Path(os.path.abspath(vcs_root / os.fsdecode(raw)))
-        try:
-            path.relative_to(root)
-        except ValueError:
+        if _relative_parts(path, root) is None:
             continue
         # Deleted index entries and submodule gitlinks are not discoverable
         # files. Symlinks to regular files remain eligible; the existing
@@ -1449,6 +1453,20 @@ def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
             tracked_dirs.add(parent_key)
             parent = parent.parent
     return tracked_files, tracked_dirs
+
+
+def _is_unc_path(p: Path) -> bool:
+    """True for a UNC path (``\\\\host\\share`` or ``//host/share``).
+
+    A ``.git`` file in an indexed repo can point ``gitdir:`` (or, through its
+    ``commondir``, the shared git dir) at a UNC path. Stat-ing or reading under it
+    makes Windows authenticate to the named host over SMB and leak a NetNTLMv2
+    response, with no LLM call or other setup (GHSA-g6c9-j4vm-mwq4). Such a gitdir
+    is treated as not-a-repo rather than probed. Purely local gitdirs — including
+    the absolute local paths that legitimate linked worktrees and submodules use —
+    are unaffected.
+    """
+    return str(p)[:2] in ("\\\\", "//")
 
 
 def _git_info_exclude(vcs_root: Path) -> Path | None:
@@ -1473,6 +1491,10 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
             content = ""
         if content.startswith("gitdir:"):
             gd = Path(content[len("gitdir:"):].strip())
+            if _is_unc_path(gd):
+                # A corpus-chosen UNC gitdir would coerce SMB auth when stat-ed
+                # (GHSA-g6c9-j4vm-mwq4); treat the repo as having no exclude file.
+                return None
             if not gd.is_absolute():
                 gd = (vcs_root / gd).resolve()
             git_dir = gd
@@ -1488,6 +1510,10 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
                     cd = Path(cd_raw)
                     git_dir = cd if cd.is_absolute() else (gd / cd).resolve()
     if git_dir is None:
+        return None
+    if _is_unc_path(git_dir):
+        # The commondir pointer may itself name a UNC shared git dir; never stat
+        # under it (GHSA-g6c9-j4vm-mwq4).
         return None
     exclude = git_dir / "info" / "exclude"
     return exclude if exclude.is_file() else None
@@ -1516,6 +1542,9 @@ def _linked_worktree_main_root(directory: Path) -> Path | None:
     if not content.startswith("gitdir:"):
         return None
     gd = Path(content[len("gitdir:"):].strip())
+    if _is_unc_path(gd):
+        # A UNC gitdir would coerce SMB auth when read/stat-ed (GHSA-g6c9-j4vm-mwq4).
+        return None
     if not gd.is_absolute():
         try:
             gd = (directory / gd).resolve()
@@ -1528,6 +1557,9 @@ def _linked_worktree_main_root(directory: Path) -> Path | None:
     if not cd_raw:
         return None
     cd = Path(cd_raw)
+    if _is_unc_path(cd):
+        # A UNC commondir would coerce SMB auth when stat-ed (GHSA-g6c9-j4vm-mwq4).
+        return None
     if not cd.is_absolute():
         try:
             cd = (gd / cd).resolve()
@@ -1749,6 +1781,28 @@ def _parse_ignore_pattern(pattern: str) -> tuple[bool, bool, bool, str]:
 _CASEFOLD_PATHS = os.path.normcase("Aa") != "Aa"
 
 
+def _relative_parts(path: Path, root: Path) -> tuple[str, ...] | None:
+    """Return ``path.relative_to(root).parts`` lexically, or None if outside."""
+    root_parts = root.parts
+    if not root_parts:
+        try:
+            return path.relative_to(root).parts
+        except ValueError:
+            return None
+    path_parts = path.parts
+    n = len(root_parts)
+    if len(path_parts) < n:
+        return None
+    head = path_parts[:n]
+    if head != root_parts and (
+        not _CASEFOLD_PATHS
+        or tuple(map(os.path.normcase, head))
+        != tuple(map(os.path.normcase, root_parts))
+    ):
+        return None
+    return path_parts[n:]
+
+
 def _lexical_relative(
     target: Path, target_parts: tuple[str, ...], anchor: Path
 ) -> str | None:
@@ -1902,7 +1956,9 @@ def _is_ignored(
             # with `!dir/` without its files.
             if target_name_nfc is None:
                 target_name_nfc = _nfc(target.name)
-            return fnmatch.fnmatch(target_name_nfc, p)
+            if _CASEFOLD_PATHS:
+                return fnmatch.fnmatch(target_name_nfc, p)
+            return fnmatch.fnmatchcase(target_name_nfc, p)
 
         result = False
         for anchor, pattern in patterns:
@@ -1939,9 +1995,8 @@ def _is_ignored(
     # whose ancestor directory is already excluded. Walk ancestors top-down;
     # if any ancestor is excluded, the file is excluded regardless of later
     # ! patterns targeting the file or a sub-path.
-    try:
-        rel_parts = path.relative_to(root).parts
-    except ValueError:
+    rel_parts = _relative_parts(path, root)
+    if rel_parts is None:
         return _eval(path)
 
     ancestor = root
@@ -2325,7 +2380,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         if not in_memory and _ignored_for_scan(p):
             ignored.append(str(p))
             continue
-        if not _resolves_under_root(p, root):
+        # When follow_symlinks=False on POSIX and we are not in memory_dir (which may
+        # traverse a symlinked graphify-out/), os.walk only visits real
+        # directories under the already-resolved root; a non-symlink file
+        # cannot resolve outside root. On Windows, always check _resolves_under_root
+        # because directory junctions are not reported as symlinks on Python 3.11.
+        if (
+            os.name != "posix" or follow_symlinks or in_memory or p.is_symlink()
+        ) and not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
             continue
         if not _is_regular_file(p):

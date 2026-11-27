@@ -409,7 +409,9 @@ def extract_go(path: Path) -> dict:
         params = func_node.child_by_field_name("parameters")
         if params is not None:
             for p in params.children:
-                if p.type != "parameter_declaration":
+                # `opts ...Option` is a variadic_parameter_declaration, with
+                # the same `type` field.
+                if p.type not in ("parameter_declaration", "variadic_parameter_declaration"):
                     continue
                 type_node = p.child_by_field_name("type")
                 refs: list[tuple[str, str]] = []
@@ -889,9 +891,11 @@ def extract_go(path: Path) -> dict:
                     field = func_node.child_by_field_name("field")
                     operand = func_node.child_by_field_name("operand")
                     receiver_name = _read_text(operand, source) if operand else ""
-                    # Package-qualified call (e.g. fmt.Println) → allow cross-file resolution.
-                    # Receiver method call (e.g. s.logger.Log) → skip, no import evidence.
-                    is_member_call = receiver_name not in go_imported_pkgs
+                    # A visible local binding takes precedence over a same-named
+                    # import, even when its receiver type is unknown.
+                    is_member_call = (
+                        receiver_name in scope_types or receiver_name not in go_imported_pkgs
+                    )
                     if not is_member_call:
                         package_receiver = receiver_name
                         import_path = go_imported_pkgs[receiver_name]
@@ -989,7 +993,7 @@ def extract_go(path: Path) -> dict:
                 arg_field_owner: str | None = None
                 if operand.type == "identifier":
                     name = _read_text(operand, source)
-                    if name in go_imported_pkgs:
+                    if name in go_imported_pkgs and name not in scope_types:
                         continue
                     arg_receiver_type = scope_types.get(name)
                 elif operand.type == "selector_expression":
@@ -1039,5 +1043,8 @@ def extract_go(path: Path) -> dict:
         "edges": clean_edges,
         "raw_calls": raw_calls,
         "go_imports": dict(go_imported_pkgs),
-        "go_type_table": {"path": str_path, "table": type_table, "package_vars": package_types},
+        "go_type_table": {
+            "path": str_path, "table": type_table, "package_vars": package_types,
+            "package_path": package_path,
+        },
     }

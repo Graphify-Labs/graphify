@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Reduceți cu 80% cheltuielile pe token-uri ale agenților.</b> Graphify Cloud este o memorie mereu activă care guvernează agenții, menține calitatea codului ridicată și dovedește corectitudinea prin verificare formală. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Începe gratuit, fără card &rarr;</b></a>
+  <b>Context comun al bazei de cod pentru agenți și oameni.</b>
+  <br/>
+  Transformați-vă baza de cod într-un graf de cunoștințe interogabil. Urmăriți dependențele, înțelegeți cum se conectează componentele și oferiți-i agentului vostru de programare un context reutilizabil între sesiuni.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Începe gratuit, fără card &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> menține acel graf mereu activ pe tot parcursul SDLC-ului vostru.
 </p>
 
 Tastați `/graphify` în asistentul AI de programare, iar acesta vă mapează întregul proiect (cod, documentație, PDF-uri, imagini, videoclipuri) într-un **graf de cunoștințe** pe care îl puteți **interoga în loc să faceți grep** prin fișiere.
@@ -41,18 +47,27 @@ Tastați `/graphify` în asistentul AI de programare, iar acesta vă mapează î
 > **Vreți asta mereu activă?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) menține graful viu pe tot parcursul SDLC-ului vostru: suport pentru monorepo și între repo-uri, verificare formală și revizuire de cod cu o vedere de ansamblu asupra SDLC-ului vostru, plus conectori pentru Sentry, Jira și altele, astfel încât incidentele și tichetele să stea în același graf ca și codul vostru. **[Începe gratuit, fără card](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>Baza de cod FastAPI mapată de graphify. Fiecare nod este un concept, culorile sunt comunitățile detectate, iar totul este clicabil în graph.html.</em>
+  <em>Baza de cod FastAPI mapată de graphify. Fiecare nod este un concept, culorile sunt subsistemele detectate, iar totul este clicabil în graph.html.</em>
 </p>
 
-**Începeți** (30 de secunde). Necesită Python 3.10+ și uv (sau pipx):
+**Începeți** (30 de secunde). Necesită Python 3.11.5–3.14 și uv (sau pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Folosiți alt asistent? Specificați-l explicit:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Vedeți [alegeți-vă platforma](#install) pentru toți cei 20+ de asistenți.
 
 Apoi, în asistentul vostru AI:
 
@@ -114,8 +129,8 @@ Ce obțineți direct din cutie:
 
 | Capabilitate | Ce obțineți |
 |---|---|
-| **Noduri-zeu (god nodes)** | Cele mai conectate concepte, astfel încât vedeți prin ce curge totul |
-| **Comunități** | Graful împărțit în subsisteme (Leiden), cu etichete fără LLM |
+| **Cele mai conectate componente** | Conceptele prin care curge totul — huburile grafului (numite și *god nodes*) |
+| **Subsisteme** | Graful împărțit în grupuri coezive (Leiden *communities*), fiecare cu o etichetă fără LLM |
 | **Legături între fișiere** | `calls` / `imports` / `inherits` / `mixes_in` rezolvate în ~40 de limbaje prin tree-sitter AST |
 | **Interogare, cale, explicație** | Puneți o întrebare, trasați calea dintre două lucruri sau explicați un concept, totul pe baza `graph.json` |
 | **Justificare + referințe doc** | Comentariile `# NOTE:` / `# WHY:` și citările ADR/RFC devin noduri de prim rang legate de cod |
@@ -124,6 +139,19 @@ Ce obțineți direct din cutie:
 
 > [!TIP]
 > Rulați asta pe multe repo-uri sau pe un monorepo? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) o face continuu și reduce cu 80% cheltuielile pe token-uri ale agenților, cu legături între repo-uri, revizuire de cod la nivelul întregului SDLC, verificare formală și conectori Sentry/Jira. [Începe gratuit, fără card &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## Când să apelați la Graphify
+
+Apelați la graf când aveți nevoie să înțelegeți o bază de cod, nu doar să o parcurgeți:
+
+| Situație | Ce să întrebați Graphify |
+|---|---|
+| Alăturarea unui proiect necunoscut | „Explicați cum se conectează componentele principale.” |
+| Modificarea unei componente partajate | „Trasați apelanții și dependențele sale.” |
+| Investigarea unui bug | „Arătați calea dintre acest endpoint și stocare.” |
+| Revenirea la o lucrare anterioară | „Găsiți deciziile de proiectare și notițele relevante.” |
 
 ---
 
@@ -159,7 +187,7 @@ Ghidurile complete și referința se află la **[docs.graphify.com](https://docs
 
 | Cerință | Minim | Verificare | Instalare |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recomandat)* | oricare | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativă)* | oricare | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +255,7 @@ de exemplu `graphify claude install --project` sau `graphify codex install --pro
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (detectat automat) sau `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (se invocă cu `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -306,7 +334,7 @@ Asta scrie un mic fișier de configurare care îi spune asistentului vostru să 
 
 `GRAPH_REPORT.md` este în continuare disponibil pentru revizuirea amplă a arhitecturii.
 
-Exact ce fișiere scrie fiecare platformă (`CODEBUDDY.md` + hook-uri `PreToolUse` pentru CodeBuddy, `AGENTS.md` pentru Codex, pluginul nativ `.kilo` pentru Kilo, regula `alwaysApply` pentru Cursor și așa mai departe) este acoperit în **[Configurare mereu activă](https://docs.graphify.com/guides/always-on)**.
+Exact ce fișiere scrie fiecare platformă (`CODEBUDDY.md` + hook-uri `PreToolUse` pentru CodeBuddy, `AGENTS.md` pentru Codex, pluginul nativ `.kilo` pentru Kilo, regula `alwaysApply` pentru Cursor și așa mai departe) este acoperit în **[Configurare mereu activă](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Pentru a elimina graphify de pe toate platformele deodată: `graphify uninstall` (adăugați `--purge` pentru a șterge și `graphify-out/`). Sau folosiți comanda per platformă (de ex. `graphify claude uninstall`).
 
@@ -325,9 +353,43 @@ Ambele încurajează interogări delimitate ale grafului înaintea căutărilor 
 
 ---
 
+## Conectați-vă agentul prin MCP
+
+Îndreptați orice agent capabil de MCP către un graf Graphify și acesta interoghează graful direct în loc să facă grep prin fișiere. Conectați-vă la graful găzduit (Graphify Cloud, plan gratuit, fără card):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+Preferați să rămâneți local? Instalați serverul stdio cu `uv tool install "graphifyy[mcp]"` și rulați `graphify-mcp` pe propriul `graph.json`: nu e nevoie de cont.
+
+Odată conectat, agentul vostru primește aceste unelte:
+
+| Unealtă | Ce face |
+|---|---|
+| `query_graph` | Puneți o întrebare în limbaj natural și primiți subgraful relevant |
+| `shortest_path` | Trasați cum se conectează două noduri |
+| `get_node` / `get_neighbors` | Căutați un nod și cu ce este în contact |
+| `get_community` / `god_nodes` | Clusterele detectate și hub-urile cele mai conectate |
+| `get_section` | Citiți o regiune etichetată a grafului |
+| `graph_stats` | Dimensiunea, limbajele și defalcarea muchiilor grafului |
+
+Serverul expune și unelte pentru PR (`list_prs`, `get_pr_impact`, `triage_prs`), astfel încât agentul vostru să poată revizui pull request-uri cu context de graf.
+
+---
+
 ## Ce este în raport
 
-`GRAPH_REPORT.md` rezumă nodurile-zeu, comunitățile și căile-cheie pentru revizuirea amplă a arhitecturii. Cum este construit graful și ce conține: **[Cum funcționează graphify](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` rezumă cele mai conectate componente, subsistemele și căile-cheie pentru revizuirea amplă a arhitecturii. Cum este construit graful și ce conține: **[Cum funcționează graphify](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -343,8 +405,8 @@ graphify analizează ~40 de limbaje de programare local cu tree-sitter AST și m
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -362,7 +424,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Vedeți [referința completă a comenzilor](#full-command-reference) mai jos.

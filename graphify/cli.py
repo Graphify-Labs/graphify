@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import graph_root_for as _graph_root_for
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -229,33 +230,6 @@ def _print_cloud_cta(out_dir: "Path", node_count: int = 0) -> None:
         print("  Free plan, no card: https://app.graphify.com/signup?utm_source=cli&utm_medium=terminal&utm_campaign=oss&utm_content=post-run")
 
 
-def _graph_root_for(gp: Path) -> Path:
-    """Resolve the selected graph's project without interpreting paths via CWD."""
-    from graphify.paths import GRAPHIFY_OUT
-
-    try:
-        text = (gp.parent / ".graphify_root").read_text(encoding="utf-8-sig").strip()
-        if text:
-            root = Path(text)
-            if root.is_absolute():
-                try:
-                    resolved = root.resolve()
-                except RuntimeError:
-                    pass  # Path resolution can report a symlink loop this way.
-                else:
-                    if resolved.is_dir():
-                        return resolved
-    except (OSError, UnicodeError, ValueError):
-        pass
-
-    # CLI-written absolute markers cover shared output. Otherwise strip only
-    # an exact, traversal-free relative output suffix, never a CWD-resolved one.
-    output = Path(GRAPHIFY_OUT)
-    parts = output.parts
-    if (parts and not output.is_absolute() and ".." not in parts
-            and gp.parent.parts[-len(parts):] == parts):
-        return gp.parent.parents[len(parts) - 1]
-    return gp.parent
 
 
 def _default_graph_path() -> str:
@@ -1132,6 +1106,28 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+def _load_cli_graph(gp: Path):
+    """Load graph.json as a directed graph for a node-lookup command, or exit 1.
+
+    Directed so stored caller->callee direction survives the load.
+    """
+    from networkx.readwrite import json_graph
+    from graphify.paths import consumed, read_graph_json
+
+    if not gp.exists():
+        print(f"error: graph file not found: {gp}", file=sys.stderr)
+        sys.exit(1)
+    _enforce_graph_size_cap_or_exit(gp)
+    raw = read_graph_json(gp)
+    if "links" not in raw and "edges" in raw:
+        raw = dict(raw, links=raw["edges"])
+    raw = {**raw, "directed": True}
+    raw = dict(raw, nodes=consumed(raw["nodes"]), links=consumed(raw["links"]))
+    return json_graph.node_link_graph(raw, edges="links")
+
+
 def _hook_strict_enabled(flag: bool) -> bool:
     """Resolve strict mode: GRAPHIFY_HOOK_STRICT env overrides the baked-in flag
     (truthy forces on without a reinstall, falsy is the kill switch); unset defers
@@ -2296,6 +2292,8 @@ def dispatch_command(cmd: str) -> None:
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
+        # A persisted index may lack postings from the rows just loaded.
+        G._graphify_one_shot_query = not seeds and G.graph.get("_trigram_index") is None
         _result = _query_graph_text(
             G,
             question,
@@ -2777,7 +2775,6 @@ def dispatch_command(cmd: str) -> None:
             print(_explain_usage)
             return
         from graphify.serve import _confidence_tag, _is_ambiguity_refusal, _resolve_single_node
-        from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
@@ -2787,18 +2784,7 @@ def dispatch_command(cmd: str) -> None:
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
         gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        from graphify.paths import consumed, read_graph_json
-        _raw = read_graph_json(gp)
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee direction.
-        _raw = {**_raw, "directed": True}
-        _raw = dict(_raw, nodes=consumed(_raw["nodes"]), links=consumed(_raw["links"]))
-        G = json_graph.node_link_graph(_raw, edges="links")
+        G = _load_cli_graph(gp)
         nid, refusal = _resolve_single_node(G, label)
         if nid is None:
             print(refusal)
@@ -2896,6 +2882,55 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             nodes_returned=len(connections),
         )
+        _touch_query_stamp(gp)
+
+    elif cmd == "section":
+        _section_usage = ('Usage: graphify section "<heading>" | "path/file.md#<heading>" '
+                          '[--max-chars N] [--graph path]')
+        if len(sys.argv) < 3:
+            print(_section_usage, file=sys.stderr)
+            sys.exit(1)
+        if len(sys.argv) == 3 and sys.argv[2] in ("--help", "-h"):
+            print(_section_usage)
+            return
+        from graphify.serve import _is_ambiguity_refusal
+        from graphify.sections import (
+            DEFAULT_MAX_CHARS,
+            format_section,
+            read_section,
+            resolve_section_query,
+            section_root,
+        )
+
+        label = sys.argv[2]
+        graph_path = _default_graph_path()
+        max_chars = DEFAULT_MAX_CHARS
+        args = sys.argv[3:]
+        for i, a in enumerate(args):
+            if a == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+            elif a == "--max-chars" and i + 1 < len(args):
+                try:
+                    max_chars = max(1, int(args[i + 1]))
+                except ValueError:
+                    print(f"error: --max-chars needs an integer, got {args[i + 1]!r}",
+                          file=sys.stderr)
+                    sys.exit(1)
+        gp = Path(graph_path).resolve()
+        G = _load_cli_graph(gp)
+        nid, refusal = resolve_section_query(G, label)
+        if nid is None:
+            print(refusal)
+            sys.exit(EXIT_AMBIGUOUS if _is_ambiguity_refusal(refusal) else EXIT_NOT_FOUND)
+        d = G.nodes[nid]
+        section, reason = read_section(d, section_root(gp), max_chars)
+        if section is None:
+            print(reason, file=sys.stderr)
+            sys.exit(1)
+        print(format_section(section, str(d.get("label", nid))))
+        from graphify import querylog
+        querylog.log_query(kind="section", question=label, corpus=str(gp),
+                           nodes_returned=1)
         _touch_query_stamp(gp)
 
     elif cmd == "diagnose":
@@ -3150,7 +3185,8 @@ def dispatch_command(cmd: str) -> None:
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         stages.mark("load")
         print("Re-clustering...")
-        communities = cluster(G, resolution=co_resolution, exclude_hubs_percentile=co_exclude_hubs)
+        communities = cluster(G, resolution=co_resolution, exclude_hubs_percentile=co_exclude_hubs,
+                               cache_dir=graph_json.parent)
         # Mirror the watch/update path (#822): map new cids to prior ones by
         # node-overlap so the existing .graphify_labels.json keeps attaching
         # to the same conceptual community after re-clustering. Without this,
@@ -4070,7 +4106,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
 
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import build_from_json as _bfj
+        from graphify.paths import consumed_graph_rows, restore_arc_direction
         from graphify.security import check_graph_file_size_cap as _check_cap
 
         # Solution 3 (#1019): for the HTML view, an oversized graph.json should
@@ -4098,12 +4134,11 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
-        from graphify.paths import restore_arc_direction as _rad
-        _raw = _rad(_raw)
-        try:
-            G = _jg.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = _jg.node_link_graph(_raw)
+        if isinstance(_raw.get("nodes"), list) and isinstance(_raw.get("links"), list):
+            graph_data = consumed_graph_rows(_raw)
+        else:
+            graph_data = restore_arc_direction(_raw)
+        G = _jg.node_link_graph(graph_data, edges="links")
         if isinstance(_raw.get("hyperedges"), list):
             G.graph["hyperedges"] = _raw["hyperedges"]
 
@@ -4647,6 +4682,7 @@ def dispatch_command(cmd: str) -> None:
             doc_files = []
             paper_files = []
             image_files = []
+            video_files = []
             deleted_files = []
             excluded_files = []
             graph_stale_sources = []
@@ -4668,6 +4704,7 @@ def dispatch_command(cmd: str) -> None:
             doc_files = [Path(p) for p in new_by_type.get("document", [])]
             paper_files = [Path(p) for p in new_by_type.get("paper", [])]
             image_files = [Path(p) for p in new_by_type.get("image", [])]
+            video_files = [Path(p) for p in new_by_type.get("video", [])]
             deleted_files = list(detection.get("deleted_files", []))
             excluded_files = list(detection.get("excluded_files", []))
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
@@ -4742,6 +4779,7 @@ def dispatch_command(cmd: str) -> None:
             doc_files = [Path(p) for p in files_by_type.get("document", [])]
             paper_files = [Path(p) for p in files_by_type.get("paper", [])]
             image_files = [Path(p) for p in files_by_type.get("image", [])]
+            video_files = [Path(p) for p in files_by_type.get("video", [])]
             deleted_files = []
             excluded_files = []
             graph_stale_sources = []
@@ -4861,6 +4899,16 @@ def dispatch_command(cmd: str) -> None:
             print(
                 f"[graphify extract] {len(_sec)} file(s) skipped as potentially sensitive "
                 f"(rename or move if wrongly flagged): {_snames}{_smore}"
+            )
+        # Audio/video files are detected (classified together under the "video"
+        # bucket) but headless extract has no transcription step wired in, so they
+        # were previously dropped with no trace: a media-only corpus silently wrote
+        # an empty graph and exited 0 with no indication anything had been found
+        # and skipped (#5076).
+        if video_files:
+            print(
+                f"[graphify extract] {len(video_files)} audio/video file(s) detected but "
+                "not extracted (headless extract has no transcription step)"
             )
         stages.mark("detect")
 
@@ -5015,8 +5063,7 @@ def dispatch_command(cmd: str) -> None:
             # graphify-out/ dir into a project that asked for external output.
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
-            # One extract() per process here, so free its parse memo when done.
-            ast_kwargs: dict = {"cache_root": out_root, "root": target, "release_parse_memo": True}
+            ast_kwargs: dict = {"cache_root": out_root, "root": target}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
@@ -5069,6 +5116,22 @@ def dispatch_command(cmd: str) -> None:
                         available_paths=[Path(p) for p in files_by_type.get("code", [])],
                         changed_paths=[Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
                     )
+                    # Files whose ids collide with a changed or deleted one are
+                    # salted apart only when extracted in one batch.
+                    from graphify.watch import _id_collision_partners
+                    code_files = list(code_files) + _id_collision_partners(
+                        list(code_files),
+                        {
+                            _i for _i in (
+                                _ctx_identity(p) for p in [*deleted_files, *excluded_files]
+                            ) if _i
+                        },
+                        [Path(p) for p in files_by_type.get("code", [])],
+                        _ctx_graph.get("nodes", []),
+                        _ctx_identity,
+                        _ctx_root,
+                        set(),
+                    )
                     _ctx_live.difference_update(_ctx_identity(p) for p in code_files)
                     for _node in _ctx_graph.get("nodes", []):
                         if not _node.get("id") or not _ctx_is_ast_tier(_node):
@@ -5091,7 +5154,7 @@ def dispatch_command(cmd: str) -> None:
                             "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
                             "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                             "_rust_impl_key", "_rust_declaration_count",
-                            "_ts_public_twin", "_py_property", "_java_ret",
+                            "_ts_public_twin", "_py_property", "_java_ret", "_java_type",
                             "_ts_fields", "_ts_static_fields",
                             "_py_fixture", "_py_return_type", "_go_fields",
                             "_go_package_path",
@@ -5110,6 +5173,11 @@ def dispatch_command(cmd: str) -> None:
                                     "cpp_conditions",
                                     "ruby_reopened",
                                     "ruby_external_method_owners",
+                                    "type_path",
+                                    "namespace",
+                                    "scope_chain",
+                                    "is_nested_type",
+                                    "is_partial",
                                     # Erlang remote-call resolution keys (#3714):
                                     # an unchanged callee module must keep its
                                     # module/name/arity so `foo:bar()` still
@@ -5119,6 +5187,9 @@ def dispatch_command(cmd: str) -> None:
                                     "module",
                                     "name",
                                     "arity",
+                                    "min_arity",
+                                    "variadic",
+                                    "signature",
                                 )
                                 if key in _metadata
                             }
@@ -5500,6 +5571,7 @@ def dispatch_command(cmd: str) -> None:
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
             "extracted_sources": list(ast_result.get("extracted_sources", [])),
+            "failed_sources": list(ast_result.get("failed_sources", [])),
         }
 
         graph_json_path = graphify_out / "graph.json"
@@ -5515,6 +5587,53 @@ def dispatch_command(cmd: str) -> None:
         # #2543: also drop AST sources that failed (missing optional extra /
         # zero-node anomaly) so they are not frozen as up-to-date.
         _failed_ast_sources = list(ast_result.get("failed_sources") or [])
+        if _failed_ast_sources:
+            # #5245: a failed source with no saved AST records in the existing
+            # graph (most commonly one whose optional extra was never
+            # installed, so it has NEVER once succeeded) has nothing for the
+            # #479 shrink guard to protect, so its failure alone must not arm
+            # that guard and refuse an otherwise complete, unrelated run —
+            # retrying can never heal a permanently missing extra anyway. A
+            # failed source that DID have saved records (a parser regression
+            # on a file that used to succeed) still arms the guard as before.
+            from graphify.export import (
+                existing_graph_node_counts_by_source as _existing_counts_by_source,
+                MALFORMED_GRAPH as _shrink_malformed,
+            )
+            _existing_counts = _existing_counts_by_source(graph_json_path)
+            if _existing_counts is _shrink_malformed:
+                # Can't verify which failed sources had saved records; stay
+                # fail safe and treat every one of them as protected.
+                _protected_failures = list(_failed_ast_sources)
+            else:
+                # failed_sources holds the resolved paths detect() dispatched
+                # (absolute), while an existing graph's source_file is written
+                # root-relative — normalize both to the same key before
+                # comparing, or every lookup here would miss.
+                def _shrink_path_key(value) -> str:
+                    p = Path(value)
+                    if not p.is_absolute():
+                        p = Path(target) / p
+                    try:
+                        return os.path.normcase(str(p.resolve()))
+                    except (OSError, RuntimeError):
+                        return os.path.normcase(os.path.abspath(str(p)))
+
+                _counts_by_key = {
+                    _shrink_path_key(sf): n for sf, n in (_existing_counts or {}).items() if n
+                }
+                _protected_failures = [
+                    sf for sf in _failed_ast_sources if _counts_by_key.get(_shrink_path_key(sf))
+                ]
+            if _protected_failures:
+                _extraction_incomplete = True
+            print(
+                f"[graphify extract] AST extraction incomplete for "
+                f"{len(_failed_ast_sources)} source(s): "
+                f"{', '.join(sorted(_failed_ast_sources))}; failed sources will not "
+                "replace saved AST records and remain pending for retry.",
+                file=sys.stderr,
+            )
         # #2879: code files the extractor declined by design this run. They ARE
         # stamped (not failures) but have zero nodes, so the manifest marks the
         # emptiness intentional and the #2543 heal stops re-queuing them.
@@ -5848,7 +5967,8 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
 
-        communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs)
+        communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs,
+                                cache_dir=graphify_out)
         stages.mark("cluster")
         cohesion = _score_all(G, communities)
         try:

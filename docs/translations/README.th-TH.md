@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>ลดการใช้จ่ายโทเคนของเอเจนต์ลง 80%</b> Graphify Cloud คือหน่วยความจำที่ทำงานตลอดเวลา ซึ่งกำกับดูแลเอเจนต์ของคุณ รักษาคุณภาพโค้ดให้สูง และพิสูจน์ความถูกต้องด้วยการตรวจสอบเชิงรูปนัย <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;</b></a>
+  <b>บริบทโค้ดเบสที่แชร์กันระหว่างเอเจนต์และมนุษย์</b>
+  <br/>
+  เปลี่ยนโค้ดเบสของคุณให้เป็นกราฟความรู้ที่สืบค้นได้ ตามรอย dependencies เข้าใจว่าคอมโพเนนต์เชื่อมโยงกันอย่างไร และมอบบริบทที่นำกลับมาใช้ซ้ำได้ข้ามเซสชันให้กับเอเจนต์เขียนโค้ดของคุณ
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> ทำให้กราฟนั้นทำงานตลอดเวลาทั่วทั้ง SDLC ของคุณ
 </p>
 
 พิมพ์ `/graphify` ในผู้ช่วยเขียนโค้ด AI ของคุณ แล้วมันจะแมปทั้งโปรเจกต์ของคุณ (โค้ด, เอกสาร, PDF, รูปภาพ, วิดีโอ) ให้เป็น **กราฟความรู้** ที่คุณสามารถ **สืบค้นแทนการ grep** ไฟล์ทีละไฟล์ได้
@@ -41,18 +47,27 @@
 > **อยากให้สิ่งนี้ทำงานตลอดเวลาไหม?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) รักษากราฟให้สดตลอดทั้ง SDLC ของคุณ: รองรับ monorepo และข้าม repo, การตรวจสอบเชิงรูปนัย, และการรีวิวโค้ดด้วยมุมมองภาพรวมของ SDLC ของคุณ รวมถึงตัวเชื่อมต่อสำหรับ Sentry, Jira และอื่น ๆ เพื่อให้เหตุการณ์และทิกเก็ตอยู่ในกราฟเดียวกับโค้ดของคุณ **[เริ่มใช้ฟรี ไม่ต้องใช้บัตร](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graph.html แบบโต้ตอบของ graphify ที่แสดงฐานโค้ด FastAPI เป็นกราฟความรู้แบบ force-directed พร้อมคำอธิบายของชุมชนที่ตรวจพบ" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graph.html แบบโต้ตอบของ graphify ที่แสดงฐานโค้ด FastAPI เป็นกราฟความรู้แบบ force-directed พร้อมคำอธิบายของระบบย่อยที่ตรวจพบ" width="900">
 </p>
 <p align="center">
-  <em>ฐานโค้ด FastAPI ที่แมปโดย graphify โหนดทุกจุดคือแนวคิดหนึ่ง สีคือชุมชนที่ตรวจพบ และทั้งหมดคลิกได้ใน graph.html</em>
+  <em>ฐานโค้ด FastAPI ที่แมปโดย graphify โหนดทุกจุดคือแนวคิดหนึ่ง สีคือระบบย่อยที่ตรวจพบ และทั้งหมดคลิกได้ใน graph.html</em>
 </p>
 
-**เริ่มต้นใช้งาน** (30 seconds) ต้องมี Python 3.10+ และ uv (หรือ pipx):
+**เริ่มต้นใช้งาน** (30 seconds) ต้องมี Python 3.11.5–3.14 และ uv (หรือ pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+ใช้ผู้ช่วยตัวอื่นอยู่ใช่ไหม? ระบุชื่อให้ชัดเจน:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+ดู [เลือกแพลตฟอร์มของคุณ](#install) สำหรับผู้ช่วยทั้งหมด 20+ ตัว
 
 จากนั้น ในผู้ช่วย AI ของคุณ:
 
@@ -112,8 +127,8 @@ Shortest path (3 hops):
 
 | ความสามารถ | สิ่งที่คุณได้รับ |
 |---|---|
-| **God nodes** | แนวคิดที่เชื่อมต่อมากที่สุด เพื่อให้คุณเห็นว่าทุกอย่างไหลผ่านอะไร |
-| **Communities** | แบ่งกราฟออกเป็นระบบย่อย (Leiden) พร้อมป้ายกำกับที่ไม่ต้องใช้ LLM |
+| **คอมโพเนนต์ที่เชื่อมต่อมากที่สุด** | แนวคิดที่ทุกอย่างไหลผ่าน — ฮับของกราฟ (หรือที่เรียกว่า *god nodes*) |
+| **ระบบย่อย** | กราฟที่ถูกแบ่งออกเป็นกลุ่มที่เกาะเกี่ยวกัน (Leiden *ชุมชน*) แต่ละกลุ่มมีป้ายกำกับที่ไม่ต้องใช้ LLM |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` ตีความข้าม ~40 languages ผ่าน tree-sitter AST |
 | **Query, path, explain** | ถามคำถามหนึ่งข้อ ตามเส้นทางระหว่างสองสิ่ง หรืออธิบายแนวคิดหนึ่งอย่าง ทั้งหมดกระทำกับ `graph.json` |
 | **Rationale + doc refs** | คอมเมนต์ `# NOTE:` / `# WHY:` และการอ้างอิง ADR/RFC กลายเป็นโหนดชั้นหนึ่งที่เชื่อมโยงกับโค้ด |
@@ -122,6 +137,19 @@ Shortest path (3 hops):
 
 > [!TIP]
 > กำลังรันสิ่งนี้ข้ามหลาย repo หรือ monorepo อยู่ใช่ไหม? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) ทำสิ่งนี้อย่างต่อเนื่องและลดการใช้จ่ายโทเคนของเอเจนต์ลง 80% พร้อมลิงก์ข้าม repo, การรีวิวโค้ดครอบคลุมทั้ง SDLC, การตรวจสอบเชิงรูปนัย และตัวเชื่อมต่อ Sentry/Jira [เริ่มใช้ฟรี ไม่ต้องใช้บัตร &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## เมื่อใดควรหยิบ Graphify มาใช้
+
+หยิบกราฟมาใช้เมื่อคุณต้องการเข้าใจโค้ดเบส ไม่ใช่แค่อ่านผ่าน ๆ:
+
+| สถานการณ์ | สิ่งที่ควรถาม Graphify |
+|---|---|
+| เข้าร่วมโปรเจกต์ที่ไม่คุ้นเคย | "อธิบายว่าคอมโพเนนต์หลักเชื่อมต่อกันอย่างไร" |
+| เปลี่ยนแปลงคอมโพเนนต์ที่ใช้ร่วมกัน | "ตามรอย callers และ dependencies ของมัน" |
+| ตรวจสอบบั๊ก | "แสดงเส้นทางระหว่าง endpoint นี้กับ storage" |
+| กลับไปทบทวนงานก่อนหน้า | "ค้นหา design decisions และโน้ตที่เกี่ยวข้อง" |
 
 ---
 
@@ -157,7 +185,7 @@ Shortest path (3 hops):
 
 | ข้อกำหนด | ขั้นต่ำ | ตรวจสอบ | ติดตั้ง |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -219,7 +247,7 @@ graphify install --project --platform codex
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (เรียกใช้ด้วย `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -298,7 +326,7 @@ Pi ไม่มี `PreToolUse` hook ดังนั้น `graphify pi guard in
 
 `GRAPH_REPORT.md` ยังคงใช้ได้สำหรับการทบทวนสถาปัตยกรรมในวงกว้าง
 
-ไฟล์ที่แต่ละแพลตฟอร์มเขียนออกมาจริง ๆ (เช่น `CODEBUDDY.md` + `PreToolUse` hooks ของ CodeBuddy, `AGENTS.md` ของ Codex, ปลั๊กอิน `.kilo` แบบเนทีฟของ Kilo, กฎ `alwaysApply` ของ Cursor และอื่น ๆ) ครอบคลุมใน **[Always-on setup](https://docs.graphify.com/guides/always-on)**
+ไฟล์ที่แต่ละแพลตฟอร์มเขียนออกมาจริง ๆ (เช่น `CODEBUDDY.md` + `PreToolUse` hooks ของ CodeBuddy, `AGENTS.md` ของ Codex, ปลั๊กอิน `.kilo` แบบเนทีฟของ Kilo, กฎ `alwaysApply` ของ Cursor และอื่น ๆ) ครอบคลุมใน **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**
 
 หากต้องการนำ graphify ออกจากทุกแพลตฟอร์มในครั้งเดียว: `graphify uninstall` (เพิ่ม `--purge` เพื่อลบ `graphify-out/` ด้วย) หรือใช้คำสั่งเฉพาะแพลตฟอร์ม (เช่น `graphify claude uninstall`)
 
@@ -317,9 +345,43 @@ Pi ไม่มี `PreToolUse` hook ดังนั้น `graphify pi guard in
 
 ---
 
+## เชื่อมต่อเอเจนต์ของคุณผ่าน MCP
+
+ชี้เอเจนต์ที่รองรับ MCP ใด ๆ ไปที่กราฟ Graphify แล้วมันจะสืบค้นกราฟโดยตรงแทนการ grep ไฟล์ เชื่อมต่อกับกราฟที่โฮสต์ไว้ (Graphify Cloud, แผนฟรี, ไม่ต้องใช้บัตร):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+อยากทำงานในเครื่องมากกว่าใช่ไหม? ติดตั้งเซิร์ฟเวอร์ stdio ด้วย `uv tool install "graphifyy[mcp]"` และรัน `graphify-mcp` กับ `graph.json` ของคุณเอง — ไม่ต้องมีบัญชี
+
+เมื่อเชื่อมต่อแล้ว เอเจนต์ของคุณจะได้เครื่องมือเหล่านี้:
+
+| เครื่องมือ | สิ่งที่มันทำ |
+|---|---|
+| `query_graph` | ถามคำถามเป็นภาษาธรรมดา แล้วได้กราฟย่อยที่เกี่ยวข้องกลับมา |
+| `shortest_path` | ตามรอยว่าสองโหนดเชื่อมโยงกันอย่างไร |
+| `get_node` / `get_neighbors` | ค้นหาโหนดหนึ่งและสิ่งที่มันเชื่อมโยงด้วย |
+| `get_community` / `god_nodes` | ชุมชนที่ตรวจพบและฮับที่เชื่อมต่อมากที่สุด |
+| `get_section` | อ่านพื้นที่ที่มีป้ายกำกับของกราฟ |
+| `graph_stats` | ขนาด ภาษา และการแยกย่อยเส้นเชื่อมของกราฟ |
+
+เซิร์ฟเวอร์ยังเปิดให้ใช้เครื่องมือ PR (`list_prs`, `get_pr_impact`, `triage_prs`) ด้วย เพื่อให้เอเจนต์ของคุณรีวิว pull request ด้วยบริบทของกราฟได้
+
+---
+
 ## ในรายงานมีอะไร
 
-`GRAPH_REPORT.md` สรุป god nodes, ชุมชน และเส้นทางสำคัญ สำหรับการทบทวนสถาปัตยกรรมในวงกว้าง กราฟถูกสร้างอย่างไรและมีอะไรอยู่ในนั้น: **[How graphify works](https://docs.graphify.com/concepts/architecture)**
+`GRAPH_REPORT.md` สรุปคอมโพเนนต์ที่เชื่อมต่อมากที่สุด ระบบย่อย และเส้นทางสำคัญ สำหรับการทบทวนสถาปัตยกรรมในวงกว้าง กราฟถูกสร้างอย่างไรและมีอะไรอยู่ในนั้น: **[How graphify works](https://docs.graphify.com/concepts/architecture)**
 
 ---
 
@@ -335,8 +397,8 @@ graphify แยกวิเคราะห์ ~40 programming languages ใน�
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -354,7 +416,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 ดู [การอ้างอิงคำสั่งฉบับเต็ม](#full-command-reference) ด้านล่าง

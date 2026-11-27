@@ -681,3 +681,73 @@ def test_cargo_missing_or_malformed_workspace_dependencies_are_ignored(tmp_path,
         '[dependencies]\ndb.workspace = true\n',
     )
     assert introspect_cargo(tmp_path)["edges"] == []
+
+
+def test_cargo_discovery_resolves_inherited_workspace_dependencies_from_manifest_dir(tmp_path):
+    """Inherited [workspace.dependencies] paths resolve relative to the workspace manifest dir."""
+    tauri = tmp_path / "src-tauri"
+    tauri.mkdir()
+    _write_manifest(
+        tauri / "Cargo.toml",
+        """
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+core = { path = "crates/core" }
+db = { path = "crates/storage", package = "internal-storage" }
+serde = "1"
+""",
+    )
+    app = tauri / "crates" / "app"
+    core = tauri / "crates" / "core"
+    storage = tauri / "crates" / "storage"
+    for crate_dir in (app, core, storage):
+        crate_dir.mkdir(parents=True)
+
+    _write_manifest(
+        app / "Cargo.toml",
+        """
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+core = { workspace = true }
+db = { workspace = true }
+serde = { workspace = true }
+""",
+    )
+    _write_manifest(
+        core / "Cargo.toml",
+        """
+[package]
+name = "core"
+version = "0.1.0"
+""",
+    )
+    _write_manifest(
+        storage / "Cargo.toml",
+        """
+[package]
+name = "internal-storage"
+version = "0.1.0"
+""",
+    )
+
+    result = introspect_cargo(tmp_path)
+
+    assert {node["id"] for node in result["nodes"]} == {
+        "crate:app",
+        "crate:core",
+        "crate:internal-storage",
+    }
+    assert {(edge["source"], edge["target"]) for edge in result["edges"]} == {
+        ("crate:app", "crate:core"),
+        ("crate:app", "crate:internal-storage"),
+    }
+    for edge in result["edges"]:
+        assert edge["source_file"] == "src-tauri/crates/app/Cargo.toml"
+        assert edge["relation"] == "crate_depends_on"
+        assert edge["context"] == "cargo_dependency"
+        assert edge["confidence"] == "EXTRACTED"

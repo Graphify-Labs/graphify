@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Vähennä agenttien tokenkulutusta 80%.</b> Graphify Cloud on aina päällä oleva muisti, joka ohjaa agenttejasi, pitää koodin laadun korkeana ja todistaa oikeellisuuden formaalilla verifioinnilla. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Aloita ilmaiseksi, ei korttia &rarr;</b></a>
+  <b>Jaettu koodikantakonteksti agenteille ja ihmisille.</b>
+  <br/>
+  Muuta koodikantasi kyseltäväksi tietograafiksi. Jäljitä riippuvuudet, ymmärrä miten komponentit liittyvät toisiinsa, ja anna koodausavustajallesi uudelleenkäytettävää kontekstia istuntojen yli.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Aloita ilmaiseksi, ei korttia &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> pitää sen graafin aina päällä koko SDLC:si läpi.
 </p>
 
 Kirjoita `/graphify` AI-koodausavustajaasi, niin se kartoittaa koko projektisi (koodi, dokumentit, PDF-tiedostot, kuvat, videot) **tietograafiksi**, jota voit **kysellä sen sijaan, että greppaisit** tiedostoja läpi.
@@ -41,18 +47,27 @@ Kirjoita `/graphify` AI-koodausavustajaasi, niin se kartoittaa koko projektisi (
 > **Haluatko tämän aina päälle?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) pitää graafin elävänä koko SDLC:n läpi: monorepo- ja repojen välinen tuki, formaali verifiointi ja koodikatselmointi lintuperspektiivistä koko SDLC:ääsi, sekä liittimet Sentryyn, Jiraan ja muihin, niin että häiriöt ja tiketit ovat samassa graafissa kuin koodisi. **[Aloita ilmaiseksi, ei korttia](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>FastAPI-koodikanta graphifyn kartoittamana. Jokainen solmu on käsite, värit ovat havaittuja yhteisöjä, ja koko juttu on klikattavissa tiedostossa graph.html.</em>
+  <em>FastAPI-koodikanta graphifyn kartoittamana. Jokainen solmu on käsite, värit ovat havaittuja alijärjestelmiä, ja koko juttu on klikattavissa tiedostossa graph.html.</em>
 </p>
 
-**Pääse alkuun** (30 sekuntia). Tarvitsee Python 3.10+ ja uv:n (tai pipx:n):
+**Pääse alkuun** (30 sekuntia). Tarvitsee Python 3.11.5–3.14 ja uv:n (tai pipx:n):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Käytätkö eri avustajaa? Nimeä se eksplisiittisesti:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Katso [valitse alustasi](#install) kaikille 20+ avustajalle.
 
 Sitten AI-avustajassasi:
 
@@ -114,8 +129,8 @@ Mitä saat suoraan laatikosta:
 
 | Ominaisuus | Mitä saat |
 |---|---|
-| **Jumalsolmut** | Eniten yhteyksiä omaavat käsitteet, niin että näet, minkä läpi kaikki virtaa |
-| **Yhteisöt** | Graafi jaettuna alijärjestelmiin (Leiden), LLM-vapailla etiketeillä |
+| **Eniten yhteyksiä omaavat komponentit** | Käsitteet, joiden läpi kaikki virtaa — graafin keskittymät (kutsutaan myös *god nodes*) |
+| **Alijärjestelmät** | Graafi jaettuna yhtenäisiin ryhmiin (Leiden *yhteisöt*), kukin LLM-vapaalla etiketillä |
 | **Tiedostojen väliset linkit** | `calls` / `imports` / `inherits` / `mixes_in` ratkaistuna ~40 kielen yli tree-sitter AST:llä |
 | **Query, path, explain** | Esitä kysymys, jäljitä polku kahden asian välillä tai selitä yksi käsite, kaikki `graph.json`-tiedostoa vasten |
 | **Perustelut + dokumenttiviittaukset** | `# NOTE:` / `# WHY:` -kommentit ja ADR/RFC-viittaukset muuttuvat ensiluokkaisiksi solmuiksi, jotka on linkitetty koodiin |
@@ -124,6 +139,19 @@ Mitä saat suoraan laatikosta:
 
 > [!TIP]
 > Ajatko tätä useiden repojen tai monorepon yli? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) tekee sen jatkuvasti ja leikkaa agenttien tokenkulutusta 80%, repojen välisillä linkeillä, koko SDLC:n kattavalla koodikatselmoinnilla, formaalilla verifioinnilla ja Sentry/Jira-liittimillä. [Aloita ilmaiseksi, ei korttia &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## Milloin kannattaa turvautua Graphifyyn
+
+Turvaudu graafiin, kun sinun pitää ymmärtää koodikanta, et vain lukea sitä läpi:
+
+| Tilanne | Mitä kysyä Graphifyltä |
+|---|---|
+| Tuntemattomaan projektiin liittyminen | "Selitä, miten pääkomponentit liittyvät toisiinsa." |
+| Jaetun komponentin muuttaminen | "Jäljitä sen kutsujat ja riippuvuudet." |
+| Bugin tutkiminen | "Näytä polku tämän päätepisteen ja tallennuksen välillä." |
+| Aiempaan työhön palaaminen | "Etsi olennaiset suunnittelupäätökset ja muistiinpanot." |
 
 ---
 
@@ -159,7 +187,7 @@ Täydelliset oppaat ja viite löytyvät osoitteesta **[docs.graphify.com](https:
 
 | Vaatimus | Vähimmäis | Tarkista | Asenna |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(suositeltu)* | mikä tahansa | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(vaihtoehto)* | mikä tahansa | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +255,7 @@ esimerkiksi `graphify claude install --project` tai `graphify codex install --pr
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (tunnistetaan automaattisesti) tai `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (kutsu komennolla `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -306,7 +334,7 @@ Tämä kirjoittaa pienen konfiguraatiotiedoston, joka kehottaa avustajaasi konsu
 
 `GRAPH_REPORT.md` on edelleen käytettävissä laajaan arkkitehtuurikatselmointiin.
 
-Tarkalleen mitkä tiedostot kukin alusta kirjoittaa (CodeBuddyn `CODEBUDDY.md` + `PreToolUse`-hookit, Codexin `AGENTS.md`, Kilon natiivi `.kilo`-liitännäinen, Cursorin `alwaysApply`-sääntö ja niin edelleen) on käsitelty kohdassa **[Aina päällä -asetus](https://docs.graphify.com/guides/always-on)**.
+Tarkalleen mitkä tiedostot kukin alusta kirjoittaa (CodeBuddyn `CODEBUDDY.md` + `PreToolUse`-hookit, Codexin `AGENTS.md`, Kilon natiivi `.kilo`-liitännäinen, Cursorin `alwaysApply`-sääntö ja niin edelleen) on käsitelty kohdassa **[Aina päällä -asetus](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Poistaaksesi graphifyn kaikilta alustoilta kerralla: `graphify uninstall` (lisää `--purge` poistaaksesi myös `graphify-out/`). Tai käytä alustakohtaista komentoa (esim. `graphify claude uninstall`).
 
@@ -325,9 +353,43 @@ Molemmat kannustavat rajattuihin graafikyselyihin ennen laajoja lähdehakuja. Va
 
 ---
 
+## Yhdistä agenttisi MCP:n kautta
+
+Osoita mikä tahansa MCP-yhteensopiva agentti Graphify-graafiin, niin se kyselee graafia suoraan sen sijaan, että greppaisi tiedostoja. Yhdistä isännöityyn graafiin (Graphify Cloud, ilmainen taso, ei korttia):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+Pysytkö mieluummin paikallisena? Asenna stdio-palvelin komennolla `uv tool install "graphifyy[mcp]"` ja aja `graphify-mcp` omaa `graph.json`-tiedostoasi vasten — tiliä ei tarvita.
+
+Kun yhteys on muodostettu, agenttisi saa nämä työkalut:
+
+| Työkalu | Mitä se tekee |
+|---|---|
+| `query_graph` | Esitä kysymys selkokielellä ja saat takaisin relevantin aligraafin |
+| `shortest_path` | Jäljitä, miten kaksi solmua liittyvät toisiinsa |
+| `get_node` / `get_neighbors` | Hae solmu ja se, mihin se koskettaa |
+| `get_community` / `god_nodes` | Havaitut klusterit ja eniten yhteyksiä omaavat keskittymät |
+| `get_section` | Lue graafin nimetty alue |
+| `graph_stats` | Graafin koko, kielet ja kaarijakauma |
+
+Palvelin tarjoaa myös PR-työkaluja (`list_prs`, `get_pr_impact`, `triage_prs`), jotta agenttisi voi katselmoida pull requestit graafikontekstin kanssa.
+
+---
+
 ## Mitä raportissa on
 
-`GRAPH_REPORT.md` tiivistää jumalsolmut, yhteisöt ja keskeiset polut laajaan arkkitehtuurikatselmointiin. Miten graafi rakennetaan ja mitä se sisältää: **[Miten graphify toimii](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` tiivistää eniten yhteyksiä omaavat komponentit, alijärjestelmät ja keskeiset polut laajaan arkkitehtuurikatselmointiin. Miten graafi rakennetaan ja mitä se sisältää: **[Miten graphify toimii](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -343,8 +405,8 @@ graphify jäsentää ~40 ohjelmointikieltä paikallisesti tree-sitter AST:llä, 
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -362,7 +424,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Katso [täydellinen komentoviite](#full-command-reference) alta.

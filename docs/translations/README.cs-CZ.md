@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>Snižte spotřebu tokenů agentů o 80 %.</b> Graphify Cloud je vždy zapnutá paměť, která řídí vaše agenty, udržuje vysokou kvalitu kódu a dokazuje správnost pomocí formální verifikace. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Začněte zdarma, bez karty &rarr;</b></a>
+  <b>Sdílený kontext kódové báze pro agenty i lidi.</b>
+  <br/>
+  Proměňte svou kódovou bázi v dotazovatelný znalostní graf. Sledujte závislosti, pochopte, jak spolu komponenty souvisejí, a dejte svému programovacímu agentovi znovupoužitelný kontext napříč sezeními.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Začněte zdarma, bez karty &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> udržuje tento graf vždy zapnutý napříč celým vaším SDLC.
 </p>
 
 Napište `/graphify` ve svém AI programovacím asistentovi a ten zmapuje celý váš projekt (kód, dokumentaci, PDF, obrázky, videa) do **znalostního grafu**, který můžete **dotazovat namísto grepování** skrze soubory.
@@ -41,18 +47,27 @@ Napište `/graphify` ve svém AI programovacím asistentovi a ten zmapuje celý 
 > **Chcete to mít vždy zapnuté?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) udržuje graf živý napříč celým vaším SDLC: podpora monorepa i napříč repozitáři, formální verifikace a revize kódu s ptačím pohledem na váš SDLC, plus konektory pro Sentry, Jira a další, takže incidenty a tikety sedí ve stejném grafu jako váš kód. **[Začněte zdarma, bez karty](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>Kódová báze FastAPI zmapovaná nástrojem graphify. Každý uzel je koncept, barvy jsou detekované komunity a celek je klikatelný v graph.html.</em>
+  <em>Kódová báze FastAPI zmapovaná nástrojem graphify. Každý uzel je koncept, barvy jsou detekované podsystémy a celek je klikatelný v graph.html.</em>
 </p>
 
-**Začínáme** (30 sekund). Vyžaduje Python 3.10+ a uv (nebo pipx):
+**Začínáme** (30 sekund). Vyžaduje Python 3.11.5–3.14 a uv (nebo pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+Používáte jiného asistenta? Uveďte ho výslovně:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Viz [vyberte svou platformu](#install) pro všech 20+ asistentů.
 
 Poté ve svém AI asistentovi:
 
@@ -114,8 +129,8 @@ Co dostanete rovnou z krabice:
 
 | Schopnost | Co získáte |
 |---|---|
-| **Boží uzly** | Nejvíce propojené koncepty, takže vidíte, čím vše protéká |
-| **Komunity** | Graf rozdělený na podsystémy (Leiden), s popisky bez LLM |
+| **Nejvíce propojené komponenty** | Koncepty, kterými vše protéká — huby grafu (také nazývané *god nodes*) |
+| **Podsystémy** | Graf rozdělený do soudržných skupin (Leiden *communities*), každá s popiskem bez LLM |
 | **Propojení napříč soubory** | `calls` / `imports` / `inherits` / `mixes_in` rozlišené napříč ~40 jazyky pomocí tree-sitter AST |
 | **Query, path, explain** | Položte otázku, vysledujte cestu mezi dvěma věcmi nebo vysvětlete jeden koncept, vše proti `graph.json` |
 | **Zdůvodnění + odkazy na dokumentaci** | Komentáře `# NOTE:` / `# WHY:` a citace ADR/RFC se stávají prvotřídními uzly propojenými s kódem |
@@ -124,6 +139,19 @@ Co dostanete rovnou z krabice:
 
 > [!TIP]
 > Spouštíte to napříč mnoha repozitáři nebo monorepem? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) to dělá nepřetržitě a snižuje spotřebu tokenů agentů o 80 %, s propojeními napříč repozitáři, revizí kódu v celém SDLC, formální verifikací a konektory Sentry/Jira. [Začněte zdarma, bez karty &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## Kdy sáhnout po Graphify
+
+Sáhněte po grafu, když potřebujete porozumět kódové základně, ne ji jen pročíst:
+
+| Situace | Na co se zeptat Graphify |
+|---|---|
+| Zapojení do neznámého projektu | „Vysvětlete, jak se propojují hlavní komponenty.“ |
+| Změna sdílené komponenty | „Vysledujte její volající a závislosti.“ |
+| Zkoumání chyby | „Ukažte cestu mezi tímto koncovým bodem a úložištěm.“ |
+| Návrat k dřívější práci | „Najděte relevantní návrhová rozhodnutí a poznámky.“ |
 
 ---
 
@@ -159,7 +187,7 @@ Každý systém běžel na stejném harnessu se stejným modelem a rozpočty, ho
 
 | Požadavek | Minimum | Kontrola | Instalace |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(doporučeno)* | jakékoli | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternativa)* | jakékoli | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +255,7 @@ například `graphify claude install --project` nebo `graphify codex install --p
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (automaticky detekováno) nebo `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (vyvolává se přes `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -306,7 +334,7 @@ Toto zapíše malý konfigurační soubor, který řekne vašemu asistentovi, ab
 
 `GRAPH_REPORT.md` je stále k dispozici pro širokou architektonickou revizi.
 
-Přesně které soubory každá platforma zapisuje (CodeBuddy `CODEBUDDY.md` + hooky `PreToolUse`, Codex `AGENTS.md`, nativní plugin `.kilo` u Kilo, pravidlo `alwaysApply` u Cursoru a tak dále) je pokryto v **[Nastavení vždy zapnuto](https://docs.graphify.com/guides/always-on)**.
+Přesně které soubory každá platforma zapisuje (CodeBuddy `CODEBUDDY.md` + hooky `PreToolUse`, Codex `AGENTS.md`, nativní plugin `.kilo` u Kilo, pravidlo `alwaysApply` u Cursoru a tak dále) je pokryto v **[Nastavení vždy zapnuto](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Chcete-li odebrat graphify ze všech platforem najednou: `graphify uninstall` (přidejte `--purge`, chcete-li také smazat `graphify-out/`). Nebo použijte příkaz pro jednotlivou platformu (např. `graphify claude uninstall`).
 
@@ -325,9 +353,43 @@ Obojí podporuje omezené dotazy do grafu před širokým vyhledáváním ve zdr
 
 ---
 
+## Připojte svého agenta přes MCP
+
+Nasměrujte libovolného agenta s podporou MCP na graf Graphify a ten bude graf dotazovat přímo namísto grepování skrze soubory. Připojte se k hostovanému grafu (Graphify Cloud, bezplatný tarif, bez karty):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+Chcete zůstat lokálně? Nainstalujte stdio server pomocí `uv tool install "graphifyy[mcp]"` a spusťte `graphify-mcp` proti vlastnímu `graph.json`: žádný účet není potřeba.
+
+Po připojení váš agent získá tyto nástroje:
+
+| Nástroj | Co dělá |
+|---|---|
+| `query_graph` | Položte otázku v běžném jazyce a získejte relevantní podgraf |
+| `shortest_path` | Vysledujte, jak se dva uzly propojují |
+| `get_node` / `get_neighbors` | Vyhledejte uzel a to, čeho se dotýká |
+| `get_community` / `god_nodes` | Detekované klastry a nejvíce propojené huby |
+| `get_section` | Přečtěte si označenou oblast grafu |
+| `graph_stats` | Velikost, jazyky a rozpis hran grafu |
+
+Server také zpřístupňuje nástroje pro PR (`list_prs`, `get_pr_impact`, `triage_prs`), takže váš agent může revidovat pull requesty s kontextem grafu.
+
+---
+
 ## Co je v reportu
 
-`GRAPH_REPORT.md` shrnuje boží uzly, komunity a klíčové cesty pro širokou architektonickou revizi. Jak se graf sestavuje a co obsahuje: **[Jak graphify funguje](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` shrnuje nejvíce propojené komponenty, podsystémy a klíčové cesty pro širokou architektonickou revizi. Jak se graf sestavuje a co obsahuje: **[Jak graphify funguje](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -343,8 +405,8 @@ graphify parsuje ~40 programovacích jazyků lokálně pomocí tree-sitter AST a
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -362,7 +424,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Viz [úplná reference příkazů](#full-command-reference) níže.

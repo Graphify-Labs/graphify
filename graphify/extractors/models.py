@@ -69,6 +69,13 @@ class _SymbolImportFact:
     target_path: Path
     imported_name: str
     line: int
+    # The plain (unsalted) id of the function this import is local to, or None
+    # for a module-level import. Only Python sets this: a function-local
+    # `from m import x` binds `x` inside that function alone, so its alias
+    # must not resolve a same-named call made from an unrelated sibling
+    # function (#5421's second, deferred scenario). JS/TS imports are always
+    # module-level, so their facts leave this None and match as before.
+    scope_id: str | None = None
 
 @dataclass(frozen=True)
 class _SymbolAliasFact:

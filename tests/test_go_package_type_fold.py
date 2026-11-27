@@ -5,7 +5,8 @@ it mints the type again under the same id, and disambiguation then split those a
 path — leaving one type fragmented into several partial nodes, each owning some of its
 methods, which every single-definition guard downstream reads as an ambiguity. The fold
 runs before disambiguation; the negative cases pin what must stay split, since the id
-folds in the directory's name rather than its path and the package clause is not parsed.
+folds in the directory's name rather than its path, and a ``_test.go`` file folds only when
+its package clause matches the other files' (#5209).
 """
 from __future__ import annotations
 
@@ -86,6 +87,26 @@ def test_two_packages_sharing_a_directory_name_stay_split(tmp_path):
     assert len(_nodes(result, "Server")) == 2
 
 
+def test_each_of_two_same_named_packages_still_folds_its_own_files(tmp_path):
+    # Staying split from each other must not stop either package folding its own
+    # sibling files: the methods follow their own declaration through the salting
+    # disambiguation then applies to the still-colliding id (#5304).
+    result = _extract(tmp_path, {
+        "a/svc/x.go": "package svc\n\ntype Server struct{}\n",
+        "a/svc/y.go": "package svc\n\nfunc (s *Server) Close() {}\n",
+        "b/svc/x.go": "package svc\n\ntype Server struct{}\n\nfunc (s *Server) Save() {}\n",
+    })
+    # Exactly two Server nodes (one per package); without the per-directory fold,
+    # package `a`'s Server stays split across x.go/y.go, giving three — the dict
+    # below would silently collapse that, so assert the count first.
+    all_servers = _nodes(result, "Server")
+    assert len(all_servers) == 2, [n["source_file"] for n in all_servers]
+    servers = {Path(str(n["source_file"])).parent.parent.name: n for n in all_servers}
+    assert sorted(servers) == ["a", "b"], servers
+    assert _edges_from(result, servers["a"]["id"], "method") == {".Close()"}
+    assert _edges_from(result, servers["b"]["id"], "method") == {".Save()"}
+
+
 def test_an_external_test_package_in_the_same_directory_stays_split(tmp_path):
     result = _extract(tmp_path, {
         "svc/a.go": "package svc\n\ntype Fixture struct{}\n\nfunc (f *Fixture) Save() {}\n",
@@ -104,3 +125,32 @@ def test_a_function_and_a_method_of_the_same_name_are_untouched(tmp_path):
     })
     assert len(_nodes(result, "Close()")) == 1
     assert len(_nodes(result, ".Close()")) == 1
+
+
+def test_an_internal_test_file_method_folds_into_the_package_type(tmp_path):
+    # #5209: an internal test file (same package clause) adding a test-only method to a
+    # package type must not split the type, or every call from its methods is lost.
+    result = _extract(tmp_path, {
+        "go.mod": "module example.com/app\n\ngo 1.22\n",
+        "exec/sim.go": "package exec\n\ntype Sim struct{}\n\nfunc (s Sim) Place(x int) int { return x }\n",
+        "seq/seq.go": ("package seq\n\nimport \"example.com/app/exec\"\n\n"
+                       "type Seq struct {\n\tsim exec.Sim\n}\n\n"
+                       "func (s *Seq) helper() int { return 1 }\n\n"
+                       "func (s *Seq) Run() int { return s.sim.Place(s.helper()) }\n"),
+        "seq/extra_test.go": ("// Test-only helpers.\npackage seq\n\n"
+                              "func (s *Seq) extra() int { return 2 }\n"),
+    })
+    seqs = _nodes(result, "Seq")
+    assert len(seqs) == 1, [n["id"] for n in seqs]
+    assert Path(str(seqs[0]["source_file"])).name == "seq.go"
+    assert _edges_from(result, seqs[0]["id"], "method") == {".helper()", ".Run()", ".extra()"}
+    run = next(n for n in result["nodes"] if n["label"] == ".Run()")
+    assert {".helper()", ".Place()"} <= _edges_from(result, run["id"], "calls")
+
+
+def test_an_external_test_package_with_a_method_only_type_stays_split(tmp_path):
+    result = _extract(tmp_path, {
+        "svc/a.go": "package svc\n\ntype Fixture struct{}\n",
+        "svc/b_test.go": "package svc_test\n\nfunc (f *Fixture) Reset() {}\n",
+    })
+    assert len(_nodes(result, "Fixture")) == 2

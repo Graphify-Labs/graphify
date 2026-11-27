@@ -105,8 +105,23 @@ _ANALYZE_WARNING_FILTERS = (
 )
 
 
+# Test modules that drive a real `graphify watch` / watchdog loop. These assert
+# that a rebuild lands within a wall-clock budget, which is flaky under xdist CPU
+# contention (the rebuild loses the race and graph.json isn't written in time), so
+# they are marked `serial` to run outside the parallel pass. Keyed by module stem.
+_SERIAL_WATCH_MODULES = frozenset({
+    "test_watch",
+    "test_watch_pruned",
+    "test_watch_inotify_overflow",
+    "test_language_override_lifecycle",
+    "test_jsconfig_baseurl",
+})
+
+
 def pytest_collection_modifyitems(items: list[Any]) -> None:
     for item in items:
+        if item.path.stem in _SERIAL_WATCH_MODULES:
+            item.add_marker(pytest.mark.serial)
         if item.path.name != "test_analyze.py":
             continue
         for warning_filter in _ANALYZE_WARNING_FILTERS:

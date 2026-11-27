@@ -70,3 +70,150 @@ def test_param_of_a_callback_inside_a_test_block_is_not_a_reference(tmp_path):
         "});\n"
     )
     assert _indirect(tmp_path, src) == set()
+
+
+# #5217: a closure passed in a call statement NESTED inside another function is
+# also tracked as its own body by the #3124 branch, so a name it captures from
+# an enclosing function or block must shadow too, not only its own params.
+
+
+def test_param_captured_from_an_enclosing_function_is_not_a_reference(tmp_path):
+    src = (
+        "m.c(function ($scope, confirm) {\n"
+        "  $scope.remove = function (value) {\n"
+        "    confirm({ buttons: { ok: { action: function () { del(value); } } } });\n"
+        "  };\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_arrow_param_captured_two_levels_down_is_not_a_reference(tmp_path):
+    src = (
+        "m.c(function ($scope) {\n"
+        "  $scope.load = function (rows) {\n"
+        "    rows.forEach((value) => {\n"
+        "      if (value) { setTimeout(function () { show(value); }); }\n"
+        "    });\n"
+        "  };\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_enclosing_const_is_not_a_reference(tmp_path):
+    src = (
+        "m.c(function () {\n"
+        "  const value = 1;\n"
+        "  setTimeout(function () { show(value); });\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_enclosing_loop_binding_is_not_a_reference(tmp_path):
+    src = (
+        "m.c(function (xs) {\n"
+        "  for (const value of xs) { setTimeout(function () { show(value); }); }\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_enclosing_catch_binding_is_not_a_reference(tmp_path):
+    src = (
+        "m.c(function () {\n"
+        "  try { run(); } catch (value) { setTimeout(function () { show(value); }); }\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_unbound_name_in_a_nested_callback_still_resolves(tmp_path):
+    src = (
+        "m.c(function ($scope) {\n"
+        "  $scope.load = function (rows) {\n"
+        "    setTimeout(function () { show(value); });\n"
+        "  };\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == {("a.js", "value()")}
+
+
+def test_a_binding_in_a_sibling_scope_does_not_shadow_a_nested_callback(tmp_path):
+    src = (
+        "m.c(function ($scope) {\n"
+        "  $scope.a = function (value) { save(1); };\n"
+        "  $scope.b = function (rows) {\n"
+        "    setTimeout(function () { show(value); });\n"
+        "  };\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == {("a.js", "value()")}
+
+
+# #5241: a `this.x = function (...) {}` member is its own node since #3408, so
+# its body is walked on its own. Its params must shadow there, as they already
+# do for the same function assigned to `$scope.x`.
+
+
+def test_this_member_param_passed_to_a_bare_call_is_not_a_reference(tmp_path):
+    src = "m.service('s', function () { this.d = function (value) { emit(value); }; });\n"
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_this_member_param_passed_to_a_this_call_is_not_a_reference(tmp_path):
+    src = "m.service('s', function () { this.e = function (value) { this.on(value); }; });\n"
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_this_member_param_passed_to_an_alias_call_is_not_a_reference(tmp_path):
+    src = (
+        "m.service('s', function () {\n"
+        "  var svc = this;\n"
+        "  this.f = function (value) { return svc.pick(value); };\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_scope_member_param_is_not_a_reference(tmp_path):
+    src = ("m.controller('c', function ($scope) "
+           "{ $scope.g = function (value) { emit(value); }; });\n")
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_this_member_in_a_named_constructor_param_is_not_a_reference(tmp_path):
+    src = "function Svc() { this.d = function (value) { emit(value); }; }\n"
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_name_captured_by_a_this_member_is_not_a_reference(tmp_path):
+    src = "m.service('s', function (value) { this.d = function () { emit(value); }; });\n"
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_unbound_name_in_a_this_member_still_resolves(tmp_path):
+    src = "m.service('s', function () { this.d = function (x) { emit(value); }; });\n"
+    assert _indirect(tmp_path, src) == {("d()", "value()")}
+
+
+def test_this_member_in_a_function_expression_constructor_param_is_not_a_reference(tmp_path):
+    src = "const Svc = function () { this.d = function (value) { emit(value); }; };\n"
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_object_member_param_is_not_a_reference(tmp_path):
+    src = (
+        "m.service('s', function () {\n"
+        "  var api = {};\n"
+        "  api.d = function (value) { emit(value); };\n"
+        "  return api;\n"
+        "});\n"
+    )
+    assert _indirect(tmp_path, src) == set()
+
+
+def test_this_arrow_member_param_is_not_a_reference(tmp_path):
+    src = "m.service('s', function () { this.d = (value) => { emit(value); }; });\n"
+    assert _indirect(tmp_path, src) == set()

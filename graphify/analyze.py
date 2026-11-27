@@ -1,5 +1,8 @@
 """Graph analysis: god nodes (most connected), surprising connections (cross-community), suggested questions."""
 from __future__ import annotations
+import math
+import random
+import re
 from pathlib import Path
 import networkx as nx
 
@@ -480,6 +483,83 @@ def _cross_community_surprises(
     return deduped[:top_n]
 
 
+# networkx 3.5 changed how sampled betweenness scores are rescaled.
+_NETWORKX_RESCALES_SAMPLES_BY_SOURCE = tuple(int(p) for p in re.findall(r"\d+", nx.__version__)[:2]) >= (3, 5)
+
+
+def _betweenness_centrality(G: nx.Graph, k: int | None, seed: int) -> dict[str, float]:
+    """The scores of ``nx.betweenness_centrality(G, k=k, seed=seed)``, bit for bit.
+
+    Unweighted, normalized and without endpoints, the only form used here. networkx
+    keeps the search state in dicts keyed by node id and rebuilds the path counts and
+    predecessor lists over the whole graph for each source. This numbers the nodes
+    once, keeps the same state in lists, and resets only the entries a source reached.
+    The search order, the accumulation order and the rescale for sampled sources
+    follow networkx 3.5 and later. Older networkx rescaled sampled scores differently,
+    so there this returns networkx's own result.
+    """
+    if not _NETWORKX_RESCALES_SAMPLES_BY_SOURCE:
+        return nx.betweenness_centrality(G, k=k, seed=seed)
+    if k is not None and k <= 1:
+        # A single sampled source can't be rescaled (the per-source factor divides
+        # by k-1). Defer to networkx, which handles it. suggest_questions never
+        # passes k <= 1; this only guards direct callers of the helper.
+        return nx.betweenness_centrality(G, k=k, seed=seed)
+    nodes = list(G)
+    n = len(nodes)
+    if k == n:
+        k = None
+    index = {node: i for i, node in enumerate(nodes)}
+    neighbors = [[index[w] for w in G[v]] for v in nodes]
+    sources = range(n) if k is None else [index[v] for v in random.Random(seed).sample(nodes, k)]
+    scores = [0.0] * n
+    dist = [-1] * n
+    sigma = [0.0] * n  # number of shortest paths from the source
+    delta = [0.0] * n
+    preds: list[list[int]] = [[] for _ in range(n)]
+    for s in sources:
+        dist[s] = 0
+        sigma[s] = 1.0
+        order = [s]  # the breadth-first queue, which is also the visit order
+        i = 0
+        while i < len(order):
+            v = order[i]
+            i += 1
+            next_dist = dist[v] + 1
+            sigma_v = sigma[v]
+            for w in neighbors[v]:
+                if dist[w] < 0:
+                    dist[w] = next_dist
+                    order.append(w)
+                elif dist[w] != next_dist:
+                    continue
+                sigma[w] += sigma_v
+                preds[w].append(v)
+        for w in reversed(order):
+            coeff = (1 + delta[w]) / sigma[w]
+            for v in preds[w]:
+                delta[v] += sigma[v] * coeff
+            if w != s:
+                scores[w] += delta[w]
+        for v in order:
+            dist[v] = -1
+            sigma[v] = delta[v] = 0.0
+            preds[v] = []
+    targets = n - 1  # a path through a node cannot end at that node
+    if targets >= 2:
+        if k is None:
+            scale = 1 / (targets * (targets - 1))
+            scores = [score * scale for score in scores]
+        else:
+            # A sampled source cannot lie on a path from itself.
+            source_scale = 1 / ((k - 1) * (targets - 1)) if k > 1 else math.nan
+            other_scale = 1 / (k * (targets - 1))
+            sampled = set(sources)
+            scores = [score * (source_scale if i in sampled else other_scale)
+                      for i, score in enumerate(scores)]
+    return dict(zip(nodes, scores))
+
+
 def suggest_questions(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -520,7 +600,7 @@ def suggest_questions(
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
     if G.number_of_edges() > 0:
         k = min(100, G.number_of_nodes()) if G.number_of_nodes() > 1000 else None
-        betweenness = nx.betweenness_centrality(G, k=k, seed=42)
+        betweenness = _betweenness_centrality(G, k, seed=42)
         # Top bridge nodes that are NOT file-level hubs
         bridges = sorted(
             [(n, s) for n, s in betweenness.items()
@@ -661,10 +741,15 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
         for n in removed_node_ids
     ]
 
-    def edge_key(G: nx.Graph, u: str, v: str, data: dict) -> tuple:
+    def edge_key(G: nx.Graph, u, v, data: dict) -> tuple:
+        rel = data.get("relation", "")
         if G.is_directed():
-            return (u, v, data.get("relation", ""))
-        return (min(u, v), max(u, v), data.get("relation", ""))
+            return (u, v, rel)
+        if isinstance(u, str) and isinstance(v, str):
+            return (u, v, rel) if u <= v else (v, u, rel)
+        if (type(u).__name__, str(u)) <= (type(v).__name__, str(v)):
+            return (u, v, rel)
+        return (v, u, rel)
 
     def edge_dir(data: dict) -> tuple | None:
         # Stored direction of an undirected edge (build_from_json, load_node_link_graph).
@@ -672,14 +757,17 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
             return (data["_src"], data["_tgt"])
         return None
 
-    old_edge_dirs = {
-        edge_key(G_old, u, v, d): edge_dir(d)
-        for u, v, d in G_old.edges(data=True)
-    }
-    new_edge_dirs = {
-        edge_key(G_new, u, v, d): edge_dir(d)
-        for u, v, d in G_new.edges(data=True)
-    }
+    def _collect_edges(G: nx.Graph) -> tuple[dict[tuple, tuple | None], dict[tuple, list[tuple]]]:
+        dirs: dict[tuple, tuple | None] = {}
+        raw: dict[tuple, list[tuple]] = {}
+        for u, v, d in G.edges(data=True):
+            k = edge_key(G, u, v, d)
+            dirs[k] = edge_dir(d)
+            raw.setdefault(k, []).append((u, v, d))
+        return dirs, raw
+
+    old_edge_dirs, old_raw_edges = _collect_edges(G_old)
+    new_edge_dirs, new_raw_edges = _collect_edges(G_new)
     old_edge_keys = set(old_edge_dirs)
     new_edge_keys = set(new_edge_dirs)
 
@@ -693,25 +781,27 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     added_edge_keys = (new_edge_keys - old_edge_keys) | reversed_edge_keys
     removed_edge_keys = (old_edge_keys - new_edge_keys) | reversed_edge_keys
 
-    new_edges_list = []
-    for u, v, d in G_new.edges(data=True):
-        if edge_key(G_new, u, v, d) in added_edge_keys:
-            new_edges_list.append({
-                "source": d.get("_src", u),
-                "target": d.get("_tgt", v),
-                "relation": d.get("relation", ""),
-                "confidence": d.get("confidence", ""),
-            })
+    new_edges_list = [
+        {
+            "source": d.get("_src", u),
+            "target": d.get("_tgt", v),
+            "relation": d.get("relation", ""),
+            "confidence": d.get("confidence", ""),
+        }
+        for k in added_edge_keys
+        for u, v, d in new_raw_edges[k]
+    ]
 
-    removed_edges_list = []
-    for u, v, d in G_old.edges(data=True):
-        if edge_key(G_old, u, v, d) in removed_edge_keys:
-            removed_edges_list.append({
-                "source": d.get("_src", u),
-                "target": d.get("_tgt", v),
-                "relation": d.get("relation", ""),
-                "confidence": d.get("confidence", ""),
-            })
+    removed_edges_list = [
+        {
+            "source": d.get("_src", u),
+            "target": d.get("_tgt", v),
+            "relation": d.get("relation", ""),
+            "confidence": d.get("confidence", ""),
+        }
+        for k in removed_edge_keys
+        for u, v, d in old_raw_edges[k]
+    ]
 
     parts = []
     if new_nodes_list:
@@ -818,6 +908,17 @@ def find_import_cycles(
     # enumerating all elementary cycles and post-filtering — avoids exponential
     # blowup on dense graphs with many long cycles (#1196).
     cycles: list[list[str]] = []
+    # Two-file cycles first, read straight off reciprocal edges in O(E). The
+    # capped enumeration below stops in networkx's yield order, not by length,
+    # so on a graph with many longer cycles it could fill the cap before ever
+    # reaching a two-file mutual import - the tightest coupling, which this
+    # function promises to list first.
+    if max_cycle_length >= 2:
+        for u, v in file_graph.edges():
+            if len(cycles) >= top_n * 10:
+                break
+            if u < v and file_graph.has_edge(v, u):
+                cycles.append([u, v])
     for cycle in nx.simple_cycles(file_graph, length_bound=max_cycle_length):
         if len(cycle) <= max_cycle_length:
             cycles.append(cycle)

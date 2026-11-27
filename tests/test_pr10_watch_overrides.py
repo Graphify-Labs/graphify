@@ -3,6 +3,10 @@ import pytest
 
 from tests.test_language_override_lifecycle import drive_watch, graph_labels
 
+# drive_watch runs a real watchdog loop (filesystem events + timing), which flakes
+# under xdist CPU contention; run it in the serial pass.
+pytestmark = pytest.mark.serial
+
 
 @pytest.mark.parametrize("replacement", [False, True])
 def test_ignored_root_configuration_still_rebuilds_the_graph(tmp_path, monkeypatch, replacement):

@@ -151,15 +151,33 @@ def generate(
     if community_labels:
         community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
 
-    confidences = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
-    total = len(confidences) or 1
-    ext_pct = round(confidences.count("EXTRACTED") / total * 100)
-    inf_pct = round(confidences.count("INFERRED") / total * 100)
-    amb_pct = round(confidences.count("AMBIGUOUS") / total * 100)
+    total_edges = 0
+    ext_count = 0
+    inf_count = 0
+    amb_count = 0
+    inf_score_sum = 0.0
+    has_import_edge = False
+    ambiguous: list[tuple] = []
 
-    inf_edges = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("confidence") == "INFERRED"]
-    inf_scores = [d.get("confidence_score", 0.5) for _, _, d in inf_edges]
-    inf_avg = round(sum(inf_scores) / len(inf_scores), 2) if inf_scores else None
+    for u, v, d in G.edges(data=True):
+        total_edges += 1
+        conf = d.get("confidence", "EXTRACTED")
+        if conf == "EXTRACTED":
+            ext_count += 1
+        elif conf == "INFERRED":
+            inf_count += 1
+            inf_score_sum += d.get("confidence_score", 0.5)
+        elif conf == "AMBIGUOUS":
+            amb_count += 1
+            ambiguous.append((u, v, d))
+        if not has_import_edge and d.get("relation") in ("imports", "imports_from"):
+            has_import_edge = True
+
+    total = total_edges or 1
+    ext_pct = round(ext_count / total * 100)
+    inf_pct = round(inf_count / total * 100)
+    amb_pct = round(amb_count / total * 100)
+    inf_avg = round(inf_score_sum / inf_count, 2) if inf_count else None
 
     lines = [
         f"# Graph Report - {_portable_root_label(root)}  ({today})",
@@ -199,6 +217,9 @@ def generate(
 
     from .analyze import _is_file_node, _is_concept_node, _is_contains_only_ast_node
 
+    nodes_view = G.nodes
+    real_cache: dict = {}
+
     def _real_node(n) -> bool:
         # The one definition of "real" (structural, not file/concept/
         # rationale) every figure this function prints about itself must
@@ -209,17 +230,22 @@ def generate(
         # this list. A community-listing loop that filtered only file nodes
         # let rationale/concept content leak into "Nodes (N): ..." as if it
         # were a real declaration, and inflated N by counting it (#3794).
-        return (
-            not _is_file_node(G, n)
+        cached = real_cache.get(n)
+        if cached is not None:
+            return cached
+        res = (
+            nodes_view[n].get("file_type") != "rationale"
             and not _is_concept_node(G, n)
-            and G.nodes[n].get("file_type") != "rationale"
+            and not _is_file_node(G, n)
         )
+        real_cache[n] = res
+        return res
 
-    def _real_count(nodes) -> int:
-        return sum(1 for n in nodes if _real_node(n))
-
-    non_empty = {cid: nodes for cid, nodes in communities.items()
-                 if any(_real_node(n) for n in nodes)}
+    community_real = {
+        cid: [n for n in nodes if _real_node(n)]
+        for cid, nodes in communities.items()
+    }
+    non_empty_cids = [cid for cid, rnodes in community_real.items() if rnodes]
     # One predicate for every figure the report prints about itself (#3148):
     # "thin" is real < min_community_size (ZERO real nodes included), and
     # "shown" is what the render loop below actually renders (real >=
@@ -231,13 +257,10 @@ def generate(
     # yet was excluded from "thin" too, so it went uncounted anywhere and
     # `shown + thin` silently undercounted `len(communities)` (#3548).
     thin_count_summary = sum(
-        1 for nodes in communities.values()
-        if _real_count(nodes) < min_community_size
+        1 for rnodes in community_real.values()
+        if len(rnodes) < min_community_size
     )
-    shown_count = sum(
-        1 for nodes in communities.values()
-        if _real_count(nodes) >= min_community_size
-    )
+    shown_count = len(communities) - thin_count_summary
 
     lines += [
         "",
@@ -245,7 +268,7 @@ def generate(
         f"- {G.number_of_nodes()} nodes · {G.number_of_edges()} edges · {len(communities)} communities"
         + (f" ({shown_count} shown, {thin_count_summary} thin omitted)" if thin_count_summary else ""),
         f"- Extraction: {ext_pct}% EXTRACTED · {inf_pct}% INFERRED · {amb_pct}% AMBIGUOUS"
-        + (f" · INFERRED: {len(inf_edges)} edges (avg confidence: {inf_avg})" if inf_avg is not None else ""),
+        + (f" · INFERRED: {inf_count} edges (avg confidence: {inf_avg})" if inf_avg is not None else ""),
         f"- Token cost: {token_cost.get('input', 0):,} input · {token_cost.get('output', 0):,} output",
     ]
 
@@ -264,9 +287,9 @@ def generate(
     # every link dangling — polluting an Obsidian vault's graph view and rendering as
     # literal brackets everywhere else (#1712). Emit wikilinks only when the caller
     # signals Obsidian output; otherwise a plain list, which navigates nowhere-to-break.
-    if non_empty:
+    if non_empty_cids:
         lines += ["", "## Community Hubs (Navigation)"]
-        for cid in non_empty:
+        for cid in non_empty_cids:
             label = community_labels.get(cid, f"Community {cid}")
             if obsidian:
                 safe = _safe_community_name(label)
@@ -301,16 +324,28 @@ def generate(
     else:
         lines.append("- None detected - all connections are within the same source files.")
 
+    has_code_node = False
+    has_semantic_layer = False
+    raw_isolated = 0
+    isolated: list = []
+    deg_view = G.degree
+
+    for n, d in nodes_view(data=True):
+        ft = d.get("file_type")
+        if not has_code_node and ft == "code":
+            has_code_node = True
+        if not has_semantic_layer and ft in ("document", "paper", "image"):
+            has_semantic_layer = True
+        if deg_view[n] <= 1:
+            raw_isolated += 1
+            if _real_node(n) and not _is_contains_only_ast_node(G, n):
+                isolated.append(n)
+
     # Circular imports surfaced from file-level dependency graph. Only meaningful
     # for code — a documents-only corpus has no imports, so the section is pure
     # noise there ("None detected" on every run). Emit it only when the graph
     # actually contains code (#1657).
-    _has_code = any(
-        d.get("file_type") == "code" for _, d in G.nodes(data=True)
-    ) or any(
-        d.get("relation") in ("imports", "imports_from")
-        for *_e, d in G.edges(data=True)
-    )
+    _has_code = has_code_node or has_import_edge
     if _has_code:
         from .analyze import find_import_cycles
         cycles = find_import_cycles(G)
@@ -337,17 +372,16 @@ def generate(
             lines.append(f"- **{h.get('label', h.get('id', ''))}** — {node_labels} [{conf_tag}]")
 
     lines += ["", f"## Communities ({len(communities)} total, {thin_count_summary} thin omitted)"]
-    for cid, nodes in communities.items():
+    for cid, real_nodes in community_real.items():
         label = community_labels.get(cid, f"Community {cid}")
         score = cohesion_scores.get(cid, 0.0)
         # Filter file/concept/rationale nodes from display - they're
         # structural noise or docstring prose, not a code declaration (#3794).
-        real_nodes = [n for n in nodes if _real_node(n)]
         if not real_nodes:
             continue
         if len(real_nodes) < min_community_size:
             continue
-        display = [G.nodes[n].get("label", n) for n in real_nodes[:8]]
+        display = [nodes_view[n].get("label", n) for n in real_nodes[:8]]
         suffix = f" (+{len(real_nodes)-8} more)" if len(real_nodes) > 8 else ""
         lines += [
             "",
@@ -356,40 +390,30 @@ def generate(
             f"Nodes ({len(real_nodes)}): {', '.join(display)}{suffix}",
         ]
 
-    ambiguous = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("confidence") == "AMBIGUOUS"]
     if ambiguous:
         lines += ["", "## Ambiguous Edges - Review These"]
         for u, v, d in ambiguous:
-            ul = G.nodes[u].get("label", u)
-            vl = G.nodes[v].get("label", v)
+            ul = nodes_view[u].get("label", u)
+            vl = nodes_view[v].get("label", v)
             lines += [
                 f"- `{ul}` → `{vl}`  [AMBIGUOUS]",
                 f"  {d.get('source_file', '')} · relation: {d.get('relation', 'unknown')}",
             ]
 
     # --- Gaps section ---
-    isolated = [
-        n for n in G.nodes()
-        if G.degree(n) <= 1 and _real_node(n) and not _is_contains_only_ast_node(G, n)
-    ]
     # Same threshold the Summary and Communities headers used (#3148): this
     # was a hardcoded 3, so with --min-community-size anything else the count
     # here disagreed with the label text beside it, which already printed
     # min_community_size. No `0 <` guard, matching thin_count_summary above
     # (#3548): an all-file-node community is skipped by the same render loop
     # as a genuinely thin one, so it belongs in this count too.
-    thin_communities = {
-        cid: nodes for cid, nodes in communities.items()
-        if _real_count(nodes) < min_community_size
-    }
-    gap_count = len(isolated) + len(thin_communities)
+    gap_count = len(isolated) + thin_count_summary
 
     if gap_count > 0 or amb_pct > 20:
         lines += ["", "## Knowledge Gaps"]
         if isolated:
-            isolated_labels = [G.nodes[n].get("label", n) for n in isolated[:5]]
+            isolated_labels = [nodes_view[n].get("label", n) for n in isolated[:5]]
             suffix = f" (+{len(isolated)-5} more)" if len(isolated) > 5 else ""
-            raw_isolated = sum(1 for n in G.nodes() if G.degree(n) <= 1)
             lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
             # "Undocumented components" only means anything when a semantic
             # layer exists: document/paper/image nodes an LLM extracted
@@ -398,10 +422,6 @@ def generate(
             # (--code-only, or any run where semantic extraction never
             # happened) has no such nodes at all, so offering it as a live
             # possibility on every report is misleading (#3801).
-            has_semantic_layer = any(
-                G.nodes[n].get("file_type") in ("document", "paper", "image")
-                for n in G.nodes()
-            )
             reason = (
                 "possible missing edges or undocumented components" if has_semantic_layer
                 else "possible missing edges"
@@ -411,8 +431,8 @@ def generate(
                 f"(Counts symbols only; {raw_isolated} node(s) total have ≤1 connection when "
                 "file, concept and rationale nodes are included.)"
             )
-        if thin_communities:
-            lines.append(f"- **{len(thin_communities)} thin communities (<{min_community_size} nodes) omitted from report** — run `graphify query` to explore isolated nodes.")
+        if thin_count_summary:
+            lines.append(f"- **{thin_count_summary} thin communities (<{min_community_size} nodes) omitted from report** — run `graphify query` to explore isolated nodes.")
         if amb_pct > 20:
             lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
 

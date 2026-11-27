@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>خفّض إنفاق وكلائك على الرموز بنسبة 80%.</b> Graphify Cloud ذاكرة دائمة التشغيل تحكم وكلاءك، وتحافظ على جودة عالية للكود، وتثبت الصحة عبر التحقق الصوري. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>ابدأ مجانًا، بدون بطاقة &rarr;</b></a>
+  <b>سياق قاعدة كود مشترك للوكلاء والبشر.</b>
+  <br/>
+  حوّل قاعدة كودك إلى رسم بياني معرفي قابل للاستعلام. تتبّع التبعيات، وافهم كيف تترابط المكوّنات، وامنح وكيل البرمجة لديك سياقًا قابلًا لإعادة الاستخدام عبر الجلسات.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>ابدأ مجانًا، بدون بطاقة &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> يُبقي ذلك الرسم البياني دائم التشغيل عبر دورة حياة تطوير برمجياتك بأكملها.
 </p>
 
 اكتب `/graphify` في مساعد البرمجة بالذكاء الاصطناعي لديك فيرسم مشروعك بالكامل (الكود والمستندات وملفات PDF والصور والفيديو) في **رسم بياني معرفي** يمكنك **الاستعلام عنه بدلًا من البحث بـ grep** عبر الملفات.
@@ -41,18 +47,27 @@
 > **تريد هذا دائم التشغيل؟** يُبقي [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) الرسم البياني حيًّا عبر دورة حياة تطوير البرمجيات بأكملها: دعم المستودعات الأحادية والعابرة للمستودعات، والتحقق الصوري، ومراجعة الكود بنظرة شاملة على دورة حياة التطوير، إضافة إلى موصّلات لـ Sentry وJira والمزيد لتجلس الحوادث والتذاكر في الرسم البياني ذاته مع الكود. **[ابدأ مجانًا، بدون بطاقة](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>قاعدة كود FastAPI مرسومة بواسطة graphify. كل عقدة مفهوم، والألوان مجتمعات مكتشفة، والكل قابل للنقر في graph.html.</em>
+  <em>قاعدة كود FastAPI مرسومة بواسطة graphify. كل عقدة مفهوم، والألوان أنظمة فرعية مكتشفة، والكل قابل للنقر في graph.html.</em>
 </p>
 
-**ابدأ الآن** (30 ثانية). يتطلب Python 3.10+ وuv (أو pipx):
+**ابدأ الآن** (30 ثانية). يتطلب Python 3.11.5–3.14 وuv (أو pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+تستخدم مساعدًا مختلفًا؟ سمِّه صراحةً:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+راجع [اختر منصتك](#install) لجميع المساعدين الـ20+ مساعدًا.
 
 ثم، في مساعد الذكاء الاصطناعي لديك:
 
@@ -114,8 +129,8 @@ Shortest path (3 hops):
 
 | Capability | What you get |
 |---|---|
-| **God nodes** | أكثر المفاهيم اتصالًا، فترى ما يتدفق كل شيء من خلاله |
-| **Communities** | الرسم البياني مقسّم إلى أنظمة فرعية (Leiden)، بتسميات بلا نموذج لغوي كبير |
+| **أكثر المكوّنات اتصالًا** | المفاهيم التي يتدفق كل شيء من خلالها — محاور الرسم البياني (تُسمّى أيضًا *god nodes*) |
+| **الأنظمة الفرعية** | الرسم البياني مقسّم إلى مجموعات متماسكة (Leiden *communities*)، لكلٍّ منها تسمية بلا نموذج لغوي كبير |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` محلولة عبر ~40 لغة بواسطة tree-sitter AST |
 | **Query, path, explain** | اطرح سؤالًا، أو تتبّع المسار بين شيئين، أو اشرح مفهومًا واحدًا، كل ذلك مقابل `graph.json` |
 | **Rationale + doc refs** | تعليقات `# NOTE:` / `# WHY:` واستشهادات ADR/RFC تصبح عقدًا من الدرجة الأولى مرتبطة بالكود |
@@ -124,6 +139,19 @@ Shortest path (3 hops):
 
 > [!TIP]
 > تشغّل هذا عبر مستودعات كثيرة أو مستودع أحادي؟ يفعله [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) باستمرار ويخفّض إنفاق الوكلاء على الرموز بنسبة 80%، مع روابط عابرة للمستودعات، ومراجعة كود على مستوى دورة حياة التطوير، وتحقق صوري، وموصّلات Sentry/Jira. [ابدأ مجانًا، بدون بطاقة &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## متى تلجأ إلى Graphify
+
+الجأ إلى الرسم البياني حين تحتاج إلى فهم قاعدة كود، لا مجرد قراءتها سطرًا سطرًا:
+
+| الموقف | ماذا تسأل Graphify |
+|---|---|
+| الانضمام إلى مشروع غير مألوف | "اشرح كيف تترابط المكوّنات الرئيسية." |
+| تغيير مكوّن مشترك | "تتبّع مستدعيه وتبعياته." |
+| التحقيق في خطأ | "أظهر المسار بين نقطة النهاية هذه والتخزين." |
+| العودة إلى عمل سابق | "اعثر على قرارات التصميم والملاحظات ذات الصلة." |
 
 ---
 
@@ -159,7 +187,7 @@ Shortest path (3 hops):
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -227,7 +255,7 @@ graphify install --project --platform codex
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (استدعِ بـ `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -306,7 +334,7 @@ graphify install --project --platform codex
 
 ما يزال `GRAPH_REPORT.md` متاحًا لمراجعة معمارية عامة.
 
-الملفات التي تكتبها كل منصة بالضبط (ملف CodeBuddy `CODEBUDDY.md` + خطافات `PreToolUse`، وملف Codex `AGENTS.md`، وإضافة Kilo الأصلية `.kilo`، وقاعدة Cursor `alwaysApply`، وهكذا) مشروحة في **[Always-on setup](https://docs.graphify.com/guides/always-on)**.
+الملفات التي تكتبها كل منصة بالضبط (ملف CodeBuddy `CODEBUDDY.md` + خطافات `PreToolUse`، وملف Codex `AGENTS.md`، وإضافة Kilo الأصلية `.kilo`، وقاعدة Cursor `alwaysApply`، وهكذا) مشروحة في **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 لإزالة graphify من كل المنصات دفعة واحدة: `graphify uninstall` (أضف `--purge` لحذف `graphify-out/` أيضًا). أو استخدم الأمر الخاص بكل منصة (مثل `graphify claude uninstall`).
 
@@ -325,9 +353,43 @@ graphify install --project --platform codex
 
 ---
 
+## وصل وكيلك عبر MCP
+
+وجّه أي وكيل يدعم MCP إلى رسم بياني من Graphify وسيستعلم عن الرسم البياني مباشرة بدلًا من البحث في الملفات. اتصل بالرسم البياني المستضاف (Graphify Cloud، خطة مجانية، دون بطاقة):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+تفضّل البقاء محليًا؟ ثبّت خادم stdio بـ `uv tool install "graphifyy[mcp]"` وشغّل `graphify-mcp` مقابل ملف `graph.json` الخاص بك، دون الحاجة إلى حساب.
+
+بمجرد الاتصال، يحصل وكيلك على هذه الأدوات:
+
+| الأداة | ماذا تفعل |
+|---|---|
+| `query_graph` | اطرح سؤالًا بلغة طبيعية، واحصل على الرسم البياني الفرعي ذي الصلة |
+| `shortest_path` | تتبّع كيفية اتصال عقدتين |
+| `get_node` / `get_neighbors` | ابحث عن عقدة وما تتصل به |
+| `get_community` / `god_nodes` | العناقيد المكتشفة والمحاور الأكثر اتصالًا |
+| `get_section` | اقرأ منطقة موسومة من الرسم البياني |
+| `graph_stats` | الحجم واللغات وتوزيع الحواف للرسم البياني |
+
+يكشف الخادم أيضًا أدوات طلبات السحب (`list_prs`، `get_pr_impact`، `triage_prs`) حتى يتمكن وكيلك من مراجعة طلبات السحب مع سياق الرسم البياني.
+
+---
+
 ## What's in the report
 
-يلخّص `GRAPH_REPORT.md` عقد god، والمجتمعات، والمسارات الرئيسية لمراجعة معمارية عامة. كيف يُبنى الرسم البياني وما يحتويه: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+يلخّص `GRAPH_REPORT.md` أكثر المكوّنات اتصالًا، والأنظمة الفرعية، والمسارات الرئيسية لمراجعة معمارية عامة. كيف يُبنى الرسم البياني وما يحتويه: **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -343,8 +405,8 @@ graphify install --project --platform codex
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -362,7 +424,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 راجع [المرجع الكامل للأوامر](#full-command-reference) أدناه.

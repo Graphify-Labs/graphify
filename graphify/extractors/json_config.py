@@ -2,9 +2,64 @@
 from __future__ import annotations
 
 
+import os
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.resolution import _read_json_config, _resolve_js_module_path
 from graphify.ids import normalize_id
+
+
+def _local_extends_target(config: Path, ref: str) -> "Path | None":
+    """The on-disk config a relative `extends` names, or None (#5223).
+
+    tsc resolves a relative or absolute `extends` against the citing config's
+    directory and, when that file is missing and the value does not end in
+    `.json`, retries with `.json` appended. Anything else is a package
+    specifier, resolved through node_modules, and stays a stub.
+    """
+    if not (ref.startswith(("./", "../")) or os.path.isabs(ref)):
+        return None
+    cand = Path(os.path.normpath(config.parent / ref))
+    if cand.is_file():
+        return cand
+    if not ref.endswith(".json"):
+        with_json = cand.with_name(cand.name + ".json")
+        if with_json.is_file():
+            return with_json
+    return None
+
+
+def _paths_base(config: Path) -> "Path | None":
+    """Directory a config's `compilerOptions.paths` targets resolve against.
+
+    tsc uses `baseUrl` when one is in effect (the config's own, else the nearest
+    one inherited through `extends`, each resolved against the config declaring
+    it), and otherwise the directory of the config declaring `paths`. Returns
+    None when the chain leaves the scan (a package `extends`) before a baseUrl
+    is found, since the base can then not be known (#5223).
+    """
+    seen: set[str] = set()
+    current = config
+    while str(current) not in seen:
+        seen.add(str(current))
+        data = _read_json_config(current) or {}
+        opts = data.get("compilerOptions")
+        base = opts.get("baseUrl") if isinstance(opts, dict) else None
+        if isinstance(base, str) and base:
+            return Path(os.path.normpath(current.parent / base))
+        ext = data.get("extends")
+        if not ext:
+            return config.parent
+        # TS 5 array: later entries override earlier ones, so the last wins.
+        if isinstance(ext, list):
+            ext = next((e for e in reversed(ext) if isinstance(e, str)), None)
+        elif not isinstance(ext, str):
+            ext = None
+        nxt = _local_extends_target(current, ext) if ext else None
+        if nxt is None:
+            return None
+        current = nxt
+    return None
 
 
 _CONFIG_JSON_NAMES = frozenset({
@@ -107,7 +162,10 @@ def extract_json(path: Path) -> dict:
         with path.open("rb") as _f:
             source = _f.read(_JSON_MAX_BYTES + 1)
         if len(source) > _JSON_MAX_BYTES:
-            return {"nodes": [], "edges": [], "error": "json file too large to index"}
+            # Declined by design, like the data-JSON branch below. Reporting it as
+            # an error made the file a failed source, which the manifest never
+            # stamps, so an unchanged tree re-extracted it on every update.
+            return {"nodes": [], "edges": [], "skipped": "json file over 1 MiB (not indexed)"}
         language = Language(tsjson.language())
         parser = Parser(language)
         tree = parser.parse(source)
@@ -134,7 +192,7 @@ def extract_json(path: Path) -> dict:
                           "source_file": str_path, "source_location": f"L{line}"})
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
-                 context: str | None = None) -> None:
+                 context: str | None = None, target_file: "Path | None" = None) -> None:
         if not src or not tgt or src == tgt:
             return
         edge = {"source": src, "target": tgt, "relation": relation,
@@ -142,7 +200,16 @@ def extract_json(path: Path) -> dict:
                 "source_location": f"L{line}", "weight": 1.0}
         if context:
             edge["context"] = context
+        if target_file is not None:
+            edge["target_file"] = str(target_file)
         edges.append(edge)
+
+    _base_memo: list = []
+
+    def paths_base() -> "Path | None":
+        if not _base_memo:
+            _base_memo.append(_paths_base(path))
+        return _base_memo[0]
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
@@ -211,17 +278,47 @@ def extract_json(path: Path) -> dict:
                     if item.type == "string":
                         content = item.child_by_field_name("string_content")
                         ref = _read_text(content, source) if content else _read_text(item, source).strip('"\'')
-                        if ref:
+                        local = _local_extends_target(path, ref) if ref else None
+                        if local is not None:
+                            add_edge(key_nid, _make_id(str(local)), "extends", line,
+                                     context="import", target_file=local)
+                        elif ref:
                             ref_nid = _make_id("ref", ref)
                             if ref_nid:
                                 add_node(ref_nid, ref, line, file_type="concept")
                                 add_edge(key_nid, ref_nid, "extends", line, context="import")
 
+            elif val.type == "array" and parent_key == "paths" and "*" not in key:
+                # An exact `paths` alias names the module it maps to; tsc takes
+                # the first target that exists. Wildcard aliases need an
+                # expansion policy and get no edge (#5223).
+                base = paths_base()
+                for item in val.children if base is not None else ():
+                    if item.type != "string":
+                        continue
+                    content = item.child_by_field_name("string_content")
+                    t = _read_text(content, source) if content else _read_text(item, source).strip('"')
+                    if not t or "*" in t:
+                        continue
+                    hit = _resolve_js_module_path(Path(os.path.normpath(base / t)))
+                    if hit is not None and hit.is_file():
+                        add_edge(file_nid, _make_id(str(hit)), "references", line,
+                                 target_file=hit)
+                        break
+
             elif val.type == "string":
                 content = val.child_by_field_name("string_content")
                 val_text = _read_text(content, source) if content else _read_text(val, source).strip('"\'')
 
-                if key == "extends" and val_text:
+                local = (_local_extends_target(path, val_text)
+                         if key == "extends" and val_text else None)
+                if local is not None:
+                    # A local config: edge only, stamped so extract()'s
+                    # target_file pass repoints it at that file's node (#5223).
+                    add_edge(file_nid, _make_id(str(local)), "extends", line,
+                             context="import", target_file=local)
+
+                elif key == "extends" and val_text:
                     # Namespace external refs to avoid ID collision with file nodes (J-4)
                     ref_nid = _make_id("ref", val_text)
                     if ref_nid:

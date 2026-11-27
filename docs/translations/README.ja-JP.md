@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>エージェントのトークン支出を 80% 削減。</b> Graphify Cloud は常時稼働のメモリであり、エージェントを統制し、コード品質を高く保ち、形式的検証で正しさを証明します。<a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>無料で始める、カード不要 &rarr;</b></a>
+  <b>エージェントと人間が共有するコードベースのコンテキスト。</b>
+  <br/>
+  コードベースをクエリ可能なナレッジグラフに変えます。依存関係をたどり、コンポーネントがどうつながっているかを理解し、コーディングエージェントにセッションをまたいで再利用できるコンテキストを与えます。
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>無料で始める、カード不要 &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> がそのグラフを SDLC 全体で常時稼働に保ちます。
 </p>
 
 AI コーディングアシスタントで `/graphify` と入力すると、プロジェクト全体（コード、ドキュメント、PDF、画像、動画）を**ナレッジグラフ**にマッピングし、ファイルを grep する代わりに**クエリで調べられる**ようになります。
@@ -41,18 +47,27 @@ AI コーディングアシスタントで `/graphify` と入力すると、プ�
 > **常時稼働にしたいですか？** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) は SDLC 全体でグラフを常にライブに保ちます。モノレポおよびリポジトリ横断のサポート、形式的検証、SDLC を俯瞰するコードレビュー、さらに Sentry、Jira などのコネクタにより、インシデントやチケットがコードと同じグラフに収まります。**[無料で始める、カード不要](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify のインタラクティブな graph.html が、FastAPI コードベースを力学的に配置されたナレッジグラフとして、検出されたコミュニティの凡例とともに表示している" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify のインタラクティブな graph.html が、FastAPI コードベースを力学的に配置されたナレッジグラフとして、検出されたサブシステムの凡例とともに表示している" width="900">
 </p>
 <p align="center">
-  <em>graphify がマッピングした FastAPI コードベース。すべてのノードは概念であり、色は検出されたコミュニティを表し、全体が graph.html でクリック可能です。</em>
+  <em>graphify がマッピングした FastAPI コードベース。すべてのノードは概念であり、色は検出されたサブシステムを表し、全体が graph.html でクリック可能です。</em>
 </p>
 
-**始め方**（30 seconds）。Python 3.10+ と uv（または pipx）が必要です。
+**始め方**（30 seconds）。Python 3.11.5–3.14 と uv（または pipx）が必要です。
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # Claude Code をセットアップ（デフォルト）
 ```
+
+別のアシスタントを使いますか？明示的に指定してください。
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex（/graphify ではなく $graphify で呼び出す）
+```
+
+20+ すべてのアシスタントについては[プラットフォームを選ぶ](#install)を参照してください。
 
 次に、AI アシスタントで次のように入力します。
 
@@ -112,8 +127,8 @@ Shortest path (3 hops):
 
 | 機能 | 得られるもの |
 |---|---|
-| **God nodes** | 最も多く接続された概念。すべてが何を通って流れているかが見えます |
-| **Communities** | グラフをサブシステムに分割（Leiden）し、LLM 不要のラベルを付けます |
+| **最も多く接続されたコンポーネント** | すべてが通って流れる概念 — グラフのハブ（*god nodes* とも呼ばれます） |
+| **サブシステム** | グラフを凝集したグループに分割（Leiden *communities*）し、それぞれに LLM 不要のラベルを付けます |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` を tree-sitter AST により ~40 languages にわたって解決します |
 | **Query, path, explain** | 質問する、2 つのものの間のパスをたどる、1 つの概念を説明する。すべて `graph.json` に対して行います |
 | **Rationale + doc refs** | `# NOTE:` / `# WHY:` コメントや ADR/RFC の引用が一級ノードになり、コードにリンクされます |
@@ -122,6 +137,19 @@ Shortest path (3 hops):
 
 > [!TIP]
 > これを多数のリポジトリやモノレポで実行していますか？[Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) はそれを継続的に行い、エージェントのトークン支出を 80% 削減します。リポジトリ横断のリンク、SDLC 全体のコードレビュー、形式的検証、Sentry/Jira コネクタを備えています。[無料で始める、カード不要 &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## Graphify を使うべきとき
+
+コードベースを読み通すだけでなく、理解する必要があるときはグラフを使いましょう。
+
+| 状況 | Graphify に尋ねること |
+|---|---|
+| 慣れないプロジェクトに参加する | 「主要なコンポーネントがどうつながっているか説明して。」 |
+| 共有コンポーネントを変更する | 「その呼び出し元と依存関係をたどって。」 |
+| バグを調査する | 「このエンドポイントとストレージの間のパスを示して。」 |
+| 以前の作業を見直す | 「関連する設計上の決定とメモを見つけて。」 |
 
 ---
 
@@ -157,7 +185,7 @@ Shortest path (3 hops):
 
 | 要件 | 最小 | 確認 | インストール |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -219,7 +247,7 @@ graphify install --project --platform codex
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` （`$graphify` で呼び出す） |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -298,7 +326,7 @@ Pi には `PreToolUse` hook がないため、`graphify pi guard install` は（
 
 `GRAPH_REPORT.md` は依然として幅広いアーキテクチャレビューに利用できます。
 
-各プラットフォームが具体的にどのファイルを書き込むか（CodeBuddy の `CODEBUDDY.md` + `PreToolUse` hooks、Codex の `AGENTS.md`、Kilo のネイティブ `.kilo` プラグイン、Cursor の `alwaysApply` ルールなど）は、**[Always-on setup](https://docs.graphify.com/guides/always-on)** で扱っています。
+各プラットフォームが具体的にどのファイルを書き込むか（CodeBuddy の `CODEBUDDY.md` + `PreToolUse` hooks、Codex の `AGENTS.md`、Kilo のネイティブ `.kilo` プラグイン、Cursor の `alwaysApply` ルールなど）は、**[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)** で扱っています。
 
 すべてのプラットフォームから graphify を一度に削除するには: `graphify uninstall`（`--purge` を追加すると `graphify-out/` も削除します）。または、プラットフォーム別コマンド（例: `graphify claude uninstall`）を使います。
 
@@ -317,9 +345,43 @@ Pi には `PreToolUse` hook がないため、`graphify pi guard install` は（
 
 ---
 
+## MCP 経由でエージェントを接続する
+
+MCP 対応のエージェントを Graphify グラフに向けると、ファイルを grep する代わりにグラフを直接クエリします。ホスト型のグラフ（Graphify Cloud、無料プラン、カード不要）に接続します。
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+ローカルのままがいいですか？`uv tool install "graphifyy[mcp]"` で stdio サーバーをインストールし、自身の `graph.json` に対して `graphify-mcp` を実行してください。アカウントは不要です。
+
+接続すると、エージェントは次のツールを利用できます。
+
+| ツール | 何をするか |
+|---|---|
+| `query_graph` | 自然言語で質問すると、関連するサブグラフが返ってきます |
+| `shortest_path` | 2 つのノードがどうつながっているかをたどります |
+| `get_node` / `get_neighbors` | ノードと、それが接しているものを調べます |
+| `get_community` / `god_nodes` | 検出されたコミュニティと、最も多く接続されたハブ |
+| `get_section` | グラフのラベル付き領域を読み取ります |
+| `graph_stats` | グラフのサイズ、言語、エッジの内訳 |
+
+サーバーは PR ツール（`list_prs`、`get_pr_impact`、`triage_prs`）も公開しており、エージェントはグラフのコンテキストでプルリクエストをレビューできます。
+
+---
+
 ## レポートの中身
 
-`GRAPH_REPORT.md` は、幅広いアーキテクチャレビューのために god nodes、コミュニティ、主要なパスを要約します。グラフがどう構築され、何を含むかは **[How graphify works](https://docs.graphify.com/concepts/architecture)** を参照してください。
+`GRAPH_REPORT.md` は、幅広いアーキテクチャレビューのために 最も多く接続されたコンポーネント、サブシステム、主要なパスを要約します。グラフがどう構築され、何を含むかは **[How graphify works](https://docs.graphify.com/concepts/architecture)** を参照してください。
 
 ---
 
@@ -335,8 +397,8 @@ graphify は ~40 programming languages を tree-sitter AST でローカルに解
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # より粒度の細かいサブシステム
+/graphify . --cluster-only --exclude-hubs 99     # 最も多く接続されたコンポーネントのランキングからユーティリティのスーパーハブを除外する
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -354,7 +416,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # グラフのサブシステムを共有する PR: マージ順序のリスク
 ```
 
 下記の[完全なコマンドリファレンス](#full-command-reference)を参照してください。

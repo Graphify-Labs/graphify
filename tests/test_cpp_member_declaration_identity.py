@@ -82,7 +82,6 @@ def test_literal_return_shapes_and_conventional_guards_are_supported(tmp_path, r
     ("int Run(int);", "int api::Service::Run(int n) {}"),
     ("template<class T> int Run();", "template<class T> int api::Service::Run() {}"),
     ("int Run() = 0;", "int api::Service::Run() {}"),
-    ("int Run(); int _Run();", "int api::Service::Run() {}"),
     ("#ifdef FEATURE\nint Run();\n#endif", "int api::Service::Run() {}"),
 ])
 def test_signature_family_or_condition_uncertainty_does_not_merge(tmp_path, declaration, definition):
@@ -91,6 +90,20 @@ def test_signature_family_or_condition_uncertainty_does_not_merge(tmp_path, decl
         "implementation.cpp": '#include "api.hpp"\n' + definition,
     })
     assert not any(n.get("definition_file") for n in _members(result))
+
+
+def test_underscore_twin_keeps_its_own_node_and_does_not_block_the_fold(tmp_path):
+    # `Run` / `_Run` once shared one node carrying two member records, so the
+    # fold refused it. They are separate members now: `Run` folds with its
+    # exact definition, `_Run` stays an unmerged declaration of its own.
+    result = _extract(tmp_path, {
+        "api.hpp": "namespace api { class Service { public:\nint Run(); int _Run();\n}; }",
+        "implementation.cpp": '#include "api.hpp"\nint api::Service::Run() {}',
+    })
+    run = _members(result)
+    assert len(run) == 1 and run[0]["definition_file"] == "implementation.cpp"
+    twin = [n for n in result["nodes"] if n.get("label") == "._Run()"]
+    assert len(twin) == 1 and not twin[0].get("definition_file")
 
 
 @pytest.mark.parametrize("files", [
@@ -200,3 +213,42 @@ def test_incremental_updates_recheck_member_proofs_and_keep_incoming_calls(tmp_p
     if merged:
         assert any(e["relation"] == "calls" and e["source"] == "use_use" and e["target"] == members[0]["id"]
                    for e in saved.get("links", saved.get("edges", [])))
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("forwards", [
+    {"elsewhere.hpp": "namespace api { class Service; }\nstruct Holder { api::Service* service; };"},
+    {"elsewhere.hpp": "namespace api { class Service; }\nstruct Holder { api::Service* service; };",
+     "another.hpp": "namespace api { class Service; }\nint Count(api::Service*);"},
+])
+def test_unreachable_class_forward_does_not_block_the_member_fold(tmp_path, forwards, reverse):
+    # A forward the include graph cannot tie to the definition stays its own
+    # node (_merge_cpp_forward_classes is fail-closed), but it declares no
+    # members, so it is not a rival owner: the single class definition still
+    # owns `Run` and the proven declaration/definition pair folds.
+    result = _extract(tmp_path, {
+        "api.hpp": "namespace api { class Service { public: void Run(); }; }",
+        "implementation.cpp": '#include "api.hpp"\nvoid api::Service::Run() {}',
+        **forwards,
+    }, reverse=reverse)
+    members = _members(result)
+    assert len(members) == 1
+    assert members[0]["source_file"] == "api.hpp"
+    assert members[0]["definition_file"] == "implementation.cpp"
+    assert members[0]["definition_location"] == "L2"
+    classes = [n for n in result["nodes"] if n.get("label") == "Service"]
+    assert sorted(n["source_file"] for n in classes) == sorted(["api.hpp", *forwards])
+
+
+@pytest.mark.parametrize("rival", [
+    "namespace api { template<class T> class Service { public: void Run(); }; }",
+    "#ifdef FEATURE\nnamespace api { class Service { public: void Run(); }; }\n#endif",
+])
+def test_class_forward_beside_an_uncertain_owner_still_blocks_the_member_fold(tmp_path, rival):
+    result = _extract(tmp_path, {
+        "api.hpp": "namespace api { class Service { public: void Run(); }; }",
+        "implementation.cpp": '#include "api.hpp"\nvoid api::Service::Run() {}',
+        "elsewhere.hpp": "namespace api { class Service; }",
+        "rival.hpp": rival,
+    })
+    assert not any(n.get("definition_file") for n in _members(result))

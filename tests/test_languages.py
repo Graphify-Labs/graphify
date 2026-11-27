@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import pytest
 from graphify.extract import (
+    extract_python,
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
@@ -466,6 +467,70 @@ end
     assert any(i.endswith("_foo_bang") for i in ids)
     assert any(i.endswith("_foo_pred") for i in ids)
     assert any(i.endswith("_foo_eq") for i in ids)
+
+
+def test_ruby_def_passed_to_access_modifier_stays_a_method(tmp_path: Path):
+    """`private def x` passes the method definition as an argument to a call.
+
+    The call node used to drop the class link, so the method became a
+    file-level function and calls to it bound to that function instead.
+    """
+    f = tmp_path / "billing.rb"
+    f.write_text("""\
+class Billing
+  def charge
+    validate
+  end
+
+  private def validate
+  end
+
+  private_class_method def self.audit
+  end
+end
+""")
+    r = extract_ruby(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert ".validate()" in labels and "validate()" not in labels
+    assert ".audit()" in labels and "audit()" not in labels
+    methods = _edge_labels(r, "method")
+    assert ("Billing", "validate") in methods
+    assert ("Billing", "audit") in methods
+    assert (".charge()", ".validate()") in _calls(r)
+
+
+# ── Python ──────────────────────────────────────────────────────────────────
+
+def test_python_parameterized_base_inherits_edge(tmp_path):
+    """`class C(Base[T])` must still emit an inherits edge to the base type.
+
+    The Python heritage handler only matched bare `identifier` bases in the
+    `superclasses` list. A parameterized base parses as a `subscript` node
+    (its `value` field is the base type; the `[...]` holds only type params),
+    so it fell through and the heritage edge was silently dropped -- every
+    `Generic[T]` / `Repo[User]` base lost its `inherits` edge.
+    """
+    source = tmp_path / "heritage.py"
+    source.write_text(
+        "class Base: pass\n"
+        "class Mixin: pass\n"
+        "class Repo(Base[int]): pass\n"
+        "class Multi(Mixin, Base[list[str]]): pass\n"
+        "def make_base(): return Base\n"
+        "class Dynamic(make_base()): pass\n"
+    )
+    result = extract_python(source)
+    inherits = _edge_labels(result, "inherits")
+    # Parameterized base must resolve to the base type, not be dropped.
+    assert ("Repo", "Base") in inherits
+    assert ("Multi", "Base") in inherits
+    # Bare-identifier bases must keep working (regression guard).
+    assert ("Multi", "Mixin") in inherits
+    # Generic arguments and dynamic base factories are not concrete parents.
+    assert ("Multi", "list") not in inherits
+    assert ("Multi", "str") not in inherits
+    assert ("Dynamic", "make_base") not in inherits
 
 
 # ── C# ───────────────────────────────────────────────────────────────────────
@@ -1059,6 +1124,27 @@ def test_kotlin_emits_in_file_calls():
     assert (".post()", ".buildRequest()") in calls
     assert ("createClient()", "Config") in calls
     assert ("createClient()", "HttpClient") in calls
+
+
+def test_kotlin_call_under_prefix_operator_is_kept(tmp_path):
+    """tree-sitter-kotlin parses `!isEmpty()` as `(!isEmpty)()`: the callee
+    slot holds the `unary_expression`, so the call itself was dropped."""
+    f = tmp_path / "Validator.kt"
+    f.write_text("""\
+class Validator {
+    fun check(): Boolean = !isEmpty()
+    fun negated(): Int = -bonus()
+    fun isEmpty(): Boolean {
+        return false
+    }
+    fun bonus(): Int {
+        return 1
+    }
+}
+""")
+    calls = _calls(extract_kotlin(f))
+    assert (".check()", ".isEmpty()") in calls
+    assert (".negated()", ".bonus()") in calls
 
 
 def test_kotlin_splits_inherits_and_implements():
@@ -1695,6 +1781,34 @@ def test_swift_call_edges_have_call_context():
     call_edges = _edges_with_relation(r, "calls")
     assert call_edges
     assert all(e.get("context") == "call" for e in call_edges)
+
+
+def test_swift_call_that_is_an_operator_operand_is_kept(tmp_path):
+    """tree-sitter-swift parses `base + bonus()` as `(base + bonus)()` and
+    `!isEmpty()` as `(!isEmpty)()`: the callee slot holds the operator
+    expression, so the call to its last operand was dropped."""
+    f = tmp_path / "Validator.swift"
+    f.write_text("""\
+final class Validator {
+    var base: Int { 1 }
+    func check() -> Bool { return !isEmpty() }
+    func total() -> Int { return base + bonus() }
+    func scaled() -> Int { return base * self.factor() }
+    func mixed() -> Int { return base + base * factor() }
+    func implicit() -> Other { return .make() }
+    func isEmpty() -> Bool { false }
+    func bonus() -> Int { 1 }
+    func factor() -> Int { 2 }
+    func make() -> Int { 3 }
+}
+""")
+    calls = _calls(extract_swift(f))
+    assert (".check()", ".isEmpty()") in calls
+    assert (".total()", ".bonus()") in calls
+    assert (".scaled()", ".factor()") in calls
+    assert (".mixed()", ".factor()") in calls
+    # `.make()` is an implicit member of `Other`, not a call on self.
+    assert (".implicit()", ".make()") not in calls
 
 
 def test_swift_extension_across_files_merges_into_canonical_type():

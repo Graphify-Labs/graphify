@@ -28,7 +28,13 @@
 </p>
 
 <p align="center">
-  <b>צמצמו את הוצאות הטוקנים של הסוכן ב-80%.</b> Graphify Cloud הוא זיכרון תמידי שמנהל את הסוכנים שלכם, שומר על איכות קוד גבוהה, ומוכיח נכונות באמצעות אימות פורמלי. <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>התחילו בחינם, ללא כרטיס &rarr;</b></a>
+  <b>הקשר משותף של בסיס הקוד לסוכנים ולבני אדם.</b>
+  <br/>
+  הפכו את בסיס הקוד שלכם לגרף ידע שניתן לתשאל. עקבו אחר תלויות, הבינו כיצד רכיבים מתחברים, ותנו לסוכן הקוד שלכם הקשר לשימוש חוזר על פני סשנים.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>התחילו בחינם, ללא כרטיס &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> משאיר את הגרף הזה פעיל תמיד לאורך כל ה-SDLC שלכם.
 </p>
 
 הקלידו `/graphify` בעוזר קוד ה-AI שלכם והוא ממפה את כל הפרויקט (קוד, מסמכים, PDFs, תמונות, סרטונים) ל**גרף ידע** שאפשר **לתשאל במקום לבצע grep** על הקבצים.
@@ -41,18 +47,27 @@
 > **רוצים את זה באופן תמידי?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) שומר על הגרף חי לאורך כל ה-SDLC שלכם: תמיכה במונורפו ובין מאגרים, אימות פורמלי, וסקירת קוד עם מבט על של ה-SDLC שלכם, בתוספת מחברים ל-Sentry, Jira, ועוד, כך שתקריות וכרטיסים יושבים באותו גרף כמו הקוד שלכם. **[התחילו בחינם, ללא כרטיס](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>בסיס הקוד של FastAPI ממופה על ידי graphify. כל צומת הוא מושג, הצבעים הם קהילות שזוהו, והכל ניתן ללחיצה ב-graph.html.</em>
+  <em>בסיס הקוד של FastAPI ממופה על ידי graphify. כל צומת הוא מושג, הצבעים הם תת-מערכות שזוהו, והכל ניתן ללחיצה ב-graph.html.</em>
 </p>
 
-**התחלה מהירה** (30 שניות). דורש Python 3.10+ ו-uv (או pipx):
+**התחלה מהירה** (30 שניות). דורש Python 3.11.5–3.14 ו-uv (או pipx):
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # detects your assistant and registers the skill
+graphify install               # sets up Claude Code (the default)
 ```
+
+משתמשים בעוזר אחר? נקבו בשמו במפורש:
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+ראו [בחרו את הפלטפורמה שלכם](#install) לכל 20+ העוזרים.
 
 לאחר מכן, בעוזר ה-AI שלכם:
 
@@ -112,8 +127,8 @@ Shortest path (3 hops):
 
 | יכולת | מה אתם מקבלים |
 |---|---|
-| **צמתי על (God nodes)** | המושגים המחוברים ביותר, כך שאתם רואים דרך מה הכל זורם |
-| **קהילות** | הגרף מחולק לתת-מערכות (Leiden), עם תוויות ללא LLM |
+| **הרכיבים המחוברים ביותר** | המושגים שדרכם הכל זורם — מרכזי הגרף (נקראים גם *god nodes*) |
+| **תת-מערכות** | הגרף מחולק לקבוצות מלוכדות (Leiden *communities*), לכל אחת תווית ללא LLM |
 | **קישורים חוצי-קבצים** | `calls` / `imports` / `inherits` / `mixes_in` נפתרים על פני ~40 שפות באמצעות tree-sitter AST |
 | **Query, path, explain** | שאלו שאלה, עקבו אחר הנתיב בין שני דברים, או הסבירו מושג אחד, הכל מול `graph.json` |
 | **נימוקים + הפניות למסמכים** | הערות `# NOTE:` / `# WHY:` וציטוטי ADR/RFC הופכים לצמתים מהשורה הראשונה המקושרים לקוד |
@@ -122,6 +137,19 @@ Shortest path (3 hops):
 
 > [!TIP]
 > מריצים את זה על פני מאגרים רבים או מונורפו? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) עושה זאת ברציפות ומצמצם את הוצאות הטוקנים של הסוכן ב-80%, עם קישורים בין מאגרים, סקירת קוד לכל ה-SDLC, אימות פורמלי, ומחברי Sentry/Jira. [התחילו בחינם, ללא כרטיס &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
+
+---
+
+## מתי לפנות ל-Graphify
+
+פנו לגרף כשאתם צריכים להבין בסיס קוד, לא רק לקרוא אותו מתחילתו ועד סופו:
+
+| מצב | מה לשאול את Graphify |
+|---|---|
+| הצטרפות לפרויקט לא מוכר | "הסבירו כיצד הרכיבים המרכזיים מתחברים." |
+| שינוי רכיב משותף | "עקבו אחר הקוראים לו והתלויות שלו." |
+| חקירת באג | "הציגו את הנתיב בין נקודת הקצה הזו לאחסון." |
+| חזרה לעבודה קודמת | "מצאו את החלטות העיצוב וההערות הרלוונטיות." |
 
 ---
 
@@ -157,7 +185,7 @@ Shortest path (3 hops):
 
 | דרישה | מינימום | בדיקה | התקנה |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(מומלץ)* | כל גרסה | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(חלופה)* | כל גרסה | `pipx --version` | `pip install pipx` |
 
@@ -219,7 +247,7 @@ graphify install --project --platform codex
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (זיהוי אוטומטי) או `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (הפעילו עם `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -298,7 +326,7 @@ graphify install --project --platform codex
 
 `GRAPH_REPORT.md` עדיין זמין לסקירת ארכיטקטורה רחבה.
 
-אילו קבצים בדיוק כל פלטפורמה כותבת (ה-`CODEBUDDY.md` + hooks של `PreToolUse` של CodeBuddy, ה-`AGENTS.md` של Codex, תוסף ה-`.kilo` המקורי של Kilo, כלל ה-`alwaysApply` של Cursor, וכן הלאה) מכוסה ב-**[הגדרה תמידית](https://docs.graphify.com/guides/always-on)**.
+אילו קבצים בדיוק כל פלטפורמה כותבת (ה-`CODEBUDDY.md` + hooks של `PreToolUse` של CodeBuddy, ה-`AGENTS.md` של Codex, תוסף ה-`.kilo` המקורי של Kilo, כלל ה-`alwaysApply` של Cursor, וכן הלאה) מכוסה ב-**[הגדרה תמידית](https://docs.graphify.com/open-source/vibe-coding)**.
 
 כדי להסיר את graphify מכל הפלטפורמות בבת אחת: `graphify uninstall` (הוסיפו `--purge` כדי למחוק גם את `graphify-out/`). או השתמשו בפקודה הספציפית לפלטפורמה (לדוגמה `graphify claude uninstall`).
 
@@ -317,9 +345,43 @@ graphify install --project --platform codex
 
 ---
 
+## חברו את הסוכן שלכם דרך MCP
+
+כוונו כל סוכן התומך ב-MCP אל גרף של Graphify והוא יתשאל את הגרף ישירות במקום לבצע grep על הקבצים. התחברו לגרף המתארח (Graphify Cloud, תוכנית חינמית, ללא כרטיס):
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+מעדיפים להישאר מקומיים? התקינו את שרת ה-stdio עם `uv tool install "graphifyy[mcp]"` והריצו את `graphify-mcp` מול ה-`graph.json` שלכם; ללא צורך בחשבון.
+
+לאחר ההתחברות, הסוכן שלכם מקבל את הכלים הבאים:
+
+| כלי | מה הוא עושה |
+|---|---|
+| `query_graph` | שאלו שאלה בשפה טבעית וקבלו בחזרה את תת-הגרף הרלוונטי |
+| `shortest_path` | עקבו אחר הדרך שבה שני צמתים מתחברים |
+| `get_node` / `get_neighbors` | חפשו צומת ואת מה שהוא נוגע בו |
+| `get_community` / `god_nodes` | אשכולות שזוהו והמרכזים המחוברים ביותר |
+| `get_section` | קראו אזור מתויג של הגרף |
+| `graph_stats` | הגודל, השפות, ופירוט הקשתות של הגרף |
+
+השרת גם חושף כלי בקשות משיכה (`list_prs`, `get_pr_impact`, `triage_prs`) כדי שהסוכן שלכם יוכל לסקור בקשות משיכה עם הקשר הגרף.
+
+---
+
 ## מה יש בדוח
 
-`GRAPH_REPORT.md` מסכם את צמתי העל, הקהילות, והנתיבים המרכזיים לסקירת ארכיטקטורה רחבה. איך הגרף נבנה ומה הוא מכיל: **[איך graphify עובד](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` מסכם את הרכיבים המחוברים ביותר, תת-המערכות, והנתיבים המרכזיים לסקירת ארכיטקטורה רחבה. איך הגרף נבנה ומה הוא מכיל: **[איך graphify עובד](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
@@ -335,8 +397,8 @@ graphify מנתח ~40 שפות תכנות מקומית עם tree-sitter AST, ו�
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -354,7 +416,7 @@ graphify merge-graphs a.json b.json              # combine two graphs
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities: merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 ראו את [תיעוד הפקודות המלא](#full-command-reference) למטה.

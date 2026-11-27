@@ -53,7 +53,118 @@ result = extract(paths, root=Path(".").resolve())   # pass root explicitly
 
 Always pass `root`. Node ids and `source_file` values are derived relative to it; when it is omitted, `extract()` infers one from the paths you passed, which is the common parent of *that list* rather than your project root. A single-file call therefore anchors to that file's own directory, and ids can end up carrying path segments from the machine they were extracted on.
 
+Document twin reconciliation may fold a Markdown page/file node into its semantic
+`_doc` twin, carrying missing page metadata forward. A `_doc` suffix alone does
+not identify a twin: real headings and explicitly AST-origin records stay
+distinct, and the semantic survivor keeps its own provenance.
+
+Deletion/exclusion pruning matches corpus paths, not physical file targets.
+Absolute and relative spellings and symlinked scan roots identify the same
+corpus entry; distinct symlink aliases inside that root remain separate entries.
+Excluding one alias must preserve any still-included target or sibling alias.
+
+When an import target ID collides with a C-family header, an explicit target
+path takes priority. Unhinted native includes keep the header fallback. Other
+languages require a unique compatible file candidate before remapping.
+
+Hook rebuilds reconcile persisted sources against the current corpus even
+when no changed file is eligible for extraction. Changes to in-scope ignore
+files also refresh the eligible AST corpus so newly included files can enter
+the graph.
+
+Wiki community audits and relationships on directed graphs include incoming
+and outgoing edges. Each incident edge contributes once per community,
+including distinct reciprocal and parallel edges.
+
+C calls through struct function-pointer fields stay unresolved unless evidence
+identifies the target. A bare name match is insufficient for field callees.
+AST cache schema 53 retires older call facts.
+
+Go resolves a selector against its visible lexical binding before considering
+a same-named import. An unknown local receiver does not resolve as a package.
+AST cache schema 54 retires older call facts.
+
 ## Extraction output schema
+
+`extracted_sources` authorizes replacement only for successful AST extractions
+and deliberate declines. `failed_sources` overrides that authority in both raw
+and clustered incremental merges, preserving the source's last good AST records.
+The CLI reports incompleteness and clears failed sources' manifest hashes so a
+later successful extraction can replace those records normally.
+
+Semantic response recovery requires one authoritative graph fragment. Multiple
+independent nonempty candidates or a top-level array of two or more fragments
+enter hollow-response retry; exhausted retries leave the files partial and
+uncached. A single-element array whose one element is a valid fragment is
+accepted. Nested candidates and repeated identical graph payloads do not create
+ambiguity. A complete top-level object remains authoritative, and recovery
+retains its bounded candidate scan. Older semantic cache entries cannot reveal
+whether their response contained discarded fragments. Regenerate affected cached
+output with `graphify extract <root> --force`; this bypasses the semantic cache
+read and replaces its entries with the new extraction.
+
+The shared extractor includes the enclosing type ID in nested declaration IDs,
+so `Left.Builder` and `Right.Builder` in one file remain distinct. Ruby retains
+its already-qualified class labels; TypeScript namespace paths qualify their
+contained type IDs. Type metadata records a label-based `type_path`, including
+C# generic arity. Exported field tables use this path and namespace, not raw
+node IDs, to survive cache relocation and corpus ID remapping.
+
+TypeScript object type aliases own nodes for their direct method signatures,
+including inline objects wrapped in an unqualified `Readonly` when the alias's
+scope does not shadow that name. The extractor retains each method's source location.
+It skips nested objects and other wrappers. These declarations can be reached
+through a resolved typed receiver and are excluded from bare call lookup.
+AST cache schema 57 refreshes existing graphs for these new declarations.
+
+Java preserves package/import context for qualified receivers, typed
+locals/parameters/fields, casts, and declared factory returns. Nested member
+types inherited from resolved supertypes participate in lexical lookup; ambiguous
+inherited types stay unlinked. Qualified type paths bind their lexical prefix
+before following member types, without falling back to an unrelated owner.
+Inherited field types, including static-field chains, resolve in their declaring
+type's package/import and lexical context rather than the calling subclass's.
+C# passes the complete declared receiver name to
+its namespace/alias/nested-type resolver, honoring lexical shadowing before
+absolute namespace matches. Qualified member-type lookup includes resolved
+base classes, with directly declared nested types hiding inherited candidates.
+Kotlin declarations persist their package as namespace metadata so explicit
+singleton imports also resolve against unchanged files; import aliases constrain
+only their local binding name. Swift preserves qualified nested receiver names
+in static calls and parameter/property annotations and resolves names in
+the caller's lexical type scopes before module-level definitions; an unrelated
+nested declaration does not shadow a top-level type. Qualified constructor
+initializers retain their complete type path for local receiver typing without
+reintroducing bare-method fallback. Static calls do not require
+a local variable-type table. Ambiguous or absent
+explicit targets stay unlinked rather than falling back to an unrelated name.
+
+AST cache schema 47 retires flat nested IDs and incomplete scope facts.
+Unchanged type metadata is preserved by CLI/watch incremental resolution.
+Existing persisted graphs and source-evidence artifacts with old IDs require
+a full code rebuild: `graphify extract . --code-only --force`.
+
+Unresolved Python direct calls through unconditional top-level `from ... import ...`
+statements constrain name-based fallback to the imported name and module. An
+external import does not bind to an unrelated same-named corpus symbol, and an
+alias cannot acquire a second target named after the alias. This guard runs after
+per-file cache loading, including on changed-file extractions with unchanged
+resolution context; it does not change callback or function-local import handling.
+Explicitly supplied callers outside the scan root retain their existing fallback.
+Previously emitted false edges are removed when their caller is re-extracted.
+The binding is constrained to the module the import names directly; a call through
+a plain (non-package) module that re-exports a same-named symbol from elsewhere is
+left unresolved rather than chased one hop further, so a genuinely ambiguous
+re-export is dropped instead of guessed (package `__init__` re-exports still
+resolve through the symbol-resolution pass).
+
+A Python lambda parameter shadows same-named callables in its body. Bare calls
+through that parameter and references to it as a callback skip both in-file
+lookup and corpus fallback. The binding check applies Python's Unicode
+identifier normalization and class-private name mangling. A lambda's own
+parameters do not shadow names in its default expressions.
+AST cache schema 54 invalidates fragments built before this rule. For an
+existing graph, run `graphify update . --force` to refresh unchanged callers.
 
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
@@ -83,6 +194,15 @@ Every extractor returns:
 ```
 
 `validate.py` enforces this schema before `build()` consumes it.
+
+`graphify section` and the `get_section` MCP tool return the text of a Markdown
+heading's section (`graphify/sections.py`). The section's end is found at read
+time from the current file, not stored: it is the line before the next heading
+of the same or a shallower level, by the extractor's own heading, fence and
+frontmatter rules, so a section includes its subsections and an edit inside it
+never leaves a stale range. Reads are confined to the project root, the body
+goes through `redact_secrets`, and the text never enters graph.json, so graphs
+built before this existed work without a rebuild.
 
 Validation reports list/object enum values as schema errors. Graph assembly
 repairs structured `file_type` values to `concept` and structured `confidence`
@@ -336,6 +456,25 @@ from a member spelled `This`. A user-defined operator or conversion is a
 `.operator +()` / `.operator int()` node owned through `method`, with id
 `_make_id(type_id, "operator", sha1(signature)[:6])`, since several conversions
 share one parameter list. Existing ids do not move. AST cache schema 40.
+
+A C# call receiver written as a dotted path of identifiers
+(`Acme.Audio.Mixer.Reset()`, `Audio.Mixer.Instance.Play()`, `?.` forms, or a
+`var` initialized from such a path) is read as a type path when no local,
+parameter, or field/property visible through the caller's type, its bases,
+enclosing types or `using static` is named like its head. A type or alias head
+follows the qualified-name rules above; any other head is a namespace, bound at
+the innermost enclosing namespace that declares it, with no fallback outward.
+The whole path naming a type is a static call (`EXTRACTED`); a type path plus
+one static member types the receiver by that member's declared type
+(`INFERRED`), as `T.P.M()` does. A head that is both a type and a namespace,
+a head that any nested type in the corpus is named like (whether it would read
+as a type or as a namespace), and a path whose two readings both resolve stay
+unlinked. `global::` receivers and longer static-member chains are not read.
+The head check shares the limits of the receiver table it reuses: a name bound
+only by a `catch` clause, a pattern, a `using`/`for` declaration, a query range
+variable or a primary-constructor parameter, a member inherited from a base
+type outside the corpus, and a type brought in by a `using` directive inside a
+namespace block from outside the corpus are not seen as hiding a namespace.
 
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
