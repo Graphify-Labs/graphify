@@ -8225,6 +8225,10 @@ def _build_parser(ts_module: str, ts_language_fn: str):
 #   repeats until no new label is activated.
 # - A GNU computed goto (`goto *p;`) may land on any label whose address is
 #   taken (`&&label`) in the function, or on any label if none is.
+# - A C++ lambda (or nested function) has labels of its own: its labels and
+#   `&&label` addresses never count for the enclosing function. A GNU
+#   statement expression `({ ... })` shares the enclosing function's labels, so
+#   when it is reachable every `goto` inside it opens the outer label it names.
 # - `switch` cases are entries whenever the switch is reachable, and each
 #   `#elif` / `#else` arm is an entry whenever its `#if` is, since it is
 #   another build configuration rather than code after the arm's `return`
@@ -8245,6 +8249,9 @@ _C_PREPROC_BRANCH_TYPES = frozenset({
 _C_LOOP_TYPES = frozenset({
     "while_statement", "do_statement", "for_statement", "for_range_loop",
 })
+
+# Nested nodes whose labels belong to themselves, not to the enclosing function.
+_C_OWN_LABEL_SCOPE_TYPES = frozenset({"lambda_expression", "function_definition"})
 
 
 def set_c_cpp_unreachable_warnings(enabled: bool = True) -> None:
@@ -8460,6 +8467,12 @@ class _CReachability:
         self._targets: list[_CJumpTarget] = []
 
     def _scan_labels(self, body) -> None:
+        """Collect this function's labels and ``&&label`` addresses.
+
+        A nested lambda or function has a label scope of its own, so the scan
+        stops there; GNU statement expressions share the enclosing function's
+        scope and are scanned.
+        """
         stack = [body]
         while stack:
             node = stack.pop()
@@ -8471,7 +8484,9 @@ class _CReachability:
                 name = _c_address_taken_label(node)
                 if name:
                     self._address_labels.add(name)
-            stack.extend(node.children)
+            stack.extend(
+                ch for ch in node.children if ch.type not in _C_OWN_LABEL_SCOPE_TYPES
+            )
 
     def run(self) -> None:
         while True:
@@ -8546,17 +8561,36 @@ class _CReachability:
             self._header_dead[key] = piece
 
     def _scan_regions(self, node) -> None:
-        """Queue compound bodies nested in an expression (lambdas, GNU
-        statement expressions); each has its own control flow."""
+        """Queue compound bodies nested in a reachable expression (lambdas, GNU
+        statement expressions); each is analyzed as a region of its own.
+
+        A statement expression shares this function's labels, so a ``goto``
+        inside it may leave for a label out here. Those jumps are taken as
+        reachable without modeling the flow inside the statement expression.
+        """
         stack = list(node.children)
         while stack:
             child = stack.pop()
             if child.type == "compound_statement":
                 self._regions.setdefault(_c_node_key(child), child)
+                if child.parent is None or child.parent.type != "lambda_expression":
+                    self._statement_expression_jumps(child)
                 continue
             if child.type == "function_definition":
                 continue
             stack.extend(child.children)
+
+    def _statement_expression_jumps(self, region) -> None:
+        stack = [region]
+        while stack:
+            node = stack.pop()
+            if node.type == "goto_statement" and not _c_is_computed_goto(node):
+                self._activate(_c_goto_target_name(node))
+            elif _c_is_computed_goto(node):
+                self._activate_computed_goto()
+            stack.extend(
+                ch for ch in node.children if ch.type not in _C_OWN_LABEL_SCOPE_TYPES
+            )
 
     def _seq(self, node, entry: bool, *, skip=(), skip_types=frozenset()) -> bool:
         """Walk the statements under ``node`` in order; ``skip`` / ``skip_types``

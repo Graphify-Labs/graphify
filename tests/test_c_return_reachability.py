@@ -1094,3 +1094,84 @@ def test_block_after_parse_error_does_not_cut_fall_through(
         "int x, y;\nvoid f(void) {\n" + _SPLIT_BY_PREPROC_CASES[case] + "}\n",
     )
     assert "after()" in targets, (case, targets)
+
+
+_REGION_LABEL_CASES: dict[str, tuple[str, set[str], set[str]]] = {
+    # #5338 review: only the lambda takes &&L, so the outer computed goto must
+    # not open the outer, unreachable L.
+    "lambda_address_does_not_open_outer_label": (
+        "  void *p = &&M;\n"
+        "  auto g = [] { void *q = &&L; goto *q; L: inside(); };\n"
+        "  goto *p;\n"
+        "  return;\n"
+        "  L: dead();\n"
+        "  M: a();\n",
+        {"a()", "inside()"},
+        {"dead()"},
+    ),
+    # A lambda's &&M must not narrow the outer computed goto either: with no
+    # outer address taken, it may land on every outer label.
+    "lambda_address_does_not_hide_outer_labels": (
+        "  auto g = [] { void *q = &&M; goto *q; M: inside(); };\n"
+        "  void *p = (void *)x;\n"
+        "  goto *p;\n"
+        "  return;\n"
+        "  L: release();\n",
+        {"inside()", "release()"},
+        set(),
+    ),
+    # A lambda's goto jumps inside the lambda only.
+    "lambda_goto_does_not_open_outer_label": (
+        "  auto g = [] { goto L; L: inside(); };\n"
+        "  return;\n"
+        "  L: dead();\n",
+        {"inside()"},
+        {"dead()"},
+    ),
+    # GNU statement expressions share the function's labels: a goto inside
+    # one may leave for an outer label.
+    "statement_expression_goto_leaves_for_outer_label": (
+        "  int v = ({ if (x) goto fail; 1; });\n"
+        "  a();\n"
+        "  return;\n"
+        "  fail: release();\n",
+        {"a()", "release()"},
+        set(),
+    ),
+    "statement_expression_computed_goto": (
+        "  void *p = &&fail;\n"
+        "  int v = ({ goto *p; 0; });\n"
+        "  return;\n"
+        "  fail: release();\n",
+        {"release()"},
+        set(),
+    ),
+    "unreachable_statement_expression_opens_nothing": (
+        "  return;\n"
+        "  { int v = ({ if (x) goto fail; 1; }); }\n"
+        "  fail: dead();\n",
+        set(),
+        {"dead()"},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "case,suffix",
+    [
+        *((c, ".cpp") for c in _REGION_LABEL_CASES if c.startswith("lambda")),
+        *(
+            (c, s)
+            for c in _REGION_LABEL_CASES
+            if not c.startswith("lambda")
+            for s in (".c", ".cpp")
+        ),
+    ],
+)
+def test_label_scope_of_nested_regions(tmp_path: Path, suffix: str, case: str) -> None:
+    body, live, dead = _REGION_LABEL_CASES[case]
+    targets = _targets_for(
+        tmp_path, suffix, "int x, y;\nvoid f(void) {\n" + body + "}\n"
+    )
+    assert live <= targets, (case, targets)
+    assert not dead & targets, (case, targets)
