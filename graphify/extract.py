@@ -3721,6 +3721,61 @@ def _cpp_conditional_tokens(source: bytes):
         yield match, pos
 
 
+_CPP_DIRECTIVE_COMMENT_RE = re.compile(
+    rb'(?:u8|u|U|L)?R"(?P<delimiter>[^ ()\\\t\v\f\r\n]{0,16})\('
+    rb'[\s\S]*?\)(?P=delimiter)"'
+    rb'|(?:u8|u|U|L)?"(?:\\[\s\S]|[^"\\])*"'
+    rb"|\b[0-9](?:[A-Za-z_0-9.]|'[A-Za-z_0-9])*"
+    rb"|(?:u8|u|U|L)?'(?:\\[\s\S]|[^'\\])*'"
+    rb"|//(?:\\\r?\n|[^\r\n])*"
+    rb"|(?P<comment>/\*[\s\S]*?\*/)"
+)
+
+
+def _blank_cpp_comment_keeping_splices(comment: bytes) -> bytes:
+    """Blank a comment while preserving newlines and line-splice backslashes."""
+    out = bytearray(comment)
+    for index, byte in enumerate(out):
+        if byte in b"\r\n":
+            continue
+        if byte == ord(b"\\") and comment[index + 1:index + 2] == b"\n":
+            continue
+        if byte == ord(b"\\") and comment[index + 1:index + 3] == b"\r\n":
+            continue
+        out[index] = ord(b" ")
+    return bytes(out)
+
+
+def _normalize_cpp_directive_comments(source: bytes) -> bytes:
+    """Blank closed block comments inside ``define`` directive spans.
+
+    Unterminated comments and comments spanning an unspliced newline are left
+    unchanged.
+    """
+    if b"/*" not in source:
+        return source
+    out: bytearray | None = None
+    for directive, _ in _cpp_conditional_tokens(source):
+        if directive.group(2) != b"define":
+            continue
+        if source[max(0, directive.start() - 3):directive.start()].endswith(
+            (b"\\\n", b"\\\r\n")
+        ):
+            continue
+        text = directive.group()
+        if b"/*" not in text:
+            continue
+        for token in _CPP_DIRECTIVE_COMMENT_RE.finditer(text):
+            if token.group("comment") is None:
+                continue
+            if out is None:
+                out = bytearray(source)
+            start = directive.start() + token.start()
+            end = directive.start() + token.end()
+            out[start:end] = _blank_cpp_comment_keeping_splices(token.group())
+    return bytes(out) if out is not None else source
+
+
 def _cpp_conditional_groups(source: bytes) -> tuple[list[dict], str | None]:
     """Read conditional ranges only; never evaluate macros or open includes."""
     groups: list[dict] = []
@@ -4033,6 +4088,7 @@ def extract_cpp(path: Path) -> dict:
         return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
     source_override = _normalize_cpp_cli(source) or source
     source_override = _normalize_cpp_export_macros(source_override)
+    source_override = _normalize_cpp_directive_comments(source_override)
     result = _extract_generic(
         path, _CPP_CONFIG, source_override=source_override
     )
