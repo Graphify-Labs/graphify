@@ -1,0 +1,29 @@
+{
+  "schema": "JavaScriptApplicationGraph",
+  "graph_id": "jag_demo",
+  "root_node_ids": ["jag_node_pkg"],
+  "coverage": "partial",
+  "limitations": ["dynamic IPC retained without a pairing edge"],
+  "nodes": [
+    {"id": "jag_node_pkg", "kind": "package", "label": "example.app", "observations": [{"authority": "artifact-bytes", "epistemic_state": "observed", "confidence": "exact"}]},
+    {"id": "jag_node_asar", "kind": "asar entry", "label": "app.asar", "observations": [{"authority": "artifact-bytes", "epistemic_state": "observed", "confidence": "exact"}]},
+    {"id": "jag_node_main", "kind": "electron main", "label": "main.js", "observations": [{"authority": "ast-analysis", "epistemic_state": "observed", "confidence": "high"}]},
+    {"id": "jag_node_bw", "kind": "browserwindow", "label": "BrowserWindow", "observations": [{"authority": "static-relationship-inference", "epistemic_state": "inferred", "confidence": "medium"}]},
+    {"id": "jag_node_preload", "kind": "preload", "label": "preload.js", "observations": [{"authority": "ast-analysis", "epistemic_state": "observed", "confidence": "high"}]},
+    {"id": "jag_node_cb", "kind": "contextBridge API", "label": "api.search", "observations": [{"authority": "ast-analysis", "epistemic_state": "observed", "confidence": "high"}]},
+    {"id": "jag_node_handler", "kind": "ipc handler", "label": "onSearch", "observations": [{"authority": "static-relationship-inference", "epistemic_state": "inferred", "confidence": "medium"}]},
+    {"id": "jag_node_chan", "kind": "ipc channel", "label": "search:query", "observations": [{"authority": "ast-analysis", "epistemic_state": "observed", "confidence": "high"}]},
+    {"id": "jag_node_native", "kind": "native add-on", "label": "fts.node", "observations": [{"authority": "ast-analysis", "epistemic_state": "observed", "confidence": "high"}]}
+  ],
+  "edges": [
+    {"source_node_id": "jag_node_pkg", "target_node_id": "jag_node_asar", "relation": "contains", "epistemic_state": "observed", "confidence": "exact"},
+    {"source_node_id": "jag_node_main", "target_node_id": "jag_node_bw", "relation": "contains", "epistemic_state": "observed", "confidence": "high"},
+    {"source_node_id": "jag_node_bw", "target_node_id": "jag_node_preload", "relation": "loads", "epistemic_state": "inferred", "confidence": "medium"},
+    {"source_node_id": "jag_node_preload", "target_node_id": "jag_node_cb", "relation": "exposes", "epistemic_state": "inferred", "confidence": "medium"},
+    {"source_node_id": "jag_node_preload", "target_node_id": "jag_node_handler", "relation": "invokes", "epistemic_state": "inferred", "confidence": "low"},
+    {"source_node_id": "jag_node_handler", "target_node_id": "jag_node_chan", "relation": "handles", "epistemic_state": "inferred", "confidence": "medium"},
+    {"source_node_id": "jag_node_preload", "target_node_id": "jag_node_native", "relation": "imports", "epistemic_state": "observed", "confidence": "high"},
+    {"source_node_id": "jag_node_main", "target_node_id": "jag_node_missing_ext", "relation": "calls", "epistemic_state": "observed", "confidence": "high"},
+    {"source_node_id": "jag_node_preload", "target_node_id": "jag_node_cb", "relation": "exposes", "epistemic_state": "unavailable"}
+  ]
+}
