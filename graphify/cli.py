@@ -2463,6 +2463,9 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             else:
                 i += 1
+        if top_n < 0:
+            print("error: --top must be >= 0", file=sys.stderr)
+            sys.exit(1)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)

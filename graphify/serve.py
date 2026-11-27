@@ -3692,8 +3692,10 @@ def _build_server(graph_path: str):
     def _tool_god_nodes(arguments: dict) -> str:
         from graphify.analyze import god_nodes as _god_nodes
         _pct = arguments.get("exclude_hubs_percentile")
+        _raw_top = arguments.get("top_n")
+        top_n = max(0, int(10 if _raw_top is None else _raw_top))
         nodes = _god_nodes(
-            G, top_n=int(arguments.get("top_n", 10)),
+            G, top_n=top_n,
             exclude_hubs_percentile=float(_pct) if _pct is not None else None,
         )
         lines = ["God nodes (most connected):"]

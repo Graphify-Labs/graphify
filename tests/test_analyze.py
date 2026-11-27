@@ -932,6 +932,24 @@ def test_betweenness_matches_networkx_bit_for_bit(G, k):
     assert list(_betweenness_centrality(G, k, seed=42).items()) == list(expected.items())
 
 
+def test_god_nodes_and_surprises_return_empty_when_top_n_non_positive():
+    from graphify.analyze import god_nodes, surprising_connections, _is_concept_node
+
+    G = nx.Graph()
+    G.add_node("hub", label="Auth", source_file="auth.py")
+    G.add_node("caller", label="login", source_file="routes.py")
+    G.add_node("non_str", label="weird", source_file=123)
+    G.add_edge("caller", "hub", relation="calls", confidence="INFERRED")
+    G.add_edge("non_str", "hub", relation="calls", confidence="AMBIGUOUS")
+
+    assert god_nodes(G, top_n=0) == []
+    assert god_nodes(G, top_n=-1) == []
+    assert surprising_connections(G, communities={0: ["hub"], 1: ["caller"]}, top_n=0) == []
+    assert surprising_connections(G, communities={0: ["hub"], 1: ["caller"]}, top_n=-1) == []
+    assert surprising_connections(G, communities=None, top_n=0) == []
+    assert _is_concept_node(G, "non_str") is True
+
+
 def test_graph_diff_handles_mixed_int_and_str_node_ids():
     """Undirected graph_diff must not raise TypeError when node IDs mix int and str."""
     G_old = nx.Graph()
