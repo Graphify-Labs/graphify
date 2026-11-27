@@ -930,3 +930,36 @@ def test_betweenness_matches_networkx_bit_for_bit(G, k):
 
     expected = nx.betweenness_centrality(G, k=k, seed=42)
     assert list(_betweenness_centrality(G, k, seed=42).items()) == list(expected.items())
+
+
+def test_graph_diff_handles_mixed_int_and_str_node_ids():
+    """Undirected graph_diff must not raise TypeError when node IDs mix int and str."""
+    G_old = nx.Graph()
+    G_old.add_node(1, label="One")
+    G_old.add_node("1", label="StrOne")
+    G_old.add_node("target", label="Target")
+    G_old.add_edge(1, "target", relation="calls", confidence="EXTRACTED")
+
+    G_new = G_old.copy()
+    G_new.add_edge("1", "target", relation="uses", confidence="INFERRED")
+
+    diff = graph_diff(G_old, G_new)
+    assert diff["removed_edges"] == []
+    assert len(diff["new_edges"]) == 1
+    assert diff["new_edges"][0]["relation"] == "uses"
+    assert diff["summary"] == "1 new edge"
+
+
+def test_graph_diff_preserves_multigraph_parallel_edges_same_relation():
+    """Parallel edges sharing (u, v, relation) on a MultiGraph must all appear in diff."""
+    G_old = nx.MultiGraph()
+    G_old.add_node("a", label="A")
+    G_old.add_node("b", label="B")
+
+    G_new = G_old.copy()
+    G_new.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
+    G_new.add_edge("a", "b", relation="calls", confidence="INFERRED")
+
+    diff = graph_diff(G_old, G_new)
+    assert len(diff["new_edges"]) == 2
+    assert {e["confidence"] for e in diff["new_edges"]} == {"EXTRACTED", "INFERRED"}

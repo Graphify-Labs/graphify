@@ -1,9 +1,12 @@
+import gc
 import json
+import re
 import subprocess
 import sys
+import weakref
 from pathlib import Path
 
-from graphify.callflow_html import derive_sections_from_communities, write_callflow_html
+from graphify.callflow_html import SECTION_ARCHETYPES, derive_sections_from_communities, write_callflow_html
 
 
 def _make_graphify_out(tmp_path: Path) -> Path:
@@ -168,6 +171,52 @@ def test_derive_sections_groups_by_architecture_keywords():
     assert "extract-pipeline" in ids
     assert "outputs-docs" in ids
     assert "tests-fixtures" in ids
+
+
+def test_archetype_keywords_are_single_ascii_words():
+    for _, _, _, keywords in SECTION_ARCHETYPES:
+        assert keywords
+        assert all(re.fullmatch(r"[a-z0-9]+", keyword) for keyword in keywords)
+
+
+def test_derive_sections_preserves_keyword_boundaries_and_ties():
+    nodes = [
+        {"id": "a", "label": "éTREE_树tree", "community": 1},
+        {"id": "b", "label": "subgraph graph2 pretest tests9", "community": 2},
+        {"id": "c", "label": "api.api.api test test", "community": 3},
+        {"id": "d", "label": "tree tree html", "community": 4},
+    ]
+    labels = {"1": "First", "2": "Second", "3": "Third", "4": "Fourth"}
+    sections = derive_sections_from_communities(nodes, labels, "en", 6)
+    assigned = {cid: section["id"] for section in sections for cid in section["communities"]}
+
+    # "tree" occurs twice and scores for both extraction and output. Extraction
+    # wins their tie by priority. Only whole ASCII words contribute.
+    assert assigned == {"1": "extract-pipeline", "2": "Second", "3": "serve-api", "4": "outputs-docs"}
+
+
+def test_derive_sections_releases_previous_community_text(monkeypatch):
+    class CommunityText(str):
+        pass
+
+    texts = []
+
+    def community_text(nodes, label):
+        if len(texts) == 2:
+            gc.collect()
+            assert texts[0]() is None
+        text = CommunityText(nodes[0]["label"])
+        texts.append(weakref.ref(text))
+        return text
+
+    monkeypatch.setattr("graphify.callflow_html._community_text", community_text)
+    nodes = [
+        {"id": "a", "label": "parse", "community": 1},
+        {"id": "b", "label": "!", "community": 2},
+        {"id": "c", "label": "last", "community": 3},
+    ]
+    derive_sections_from_communities(nodes, {}, "en", 6)
+    assert len(texts) == len(nodes)
 
 
 def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path):

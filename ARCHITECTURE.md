@@ -110,6 +110,13 @@ contained type IDs. Type metadata records a label-based `type_path`, including
 C# generic arity. Exported field tables use this path and namespace, not raw
 node IDs, to survive cache relocation and corpus ID remapping.
 
+TypeScript object type aliases own nodes for their direct method signatures,
+including inline objects wrapped in an unqualified `Readonly` when the alias's
+scope does not shadow that name. The extractor retains each method's source location.
+It skips nested objects and other wrappers. These declarations can be reached
+through a resolved typed receiver and are excluded from bare call lookup.
+AST cache schema 57 refreshes existing graphs for these new declarations.
+
 Java preserves package/import context for qualified receivers, typed
 locals/parameters/fields, casts, and declared factory returns. Nested member
 types inherited from resolved supertypes participate in lexical lookup; ambiguous
@@ -449,6 +456,25 @@ from a member spelled `This`. A user-defined operator or conversion is a
 `.operator +()` / `.operator int()` node owned through `method`, with id
 `_make_id(type_id, "operator", sha1(signature)[:6])`, since several conversions
 share one parameter list. Existing ids do not move. AST cache schema 40.
+
+A C# call receiver written as a dotted path of identifiers
+(`Acme.Audio.Mixer.Reset()`, `Audio.Mixer.Instance.Play()`, `?.` forms, or a
+`var` initialized from such a path) is read as a type path when no local,
+parameter, or field/property visible through the caller's type, its bases,
+enclosing types or `using static` is named like its head. A type or alias head
+follows the qualified-name rules above; any other head is a namespace, bound at
+the innermost enclosing namespace that declares it, with no fallback outward.
+The whole path naming a type is a static call (`EXTRACTED`); a type path plus
+one static member types the receiver by that member's declared type
+(`INFERRED`), as `T.P.M()` does. A head that is both a type and a namespace,
+a head that any nested type in the corpus is named like (whether it would read
+as a type or as a namespace), and a path whose two readings both resolve stay
+unlinked. `global::` receivers and longer static-member chains are not read.
+The head check shares the limits of the receiver table it reuses: a name bound
+only by a `catch` clause, a pattern, a `using`/`for` declaration, a query range
+variable or a primary-constructor parameter, a member inherited from a base
+type outside the corpus, and a type brought in by a `using` directive inside a
+namespace block from outside the corpus are not seen as hiding a namespace.
 
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes

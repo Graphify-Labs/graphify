@@ -60,7 +60,7 @@ from graphify.extractors.base import (  # noqa: F401
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
-from graphify.extractors.cobol import extract_cobol  # noqa: F401
+from graphify.extractors.cobol import extract_cobol, resolve_cobol_copybook_performs  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
     _is_cs_file,
@@ -5036,6 +5036,236 @@ def _rewire_unique_stub_nodes(
         if sf.endswith(".rs") and (crate := crate_of(sf)):
             workspace_crates.add(crate)
 
+    def _source_path(source_file: object) -> Path:
+        path = Path(str(source_file or ""))
+        if not path.is_absolute() and scan_root is not None:
+            path = scan_root / path
+        return path.resolve()
+
+    def _module_file_for_name(source_file: object, module: str) -> bool:
+        path = Path(str(source_file or ""))
+        if path.name == "mod.rs":
+            return path.parent.name == module
+        return path.stem == module
+
+    def _module_file_nodes(directory: Path, module: str) -> list[dict]:
+        expected = {
+            (directory / f"{module}.rs").resolve(),
+            (directory / module / "mod.rs").resolve(),
+        }
+        return [
+            node for node in nodes
+            if str(node.get("source_file", "")).endswith(".rs")
+            and _module_file_for_name(node.get("source_file"), module)
+            and node.get("label") == Path(str(node.get("source_file", ""))).name
+            and _source_path(node.get("source_file")) in expected
+        ]
+
+    declared_modules_by_file: dict[Path, set[str]] = {}
+
+    def _declared_external_modules(source_path: Path) -> set[str]:
+        source_path = source_path.resolve()
+        if source_path in declared_modules_by_file:
+            return declared_modules_by_file[source_path]
+        try:
+            import tree_sitter_rust as tsrust
+            from tree_sitter import Language, Parser
+
+            source = source_path.read_bytes()
+            tree = Parser(Language(tsrust.language())).parse(source)
+        except Exception:
+            declared_modules_by_file[source_path] = set()
+            return declared_modules_by_file[source_path]
+        declared_modules_by_file[source_path] = {
+            _read_text(name, source)
+            for child in tree.root_node.named_children
+            if child.type == "mod_item"
+            and child.child_by_field_name("body") is None
+            and (name := child.child_by_field_name("name")) is not None
+        }
+        return declared_modules_by_file[source_path]
+
+    def _module_nodes_from(
+        base: Path, modules: list[str], parent_file: Path | None,
+    ) -> list[dict]:
+        """Follow a full Rust module path through `name.rs`/`name/mod.rs` files."""
+        if not modules:
+            return [
+                node for node in nodes
+                if parent_file is not None
+                and _source_path(node.get("source_file")) == parent_file.resolve()
+                and node.get("label") == parent_file.name
+            ]
+        if parent_file is None:
+            return []
+        current_base = base
+        found: list[dict] = []
+        for index, module in enumerate(modules):
+            if module not in _declared_external_modules(parent_file):
+                return []
+            found = _module_file_nodes(current_base, module)
+            if len(found) != 1:
+                return []
+            if index < len(modules) - 1:
+                parent_file = _source_path(found[0].get("source_file"))
+                current_base = (
+                    parent_file.parent if parent_file.name == "mod.rs"
+                    else parent_file.parent / parent_file.stem
+                )
+        return found
+
+    def _super_parent_file(origin: str, crate_lib: Path | None) -> Path | None:
+        source = _source_path(origin)
+        if crate_lib is None or source == crate_lib:
+            return None
+        if source.parent == crate_lib.parent:
+            return crate_lib
+        containing_module = source.parent.name
+        parents = _module_file_nodes(source.parent.parent, containing_module)
+        if len(parents) == 1:
+            return _source_path(parents[0].get("source_file"))
+        return None
+
+    def _lib_file_for_crate(crate: str, origin: str) -> Path | None:
+        libs = [
+            _source_path(node.get("source_file"))
+            for node in nodes
+            if node.get("label") == "lib.rs"
+            and str(node.get("source_file", "")).endswith(".rs")
+            and crate_of(str(node.get("source_file", ""))) == crate
+        ]
+        if len(libs) == 1:
+            return libs[0]
+        own_path = _source_path(origin)
+        return own_path if own_path.name == "lib.rs" and crate_of(origin) == crate else None
+
+    def _unmanifested_module_nodes(
+        origin: str, modules: list[str], root_name: str,
+    ) -> list[dict]:
+        """Resolve only modules declared along the containing lib.rs module path."""
+        source = _source_path(origin)
+        directory = source.parent
+        lib_path: Path | None = None
+        while True:
+            candidate = directory / "lib.rs"
+            if candidate.is_file():
+                lib_path = candidate.resolve()
+                break
+            if scan_root is not None and directory.resolve() == scan_root:
+                break
+            parent = directory.parent
+            if parent == directory:
+                break
+            directory = parent
+        if lib_path is None:
+            return []
+
+        current_file = lib_path
+        current_base = lib_path.parent
+        if root_name == "super":
+            current_file = _super_parent_file(origin, lib_path)
+            if current_file is None:
+                return []
+            current_base = source.parent.parent if source.name == "mod.rs" else source.parent
+        elif root_name == "self":
+            current_file = source
+            current_base = (
+                source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
+                else source.parent / source.stem
+            )
+        for index, module in enumerate(modules):
+            if module not in _declared_external_modules(current_file):
+                return []
+            found = _module_file_nodes(current_base, module)
+            if len(found) != 1:
+                return []
+            if index < len(modules) - 1:
+                current_file = _source_path(found[0].get("source_file"))
+                current_base = (
+                    current_file.parent if current_file.name == "mod.rs"
+                    else current_file.parent / current_file.stem
+                )
+        return found if modules else [
+            node for node in nodes if _source_path(node.get("source_file")) == lib_path
+        ]
+
+    # A module import's final segment is not a Rust declaration label (the file
+    # node is labelled `module.rs`), so symbol-name rewiring cannot reach it.
+    # Resolve module-only paths for plain imports and grouped bindings through
+    # the same declaration-aware file lookup.
+    for edge in edges:
+        info = edge.get("_rust_use_module_path")
+        if not isinstance(info, dict):
+            continue
+        root_name = str(info.get("root", ""))
+        segments = info.get("segments")
+        if (
+            not root_name or info.get("absolute")
+            or not isinstance(segments, list)
+            or not segments
+            or not all(isinstance(item, str) for item in segments)
+        ):
+            continue
+        origin = str(edge.get("source_file", ""))
+        own = crate_of(origin) if origin.endswith(".rs") else None
+        normalized_root = root_name.replace("-", "_")
+        modules = list(segments[1:])
+        local_root = False
+        if root_name in ("crate", "self", "super"):
+            if own is None:
+                candidates = _unmanifested_module_nodes(origin, modules, root_name)
+                if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
+                    edge["target"] = candidates[0]["id"]
+                continue
+            target_crate = own
+        elif own is not None and normalized_root == own:
+            target_crate = own
+        elif normalized_root in workspace_crates:
+            target_crate = normalized_root
+        elif own is None:
+            candidates = _unmanifested_module_nodes(origin, modules, root_name)
+            if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
+                edge["target"] = candidates[0]["id"]
+            continue
+        elif root_name in _declared_external_modules(_source_path(origin)):
+            # A leading segment declared beside this use is a local module path.
+            target_crate = own
+            modules = list(segments)
+            local_root = True
+        else:
+            continue  # an external crate path must not bind to a local module
+
+        if root_name == "super":
+            source = _source_path(origin)
+            crate_lib = _lib_file_for_crate(str(target_crate), origin)
+            parent_file = _super_parent_file(origin, crate_lib)
+            if parent_file is None:
+                continue
+            base = source.parent.parent if source.name == "mod.rs" else source.parent
+        elif root_name == "self":
+            source = _source_path(origin)
+            parent_file = source
+            base = (
+                source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
+                else source.parent / source.stem
+            )
+        elif local_root:
+            source = _source_path(origin)
+            parent_file = source
+            base = (
+                source.parent if source.name in ("lib.rs", "main.rs", "mod.rs")
+                else source.parent / source.stem
+            )
+        else:
+            lib_file = _lib_file_for_crate(str(target_crate), origin)
+            if lib_file is None:
+                continue
+            parent_file = lib_file
+            base = lib_file.parent
+        candidates = _module_nodes_from(base, modules, parent_file)
+        if len(candidates) == 1 and isinstance(candidates[0].get("id"), str):
+            edge["target"] = candidates[0]["id"]
+
     # A crate can re-export another crate's item (`pub use core::Thing;`), so an
     # import that names the re-exporting crate reaches the defining one (#4699).
     # Keyed by (re-exporting crate, imported label) -> crates it re-exports from.
@@ -6731,6 +6961,8 @@ def _resolve_typescript_member_calls(
         # declares a public `foo` (the node is marked); otherwise its `foo` comes
         # from elsewhere and the private method is not the target.
         method_node = node_by_id.get(method_nid, {})
+        if type_qualified and (method_node.get("metadata") or {}).get("kind") == "type_alias_method":
+            continue
         if (not exact and str(method_node.get("label", "")).lstrip(".").startswith("#")
                 and not str(callee).startswith("#")
                 and not method_node.get("_ts_public_twin")):
@@ -7441,6 +7673,67 @@ def _resolve_csharp_member_calls(
             field_type, owner, (owner or {}).get("source_file", "")
         )
 
+    # A nested type's enclosing type: its static members are in scope too.
+    outer_type_of = {
+        nested: holder
+        for holder, nested_by_label in resolver.nested_types_by_holder.items()
+        for nested in nested_by_label.values()
+    }
+
+    def _head_is_visible_value(head: str, caller: str, caller_node: dict | None,
+                               src_file: str) -> bool:
+        """Whether a field/property named ``head`` is in scope at the caller.
+
+        The extractor already rules out the caller's locals, parameters and its
+        own type's members; a base type, an enclosing type or a ``using
+        static`` type declared in another file is only known here. Any of them
+        declaring ``head`` makes ``head.X`` a member access on a value, never a
+        namespace or type path.
+        """
+        owner = enclosing_type.get(caller) or (caller if caller in type_nids else None)
+        frontier = [owner] if owner else []
+        if caller_node is not None:
+            frontier.extend(resolver.static_using_holders(caller_node, src_file))
+        seen: set[str] = set()
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            if head in class_fields.get(nid, {}):
+                return True
+            frontier.extend(bases_of.get(nid, []))
+            if nid in outer_type_of:
+                frontier.append(outer_type_of[nid])
+        return False
+
+    def _receiver_path_type(path: list[str], caller: str, caller_node: dict | None,
+                            src_file: str, *, member_only: bool) -> tuple[str | None, bool]:
+        """The type of a dotted receiver: ``(type id, named in source)``.
+
+        ``path`` is a qualified type path (``Audio.Mixer``,
+        ``Acme.Systems.Audio.Mixer``), optionally followed by one static member
+        (``...Mixer.Instance``) whose declared type is the receiver's. The
+        whole path naming a type is a static call on it (``member_only`` rules
+        that out for a ``var`` initializer, which is a value). If both readings
+        resolve, nothing is guessed.
+        """
+        if caller_node is None or _head_is_visible_value(path[0], caller, caller_node, src_file):
+            return None, False
+        whole = None
+        if not member_only:
+            whole = resolver.resolve_receiver_type_path(path, caller_node, src_file)
+        via_member = None
+        if len(path) >= 3:
+            owner = resolver.resolve_receiver_type_path(path[:-1], caller_node, src_file)
+            if owner:
+                via_member = _field_type_nid(owner, path[-1])
+        if whole and via_member:
+            return None, False
+        if whole:
+            return whole, True
+        return via_member, False
+
     # Method return types per class, for `var v = R.M<A>()` (#4266).
     method_returns = _bind_member_field_tables(per_file, all_nodes, lang="csharp_returns")
 
@@ -7488,20 +7781,29 @@ def _resolve_csharp_member_calls(
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
         chain = rc.get("receiver_chain") or []
-        if not (receiver or chain) or not callee or not caller:
+        receiver_path = rc.get("receiver_path") or []
+        if not (receiver or chain or receiver_path) or not callee or not caller:
             continue
         src_file = rc.get("source_file", "")
         caller_node = node_by_id.get(caller)
         if not receiver:
             # x.F.M() -> [type of x, "F"]; xs[i].M() -> [element type].
-            type_nid = _resolve_type_name_nid(chain[0], caller_node, src_file)
-            for field in chain[1:]:
-                if not type_nid:
-                    break
-                type_nid = _field_type_nid(type_nid, field)
+            type_nid = None
+            if chain:
+                type_nid = _resolve_type_name_nid(chain[0], caller_node, src_file)
+                for field in chain[1:]:
+                    if not type_nid:
+                        break
+                    type_nid = _field_type_nid(type_nid, field)
+            type_qualified = False
+            if not type_nid and receiver_path:
+                # `Acme.Audio.Mixer.Reset()` / `Acme.Audio.Mixer.Instance.Play()`:
+                # a qualified type path, then at most one static member.
+                type_nid, type_qualified = _receiver_path_type(
+                    receiver_path, caller, caller_node, src_file, member_only=False,
+                )
             if not type_nid:
                 continue
-            type_qualified = False
         elif receiver == "this":
             type_nid = enclosing_type.get(caller) or (caller if caller in type_nids else None)
             if not type_nid:
@@ -7524,6 +7826,15 @@ def _resolve_csharp_member_calls(
                 if not type_nid:
                     break
                 type_nid = _field_type_nid(type_nid, field)
+            if not type_nid:
+                continue
+            type_qualified = False
+        elif rc.get("receiver_var_path"):
+            # `var a = Acme.Audio.Mixer.Instance; a.M()`: `a` has the declared
+            # type of the static member at the end of the qualified path.
+            type_nid, _named = _receiver_path_type(
+                rc["receiver_var_path"], caller, caller_node, src_file, member_only=True,
+            )
             if not type_nid:
                 continue
             type_qualified = False
@@ -10235,6 +10546,17 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver(
+        "cobol_copybook_performs",
+        # Both cases, as for R: the gate compares suffixes as written, and
+        # mainframe source is often delivered as `PROG.CBL` with `BOOK.CPY`.
+        frozenset({
+            ".cbl", ".cob", ".cobol", ".cpy", ".CBL", ".COB", ".COBOL", ".CPY",
+        }),
+        resolve_cobol_copybook_performs,
+    )
+)
+register_language_resolver(
+    LanguageResolver(
         "solidity_type_references", frozenset({".sol"}), resolve_solidity_type_references
     )
 )
@@ -12757,6 +13079,33 @@ def extract(
         if _raw_tp != _tp:
             _remap_seen.add(_raw_tp)
             remap_paths.append(_raw_tp)
+    # Nodes this batch emits for a file that is NOT in it, such as the
+    # code-behind class a XAML file embeds from Foo.xaml.cs. In a full scan the
+    # other file is in `paths` and the loop below canonicalizes that node's
+    # scan-path id. On an incremental run that edits only Foo.xaml it was never
+    # registered, so the absolute path leaked into the persisted id.
+    for _n in all_nodes:
+        _sf = _n.get("source_file")
+        if not _sf or not isinstance(_sf, str):
+            continue
+        _raw_sp = Path(_sf)
+        try:
+            _sp = _resolved(_raw_sp)
+        except (OSError, RuntimeError):
+            continue
+        if _sp in _remap_seen:
+            continue
+        _remap_seen.add(_sp)
+        try:
+            _sp.relative_to(root)
+            if not _sp.is_file():
+                continue
+        except (ValueError, OSError):
+            continue
+        remap_paths.append(_sp)
+        if _raw_sp != _sp:
+            _remap_seen.add(_raw_sp)
+            remap_paths.append(_raw_sp)
     for path in remap_paths:
         old_id = _make_id(str(path))
         try:
@@ -13347,7 +13696,9 @@ def extract(
             continue
         # A C# constructor is named like its type but never called by name;
         # an explicit interface implementation is called only through the interface.
-        if is_csharp_constructor_node(n) or is_csharp_explicit_interface_node(n):
+        # TypeScript alias signatures require a typed receiver.
+        if (is_csharp_constructor_node(n) or is_csharp_explicit_interface_node(n)
+                or (n.get("metadata") or {}).get("kind") == "type_alias_method"):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")
@@ -13552,6 +13903,12 @@ def extract(
         # bases; resolve_solidity_inherited_calls binds those. A corpus-wide
         # name match would link `_transfer()` to any contract's `_transfer`.
         if rc.get("solidity_call"):
+            continue
+        # A COBOL paragraph name is visible only inside its own program: the
+        # program's file and the copybooks it copies.
+        # resolve_cobol_copybook_performs binds those. A corpus-wide name match
+        # would link `PERFORM INIT` to any program's INIT paragraph.
+        if rc.get("cobol_perform"):
             continue
         # A Go predeclared function is never a cross-file call: the extractor
         # already drops bare `append(s, x)` (extractors/go.py), so this is the
@@ -14008,6 +14365,7 @@ def extract(
         e.pop("_rust_use_binding", None)
         e.pop("_rust_use_name", None)
         e.pop("_rust_pub_use", None)
+        e.pop("_rust_use_module_path", None)
     for n in all_nodes:
         n.pop("_rust_use_roots", None)
 

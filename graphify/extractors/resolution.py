@@ -95,6 +95,15 @@ def _resolve_js_import_path(candidate: Path) -> Path:
             if index_candidate.is_file():
                 return index_candidate
 
+    # Tried last so a path that resolves to an implementation keeps its target.
+    declaration = candidate.parent / f"{candidate.name}.d.ts"
+    if declaration.is_file() and effective_suffix(declaration) in _JS_CACHE_BYPASS_SUFFIXES:
+        return declaration
+    if candidate.is_dir():
+        declaration_index = candidate / "index.d.ts"
+        if declaration_index.is_file() and effective_suffix(declaration_index) in _JS_CACHE_BYPASS_SUFFIXES:
+            return declaration_index
+
     return candidate
 
 def _strip_jsonc(text: str) -> str:
@@ -729,16 +738,22 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
         else:
             continue
         build_fallback: Path | None = None
+        declaration_fallback: Path | None = None
         for candidate in _package_entry_candidates(package_dir, subpath, platform):
             resolved = _resolve_js_import_path(candidate)
             if resolved.is_file():
+                # A declaration the entry did not name yields to source or build output.
+                if resolved != candidate and resolved.name.endswith(".d.ts"):
+                    if declaration_fallback is None:
+                        declaration_fallback = resolved
+                    continue
                 if _is_build_output_path(resolved, package_dir):
                     if build_fallback is None:
                         build_fallback = resolved
                 else:
                     return resolved
-        if build_fallback is not None:
-            return build_fallback
+        if build_fallback is not None or declaration_fallback is not None:
+            return build_fallback or declaration_fallback
     return None
 
 def _find_js_project_anchor(start_dir: Path) -> Path:
@@ -1382,12 +1397,14 @@ def _apply_symbol_resolution_facts(
     # and never let a member shadow a same-named top-level symbol.
     member_symbol_keys: set[tuple[Path, str]] = set()
 
+    # Structural alias signatures are only members, never module bindings.
     if resolution_context_nodes:
         _fresh_node_ids = {n.get("id") for n in nodes if n.get("id")}
         _fresh_paths = {_resolve_cached(p) for p in paths}
         for node in resolution_context_nodes:
             nid = node.get("id")
-            if not nid or nid in _fresh_node_ids:
+            if (not nid or nid in _fresh_node_ids
+                    or (node.get("metadata") or {}).get("kind") == "type_alias_method"):
                 continue
             source_path = _js_source_path(str(node.get("source_file", "")), root)
             if source_path is None or source_path in _fresh_paths:
@@ -1406,6 +1423,8 @@ def _apply_symbol_resolution_facts(
             symbol_nodes[key] = str(nid)
 
     for node in nodes:
+        if (node.get("metadata") or {}).get("kind") == "type_alias_method":
+            continue
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
             continue
@@ -4235,6 +4254,7 @@ def _merge_decl_def_classes(
     # Identify, per surviving id, which node to keep (header preferred). We can't
     # mutate all_nodes mid-scan, so collect a set of node object ids to drop.
     drop_objs: set[int] = set()
+    merged_ids: set[str] = set()
     for nid, group in by_id.items():
         if len(group) < 2:
             continue
@@ -4302,6 +4322,7 @@ def _merge_decl_def_classes(
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
+                merged_ids.add(nid)
 
     if not drop_objs:
         return
@@ -4310,7 +4331,12 @@ def _merge_decl_def_classes(
     # own label/source_file (and now carries the impl's definition_file/
     # definition_location); edges are unchanged because the id is identical. Then
     # de-dup any now-identical edges (e.g. the impl file's `contains`/`method`
-    # edge that duplicates the header's after the collapse).
+    # edge that duplicates the header's after the collapse). Only edges touching
+    # a merged id are twins. Every other edge in the batch is left alone: two
+    # unrelated files can still share raw ids here (sample.cu and sample.metal
+    # both define Vec3), and disambiguation splits those apart only later, so a
+    # batch-wide de-dup kept one file's edges and dropped the other's depending
+    # on input order. It also dropped every self-loop, such as a recursive call.
     all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
 
     seen_keys: set[tuple] = set()
@@ -4318,6 +4344,9 @@ def _merge_decl_def_classes(
     for e in all_edges:
         src = e.get("source")
         tgt = e.get("target")
+        if src not in merged_ids and tgt not in merged_ids:
+            rewritten.append(e)
+            continue
         if src == tgt:
             continue
         k = (src, tgt, e.get("relation"), e.get("context"))

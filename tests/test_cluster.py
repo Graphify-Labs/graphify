@@ -251,6 +251,68 @@ def test_native_leiden_returns_none_when_binding_absent(monkeypatch):
     assert cl._native_leiden(stable, 1.0) is None
 
 
+def test_partition_passes_canonical_weighted_edges_to_native_leiden(monkeypatch):
+    from types import SimpleNamespace
+    import graphify.cluster as cl
+
+    # Record the call and check it below: _native_leiden treats any exception
+    # from the binding as "unavailable", so an assert in here could not fail.
+    calls = []
+
+    def leiden(*, edges, seed, resolution, **kwargs):
+        calls.append((edges, seed, resolution))
+        return 0.0, {"b": 5, "é": 5, "a": 1}
+
+    monkeypatch.setitem(sys.modules, "graspologic_native", SimpleNamespace(leiden=leiden))
+    G = nx.Graph()
+    G.add_nodes_from(["z", "é", "b", "a", "isolated"])
+    G.add_edge("é", "a", weight="0.25", confidence="AMBIGUOUS")
+    G.add_edge("b", "a")
+    G.add_edge("a", "a", weight=2)
+    G.add_edge("é", "b", weight=3.0)
+    G.add_edge("a", "é", source_file="sample.py")
+
+    def rebuild_unexpected(*args, **kwargs):
+        raise AssertionError("native Leiden should consume the canonical edges directly")
+
+    monkeypatch.setattr(cl, "_stable_partition_graph", rebuild_unexpected)
+    assert list(cl._partition(G.subgraph(G), resolution=1.2).items()) == [
+        ("b", 5), ("é", 5), ("a", 1), ("isolated", 6), ("z", 7),
+    ]
+    assert calls == [(
+        [("a", "a", 2.0), ("a", "b", 1.0), ("a", "é", 0.25), ("b", "é", 3.0)],
+        42,
+        1.2,
+    )]
+
+
+def test_native_partition_error_preserves_wrapper_input(monkeypatch):
+    from types import SimpleNamespace
+    import graphify.cluster as cl
+
+    native_calls = []
+    wrapper_edges = []
+
+    def native_leiden(*, edges, **kwargs):
+        native_calls.append(edges)
+        raise RuntimeError("native binding failed")
+
+    def wrapper_leiden(stable, *, resolution, random_seed):
+        assert resolution == 1.2
+        assert random_seed == 42
+        wrapper_edges.extend(stable.edges(data=True))
+        return {"a": 0, "b": 0}
+
+    monkeypatch.setitem(sys.modules, "graspologic_native", SimpleNamespace(leiden=native_leiden))
+    monkeypatch.setitem(sys.modules, "graspologic.partition", SimpleNamespace(leiden=wrapper_leiden))
+    G = nx.Graph()
+    G.add_edge("b", "a", weight="0.25", confidence="AMBIGUOUS")
+
+    assert cl._partition(G, resolution=1.2) == {"a": 0, "b": 0}
+    assert native_calls == [[("a", "b", 0.25)]]
+    assert wrapper_edges == [("a", "b", {"weight": "0.25", "confidence": "AMBIGUOUS"})]
+
+
 def test_partition_is_invariant_to_edge_endpoint_orientation():
     """#3146: for an undirected graph, (a,b) and (b,a) are the same edge, but the
     orientation networkx yields can vary across builds/machines. _partition must
@@ -339,3 +401,40 @@ def test_cache_fails_open_on_corrupt_sidecar(tmp_path):
     assert out == fresh  # recomputed, and valid cache rewritten
     # the corrupt file was replaced by a valid one
     json.loads((tmp_path / ".graphify_partition_cache.json").read_text())
+
+
+def test_score_all_single_pass_parity_and_no_subgraph_allocations(monkeypatch):
+    """score_all must match per-community cohesion_score across Graph/DiGraph/MultiGraph
+    without calling G.subgraph() for partitioned communities."""
+    import pytest
+
+    def _build(cls):
+        G = cls()
+        G.add_edges_from([("a", "b"), ("b", "c"), ("a", "a"), ("c", "d")])
+        G.add_node("solo")
+        return G
+
+    for cls in (nx.Graph, nx.DiGraph, nx.MultiGraph):
+        G = _build(cls)
+        if cls is nx.DiGraph:
+            G.add_edge("b", "a")  # reciprocal edge
+        elif cls is nx.MultiGraph:
+            G.add_edge("a", "b")  # parallel edge
+        communities = {0: ["a", "b", "c"], 1: ["d"], 2: ["solo"]}
+        expected = {cid: cohesion_score(G, nodes) for cid, nodes in communities.items()}
+
+        def _forbid_subgraph(_nodes):
+            raise AssertionError("score_all must not allocate SubGraphView for partitions")
+
+        monkeypatch.setattr(G, "subgraph", _forbid_subgraph)
+        got = score_all(G, communities)
+        for cid in communities:
+            assert got[cid] == pytest.approx(expected[cid])
+
+    # Overlapping communities fall back to per-community cohesion_score cleanly.
+    G = _build(nx.Graph)
+    overlapping = {0: ["a", "b", "c"], 1: ["b", "c", "d"]}
+    assert score_all(G, overlapping) == {
+        cid: cohesion_score(G, nodes) for cid, nodes in overlapping.items()
+    }
+    assert score_all(G, {}) == {}

@@ -239,6 +239,76 @@ def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     return out
 
 
+def _id_collision_partners(
+    targets: list[Path],
+    deleted: "set[str]",
+    code_files: list[Path],
+    stored_nodes: list[dict],
+    identity: "Callable[[str], str | None]",
+    root: Path,
+    exclude: "set[Path]",
+) -> list[Path]:
+    """Corpus files that must be re-extracted together with ``targets``.
+
+    extract() salts a node id two files both produce (``sample.go`` and
+    ``sample.java`` both yield ``sample_dataprocessor``; two XAML files both
+    yield ``binding_username``) into ``make_id(<path>, <id>)``, but only when
+    the colliding files are extracted in the same batch. An incremental run
+    that re-extracted one of them alone gave it the bare id a full build never
+    uses, and deleting one left the others on salted ids, so the graph drifted
+    from a full build of the same tree.
+
+    Partners are found two ways: files with the same file-node id as a target
+    (catches a newly added sibling), and files holding a salted node whose bare
+    id a target's or deleted file's salted node also carries. The second is
+    repeated until no new file joins, because a partner can collide with yet
+    another file on a different id.
+    """
+    from graphify.extract import _file_node_id
+    from graphify.ids import make_id
+
+    def _rel(path: str | Path) -> "Path | None":
+        try:
+            return Path(os.path.abspath(path)).relative_to(root)
+        except ValueError:
+            return None
+
+    corpus: dict[str, Path] = {}
+    for path in code_files:
+        absolute = Path(os.path.abspath(path))
+        if absolute not in exclude and absolute.is_file():
+            corpus[absolute.as_posix()] = absolute
+
+    # Salted nodes per stored source: (source identity, bare id).
+    salted: list[tuple[str, str]] = []
+    for node in stored_nodes:
+        nid = node.get("id")
+        source = identity(node.get("source_file") or "")
+        rel = _rel(source) if source else None
+        if not isinstance(nid, str) or rel is None:
+            continue
+        prefix = make_id(rel.as_posix()) + "_"
+        if nid.startswith(prefix) and len(nid) > len(prefix):
+            salted.append((source, nid[len(prefix):]))
+
+    group = {Path(os.path.abspath(p)).as_posix() for p in targets} | set(deleted)
+    stems = {_file_node_id(r) for r in map(_rel, group) if r is not None}
+    for key, absolute in corpus.items():
+        rel = _rel(absolute)
+        if rel is not None and _file_node_id(rel) in stems:
+            group.add(key)
+
+    while True:
+        bare = {raw for source, raw in salted if source in group}
+        joined = {source for source, raw in salted if raw in bare and source not in group}
+        if not joined:
+            break
+        group |= joined
+
+    have = {Path(os.path.abspath(p)).as_posix() for p in targets}
+    return [corpus[key] for key in sorted(group - have) if key in corpus]
+
+
 # msvcrt.locking reports a byte range held by another handle as EACCES
 # (EDEADLOCK is the LK_LOCK flavour). Any other errno means the lock call
 # itself is unsupported on this filesystem, so waiting for it is pointless.
@@ -1569,10 +1639,29 @@ def _reconcile_existing_graph(
             members = edge.get("nodes", edge.get("members", edge.get("node_ids", [])))
             if isinstance(members, list):
                 referenced_ids.update(members)
+        # The same holds for a sourceless AST reference node (a base type such
+        # as Kotlin's ``MutableList`` that no scanned file defines): it has no
+        # source_file, so eviction never claims it, and once the only file that
+        # referenced it is deleted or rewritten it was left behind with no
+        # edges. Drop it only when it lost its edges in this run; a node that
+        # was already edgeless is what a full build emits too, so it stays.
+        previously_referenced = {
+            endpoint
+            for edge in existing.get("links", existing.get("edges", []))
+            for endpoint in (edge.get("source"), edge.get("target"))
+        }
         preserved_nodes = [
             node
             for node in preserved_nodes
-            if not _is_external_stub(node) or node["id"] in referenced_ids
+            if node["id"] in referenced_ids
+            or not (
+                _is_external_stub(node)
+                or (
+                    not node.get("source_file")
+                    and _is_ast_tier(node)
+                    and node["id"] in previously_referenced
+                )
+            )
         ]
 
         for item in preserved_nodes + preserved_edges + preserved_hyperedges:
@@ -2882,6 +2971,15 @@ def _rebuild_code(
                     available_paths=code_files,
                     changed_paths=[Path(p) for p in deleted_source_identities],
                 )
+                extract_targets = extract_targets + _id_collision_partners(
+                    extract_targets,
+                    deleted_source_identities,
+                    code_files,
+                    ctx_graph.get("nodes", []),
+                    lambda sf: ctx_paths.absolute_identity(sf, project_root) if sf else None,
+                    Path(watch_root).resolve(),
+                    {Path(os.path.abspath(p)) for p in semantic_doc_files},
+                )
                 ctx_live = {
                     ctx_paths.absolute_identity(str(p), project_root) for p in code_files
                 }
@@ -3833,7 +3931,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             if _is_read_only_event(event):
                 return
-            path = Path(os.fsdecode(event.src_path))
+            path = Path(os.fsdecode(event.src_path)).resolve()
             if manual and (
                 path.parent not in watched or not path.parent.exists()
             ):
@@ -3851,7 +3949,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             # Atomic replacement reports the new root config in dest_path.
             dest_raw = getattr(event, "dest_path", None)
-            dest_path = Path(os.fsdecode(dest_raw)) if dest_raw else None
+            dest_path = Path(os.fsdecode(dest_raw)).resolve() if dest_raw else None
             if path == root_config_path or dest_path == root_config_path:
                 override_snapshot = activate_language_overrides(watch_root_for_ignore)
                 config_changed = True
