@@ -34,7 +34,7 @@ _UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 _INDEX_LINK = "[index](index.md)"
 
 
-def _safe_filename(name: str, limit: int = 200) -> str:
+def _safe_filename(name: str | None, limit: int = 200) -> str:
     """Make a label safe for use as a filename across platforms AND as a
     markdown link destination.
 
@@ -53,6 +53,8 @@ def _safe_filename(name: str, limit: int = 200) -> str:
     ``__init__`` intact. Two labels that collapse to one slug are still
     separated by ``_unique_slug``.
     """
+    if not name or not isinstance(name, str):
+        return 'unnamed'
     s = name.replace("/", "-").replace(" ", "_").replace(":", "-")
     s = s.replace("(", "").replace(")", "")
     s = _UNSAFE_SLUG_CHARS.sub('_', s)
@@ -60,9 +62,10 @@ def _safe_filename(name: str, limit: int = 200) -> str:
     return s[:limit] if s else 'unnamed'
 
 
-def _md_link_to(label: str, slug: str | None) -> str:
+def _md_link_to(label: str | None, slug: str | None) -> str:
     """Link to the exact on-disk filename (#2597), or render plain text."""
-    text = label.replace("[", r"\[").replace("]", r"\]")
+    clean_label = str(label) if label is not None else "unnamed"
+    text = clean_label.replace("[", r"\[").replace("]", r"\]")
     if slug is None:
         return text
     return f"[{text}]({slug}.md)"
@@ -120,7 +123,8 @@ def _community_article(
     lines += ["## Key Concepts", ""]
     for nid in top_nodes:
         d = G.nodes[nid]
-        node_label = d.get("label", nid)
+        raw_label = d.get("label")
+        node_label = str(raw_label) if raw_label is not None else nid
         src = d.get("source_file", "")
         degree = G.degree(nid)
         src_str = f" — `{src}`" if src else ""
@@ -133,7 +137,7 @@ def _community_article(
     lines += ["## Relationships", ""]
     if cross:
         for other_cid, count in cross[:12]:
-            other_label = labels.get(other_cid, f"Community {other_cid}")
+            other_label = labels.get(other_cid) or f"Community {other_cid}"
             link = _md_link_to(other_label, community_slugs.get(other_cid))
             lines.append(f"- {link} ({count} shared connections)")
     else:
@@ -168,10 +172,11 @@ def _god_node_article(
     community_slugs = community_slugs or {}
     god_slugs = god_slugs or {}
     d = G.nodes[nid]
-    node_label = d.get("label", nid)
+    raw_label = d.get("label")
+    node_label = str(raw_label) if raw_label is not None else nid
     src = d.get("source_file", "")
     cid = (node_community or {}).get(nid)
-    community_name = labels.get(cid, f"Community {cid}") if cid is not None else None
+    community_name = (labels.get(cid) or f"Community {cid}") if cid is not None else None
 
     lines: list[str] = []
     lines += [f"# {node_label}", ""]
@@ -190,7 +195,8 @@ def _god_node_article(
     for neighbor, incoming, ed in sorted(
         connections, key=lambda item: G.degree(item[0]), reverse=True
     ):
-        neighbor_label = G.nodes[neighbor].get("label", neighbor)
+        raw_neighbor_label = G.nodes[neighbor].get("label")
+        neighbor_label = str(raw_neighbor_label) if raw_neighbor_label is not None else neighbor
         rel = ed.get("relation", "related")
         conf = ed.get("confidence", "")
         conf_str = f" `{conf}`" if conf else ""
@@ -258,7 +264,7 @@ def _index_md(
     ]
 
     for cid, nodes in sorted(communities.items(), key=lambda x: -len(x[1])):
-        label = labels.get(cid, f"Community {cid}")
+        label = labels.get(cid) or f"Community {cid}"
         slug = community_slugs.get(cid)
         lines.append(f"- {_md_link_to(label, slug)} — {len(nodes)} nodes")
     lines.append("")
@@ -267,7 +273,9 @@ def _index_md(
         lines += ["## God Nodes", "(most connected concepts — the load-bearing abstractions)", ""]
         for node in god_nodes_data:
             slug = god_slugs.get(node.get("id"))
-            lines.append(f"- {_md_link_to(node['label'], slug)} — {node['degree']} connections")
+            god_label = node.get("label") or node.get("id") or "unnamed"
+            deg = node.get("degree", 0)
+            lines.append(f"- {_md_link_to(god_label, slug)} — {deg} connections")
         lines.append("")
 
     lines += [
@@ -384,7 +392,7 @@ def to_wiki(
     # suffix from collision dedup — so the final slug must be known up front.
     community_slugs: dict[int, str] = {}
     for cid in communities:
-        label = labels.get(cid, f"Community {cid}")
+        label = labels.get(cid) or f"Community {cid}"
         slug = _unique_slug(_safe_filename(label, _slug_limit))
         community_slugs[cid] = slug
 
@@ -392,13 +400,14 @@ def to_wiki(
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
-            slug = _unique_slug(_safe_filename(node_data['label'], _slug_limit))
+            god_label = node_data.get("label") or G.nodes[nid].get("label") or nid
+            slug = _unique_slug(_safe_filename(god_label, _slug_limit))
             god_articles.append((nid, slug))
 
     # Resolve body links by community and node ID, since labels can repeat.
     god_slugs = dict(god_articles)
     for cid, nodes in communities.items():
-        label = labels.get(cid, f"Community {cid}")
+        label = labels.get(cid) or f"Community {cid}"
         article = _community_article(
             G, cid, nodes, label, labels, cohesion.get(cid), node_community, community_slugs,
         )
