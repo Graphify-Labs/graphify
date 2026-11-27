@@ -484,3 +484,26 @@ def test_inline_asset_content_filter_links_the_asset(tmp_path):
     assert _targets(root, "sections/a.liquid") == [("references", "assets/icon.svg", "L1")]
     unresolved = [e for e in _edges(root, "sections/a.liquid") if e["confidence"] == "AMBIGUOUS"]
     assert len(unresolved) == 1 and unresolved[0]["source_location"] == "L2"
+
+
+def test_preset_blocks_link_existing_block_files_nested_and_dict_form(tmp_path):
+    schema = json.dumps({
+        "name": "Hero",
+        "blocks": [{"type": "local", "name": "Local"}],
+        "presets": [
+            {"name": "A", "blocks": [
+                {"type": "card", "blocks": [{"type": "badge"}]},
+                {"type": "local"},
+                {"type": "@app"},
+                {"type": "nofile"},
+            ]},
+            {"name": "B", "blocks": {"x": {"type": "tile", "blocks": {"y": {"type": "card"}}}}},
+        ],
+    }, indent=2)
+    root = _theme(tmp_path, {
+        "blocks/card.liquid": "", "blocks/badge.liquid": "", "blocks/tile.liquid": "",
+        "sections/hero.liquid": "{% schema %}\n" + schema + "\n{% endschema %}\n",
+    })
+    t = _targets(root, "sections/hero.liquid")
+    assert sorted(x[1] for x in t if x[0] == "imports") == ["blocks/badge.liquid", "blocks/card.liquid", "blocks/tile.liquid"]
+    assert [e for e in _edges(root, "sections/hero.liquid") if e["confidence"] == "AMBIGUOUS"] == []

@@ -9,6 +9,8 @@ block":
 * ``sections 'x'``                      -> ``sections/x.json``        (``imports``)
 * ``content_for 'block', type: 'x'``    -> ``blocks/x.liquid``        (``imports``)
 * ``{% schema %}`` ``blocks[]`` entries -> ``blocks/<type>.liquid``   (``imports``)
+* ``{% schema %}`` ``presets[].blocks`` (nested, list or dict form) -> ``blocks/<type>.liquid``
+  when that file exists (``imports``; section-local types get nothing)
 * ``'x' | asset_url`` / ``inline_asset_content`` -> ``assets/x[.liquid]`` (``references``)
 * ``'a.b' | t`` / ``| translate``       -> key ``a.b`` of the default locale (``references``)
 
@@ -333,6 +335,36 @@ class _Collector:
         else:
             self.file_edge("references", "asset", name, direct, line)
 
+    def _preset_blocks(self, data: dict, body: str, line: int) -> None:
+        """``imports`` for each ``presets[].blocks`` type (nested too) that has a ``blocks/`` file."""
+        presets = data.get("presets")
+        if not isinstance(presets, list):
+            return
+        start = max(body.find('"presets"'), 0)
+        seen: set[str] = set()
+        stack: list[tuple[object, int]] = [(p, 0) for p in reversed(presets)]
+        while stack:
+            node, depth = stack.pop()
+            if depth > 32 or not isinstance(node, dict):
+                continue
+            children = node.get("blocks")
+            if isinstance(children, dict):
+                children = list(children.values())
+            if isinstance(children, list):
+                stack.extend((c, depth + 1) for c in reversed(children))
+            if depth == 0:
+                continue
+            block_type = node.get("type")
+            if not isinstance(block_type, str) or block_type.startswith(("@", "shopify://")) or block_type in seen:
+                continue
+            seen.add(block_type)
+            target = self.root / "blocks" / f"{block_type}.liquid"
+            if not _safe_component(block_type) or not target.is_file():
+                continue
+            m = re.compile(r'"type"\s*:\s*"' + re.escape(block_type) + '"').search(body, start)
+            entry_line = line + body.count("\n", 0, m.start()) if m else line
+            self.file_edge("imports", "block", block_type, target, entry_line)
+
     def schema(self, body: str, line: int) -> None:
         """``blocks[]`` entries of a section/block schema that name a theme block file."""
         try:
@@ -340,7 +372,10 @@ class _Collector:
         except ValueError:
             return
         self.schema_keys(data, body, line)
-        blocks = data.get("blocks") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return
+        self._preset_blocks(data, body, line)
+        blocks = data.get("blocks")
         if not isinstance(blocks, list):
             return
         search_from = body.find('"blocks"')
