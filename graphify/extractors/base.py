@@ -9,7 +9,7 @@ from graphify.ids import _file_stem, make_id  # noqa: F401  (_file_stem re-expor
 from graphify.paths import take_preread_bytes as _take_preread_bytes
 
 # Ambient scan root of the extraction in flight. extract.py's
-# _safe_extract_with_xaml_root sets it around every per-file extraction; the
+# _safe_extract_with_scan_root sets it around every per-file extraction; the
 # extractors that need the corpus boundary read it (Markdown link resolution and
 # the XAML C# project-root clamp). It lives here rather than in graphify.extract
 # so those extractors read it in the correct import direction (extract.py ->
@@ -29,7 +29,7 @@ from graphify.paths import take_preread_bytes as _take_preread_bytes
 # Semantic note: because the value is context-local, a root set on one
 # thread is NOT visible to worker threads spawned mid-extraction. Every
 # real call path sets and reads the root inside the same pool worker
-# (_safe_extract_with_xaml_root runs inside the worker; the scan root also
+# (_safe_extract_with_scan_root runs inside the worker; the scan root also
 # travels to workers as an explicit `root` parameter, not via this
 # global), so no production path crosses the boundary. If a future
 # extractor needs cross-thread visibility, propagate explicitly with

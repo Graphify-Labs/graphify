@@ -5249,7 +5249,7 @@ def test_markdown_reconcile_preserves_links_on_extraction_error(
         [_ast_reference("a_sem", "b_sem", source_file, sentinel="keep")],
     )
     source_path = (corpus / source_file).resolve()
-    real_extract = extract_module._safe_extract_with_xaml_root
+    real_extract = extract_module._safe_extract_with_scan_root
     fail_source = True
 
     def controlled_extract(extractor, path, root):
@@ -5258,7 +5258,7 @@ def test_markdown_reconcile_preserves_links_on_extraction_error(
         return real_extract(extractor, path, root)
 
     monkeypatch.setattr(
-        extract_module, "_safe_extract_with_xaml_root", controlled_extract
+        extract_module, "_safe_extract_with_scan_root", controlled_extract
     )
 
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
