@@ -78,6 +78,13 @@ _COMPOSITION = {
 
 # (theme root, locale path) -> (mtime_ns, parsed locale or None)
 _LOCALE_CACHE: dict[tuple[str, str], tuple[int, dict | None]] = {}
+# (theme root, settings_schema.json path) -> (mtime_ns, {setting id: line} or None)
+_SETTINGS_CACHE: dict[tuple[str, str], tuple[int, dict[str, int] | None]] = {}
+_ID_PROP = re.compile(r'"id"\s*:\s*"([^"\\\n]+)"')
+# ``settings.x``, ``section.settings.x``, ``block.settings.x`` and their ``['x']`` forms.
+_SETTING_USE = re.compile(
+    r"""(?<![\w.])(?<!t:)(section\.settings|block\.settings|settings)(?:\.([A-Za-z_]\w*)|\[\s*(['"])([\w-]+)\3\s*\])"""
+)
 
 
 def _find_theme_root(path: Path) -> Path | None:
@@ -107,8 +114,56 @@ def _inside(root: Path, target: Path) -> bool:
 
 
 def _strip_json_comments(text: str) -> str:
-    """Drop ``//`` and ``/* */`` comments outside strings (Shopify locale files carry them)."""
-    return _JSON_COMMENT.sub(lambda m: m.group(0) if m.group(0).startswith('"') else " ", text)
+    """Blank ``//`` and ``/* */`` comments outside strings, keeping newlines so line numbers survive."""
+    return _JSON_COMMENT.sub(
+        lambda m: m.group(0) if m.group(0).startswith('"') else re.sub(r"[^\n]", " ", m.group(0)), text,
+    )
+
+
+def _read_theme_json(path: Path) -> object | None:
+    """Parsed JSON (comments allowed) when the file is small enough and valid, else None."""
+    try:
+        if path.stat().st_size > _MAX_LOCALE_BYTES:
+            return None
+        return json.loads(_strip_json_comments(_read_source_text(path)))
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def _settings_schema(root: Path) -> dict[str, int] | None:
+    """Global setting id -> line of its ``"id"`` in ``config/settings_schema.json``; None if absent or hostile."""
+    path = root / "config" / "settings_schema.json"
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    key = (str(root), str(path))
+    cached = _SETTINGS_CACHE.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    ids: dict[str, int] | None = None
+    data = _read_theme_json(path)
+    if data is not None:
+        found: set[str] = set()
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                sid = node.get("id")
+                if isinstance(sid, str) and "type" in node:
+                    found.add(sid)
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        text = _strip_json_comments(_read_source_text(path))
+        ids = {}
+        for m in _ID_PROP.finditer(text):
+            if m.group(1) in found and m.group(1) not in ids:
+                ids[m.group(1)] = text.count("\n", 0, m.start()) + 1
+        for sid in found:
+            ids.setdefault(sid, 1)
+    _SETTINGS_CACHE[key] = (mtime, ids)
+    return ids
 
 
 def _default_locale(root: Path, pattern: str = "*.default.json") -> tuple[Path, dict] | None:
@@ -147,6 +202,14 @@ def _has_key(locale: dict, key: str) -> bool:
     return isinstance(node, (str, dict))
 
 
+def setting_node(root: Path, sid: str, line: int) -> dict:
+    """The node of global setting ``sid``; shared by the Liquid and the settings-schema extractors."""
+    return {
+        "id": _make_id("liquid_setting", str(root), sid), "label": f"settings.{sid}", "file_type": "concept",
+        "source_file": str(root / "config" / "settings_schema.json"), "source_location": f"L{line}",
+    }
+
+
 class _Collector:
     """Accumulates nodes and de-duplicated edges for one file, in source order."""
 
@@ -164,6 +227,8 @@ class _Collector:
         self._seen: set[tuple[str, str, int]] = set()
         self._locale: tuple[Path, dict] | None | _Unset = _UNSET
         self._schema_locale: tuple[Path, dict] | None | _Unset = _UNSET
+        self._settings: dict[str, int] | None | _Unset = _UNSET
+        self.pending: list[tuple[str, str, int]] = []   # (section|block, setting id, line) resolved after the schema
         self.blocks_line: int | None = None   # first static ``content_for 'blocks'``
         self.accepts_theme = False            # schema ``blocks`` lists ``@theme``
 
@@ -319,8 +384,34 @@ class _Collector:
 
     # -- statement level -------------------------------------------------
 
+    def setting_edge(self, sid: str, line: int) -> None:
+        """``references`` edge to a global setting of ``config/settings_schema.json`` (or an unresolved one)."""
+        if self._settings is _UNSET:
+            self._settings = _settings_schema(self.root)
+        ids = self._settings
+        label = f"settings.{sid}"
+        if not isinstance(ids, dict) or sid not in ids:
+            self._unresolved("references", "setting", label, label, line)
+            return
+        node = setting_node(self.root, sid, ids[sid])
+        if not self._first(node["id"], "references", line):
+            return
+        self._declare(node)
+        self.edges.append({
+            "source": self.file_id, "target": node["id"], "relation": "references",
+            "confidence": "EXTRACTED", "confidence_score": 1.0,
+            "source_file": str(self.path), "source_location": f"L{line}", "weight": 1.0,
+        })
+
     def statement(self, text: str, line: int) -> None:
         """Handle one tag body or one line of a ``{% liquid %}`` block."""
+        if "settings" in text:
+            for m in _SETTING_USE.finditer(text):
+                scope, sid = m.group(1), m.group(2) or m.group(4)
+                if scope == "settings":
+                    self.setting_edge(sid, line)
+                else:
+                    self.pending.append((scope.split(".", 1)[0], sid, line))
         for m in _FILTER.finditer(text):
             name, kind = m.group(2), m.group(3)
             if kind in _ASSET_FILTERS:

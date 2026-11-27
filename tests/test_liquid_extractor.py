@@ -550,3 +550,113 @@ def test_preset_blocks_link_existing_block_files_nested_and_dict_form(tmp_path):
     t = _targets(root, "sections/hero.liquid")
     assert sorted(x[1] for x in t if x[0] == "imports") == ["blocks/badge.liquid", "blocks/card.liquid", "blocks/tile.liquid"]
     assert [e for e in _edges(root, "sections/hero.liquid") if e["confidence"] == "AMBIGUOUS"] == []
+
+
+# -- settings (R4) -----------------------------------------------------------
+
+_SETTINGS_SCHEMA = """/* synthetic schema */
+[
+  {"name": "theme_info", "theme_name": "Demo"},
+  {
+    "name": "Header",
+    "settings": [
+      {"type": "header", "content": "Header"},
+      {"type": "checkbox", "id": "show_breadcrumbs", "label": "Breadcrumbs"},
+      {"type": "select", "id": "text_direction", "label": "Direction"},
+      {"type": "text", "id": "logo", "label": "Logo"}
+    ]
+  }
+]
+"""
+
+
+def _line_of(text: str, needle: str) -> int:
+    return text[: text.index(needle)].count("\n") + 1
+
+
+def _used(root: Path, rel: str) -> list[dict]:
+    """Edges leaving the file, each with its target node under ``node``."""
+    result = extract_liquid(root / rel)
+    assert "error" not in result
+    nodes = {n["id"]: n for n in result["nodes"]}
+    fid = _make_id(str(root / rel))
+    return [{**e, "node": nodes[e["target"]]} for e in result["edges"] if e["source"] == fid and e["target"] in nodes]
+
+
+def _by_label(edges: list[dict], label: str) -> list[dict]:
+    return [e for e in edges if e["node"]["label"] == label]
+
+
+def test_settings_global_links_to_schema_line(tmp_path):
+    layout = (
+        "{{ settings.show_breadcrumbs }}\n"
+        "{% if settings.text_direction == 'rtl' %}x{% endif %}\n"
+        "{% liquid\n  assign a = 1\n  echo settings.logo\n%}\n"
+    )
+    root = _theme(tmp_path, {"layout/password.liquid": layout, "config/settings_schema.json": _SETTINGS_SCHEMA})
+    edges = _used(root, "layout/password.liquid")
+    for sid, line in (("show_breadcrumbs", 1), ("text_direction", 2), ("logo", 5)):
+        found = _by_label(edges, f"settings.{sid}")
+        assert len(found) == 1, sid
+        e = found[0]
+        assert e["relation"] == "references" and e["confidence"] == "EXTRACTED"
+        assert e["source_location"] == f"L{line}"
+        assert Path(e["node"]["source_file"]) == root / "config" / "settings_schema.json"
+        needle = '"id": "' + sid + '"'
+        assert e["node"]["source_location"] == f"L{_line_of(_SETTINGS_SCHEMA, needle)}"
+
+
+def test_settings_bracket_form_links(tmp_path):
+    root = _theme(tmp_path, {
+        "layout/password.liquid": "{{ settings['logo'] }}{{ settings[\"logo\"] }}{{ settings[var] }}\n",
+        "config/settings_schema.json": _SETTINGS_SCHEMA,
+    })
+    edges = _used(root, "layout/password.liquid")
+    assert len(_by_label(edges, "settings.logo")) == 1
+    assert len(edges) == 1
+
+
+def test_settings_missing_id_is_ambiguous_unresolved(tmp_path):
+    root = _theme(tmp_path, {
+        "layout/password.liquid": "{{ settings.missing }}\n",
+        "config/settings_schema.json": _SETTINGS_SCHEMA,
+    })
+    edges = _used(root, "layout/password.liquid")
+    assert len(edges) == 1
+    e = edges[0]
+    assert e["confidence"] == "AMBIGUOUS"
+    assert e["node"]["unresolved"] is True and e["node"]["ref_kind"] == "setting"
+    assert e["node"]["label"] == "settings.missing"
+
+
+def test_settings_in_nested_comment_and_t_prefix_ignored(tmp_path):
+    layout = (
+        "{% comment %}{% comment %}{{ settings.logo }}{% endcomment %}{{ settings.logo }}{% endcomment %}\n"
+        "{{ product.settings.logo }}{{ 't:settings.logo' }}\n"
+    )
+    root = _theme(tmp_path, {"layout/password.liquid": layout, "config/settings_schema.json": _SETTINGS_SCHEMA})
+    assert _used(root, "layout/password.liquid") == []
+
+
+def test_settings_hostile_schema_is_treated_as_missing(tmp_path, monkeypatch):
+    from graphify.extractors import liquid
+
+    root = _theme(tmp_path, {"layout/password.liquid": "{{ settings.logo }}\n", "config/settings_schema.json": "[{"})
+    edges = _used(root, "layout/password.liquid")
+    assert [e["confidence"] for e in edges] == ["AMBIGUOUS"]
+
+    big = tmp_path / "big"
+    big.mkdir()
+    monkeypatch.setattr(liquid, "_MAX_LOCALE_BYTES", 10)
+    root = _theme(big, {"layout/password.liquid": "{{ settings.logo }}\n", "config/settings_schema.json": _SETTINGS_SCHEMA})
+    assert [e["confidence"] for e in _used(root, "layout/password.liquid")] == ["AMBIGUOUS"]
+
+
+def test_settings_regex_is_linear_on_a_huge_line(tmp_path):
+    root = _theme(tmp_path, {
+        "layout/password.liquid": "{{ " + "settings." * 60000 + "x" + " section.settings[ " * 20000 + " }}\n",
+        "config/settings_schema.json": _SETTINGS_SCHEMA,
+    })
+    start = time.perf_counter()
+    extract_liquid(root / "layout/password.liquid")
+    assert time.perf_counter() - start < 2

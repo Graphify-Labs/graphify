@@ -59,6 +59,21 @@ def _unresolved(root: Path, rel: str) -> list[tuple[str, str]]:
     ]
 
 
+def test_settings_schema_file_node_contains_each_setting(tmp_path):
+    schema = (
+        '/* c */\n[{"name": "theme_info"},\n {"name": "G", "settings": [\n'
+        '  {"type": "header", "content": "H"},\n  {"type": "checkbox", "id": "show_breadcrumbs"}\n ]}]\n'
+    )
+    root = _theme(tmp_path, {"config/settings_schema.json": schema})
+    result = _run(root, "config/settings_schema.json")
+    nodes = {n["id"]: n for n in result["nodes"]}
+    file_id = _make_id(str(root / "config" / "settings_schema.json"))
+    contained = [nodes[e["target"]] for e in result["edges"] if e["source"] == file_id and e["relation"] == "contains"]
+    assert [n["label"] for n in contained] == ["settings.show_breadcrumbs"]
+    assert contained[0]["source_location"] == "L5"
+    assert Path(contained[0]["source_file"]) == root / "config" / "settings_schema.json"
+
+
 def test_registered():
     from graphify.extractors import LANGUAGE_EXTRACTORS
     from graphify.extractors.shopify_theme_json import extract_shopify_theme_json

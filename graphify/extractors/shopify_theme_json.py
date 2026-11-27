@@ -40,6 +40,8 @@ from graphify.extractors.liquid import (
     _Collector,
     _find_theme_root,
     _safe_component,
+    _settings_schema,
+    setting_node,
 )
 
 _MAX_JSON_BYTES = 1024 * 1024
@@ -136,6 +138,14 @@ def extract_shopify_theme_json(path: Path) -> dict:
         return empty
     if found[1] == _SETTINGS_SCHEMA:
         out.schema_keys(data, src, 1)
+        for sid, line in (_settings_schema(out.root) or {}).items():
+            node = setting_node(out.root, sid, line)
+            out.nodes.append(node)
+            out.edges.append({
+                "source": out.file_id, "target": node["id"], "relation": "contains",
+                "confidence": "EXTRACTED", "confidence_score": 1.0,
+                "source_file": str(path), "source_location": f"L{line}", "weight": 1.0,
+            })
     elif found[1] == _SETTINGS_DATA:
         if isinstance(data, dict):
             scopes = [data.get("current")]
