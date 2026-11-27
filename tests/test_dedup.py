@@ -27,7 +27,7 @@ def test_entropy_empty_string():
 
 def test_shingles_produces_trigrams():
     s = _shingles("hello")
-    assert "hel" in s
+    assert "hel" in s  # codespell:ignore hel
     assert "ell" in s
     assert "llo" in s
 
