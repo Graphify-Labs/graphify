@@ -102,6 +102,12 @@ and clustered incremental merges, preserving the source's last good AST records.
 The CLI reports incompleteness and clears failed sources' manifest hashes so a
 later successful extraction can replace those records normally.
 
+When incremental `extract --no-cluster` dispatches no files, the manifest
+still drops stale rows but retains the existing content stamps. Re-reading
+sources at that point could stamp an edit made after detection even though the
+graph still describes the old bytes. A timestamp-only touch keeps the previous
+stamp, so later scans still compare content while the file has the touched mtime.
+
 Semantic response recovery requires one authoritative graph fragment. Multiple
 independent nonempty candidates or a top-level array of two or more fragments
 enter hollow-response retry; exhausted retries leave the files partial and

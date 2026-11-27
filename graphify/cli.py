@@ -5732,7 +5732,16 @@ def dispatch_command(cmd: str) -> None:
                     "(--no-cluster); outputs left untouched."
                 )
                 try:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None, ast_empty=_ast_empty_sources or None)
+                    _save_manifest(
+                        _manifest_files,
+                        manifest_path=str(manifest_path),
+                        kind="both",
+                        root=target,
+                        scan_corpus=_scan_corpus,
+                        clear_semantic=_cleared_semantic,
+                        clear_ast=_cleared_ast or None,
+                        restamp=False,
+                    )
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()

@@ -2826,6 +2826,7 @@ def save_manifest(
     clear_semantic: set[str] | list[str] | None = None,
     clear_ast: set[str] | list[str] | None = None,
     ast_empty: set[str] | list[str] | None = None,
+    restamp: bool = True,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -2875,6 +2876,12 @@ def save_manifest(
     Marks their row ``ast_empty: true`` so the #2543 heal can tell an intentional
     empty from a poisoned stamp and stop re-queuing them. Preserved across
     incrementals for unchanged rows; dropped once a file starts producing nodes.
+
+    ``restamp=False`` preserves existing file stamps without reading source
+    contents. Use it when no sources were extracted, so bytes modified since
+    detection do not get stamped as graph-backed. The supplied ``files`` still
+    identify relative keys for previous-checkout cleanup. Pruning, clearing and
+    legacy key normalization continue to apply.
     """
     # Another root may have activated different overrides in this thread.
     if root is not None:
@@ -3017,13 +3024,14 @@ def save_manifest(
             normalised = {**normalised, "semantic_hash": ""}
         manifest[f] = normalised
 
-    with ThreadPoolExecutor() as pool:
-        raw = pool.map(_stat_and_hash, all_files)
-    hashed: dict[str, tuple[float, str]] = {
-        r[0]: (r[1], r[2]) for r in raw if r is not None
-    }
+    stamp_files = all_files if restamp else []
+    hashed: dict[str, tuple[float, str]] = {}
+    if stamp_files:
+        with ThreadPoolExecutor() as pool:
+            raw = pool.map(_stat_and_hash, stamp_files)
+        hashed = {r[0]: (r[1], r[2]) for r in raw if r is not None}
 
-    for f in all_files:
+    for f in stamp_files:
         if f not in hashed:
             continue  # file deleted between detect() and manifest write
         mtime, h = hashed[f]
