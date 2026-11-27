@@ -601,6 +601,79 @@ def _handle_unverified_semantic_shrink(
     return incomplete, manifest_files, cleared_semantic
 
 
+def _placeholder_stale_sources(
+    graph_path: Path,
+    manifest_path: Path,
+    root: Path,
+    stale_sources: list[str],
+    emitted_sources: "set[str]",
+    rebuilt: "list[Path]",
+) -> set[str]:
+    """Stale graph sources that are placeholders a full build keeps, not deleted files.
+
+    An unresolved dynamic import (``import('left-pad')``) mints a node whose
+    source_file is the specifier. _stale_graph_sources reads that unscanned path
+    as deleted, so the prune dropped the node and the referrer's edge to it.
+    The rules are those of watch._referenced_unscanned_identities (#4161):
+
+    - a path that produced located nodes or any edge was a real file: pruned;
+    - otherwise it stays when this run's AST pass emitted it again;
+    - or when manifest.json (the deletion evidence, #1795) never listed it and
+      an edge from a file that is neither stale nor re-extracted points at it.
+
+    The last rule needs a manifest that lists a current source. Paths compare
+    root-relative and NFC-normalized (#2210).
+    """
+    from graphify.paths import nfc
+    if not stale_sources:
+        return set()
+    try:
+        root = Path(root).resolve()
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, ValueError):
+        return set()
+    if not isinstance(graph, dict):
+        return set()
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = None
+
+    def rel(value: str) -> str:
+        p = Path(value)
+        try:
+            value = (p if p.is_absolute() else root / p).resolve().relative_to(root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            pass
+        return nfc(value)
+
+    def source(record: object) -> str:
+        # Persisted state can be corrupt: skip what _stale_graph_sources skips.
+        value = record.get("source_file") if isinstance(record, dict) else None
+        return value if isinstance(value, str) else ""
+
+    stale = set(stale_sources)
+    nodes = [n for n in graph.get("nodes") or [] if source(n)]
+    edges = [e for e in graph.get("links", graph.get("edges")) or [] if source(e)]
+    owner = {n["id"]: source(n) for n in nodes if source(n) in stale and isinstance(n.get("id"), str)}
+    produced = {source(n) for n in nodes if source(n) in stale and n.get("source_location")}
+    produced |= {source(e) for e in edges if source(e) in stale}
+    emitted = {rel(s) for s in emitted_sources if isinstance(s, str) and s}
+    keep = {s for s in stale if rel(s) in emitted}
+
+    scanned = {rel(k) for k in manifest} if isinstance(manifest, dict) else set()
+    if scanned & {rel(source(n)) for n in nodes if source(n) not in stale}:
+        rebuilt_rel = {rel(str(p)) for p in rebuilt}
+        for edge in edges:
+            if source(edge) in stale or rel(source(edge)) in rebuilt_rel:
+                continue
+            for endpoint in (edge.get("source"), edge.get("target")):
+                placeholder = owner.get(str(endpoint))
+                if placeholder and rel(placeholder) not in scanned:
+                    keep.add(placeholder)
+    return keep - produced
+
+
 def _stale_graph_sources(
     graph_path: Path,
     scan_root: Path,
@@ -5273,6 +5346,15 @@ def dispatch_command(cmd: str) -> None:
             # Only extract() reads the resolution context; free it before the
             # semantic pass and graph build.
             del ast_kwargs
+        # An unresolved `import()` target is a node whose source_file is the
+        # specifier; _stale_graph_sources reads that unscanned path as deleted.
+        # Keep the placeholders a full build keeps out of the prune (#4161).
+        if graph_stale_sources and existing_graph_path.exists():
+            _placeholders = _placeholder_stale_sources(
+                existing_graph_path, manifest_path, target, graph_stale_sources,
+                {n.get("source_file") for n in ast_result.get("nodes", [])}, code_files,
+            )
+            graph_stale_sources = [s for s in graph_stale_sources if s not in _placeholders]
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
