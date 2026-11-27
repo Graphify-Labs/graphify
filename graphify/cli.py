@@ -5148,12 +5148,25 @@ def dispatch_command(cmd: str) -> None:
                         }
                         # Keep bounded resolver identity for unchanged nodes;
                         # these markers cannot be reconstructed from labels.
+                        # `_php_non_class_types` (#11, #12) rides the same
+                        # marker channel as the callability flags: it records
+                        # which of an unchanged PHP file's declarations are
+                        # interfaces, enums or traits rather than classes. It
+                        # drove a receiver refusal until #53 lifted it, and is
+                        # still carried; `_php_interfaces` is the pre-#12
+                        # spelling, kept for older graphs. `_php_class_fqns`
+                        # (#23) is what resolution reads today: the declared
+                        # FQNs that let a claimed `use` import bind into an
+                        # unchanged defining file (#22), and let the guard
+                        # refuse a vendor import that only shares a short name.
                         for _marker in (
                             "_callable", "_callable_class", "_elixir_module", "_cpp_qualified",
                             "_cpp_class_kind", "_cpp_fields", "_cpp_reconcile_files",
                             "_cpp_member_records", "_cpp_lookup", "_cpp_field_positions",
                             "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                             "_rust_impl_key", "_rust_declaration_count",
+                            "_php_non_class_types", "_php_interfaces",
+                            "_php_class_fqns",
                             "_ts_public_twin", "_py_property", "_java_ret", "_java_type",
                             "_ts_fields", "_ts_static_fields",
                             "_py_fixture", "_py_return_type", "_go_fields",
