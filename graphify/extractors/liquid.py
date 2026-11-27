@@ -14,7 +14,7 @@ block":
 * ``{% schema %}`` ``enabled_on`` / ``disabled_on`` ``templates`` and ``groups``
   -> ``templates/<x>.json`` (or ``.liquid``) and ``sections/<g>-group.json`` (or ``<g>.json``)
   (``references``; ``"*"`` gets nothing)
-* ``'x' | asset_url`` / ``inline_asset_content`` -> ``assets/x[.liquid]`` (``references``)
+* ``'x' | asset_url`` / ``asset_img_url`` / ``inline_asset_content`` -> ``assets/x[.liquid]`` (``references``)
 * ``'a.b' | t`` / ``| translate``       -> key ``a.b`` of the default locale (``references``)
 
 Gates and limits, all fail-closed:
@@ -56,8 +56,8 @@ _STMT_NAME = re.compile(r"\s*([A-Za-z_]\w*)")
 _NAME_ARG = re.compile(r"""\s*(['"])([^'"\n]*)\1""")
 _BLOCK_TYPE = re.compile(r"""\btype\s*:\s*(['"])([^'"\n]*)\1""")
 # A quoted literal directly piped into asset_url or into the t / translate filter.
-_FILTER = re.compile(r"""(['"])([^'"\n]+)\1\s*\|\s*(asset_url|inline_asset_content|t|translate)(?![\w])""")
-_ASSET_FILTERS = frozenset({"asset_url", "inline_asset_content"})
+_FILTER = re.compile(r"""(['"])([^'"\n]+)\1\s*\|\s*(asset_url|asset_img_url|inline_asset_content|t|translate)(?![\w])""")
+_ASSET_FILTERS = frozenset({"asset_url", "asset_img_url", "inline_asset_content"})
 _ASSET_SUFFIX = re.compile(r"[?#]")
 _JSON_COMMENT = re.compile(r'"(?:[^"\\\n]|\\.)*"|//[^\n]*|/\*.*?\*/', re.DOTALL)
 

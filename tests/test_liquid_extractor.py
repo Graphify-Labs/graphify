@@ -486,6 +486,14 @@ def test_inline_asset_content_filter_links_the_asset(tmp_path):
     assert len(unresolved) == 1 and unresolved[0]["source_location"] == "L2"
 
 
+def test_asset_img_url_filter_links_the_asset(tmp_path):
+    root = _theme(tmp_path, {
+        "assets/logo.png": "",
+        "sections/a.liquid": "<img src=\"{{ 'logo.png' | asset_img_url: '100x' }}\">\n",
+    })
+    assert _targets(root, "sections/a.liquid") == [("references", "assets/logo.png", "L1")]
+
+
 def test_enabled_and_disabled_on_link_templates_and_groups(tmp_path):
     schema = json.dumps({
         "name": "Banner",
