@@ -8,6 +8,8 @@ lists the templates and section groups that use it:
   ``.context.<x>.json`` variants): each ``sections`` entry -> ``sections/<type>.liquid``
   (``imports``), each nested ``blocks`` entry -> ``blocks/<type>.liquid`` when
   that file exists (``imports``).
+* ``config/settings_data.json``: the same placement for ``current.sections`` and
+  each ``presets.<name>.sections`` (legacy section groups saved by the editor).
 * ``config/settings_schema.json``, and ``{% schema %}`` bodies read by the Liquid
   extractor: ``"t:key"`` strings -> the key in the single
   ``locales/*.default.schema.json`` (``references``).
@@ -24,7 +26,7 @@ keys of a template does not change the extraction.
 Not covered: app blocks (``shopify://`` and ``@app`` types), the built-in ``_blocks``
 section type (its nested blocks are still linked), block types with no
 ``blocks/<type>.liquid`` (they may be section-local, so nothing is guessed),
-``config/settings_data.json`` and the ``{% block %}`` / ``{% partial %}`` tags.
+and the ``{% block %}`` / ``{% partial %}`` tags.
 """
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ from graphify.extractors.liquid import (
 _MAX_JSON_BYTES = 1024 * 1024
 _MAX_DEPTH = 32
 _SETTINGS_SCHEMA = ("config", "settings_schema.json")
+_SETTINGS_DATA = ("config", "settings_data.json")
 
 
 def _relative_parts(path: Path) -> tuple[Path, tuple[str, ...]] | None:
@@ -69,7 +72,7 @@ def is_shopify_theme_json_path(path: Path) -> bool:
         return 2 <= len(parts) <= 3
     if parts[:1] == ("sections",):
         return len(parts) == 2
-    return parts == _SETTINGS_SCHEMA
+    return parts in (_SETTINGS_SCHEMA, _SETTINGS_DATA)
 
 
 def _is_app(block_type: str) -> bool:
@@ -133,6 +136,15 @@ def extract_shopify_theme_json(path: Path) -> dict:
         return empty
     if found[1] == _SETTINGS_SCHEMA:
         out.schema_keys(data, src, 1)
+    elif found[1] == _SETTINGS_DATA:
+        if isinstance(data, dict):
+            scopes = [data.get("current")]
+            presets = data.get("presets")
+            if isinstance(presets, dict):
+                scopes.extend(presets[k] for k in sorted(presets))
+            for scope in scopes:
+                if isinstance(scope, dict):
+                    _place_sections(scope, out)
     elif isinstance(data, dict):
         _place_sections(data, out)
     return {"nodes": out.nodes, "edges": out.edges}

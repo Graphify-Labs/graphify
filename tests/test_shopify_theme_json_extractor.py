@@ -221,8 +221,35 @@ def test_depth_and_unrelated_json_are_not_routed(tmp_path):
     assert is_shopify_theme_json_path(root / "templates/customers/login.json")
     assert not is_shopify_theme_json_path(root / "templates/a/b/too-deep.json")
     assert not is_shopify_theme_json_path(root / "locales/en.default.json")
-    assert not is_shopify_theme_json_path(root / "config/settings_data.json")
+    assert is_shopify_theme_json_path(root / "config/settings_data.json")
+    assert not is_shopify_theme_json_path(root / "config/other.json")
     assert not is_shopify_theme_json_path(root / "sections/nested/x.json")
+
+
+def test_settings_data_places_current_and_preset_sections(tmp_path):
+    from graphify.extractors.shopify_theme_json import extract_shopify_theme_json
+
+    data = json.dumps({
+        "current": {
+            "sections": {"a": {"type": "hero", "blocks": {"b": {"type": "card"}, "c": {"type": "@app"}}}},
+            "order": ["a"],
+            "color": "#fff",
+        },
+        "presets": {"Alt": {"sections": {"x": {"type": "footer"}}}},
+    })
+    root = _theme(tmp_path, {
+        "sections/hero.liquid": "", "sections/footer.liquid": "", "blocks/card.liquid": "",
+        "config/settings_data.json": data,
+    })
+    assert _get_extractor(root / "config/settings_data.json") is extract_shopify_theme_json
+    assert _placed(root, "config/settings_data.json") == [
+        "sections/hero.liquid", "blocks/card.liquid", "sections/footer.liquid",
+    ]
+    assert _unresolved(root, "config/settings_data.json") == []
+
+    (tmp_path / "s").mkdir()
+    root2 = _theme(tmp_path / "s", {"config/settings_data.json": json.dumps({"current": "Default", "presets": {}})})
+    assert len(_run(root2, "config/settings_data.json")["edges"]) == 0
 
 
 SCHEMA_LOCALE = json.dumps({"sections": {"featured": {"name": "Featured"}}, "settings": {"colors": "Colors"}})
