@@ -140,6 +140,15 @@ def test_budget_keeps_the_limit_when_name_max_is_unavailable(monkeypatch):
     assert stem_filename_budget("/home/me/vault", reserve=5) == 200
 
 
+def test_budget_never_exceeds_the_room_a_tiny_name_max_leaves(monkeypatch):
+    # The floor keeps room for _cap_filename's digest, but a filesystem that
+    # allows fewer bytes than that must still get a name it accepts.
+    _fake_name_max(monkeypatch, 14)
+    budget = stem_filename_budget("/home/me/vault", reserve=5)
+    assert budget >= 1
+    assert budget + 5 + len(".md") <= 14
+
+
 # ---------------------------------------------------------------------------
 # The stem helpers honour an explicit limit
 # ---------------------------------------------------------------------------
@@ -157,8 +166,20 @@ def test_obsidian_stem_stays_collision_safe_at_a_small_limit():
     assert len(a.encode("utf-8")) <= 40 and len(b.encode("utf-8")) <= 40
 
 
+def test_obsidian_stem_fits_a_limit_too_small_for_the_digest():
+    for limit in (1, 6, 9):
+        stem = _obsidian_safe_stem("a" * 300, limit)
+        assert stem and len(stem.encode("utf-8")) <= limit, (limit, stem)
+
+
 def test_wiki_safe_filename_honours_an_explicit_limit():
     assert len(_safe_filename("w" * 300, 60)) <= 60
+
+
+def test_wiki_safe_filename_caps_bytes_not_characters():
+    # The budget is in bytes on POSIX; a CJK character is three of them.
+    slug = _safe_filename("文" * 100, 60)
+    assert slug and len(slug.encode("utf-8")) <= 60
 
 
 # ---------------------------------------------------------------------------

@@ -42,9 +42,12 @@ def _safe_filename(name: str, limit: int = 200) -> str:
     (< > : " / \\ | ? *) plus the ones that would make the emitted link stop
     matching the file on disk, and strips trailing dots/spaces, also reserved.
     Falls back to 'unnamed' for empty results and caps length at ``limit``
-    chars (default 200) to stay well under common filesystem limits; ``to_wiki``
-    lowers ``limit`` when the wiki directory leaves less than that inside
-    Windows' MAX_PATH window (#2655).
+    UTF-8 bytes (default 200) to stay well under common filesystem limits;
+    ``to_wiki`` lowers ``limit`` when the wiki directory leaves less than that
+    inside Windows' MAX_PATH window (#2655) or the filesystem reports a smaller
+    NAME_MAX. Bytes, like ``_cap_filename``, because NAME_MAX counts bytes and a
+    CJK character is three of them; a byte-capped slug also meets the Windows
+    character budget, since a string's UTF-8 length is never below its length.
 
     Parentheses are DROPPED rather than substituted: every callable node is
     labelled ``foo()``, and substituting would leave a trailing ``foo__`` on
@@ -57,7 +60,10 @@ def _safe_filename(name: str, limit: int = 200) -> str:
     s = s.replace("(", "").replace(")", "")
     s = _UNSAFE_SLUG_CHARS.sub('_', s)
     s = s.strip('. ')
-    return s[:limit] if s else 'unnamed'
+    if not s:
+        return 'unnamed'
+    # "ignore" drops a character split by the cut.
+    return s.encode("utf-8")[:limit].decode("utf-8", "ignore") or "_"
 
 
 def _md_link_to(label: str, slug: str | None) -> str:

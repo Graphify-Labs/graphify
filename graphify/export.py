@@ -727,6 +727,10 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     if len(b) <= limit:
         return s
     digest = hashlib.sha1(s.encode("utf-8")).hexdigest()[:8]  # nosec - not security
+    if limit <= 9:
+        # No room for "_" + digest (a filesystem with a tiny NAME_MAX): keep what
+        # fits, or the start of the digest when not even one character does.
+        return b[:limit].decode("utf-8", "ignore") or digest[:limit]
     keep = limit - 9  # "_" + 8 hex chars
     truncated = b[:keep].decode("utf-8", "ignore")  # "ignore" drops a split trailing char
     return f"{truncated}_{digest}"
