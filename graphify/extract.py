@@ -13058,6 +13058,10 @@ def extract(
         ambiguous_python_modules=ambiguous_python_modules,
         resolution_context_nodes=resolution_context_nodes,
         raw_calls=all_raw_calls,
+        ts_callable_scopes={
+            path: (result["_ts_owned_callable_bodies"], result["_ts_local_call_offsets"])
+            for path, result in zip(paths, per_file) if result and result.get("_ts_owned_callable_bodies")
+        },
     )
 
     # Merge a header-declared class (and its methods) with its sibling-impl
@@ -13845,7 +13849,7 @@ def extract(
         # an explicit interface implementation is called only through the interface.
         # TypeScript alias signatures require a typed receiver.
         if (is_csharp_constructor_node(n) or is_csharp_explicit_interface_node(n)
-                or (n.get("metadata") or {}).get("kind") == "type_alias_method"):
+                or (n.get("metadata") or {}).get("kind") in ("type_alias_method", "ts_scoped_callable")):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")

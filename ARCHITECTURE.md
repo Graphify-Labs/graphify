@@ -149,6 +149,15 @@ outside this extraction. These declarations can be reached through a resolved
 typed receiver and are excluded from bare call lookup. AST cache schema 58
 invalidates cached extractions that omitted function-typed properties.
 
+TypeScript named callables own directly declared function-valued `const`
+bindings. A directly returned object can also contribute methods from
+function-valued properties and method declarations with identifier keys.
+Their bodies own their call edges, including calls through imported aliases.
+Local bindings resolve in lexical scope and these nodes cannot serve as
+module imports or bare cross-file call targets. Anonymous callbacks retain
+their enclosing caller. The extractor records inline method definitions and
+leaves returned aliases and calls through factory instances to separate analysis.
+
 TypeScript also resolves a call through a local `const` initialized from one
 property of an explicitly typed parameter, including calls inside a closure.
 The parameter's annotation can be an object literal or a non-generic object
