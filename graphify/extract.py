@@ -3696,18 +3696,92 @@ def _blank_cpp_export_decl_macro(source: bytes, m: re.Match[bytes]) -> bytes:
     return b" " * len(m.group(0))
 
 
+def _cpp_comment_and_literal_spans(source: bytes) -> list[tuple[int, int]]:
+    """Return sorted spans occupied by C++ comments and literals."""
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while match := _CPP_CONDITIONAL_TOKEN_RE.search(source, pos):
+        pos = match.end()
+        token_text = match.group(0)
+
+        if match.group(1) is not None:
+            end = source.find(b")" + match.group(1) + b'"', pos)
+            pos = len(source) if end == -1 else end + len(match.group(1)) + 2
+            spans.append((match.start(), pos))
+            continue
+
+        if match.group(2) is not None:
+            directive_start = match.start()
+            directive_spans = []
+            for token in _CPP_DIRECTIVE_COMMENT_RE.finditer(token_text):
+                text = token.group(0)
+                if text[:1].isdigit():
+                    continue
+                start = directive_start + token.start()
+                end = directive_start + token.end()
+                directive_spans.append((token.start(), token.end()))
+                spans.append((start, end))
+
+            comment_start = token_text.find(b"/*")
+            while comment_start != -1:
+                if not any(start <= comment_start < end for start, end in directive_spans):
+                    start = directive_start + comment_start
+                    close = source.find(b"*/", start + 2)
+                    pos = len(source) if close == -1 else close + 2
+                    spans.append((start, pos))
+                    break
+                comment_start = token_text.find(b"/*", comment_start + 2)
+            continue
+
+        if token_text[:1].isdigit():
+            continue
+        if token_text.startswith((b'"', b"'")):
+            if any(
+                newline.group(0) == b"\r"
+                or newline.start() == 0
+                or token_text[newline.start() - 1] != ord(b"\\")
+                for newline in re.finditer(rb"\r\n|\r|\n", token_text)
+            ):
+                pos = match.start() + 1
+                continue
+        spans.append((match.start(), pos))
+
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def _normalize_cpp_export_macros(source: bytes) -> bytes:
     """Blank an export macro between ``class``/``struct`` and the type name,
-    and one leading a function or variable declaration (#5550).
+    and one leading a function or variable declaration (#5550). Matches inside
+    comments and string, char, or raw string literals are left unchanged.
 
     Single ALL-CAPS identifier macros (and stacked ones) are handled.
     Note: paren-attribute macros like ``__declspec(dllexport)`` and
     ``__attribute__((visibility("default")))`` are currently unsupported,
     as well as template specializations (e.g. ``template<> class MODULE_API Widget<int>``).
     """
+    if not (
+        _CPP_EXPORT_MACRO_RE.search(source)
+        or _CPP_EXPORT_DECL_MACRO_RE.search(source)
+    ):
+        return source
+
+    excluded_spans = _cpp_comment_and_literal_spans(source)
+    excluded_starts = [start for start, _ in excluded_spans]
+
+    def is_excluded(start: int) -> bool:
+        index = bisect_right(excluded_starts, start) - 1
+        return index >= 0 and start < excluded_spans[index][1]
 
     def repl(m: re.Match[bytes]) -> bytes:
         start = m.start()
+        if is_excluded(start):
+            return m.group(0)
 
         # Check if preceded by `(` (e.g. range-based for loop `for(class MACRO var: items)`)
         idx = start - 1
@@ -3736,10 +3810,15 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
 
         return m.group(1) + bytes(blanked_macro) + m.group(3) + m.group(4)
 
+    # Both rewrites preserve byte lengths, so the original token spans stay valid.
     source = _CPP_EXPORT_MACRO_RE.sub(repl, source)
-    return _CPP_EXPORT_DECL_MACRO_RE.sub(
-        lambda m: _blank_cpp_export_decl_macro(source, m), source
-    )
+
+    def repl_decl(m: re.Match[bytes]) -> bytes:
+        if is_excluded(m.start()):
+            return m.group(0)
+        return _blank_cpp_export_decl_macro(source, m)
+
+    return _CPP_EXPORT_DECL_MACRO_RE.sub(repl_decl, source)
 
 
 _CPP_CONDITIONAL_TOKEN_RE = re.compile(
