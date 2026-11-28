@@ -77,3 +77,25 @@ def test_retry_drops_unknown_future_cache(monkeypatch):
     view = _retry_view(monkeypatch, G)
 
     assert "_some_new_cache" not in view.graph
+
+
+def test_retry_cannot_override_exact_non_section_id():
+    G = _graph()
+    G.add_node("Intro", label="Introduction class", source_file="intro.py")
+
+    assert resolve_section_query(G, "Intro") == ("Intro", "")
+
+
+def test_retry_reports_ambiguity_among_sections():
+    G = _graph()
+    G.add_node("intro_class", label="Intro", source_file="intro.py")
+    G.add_node("guide_intro", label="Introduction", node_kind="heading",
+               source_file="guide.md", source_location="L1")
+    G.nodes["readme_intro"]["label"] = "Intro to deployment"
+
+    node_id, message = resolve_section_query(G, "Intro")
+
+    assert node_id is None
+    assert "Ambiguous" in message
+    assert "README.md" in message
+    assert "guide.md" in message
