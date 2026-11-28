@@ -1131,13 +1131,36 @@ def _node_disambiguation_source_key(node: dict, root: Path) -> str:
         return _source_key(source_file, root)
     return _source_key(str(node.get("origin_file", "")), root)
 
+# Relations whose target is a FILE node, so a `target_file` stamp on the edge
+# must key the target's salt. Template composition belongs here for the same
+# reason imports do, and the need is sharper: a Single Directory Component keeps
+# `card.twig` and `card.scss` side by side, so every component's file id
+# collides across extensions and is salted apart. An `includes` edge that fell
+# back to the importer's own source_key would then look up an id that
+# disambiguation has already retired, and the edge would dangle.
+_TEMPLATE_TARGET_RELATIONS = frozenset({
+    "includes", "embeds", "extends", "imports_macro", "uses_template",
+})
+
+_FILE_TARGET_RELATIONS = frozenset({
+    "imports", "imports_from", "re_exports", "references",
+}) | _TEMPLATE_TARGET_RELATIONS
+
+
 def _disambiguate_colliding_node_ids(
     nodes: list[dict],
     edges: list[dict],
     raw_calls: list[dict],
     root: Path,
+    context_nodes: list[dict] | None = None,
 ) -> None:
     """Rewrite only colliding node IDs, using source path as the disambiguator.
+
+    ``context_nodes`` are the persisted nodes of files a changed-files rebuild is
+    not re-extracting. A batch that holds only ``card.twig`` cannot see that
+    ``card.scss`` shares its id, so without them the template keeps the bare id
+    and its edges miss every salted sibling. A context node whose id is the
+    salted form of a batch id, or of an edge target, counts as a collider.
 
     Module anchor nodes (#1327) are exempt: ``import CoreKit`` from three files
     yields three ``type=module`` nodes with the same id but different
@@ -1160,11 +1183,31 @@ def _disambiguate_colliding_node_ids(
         if isinstance(nid, str) and nid:
             by_id.setdefault(nid, []).append(node)
 
+    # Unchanged files' salted ids, keyed by the pre-salt id they came from. Only
+    # ids this batch defines or points at matter; the rest stay untouched.
+    wanted = set(by_id) | {str(e.get("target", "")) for e in edges}
+    partners: dict[str, list[dict]] = {}
+    for cn in context_nodes or ():
+        cid = cn.get("id")
+        csk = _node_disambiguation_source_key(cn, root)
+        if not (isinstance(cid, str) and csk):
+            continue
+        prefix = _make_id(csk) + "_"
+        old = cid[len(prefix):] if cid.startswith(prefix) else ""
+        if old and old in wanted:
+            partners.setdefault(old, []).append({"id": cid, "source_key": csk, "label": cn.get("label")})
+
     remap: dict[tuple[str, str], str] = {}
     ambiguous_ids: set[str] = set()
+    for old_id, part in partners.items():
+        for p in part:
+            remap[(old_id, p["source_key"])] = p["id"]
+        if old_id not in by_id:
+            ambiguous_ids.add(old_id)  # only an edge target: route edges to the salted sibling
     for old_id, group in by_id.items():
         source_keys = {_node_disambiguation_source_key(node, root) for node in group}
-        if len(group) < 2 or len(source_keys) < 2:
+        partner_keys = {p["source_key"] for p in partners.get(old_id, ())} - source_keys
+        if len(source_keys) + len(partner_keys) < 2:
             continue
         ambiguous_ids.add(old_id)
         # Salt the colliding id with the *path* it came from. The naive salt is
@@ -1231,17 +1274,40 @@ def _disambiguate_colliding_node_ids(
     header_suffixes = {".h", ".hpp", ".hh", ".hxx"}
     header_remaps: dict[str, str] = {}
     file_remaps: dict[tuple[str, str], set[str]] = {}
+    def _colliders(old_id: str):
+        """(source_key, label) of every node behind an ambiguous id, batch and context."""
+        for node in by_id.get(old_id, ()):
+            yield _node_disambiguation_source_key(node, root), node.get("label")
+        for p in partners.get(old_id, ()):
+            yield p["source_key"], p["label"]
+
     for old_id in ambiguous_ids:
-        for node in by_id[old_id]:
-            source = _node_disambiguation_source_key(node, root)
+        for source, label in _colliders(old_id):
             new_id = remap.get((old_id, source))
             if not source or not new_id:
                 continue
             if Path(source).suffix.lower() in header_suffixes:
                 header_remaps.setdefault(old_id, new_id)
             family = _lang_family(source)
-            if family and node.get("label") == Path(source).name:
+            if family and label == Path(source).name:
                 file_remaps.setdefault((old_id, family), set()).add(new_id)
+
+    # The same shape, for template composition. A Single Directory Component
+    # keeps `card.twig` beside `card.scss`, so the two collapse to one `card`
+    # file id and disambiguation salts them apart. An `{% include %}` from a
+    # THIRD template carries neither salt's source_key, so the
+    # (target, edge_source_key) lookup misses and the edge dangles on the now
+    # dead `card` id — the #1475 failure exactly. An include always targeted the
+    # template, so repoint to the template variant.
+    _TEMPLATE_SUFFIXES = (".twig",)
+    template_remaps: dict[str, str] = {}
+    for old_id in ambiguous_ids:
+        for sk, _label in _colliders(old_id):
+            if sk and Path(sk).suffix.lower() in _TEMPLATE_SUFFIXES:
+                new_id = remap.get((old_id, sk))
+                if new_id:
+                    template_remaps[old_id] = new_id
+                    break
 
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
@@ -1255,7 +1321,7 @@ def _disambiguate_colliding_node_ids(
         # every language and to re_exports. `pop` it as we consume it: this is the
         # hint's only reader, and its absolute path must not persist into graph.json.
         target_file = edge.pop("target_file", None)
-        if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports", "references"):
+        if target_file and edge.get("relation") in _FILE_TARGET_RELATIONS:
             target_edge_key = _source_key(str(target_file), root)
         else:
             target_edge_key = edge_source_key
@@ -1274,6 +1340,9 @@ def _disambiguate_colliding_node_ids(
                 candidates = file_remaps.get((target, family), set())
                 if len(candidates) == 1:
                     edge["target"] = next(iter(candidates))
+        elif (edge.get("relation") in _TEMPLATE_TARGET_RELATIONS
+                and target in template_remaps):
+            edge["target"] = template_remaps[target]
         elif target_key in remap:
             edge["target"] = remap[target_key]
         elif edge.get("target") in unambiguous_remaps:

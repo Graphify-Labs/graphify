@@ -94,6 +94,7 @@ from graphify.extractors.r import extract_r, resolve_r_sourced_calls  # noqa: F4
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
+from graphify.extractors.scss import extract_scss  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.solidity import (  # noqa: F401
     extract_solidity,
@@ -102,6 +103,7 @@ from graphify.extractors.solidity import (  # noqa: F401
 )
 from graphify.extractors.sql import _norm_ident as _sql_norm_ident, extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform, prepare_terraform, resolve_terraform_modules  # noqa: F401
+from graphify.extractors.twig import extract_twig  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.vbnet import extract_vbnet, resolve_vbnet_partial_calls  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
@@ -5002,6 +5004,11 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".sql": "sql",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
+    # Template and stylesheet families. Naming them keeps a Twig include stub or
+    # an SCSS mixin stub from being remapped onto a same-labeled function in an
+    # unrelated language, which is what an unknown (None) family permits.
+    ".twig": "twig",
+    ".scss": "sass", ".sass": "sass",
 }
 
 
@@ -11987,6 +11994,9 @@ _DISPATCH: dict[str, Any] = {
     ".resource": extract_robot,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".twig": extract_twig,
+    ".scss": extract_scss,
+    ".sass": extract_scss,
 }
 
 
@@ -13605,7 +13615,8 @@ def extract(
     # canonical half; it would miss and leave them on a dead id. Run first, it
     # splits only genuinely distinct nodes; the merge then joins the halves by
     # type path, whatever their (salted) ids.
-    _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
+    _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root,
+                                     context_nodes=resolution_context_nodes)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _canonicalize_csharp_namespace_nodes(all_nodes, all_edges)
     # PHP namespace/use disambiguation must run BEFORE the unique-stub rewire:

@@ -601,6 +601,7 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".dart": "dart", ".sql": "sql",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
+    ".twig": "twig", ".scss": "sass", ".sass": "sass",
 }
 
 
