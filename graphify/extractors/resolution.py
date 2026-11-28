@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+from collections import deque
 
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
@@ -1390,6 +1391,7 @@ def _apply_symbol_resolution_facts(
         return _make_id(str(stored)), str(stored)
 
     symbol_nodes: dict[tuple[Path, str], str] = {}
+    context_symbol_ids: set[str] = set()
     # Member nodes (`.method()` labels) share their bare name with top-level
     # symbols once the leading dot is stripped. A module can only re-export
     # top-level bindings, so a star-export walk must never bind an imported
@@ -1421,6 +1423,7 @@ def _apply_symbol_resolution_facts(
             else:
                 member_symbol_keys.discard(key)
             symbol_nodes[key] = str(nid)
+            context_symbol_ids.add(str(nid))
 
     for node in nodes:
         if (node.get("metadata") or {}).get("kind") == "type_alias_method":
@@ -1624,16 +1627,16 @@ def _apply_symbol_resolution_facts(
     for namespace_fact in facts.namespace_exports:
         source_path = _resolve_cached(namespace_fact.file_path)
         target_path = _resolve_cached(namespace_fact.target_path)
-        namespace_id = ensure_symbol_node(
-            namespace_fact.file_path,
-            namespace_fact.exported_name,
-            namespace_fact.line,
-        )
         named_exports_by_file.setdefault(source_path, {})[
             namespace_fact.exported_name
         ] = (source_path, namespace_fact.exported_name)
         source_id = source_file_id.get(source_path)
         if source_id is not None:
+            namespace_id = ensure_symbol_node(
+                namespace_fact.file_path,
+                namespace_fact.exported_name,
+                namespace_fact.line,
+            )
             add_edge(
                 source_id,
                 namespace_id,
@@ -1766,7 +1769,7 @@ def _apply_symbol_resolution_facts(
                 _resolve_cached(export_fact.target_path),
             )
             export_sites.setdefault(site, []).append(export_fact)
-    owned_ids = {node.get("id") for node in nodes}
+    owned_ids = {node.get("id") for node in nodes} | context_symbol_ids
     for edge in edges:
         if edge.get("relation") != "re_exports" or edge.get("target") in owned_ids:
             continue
@@ -2769,7 +2772,9 @@ _JS_FACT_NODE_TYPES = frozenset({
 })
 
 
-def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
+def _collect_js_symbol_resolution_facts(
+    paths: list[Path], facts: _SymbolResolutionFacts, *, exports_only: bool = False,
+) -> None:
     js_paths = [
         path for path in paths
         if effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
@@ -2786,13 +2791,14 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
         if parsed is None:
             continue
         source, root_node = parsed
+        candidates = root_node.named_children if exports_only else _walk_js_tree(root_node)
         indexed = [
-            node for node in _walk_js_tree(root_node)
+            node for node in candidates
             if node.type in _JS_FACT_NODE_TYPES
         ]
 
         for node in indexed:
-            if node.type == "export_statement":
+            if node.type == "export_statement" and not exports_only:
                 for name in _js_exported_declaration_names(node, source):
                     facts.declarations.append(
                         _SymbolDeclarationFact(path, name, node.start_point[0] + 1)
@@ -3003,6 +3009,8 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
+        if exports_only:
+            continue
         for source_id, body in _js_top_level_function_bodies(path, root_node, source):
             for node in _walk_js_tree(body):
                 imported_name = _js_call_identifier(node, source)
@@ -3622,6 +3630,67 @@ def _collect_python_symbol_resolution_facts(
                     )
                 )
 
+def _collect_js_reexport_context(
+    paths: list[Path], root: Path, nodes: list[dict], facts: _SymbolResolutionFacts,
+) -> None:
+    """Read export facts from unchanged modules reachable from the fresh batch."""
+    def export_targets(module: _SymbolResolutionFacts):
+        for export in module.exports:
+            if export.target_path is not None:
+                yield export.target_path
+        for export in (*module.star_exports, *module.namespace_exports):
+            yield export.target_path
+
+    pending = deque(import_fact.target_path for import_fact in facts.imports)
+    pending.extend(export_targets(facts))
+    if not pending:
+        return
+
+    root = _resolve_cached(root)
+    live_modules = set()
+    for node in nodes:
+        source = node.get("source_file")
+        # A file node is the live inventory entry, including barrels without
+        # any declarations of their own.
+        if not source or node.get("label") != Path(source).name:
+            continue
+        path = _js_source_path(source, root)
+        if path is not None and path.is_relative_to(root) and effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES:
+            live_modules.add(path)
+    if not live_modules:
+        return
+
+    seen = {_resolve_cached(path) for path in paths}
+    while pending:
+        path = pending.popleft()
+        if path in seen or path not in live_modules:
+            continue
+        seen.add(path)
+        exports = _SymbolResolutionFacts()
+        _collect_js_symbol_resolution_facts([path], exports, exports_only=True)
+        pending.extend(export_targets(exports))
+
+        # A local re-export can name an imported binding, possibly through
+        # const aliases. Follow those imports without walking ordinary
+        # implementation dependencies of the unchanged module.
+        bindings = {export.local_name for export in exports.exports if export.local_name is not None}
+        aliases = {alias.alias: alias.target_name for alias in exports.aliases}
+        frontier = list(bindings)
+        for name in frontier:
+            alias_target = aliases.get(name)
+            if alias_target is not None and alias_target not in bindings:
+                bindings.add(alias_target)
+                frontier.append(alias_target)
+        imports = [entry for entry in exports.imports if entry.local_name in bindings]
+        pending.extend(entry.target_path for entry in imports)
+
+        facts.imports.extend(imports)
+        facts.aliases.extend(exports.aliases)
+        facts.exports.extend(exports.exports)
+        facts.star_exports.extend(exports.star_exports)
+        facts.namespace_exports.extend(exports.namespace_exports)
+
+
 def _augment_symbol_resolution_edges(
     paths: list[Path],
     nodes: list[dict],
@@ -3633,6 +3702,8 @@ def _augment_symbol_resolution_edges(
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
+    if resolution_context_nodes:
+        _collect_js_reexport_context(paths, root, resolution_context_nodes, facts)
     _collect_python_symbol_resolution_facts(
         paths, root, facts,
         ambiguous_python_modules=ambiguous_python_modules,

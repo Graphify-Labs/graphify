@@ -12567,9 +12567,9 @@ def extract(
             `_callable_class` markers, #2438), and the member-call resolvers
             run by `run_language_resolvers` (#2437) — so a changed caller can
             still bind `foo()`, `obj.method()`, or `submit(handler)` to an
-            unchanged callee. They are never parsed, mutated, or returned;
-            raw_calls come only from `paths`, so only edges sourced by the
-            re-extracted files are emitted.
+            unchanged callee. JS/TS resolution may read unchanged modules for
+            export facts. Context nodes are never mutated or returned. Raw calls
+            come only from `paths`, so emitted edges are owned by re-extracted files.
         resolution_context_edges: structural resolver edges from the same
             unchanged corpus (#2437). These map receiver types to their methods
             and preserve inheritance evidence for language-specific resolvers.

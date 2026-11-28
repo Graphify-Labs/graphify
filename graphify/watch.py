@@ -2950,8 +2950,9 @@ def _rebuild_code(
         #     nor a deleted one (its persisted symbols are gone).
         #   * only sources still in the scanned corpus, so a renamed/removed file
         #     cannot stay a resolver target.
-        # extract() uses these purely to widen the resolvers' indexes; nothing
-        # is parsed, mutated, or emitted from them (see extract()'s docstring).
+        # extract() uses these to widen the resolvers' indexes. JS/TS can read
+        # export facts from live unchanged modules. Their records retain
+        # their original ownership in the existing graph.
         resolution_context_nodes: list[dict] = []
         resolution_context_edges: list[dict] = []
         if changed_paths is not None and existing_graph.exists():
