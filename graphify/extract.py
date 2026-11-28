@@ -46,6 +46,7 @@ from graphify.rcfile import (
     set_language_overrides,
 )
 from graphify.extractors.engine import _cpp_is_header_guard, _js_import_is_type_only
+from graphify.extractors.typescript_tags import _TS_TYPED_TAG_END_RE, mask_ts_tag_type_arguments
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _PYTHON_BUILTIN_NAMES,
@@ -2460,14 +2461,15 @@ _TS_QUALIFIED_IMPORT_TYPE_RE = re.compile(
 def _normalize_ts_tag_and_import_annotations(source: bytes, *, tsx: bool = False) -> bytes | None:
     """Repair two parser gaps without changing runtime expressions or byte offsets.
 
-    A typed tagged template with an object-array type and an import-qualified
-    generic type annotation are valid TypeScript, but this grammar can lose
-    later declarations. Mask only confirmed type syntax in a temporary parse;
-    the original source and line/byte positions remain untouched.
+    Typed tagged templates can be parsed as comparisons or cause a syntax
+    error. Import-qualified generic annotations can also hide later
+    declarations. Mask only confirmed type syntax for extraction, preserving
+    the original line and byte positions.
     """
+    endings = list(_TS_TYPED_TAG_END_RE.finditer(source))
     tags = list(_TS_TYPED_TAG_RE.finditer(source))
     imports = list(_TS_QUALIFIED_IMPORT_TYPE_RE.finditer(source))
-    if not tags and not imports:
+    if not endings and not tags and not imports:
         return None
     try:
         import tree_sitter_typescript as ts_typescript
@@ -2477,13 +2479,12 @@ def _normalize_ts_tag_and_import_annotations(source: bytes, *, tsx: bool = False
         original = parser.parse(source).root_node
     except Exception:
         return None
-    if not original.has_error:
-        return None
+    tagged_source = mask_ts_tag_type_arguments(source, parser, original, endings)
 
     # A missing token at the tagged template's backtick distinguishes the
     # grammar failure from a correctly parsed expression elsewhere in the file.
     missing = []
-    stack = [original]
+    stack = [original] if original.has_error and tags else []
     while stack:
         node = stack.pop()
         if node.is_missing:
@@ -2497,13 +2498,14 @@ def _normalize_ts_tag_and_import_annotations(source: bytes, *, tsx: bool = False
         if (backtick >= 0 and any(end <= pos <= backtick for pos in missing)
                 and _ts_import_is_code(original, match.start('tag'))):
             candidates.append((start, end, match.start('tag'), 'tag'))
-    for match in imports:
-        if _ts_import_is_code(original, match.start()):
-            candidates.append((match.start(), match.start('name'), match.start('name'), 'annotation'))
+    if original.has_error:
+        for match in imports:
+            if _ts_import_is_code(original, match.start()):
+                candidates.append((match.start(), match.start('name'), match.start('name'), 'annotation'))
     if not candidates:
-        return None
+        return tagged_source
 
-    masked = bytearray(source)
+    masked = bytearray(tagged_source or source)
     for start, end, _, _ in candidates:
         masked[start:end] = re.sub(rb'[^\r\n]', b' ', source[start:end])
     recovered = parser.parse(bytes(masked)).root_node
@@ -2521,8 +2523,8 @@ def _normalize_ts_tag_and_import_annotations(source: bytes, *, tsx: bool = False
                 break
             node = node.parent
     if not accepted:
-        return None
-    result = bytearray(source)
+        return tagged_source
+    result = bytearray(tagged_source or source)
     for start, end in accepted:
         result[start:end] = masked[start:end]
     return bytes(result)

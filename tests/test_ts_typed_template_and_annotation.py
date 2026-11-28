@@ -24,6 +24,55 @@ export function later() {}
     assert next(n for n in result['nodes'] if n['label'] == 'later()')['source_location'] == 'L5'
 
 
+@pytest.mark.parametrize('suffix', ['.ts', '.tsx'])
+def test_generic_tagged_templates_resolve_import_alias_and_interpolation(
+    tmp_path: Path, suffix: str,
+):
+    tag = tmp_path / 'query.ts'
+    tag.write_text(
+        'export function tag<T>(parts: TemplateStringsArray, ...args: unknown[]): T { throw 0; }\n',
+        encoding='utf-8',
+    )
+    caller = tmp_path / ('input' + suffix)
+    source = '''import { tag as sql } from './query';
+function parameter() { return 42; }
+export function simple() { return sql<number>`count`; }
+export function union() { return sql<string | null>`name`; }
+export function nested() {
+  return sql<
+    ReadonlyArray<Promise<number>>
+  > `select ${parameter()}`;
+}
+export function untyped() { return sql`select`; }
+'''
+    if suffix == '.tsx':
+        source += 'export function component() { return <div />; }\n'
+    caller.write_text(source, encoding='utf-8')
+
+    result = extractor.extract(
+        [tag, caller], root=tmp_path, cache_root=tmp_path / 'cache', parallel=False,
+    )
+    assert not result['failed_sources']
+    nodes = {node['id']: node for node in result['nodes']}
+    calls = {
+        (
+            nodes[edge['source']]['label'],
+            nodes[edge['target']]['label'],
+            edge['source_file'],
+            edge['source_location'],
+            nodes[edge['target']]['source_file'],
+        )
+        for edge in result['edges'] if edge['relation'] == 'calls'
+    }
+    assert calls == {
+        ('simple()', 'tag()', caller.name, 'L3', 'query.ts'),
+        ('union()', 'tag()', caller.name, 'L4', 'query.ts'),
+        ('nested()', 'tag()', caller.name, 'L6', 'query.ts'),
+        ('nested()', 'parameter()', caller.name, 'L8', caller.name),
+        ('untyped()', 'tag()', caller.name, 'L10', 'query.ts'),
+    }
+
+
 def test_import_qualified_annotation_keeps_export_and_calls(tmp_path: Path):
     path = tmp_path / 'routes.ts'
     path.write_text('''export function create() {
@@ -37,6 +86,27 @@ export function after() {}
     assert {'create()', 'after()'} <= {node['label'] for node in result['nodes']}
     assert any(call.get('callee') == 'respond' for call in result['raw_calls'])
     assert not any(edge.get('relation') == 'dynamic_import' for edge in result['edges'])
+
+
+def test_generic_tagged_templates_recover_after_misparsed_opening(tmp_path: Path):
+    path = tmp_path / 'input.ts'
+    path.write_text('''export function load(flag: boolean) {
+  return select({ value: flag
+    ? sql<unknown>`null`
+    : sql<unknown>`(
+        select ${parameter()}
+      )`,
+  });
+}
+export function later() {}
+''', encoding='utf-8')
+
+    result = extract_js(path)
+    assert 'parse_errors' not in result
+    assert {'load()', 'later()'} <= {node['label'] for node in result['nodes']}
+    assert {(call['callee'], call['source_location']) for call in result['raw_calls']} == {
+        ('select', 'L2'), ('sql', 'L3'), ('sql', 'L4'), ('parameter', 'L5'),
+    }
 
 
 def test_type_import_does_not_hide_real_dynamic_import_after_unicode(tmp_path: Path):
@@ -93,6 +163,20 @@ def test_runtime_comparison_and_dynamic_import_survive_other_errors():
               b'const value = a < {id: 2} > `runtime`;\n'
               b'const other = import("mod").Thing < limit;\n')
     assert extractor._normalize_ts_tag_and_import_annotations(source) is None
+
+
+def test_generic_tagged_template_repair_leaves_other_source_unchanged():
+    source = (
+        b'// sql<number>`comment`\n'
+        b'/* sql<string | null>`block comment` */\n'
+        b'const literal = "sql<number>`string`";\n'
+        b'const template = `sql<number>`;\n'
+        b'const compared = (a < b) > `runtime`;\n'
+        b'const updated = a++<b>`runtime`;\n'
+        b'const count = sql<number>`select`;\n'
+    )
+    normalized = extractor._normalize_ts_tag_and_import_annotations(source)
+    assert normalized == source.replace(b'<number>`select`', b'        `select`')
 
 
 def test_multiline_type_preserves_offsets_and_line_numbers(tmp_path: Path):
