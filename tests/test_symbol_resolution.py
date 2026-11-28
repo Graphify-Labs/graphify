@@ -601,6 +601,140 @@ def test_bash_call_resolver_skips_non_bash_raw_calls(tmp_path: Path) -> None:
     assert edges == [], f"Should ignore non-bash raw_calls but got: {edges}"
 
 
+def test_bash_sibling_libraries_sourced_by_same_entry_resolve_cross_calls(tmp_path: Path) -> None:
+    """#5564: A sourced library calling a function from a sibling library loaded by
+    the same entry script resolves via the entry script's shared shell pool."""
+    from graphify.extract import extract
+
+    bin_dir = tmp_path / "bin"
+    lib_dir = tmp_path / "lib"
+    bin_dir.mkdir()
+    lib_dir.mkdir()
+    tool = bin_dir / "tool"
+    a_sh = lib_dir / "a.sh"
+    b_sh = lib_dir / "b.sh"
+    tool.write_text(
+        '#!/usr/bin/env bash\n'
+        'ROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        '. "$ROOT/lib/a.sh"\n'
+        '. "$ROOT/lib/b.sh"\n'
+        'greet\n',
+        encoding="utf-8",
+    )
+    a_sh.write_text("greet() { shout hello; }\n", encoding="utf-8")
+    b_sh.write_text('shout() { echo "$1"; }\n', encoding="utf-8")
+
+    result = extract([tool, a_sh, b_sh], cache_root=tmp_path, root=tmp_path, parallel=False)
+    calls = [
+        (e["source"], e["target"], e.get("confidence"))
+        for e in result["edges"]
+        if e.get("relation") == "calls"
+    ]
+    assert ("bin_tool__entry", "lib_a_greet", "EXTRACTED") in calls, calls
+    assert ("lib_a_greet", "lib_b_shout", "INFERRED") in calls, calls
+
+
+def test_bash_sibling_pool_precedence_multipool_ambiguity_and_isolation(tmp_path: Path) -> None:
+    """#5564: Direct own reach beats sibling pool; separate pools each emit an edge;
+    ambiguity within a single pool and unrelated pools emit nothing."""
+    from graphify.extract import extract
+
+    (tmp_path / "lib").mkdir()
+    tool1 = tmp_path / "tool1.sh"
+    tool2 = tmp_path / "tool2.sh"
+    ambig_tool = tmp_path / "ambig_tool.sh"
+    isolated_tool = tmp_path / "isolated_tool.sh"
+
+    shared = tmp_path / "lib" / "shared.sh"
+    b1 = tmp_path / "lib" / "b1.sh"
+    b2 = tmp_path / "lib" / "b2.sh"
+    own = tmp_path / "lib" / "own.sh"
+    unrelated = tmp_path / "lib" / "unrelated.sh"
+
+    tool1.write_text("#!/usr/bin/env bash\nsource ./lib/shared.sh\nsource ./lib/b1.sh\n", encoding="utf-8")
+    tool2.write_text("#!/usr/bin/env bash\nsource ./lib/shared.sh\nsource ./lib/b2.sh\n", encoding="utf-8")
+    shared.write_text(
+        "#!/usr/bin/env bash\n"
+        "source ./own.sh\n"
+        "run_all() { shout; local_first; never_cross; }\n",
+        encoding="utf-8",
+    )
+    b1.write_text("#!/usr/bin/env bash\nshout() { :; }\nlocal_first() { :; }\n", encoding="utf-8")
+    b2.write_text("#!/usr/bin/env bash\nshout() { :; }\n", encoding="utf-8")
+    own.write_text("#!/usr/bin/env bash\nlocal_first() { :; }\n", encoding="utf-8")
+    unrelated.write_text("#!/usr/bin/env bash\nnever_cross() { :; }\n", encoding="utf-8")
+    isolated_tool.write_text("#!/usr/bin/env bash\nsource ./lib/unrelated.sh\n", encoding="utf-8")
+
+    # Separate pools for tool1 and tool2 -> one edge per pool for `shout`;
+    # `local_first` resolves only to `own.sh` (direct reach, EXTRACTED);
+    # `never_cross` in unrelated_tool's pool is NOT in shared.sh's pools -> no edge.
+    res = extract(
+        [tool1, tool2, isolated_tool, shared, b1, b2, own, unrelated],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+    )
+    calls = {(e["source"], e["target"], e.get("confidence")) for e in res["edges"] if e.get("relation") == "calls"}
+    assert ("lib_shared_run_all", "lib_b1_shout", "INFERRED") in calls
+    assert ("lib_shared_run_all", "lib_b2_shout", "INFERRED") in calls
+    assert ("lib_shared_run_all", "lib_own_local_first", "EXTRACTED") in calls
+    assert not any(t == "lib_b1_local_first" for _, t, _ in calls)
+    assert not any(t == "lib_unrelated_never_cross" for _, t, _ in calls)
+
+    # Ambiguity inside ONE pool (ambig_tool loads both b1 and b2) -> fail closed.
+    ambig_tool.write_text(
+        "#!/usr/bin/env bash\nsource ./lib/shared.sh\nsource ./lib/b1.sh\nsource ./lib/b2.sh\n",
+        encoding="utf-8",
+    )
+    ambig_res = extract(
+        [ambig_tool, shared, b1, b2, own],
+        cache_root=tmp_path / "ambig_cache",
+        root=tmp_path,
+        parallel=False,
+    )
+    ambig_calls = [
+        e for e in ambig_res["edges"]
+        if e.get("relation") == "calls" and e.get("source") == "lib_shared_run_all" and "shout" in e.get("target", "")
+    ]
+    assert ambig_calls == [], ambig_calls
+
+
+def test_bash_sibling_pool_transitive_cycles_and_incremental_context(tmp_path: Path) -> None:
+    """#5564: Transitive pool loading, cycle safety, and incremental context rebuild."""
+    from graphify.extract import extract
+
+    (tmp_path / "lib").mkdir()
+    entry = tmp_path / "entry.sh"
+    mid = tmp_path / "lib" / "mid.sh"
+    a_sh = tmp_path / "lib" / "a.sh"
+    b_sh = tmp_path / "lib" / "b.sh"
+
+    entry.write_text("#!/usr/bin/env bash\nsource ./lib/mid.sh\nsource ./lib/b.sh\n", encoding="utf-8")
+    mid.write_text("#!/usr/bin/env bash\nsource ./a.sh\n", encoding="utf-8")
+    a_sh.write_text("#!/usr/bin/env bash\nsource ./mid.sh\ngreet() { shout; }\n", encoding="utf-8")
+    b_sh.write_text("#!/usr/bin/env bash\nshout() { :; }\n", encoding="utf-8")
+
+    full = extract([entry, mid, a_sh, b_sh], cache_root=tmp_path, root=tmp_path, parallel=False)
+    full_calls = {(e["source"], e["target"]) for e in full["edges"] if e.get("relation") == "calls"}
+    assert ("lib_a_greet", "lib_b_shout") in full_calls
+
+    # Incremental rebuild of only lib/a.sh with unchanged files as resolution context.
+    a_sh.write_text("#!/usr/bin/env bash\nsource ./mid.sh\ngreet() { shout; }\nagain() { shout; }\n", encoding="utf-8")
+    ctx_nodes = [n for n in full["nodes"] if n.get("source_file") != "lib/a.sh"]
+    ctx_edges = [e for e in full["edges"] if e.get("source_file") != "lib/a.sh"]
+    incr = extract(
+        [a_sh],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+        resolution_context_nodes=ctx_nodes,
+        resolution_context_edges=ctx_edges,
+    )
+    incr_calls = {(e["source"], e["target"]) for e in incr["edges"] if e.get("relation") == "calls"}
+    assert ("lib_a_greet", "lib_b_shout") in incr_calls
+    assert ("lib_a_again", "lib_b_shout") in incr_calls
+
+
 def test_bash_make_id_identical_to_make_id() -> None:
     from graphify.extract import _make_id
 
