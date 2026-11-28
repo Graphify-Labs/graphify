@@ -129,6 +129,13 @@ _BASH_LEADING_VAR = re.compile(
 # trailing `/..` hops applied to the dirname result.
 _BASH_DIRNAME_IDIOM = re.compile(r"dirname[^)]*\)((?:/\.\.)*)")
 
+# A path in the script's own folder, as in `$(dirname "$0")/x.sh` or
+# `$(dirname "${BASH_SOURCE[0]}")/lib/x.sh`: the path after it (#5575).
+_BASH_DIRNAME_PATH = re.compile(
+    r'^\$\(dirname\s+"?\$(?:0|\{0\}|BASH_SOURCE|\{BASH_SOURCE(?:\[0\])?\})"?\s*\)'
+    r"/((?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+)$"
+)
+
 
 def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
     """Resolve a top-level assignment's value to a directory, or None if untracked.
@@ -553,6 +560,15 @@ def extract_bash(path: Path) -> dict:
                     raw = cmd if (cmd and cmd.endswith(".sh")) else None
                     if cmd and cmd in _BASH_SCRIPT_RUNNERS and args:
                         raw = literal(args[0])
+                    if raw is None:
+                        # `"$(dirname "$0")/x.sh"`, by its path or through a
+                        # shell runner, is x.sh in the script's own folder
+                        # (#5575); a path with `..` is left out.
+                        word = args[0] if (cmd in _BASH_SCRIPT_RUNNERS and args) else cmd_name_node
+                        own = _BASH_DIRNAME_PATH.match(
+                            _read_text(word, source).strip().strip("'\""))
+                        if own and ".." not in own.group(1).split("/"):
+                            raw = own.group(1)
                     if raw is None:
                         # The command name is itself an expansion, e.g.
                         # `"$script_dir/x.sh" --flag`. `literal()` rejects any
