@@ -691,3 +691,50 @@ def test_redact_rationale_labels_covers_any_extractor():
     out = _redact_rationale_labels(result)
     assert out["nodes"][0]["label"] == "WHY: [redacted]"
     assert out["nodes"][1]["label"] == "deploy"
+
+
+def test_python_file_is_parsed_once_and_keeps_its_rationale(tmp_path, monkeypatch):
+    """The rationale pass reuses the AST pass's tree instead of parsing again.
+
+    extract_python() used to parse each file twice: once for the AST pass and
+    again inside _extract_python_rationale(). Both passes must still see the
+    same bytes, so the rationale nodes are unchanged.
+    """
+    import tree_sitter
+
+    parse_calls: list[int] = []
+    real_parser = tree_sitter.Parser
+
+    class CountingParser:
+        # tree_sitter.Parser is a C type and cannot be subclassed, so wrap it.
+        def __init__(self, language):
+            self._parser = real_parser(language)
+
+        def parse(self, *args, **kwargs):
+            parse_calls.append(1)
+            return self._parser.parse(*args, **kwargs)
+
+    monkeypatch.setattr(tree_sitter, "Parser", CountingParser)
+    path = _write_py(tmp_path, '''
+        """This module handles authentication because legacy sessions were insecure."""
+        def process():
+            """We use chunked processing here because the full dataset exceeds RAM."""
+            pass
+    ''')
+    result = extract_python(path)
+    assert "error" not in result
+    assert len(parse_calls) == 1
+    rationale = [n["label"] for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert any("authentication" in label for label in rationale)
+    assert any("chunked" in label for label in rationale)
+
+
+def test_python_without_trailing_newline_keeps_its_rationale(tmp_path):
+    """A file that lacks a final newline still gets its docstrings, unchanged."""
+    path = tmp_path / "no_newline.py"
+    path.write_bytes(
+        b'def process():\n    """We use chunked processing here because the full dataset exceeds RAM."""\n    pass'
+    )
+    result = extract_python(path)
+    rationale = [n["label"] for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert any("chunked" in label for label in rationale)
