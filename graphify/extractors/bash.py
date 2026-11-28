@@ -236,6 +236,8 @@ def extract_bash(path: Path) -> dict:
 
     _BASH_SOURCE_COMMANDS = frozenset({"source", "."})
     _BASH_SCRIPT_RUNNERS = frozenset({"bash", "sh", "zsh", "ksh", "dash"})
+    # Keywords that open a branch or loop body; never a callee (#5572).
+    _BASH_KEYWORDS = frozenset({"if", "then", "elif", "else", "do", "while", "until"})
     # Non-shell interpreters a pipeline orchestrator commonly hands a script
     # path to (#3802): `python3 scripts/stage_one.py`, `node build.js`. A
     # script run this way is most of what an orchestrator does, and none of
@@ -316,6 +318,14 @@ def extract_bash(path: Path) -> dict:
                     cmd_name_node = child.children[0]
                 if cmd_name_node:
                     name = literal(cmd_name_node)
+                    # tree-sitter-bash can read a line of assignments only and the
+                    # next line's keyword as one command, as in `v=a w="$(f)"` then
+                    # `elif fn x; then`, its name the keyword (#5572). The call is
+                    # the first word after it, a `!` aside.
+                    if name in _BASH_KEYWORDS:
+                        name = next((literal(w) for w in child.children
+                                     if w.type == "word" and text(w) != "!"),
+                                    None)
                     # Defined-functions wins. Skip-lists for external commands
                     # would create false negatives when a user defines a
                     # function shadowing an external (`install`, `find`, etc.).
