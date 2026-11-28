@@ -4122,6 +4122,39 @@ def test_extract_bash_script_invocation_via_variable_built_path(tmp_path, invoca
     }]
 
 
+def test_bash_invocations_use_tracked_dir_and_shell_shebang(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    job = lib / "job.sh"
+    helper = bin_dir / "helper"
+    script = bin_dir / "tool"
+    job.write_text("echo job\n", encoding="utf-8")
+    helper.write_text("#!/usr/bin/env bash\necho helper\n", encoding="utf-8")
+    (bin_dir / "other").write_text("#!/usr/bin/env python\n", encoding="utf-8")
+    script.write_text(
+        '#!/bin/sh\nROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        'bash "$ROOT/lib/job.sh" build\n'
+        '"${ROOT}/bin/helper" --flag\n'
+        './helper\n'
+        '"$ROOT/bin/other"\n'
+        'helper\n'
+        'bash helper\n'
+        "'$ROOT/bin/helper'\n",
+        encoding="utf-8",
+    )
+    graph = extract([script, job, helper], root=tmp_path, cache_root=tmp_path)
+    labels = {node["id"]: node["label"] for node in graph["nodes"]}
+    calls = [(labels[e["source"]], labels[e["target"]], e["source_location"])
+             for e in graph["edges"] if e.get("context") == "script_invocation"]
+    assert sorted(calls) == [
+        ("tool script", "helper script", "L4"),
+        ("tool script", "helper script", "L5"),
+        ("tool script", "job.sh script", "L3"),
+    ]
+
+
 def test_extract_bash_variable_built_invocation_with_dynamic_stem_emits_no_edge(tmp_path):
     helpers = tmp_path / "helpers.sh"
     helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")

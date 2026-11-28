@@ -12,6 +12,11 @@ Each stage lives in its own module and they communicate through plain Python dic
 
 ## Module responsibilities
 
+Bash script invocation edges can follow a single preceding top-level directory
+assignment in a path such as `bash "$ROOT/lib/job.sh"`. Extensionless targets
+need a Bash or sh shebang and a path operand. Bare commands are looked up on
+`PATH` by the shell, so Graphify does not bind them to same-named local scripts.
+
 Signatures below are the real ones - `tests/test_architecture_doc.py` imports every symbol named here, so this table cannot drift from the code.
 
 | Module | Entry point(s) | Input → Output |
