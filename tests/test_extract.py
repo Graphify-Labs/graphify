@@ -4030,6 +4030,39 @@ def test_extract_bash_emits_script_invocation_calls(tmp_path, command):
     }]
 
 
+@pytest.mark.parametrize("command", [
+    '"$(dirname "$0")/helpers.sh" --flag',
+    'bash "$(dirname "$0")/helpers.sh" build',
+    '"$(dirname "${BASH_SOURCE[0]}")/helpers.sh"',
+])
+def test_extract_bash_script_invocation_in_own_folder_via_dirname(tmp_path, command):
+    """#5575: `"$(dirname "$0")/x.sh"` is x.sh next to the script."""
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(f"#!/bin/bash\n{command}\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    targets = [
+        edge["target"] for edge in result["edges"]
+        if edge.get("relation") == "calls" and edge.get("context") == "script_invocation"
+    ]
+
+    assert targets == [_make_id(str(helpers.resolve())) + "__entry"], targets
+
+
+def test_extract_bash_dirname_invocation_with_dotdot_not_followed(tmp_path):
+    """#5575: a path after `$(dirname "$0")/` with `..` in it is left out."""
+    (tmp_path / "helpers.sh").write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    (tmp_path / "bin").mkdir()
+    script = tmp_path / "bin" / "deploy.sh"
+    script.write_text('#!/bin/bash\n"$(dirname "$0")/../helpers.sh"\n', encoding="utf-8")
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
 def test_extract_bash_skips_missing_and_shadowed_script_invocations(tmp_path):
     helpers = tmp_path / "helpers.sh"
     helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
