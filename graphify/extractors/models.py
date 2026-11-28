@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
 
 _JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte", ".ejs"}
+_TS_INDEXED_METHOD_KIND = "indexed_access_method"
+_TS_TYPE_ONLY_METHOD_KINDS = frozenset({"type_alias_method", _TS_INDEXED_METHOD_KIND})
 
 @dataclass
 class LanguageConfig:

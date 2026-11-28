@@ -149,6 +149,14 @@ outside this extraction. These declarations can be reached through a resolved
 typed receiver and are excluded from bare call lookup. AST cache schema 58
 invalidates cached extractions that omitted function-typed properties.
 
+TypeScript interfaces and named object aliases at module scope can also
+expose an indexed member such as `read: Store['read']`. The extractor
+requires a literal string key and a unique, required, direct method or
+function-typed property in a non-generic type from the same file. A typed
+call links to the receiving property's declaration. A parameter receiver's
+annotation must be visible at the call site, so a same-named parameter
+elsewhere cannot supply its type.
+
 TypeScript also resolves a call through a local `const` initialized from one
 property of an explicitly typed parameter, including calls inside a closure.
 The parameter's annotation can be an object literal or a non-generic object
