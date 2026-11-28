@@ -18,6 +18,28 @@ def cache_root(tmp_path):
     return tmp_path
 
 
+@pytest.mark.parametrize("kind,prompt", [("semantic", None), ("semantic-deep", "extract deeply")])
+def test_semantic_shard_takes_precedence_over_old_flat_entry(tmp_file, tmp_path, kind, prompt):
+    from graphify.cache import mark_semantic_cache_partial, prompt_fingerprint
+
+    digest = file_hash(tmp_file, tmp_path)
+    namespace = cache_dir(tmp_path, kind, prompt_fingerprint(prompt) if prompt else None)
+    flat = namespace / f"{digest}.json"
+    flat.write_text(json.dumps({"nodes": [{"id": "old"}]}), encoding="utf-8")
+    args = dict(root=tmp_path, kind=kind, prompt=prompt)
+    old_hit = load_cached(tmp_file, **args, allow_legacy=False)
+    assert old_hit is not None and old_hit["nodes"][0]["id"] == "old"
+
+    save_cached(tmp_file, {"nodes": [{"id": "new"}]}, **args)
+    shard = namespace / digest[:2] / flat.name
+    assert shard.is_file()
+    new_hit = load_cached(tmp_file, **args)
+    assert new_hit is not None and new_hit["nodes"][0]["id"] == "new"
+    mode = "deep" if kind == "semantic-deep" else None
+    assert mark_semantic_cache_partial([str(tmp_file)], tmp_path, mode=mode, prompt=prompt) == [shard]
+    assert load_cached(tmp_file, **args) is None
+
+
 def test_file_hash_consistent(tmp_file):
     """Same file gives same hash on repeated calls."""
     h1 = file_hash(tmp_file)
@@ -732,7 +754,7 @@ def test_semantic_cache_survives_version_bump(tmp_path, monkeypatch):
     monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set(), raising=False)
     cache_dir(tmp_path, "ast")  # triggers stale-AST cleanup
     assert load_cached(f, root=tmp_path, kind="semantic") is not None
-    assert any(semantic_dir.glob("*.json")), (
+    assert any(semantic_dir.rglob("*.json")), (
         "semantic entries must survive both the version bump and AST cleanup"
     )
 
@@ -915,7 +937,8 @@ def test_semantic_cache_self_heals_legacy_symlink_collision(
     )
     stored_sources = []
     for path in (target, alias):
-        entry = cache_dir(root, "semantic") / f"{file_hash(path, root)}.json"
+        digest = file_hash(path, root)
+        entry = cache_dir(root, "semantic") / digest[:2] / f"{digest}.json"
         stored_sources.append(json.loads(entry.read_text())["nodes"][0]["source_file"])
     nodes, _, _, uncached = check_semantic_cache(
         [str(target), str(alias)], root=root
@@ -1047,13 +1070,13 @@ def test_semantic_prune_removes_orphan_entries(tmp_path):
     save_cached(f, {"nodes": [{"id": "b"}], "edges": []}, root=tmp_path, kind="semantic")
 
     semantic_dir = cache_dir(tmp_path, "semantic")
-    assert (semantic_dir / f"{h_a}.json").exists()
-    assert (semantic_dir / f"{h_b}.json").exists()
+    assert (semantic_dir / h_a[:2] / f"{h_a}.json").exists()
+    assert (semantic_dir / h_b[:2] / f"{h_b}.json").exists()
 
     pruned = prune_semantic_cache(tmp_path, {h_b})
     assert pruned == 1
-    assert not (semantic_dir / f"{h_a}.json").exists()
-    assert (semantic_dir / f"{h_b}.json").exists()
+    assert not (semantic_dir / h_a[:2] / f"{h_a}.json").exists()
+    assert (semantic_dir / h_b[:2] / f"{h_b}.json").exists()
 
 
 def test_semantic_prune_keeps_live_unchanged_entries(tmp_path):
@@ -1070,11 +1093,11 @@ def test_semantic_prune_keeps_live_unchanged_entries(tmp_path):
         live_hashes.add(file_hash(f, tmp_path))
 
     semantic_dir = cache_dir(tmp_path, "semantic")
-    assert len(list(semantic_dir.glob("*.json"))) == 5
+    assert len(list(semantic_dir.rglob("*.json"))) == 5
 
     pruned = prune_semantic_cache(tmp_path, live_hashes)
     assert pruned == 0
-    assert len(list(semantic_dir.glob("*.json"))) == 5
+    assert len(list(semantic_dir.rglob("*.json"))) == 5
 
 
 def test_semantic_prune_handles_deleted_file(tmp_path):
@@ -1087,13 +1110,13 @@ def test_semantic_prune_handles_deleted_file(tmp_path):
     h = file_hash(f, tmp_path)
     save_cached(f, {"nodes": [{"id": "g"}], "edges": []}, root=tmp_path, kind="semantic")
     semantic_dir = cache_dir(tmp_path, "semantic")
-    assert (semantic_dir / f"{h}.json").exists()
+    assert (semantic_dir / h[:2] / f"{h}.json").exists()
 
     f.unlink()
     # Live set is empty: the file is gone, so its entry must be pruned.
     pruned = prune_semantic_cache(tmp_path, set())
     assert pruned == 1
-    assert not (semantic_dir / f"{h}.json").exists()
+    assert not (semantic_dir / h[:2] / f"{h}.json").exists()
 
 
 def test_semantic_prune_ignores_ast_and_tmp(tmp_path):
@@ -1198,12 +1221,12 @@ def test_semantic_cache_deep_mode_roundtrip_under_deep_namespace(tmp_path):
 
     deep_dir = tmp_path / "graphify-out" / "cache" / "semantic-deep"
     h = file_hash(f, tmp_path)
-    assert (deep_dir / f"{h}.json").exists(), (
+    assert (deep_dir / h[:2] / f"{h}.json").exists(), (
         "deep entry must land under cache/semantic-deep/"
     )
     # And NOT in the plain namespace.
     plain_dir = tmp_path / "graphify-out" / "cache" / "semantic"
-    assert not (plain_dir / f"{h}.json").exists()
+    assert not (plain_dir / h[:2] / f"{h}.json").exists()
 
     nodes, edges, hyper, uncached = check_semantic_cache(
         [str(f)], root=tmp_path, mode="deep"
@@ -1251,7 +1274,7 @@ def test_semantic_cache_mode_none_layout_unchanged(tmp_path):
     f.write_text("# Doc\n")
     save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [], root=tmp_path)
     h = file_hash(f, tmp_path)
-    assert (tmp_path / "graphify-out" / "cache" / "semantic" / f"{h}.json").exists()
+    assert (tmp_path / "graphify-out" / "cache" / "semantic" / h[:2] / f"{h}.json").exists()
     assert not (tmp_path / "graphify-out" / "cache" / "semantic-deep").exists(), (
         "mode=None must never create the deep namespace"
     )
@@ -1269,8 +1292,8 @@ def test_clear_cache_removes_deep_namespace(tmp_path):
     save_semantic_cache([{"id": "d", "source_file": "doc.md"}], [],
                         root=tmp_path, mode="deep")
     base = tmp_path / "graphify-out" / "cache"
-    assert list((base / "semantic").glob("*.json"))
-    assert list((base / "semantic-deep").glob("*.json"))
+    assert list((base / "semantic").rglob("*.json"))
+    assert list((base / "semantic-deep").rglob("*.json"))
 
     clear_cache(tmp_path)
     assert not list(base.rglob("*.json")), (
@@ -1312,14 +1335,14 @@ def test_semantic_prune_sweeps_both_namespaces_against_same_live_set(tmp_path):
     plain_dir = tmp_path / "graphify-out" / "cache" / "semantic"
     deep_dir = tmp_path / "graphify-out" / "cache" / "semantic-deep"
     for d in (plain_dir, deep_dir):
-        assert (d / f"{h_old}.json").exists()
-        assert (d / f"{h_live}.json").exists()
+        assert (d / h_old[:2] / f"{h_old}.json").exists()
+        assert (d / h_live[:2] / f"{h_live}.json").exists()
 
     pruned = prune_semantic_cache(tmp_path, {h_live})
     assert pruned == 2, "one orphan in EACH namespace must be pruned"
     for d in (plain_dir, deep_dir):
-        assert not (d / f"{h_old}.json").exists(), f"orphan survived in {d.name}"
-        assert (d / f"{h_live}.json").exists(), f"live entry pruned from {d.name}"
+        assert not (d / h_old[:2] / f"{h_old}.json").exists(), f"orphan survived in {d.name}"
+        assert (d / h_live[:2] / f"{h_live}.json").exists(), f"live entry pruned from {d.name}"
 
 
 def test_save_semantic_cache_merge_existing_unions(tmp_path):
@@ -1465,8 +1488,9 @@ def test_save_semantic_cache_unscoped_preserves_dangling_refs_verbatim(tmp_path)
     assert saved == 1
 
     import json
+    digest = file_hash(doc, tmp_path)
     raw = json.loads(
-        (cache_dir(tmp_path, "semantic") / f"{file_hash(doc, tmp_path)}.json").read_text()
+        (cache_dir(tmp_path, "semantic") / digest[:2] / f"{digest}.json").read_text()
     )
     assert raw["edges"] == edges
     assert raw["hyperedges"] == hyperedges
@@ -1582,8 +1606,8 @@ def test_semantic_cache_prompt_namespaced_layout(tmp_path):
 
     sem = tmp_path / "graphify-out" / "cache" / "semantic"
     h = file_hash(f, tmp_path)
-    assert (sem / f"p{prompt_fingerprint('PROMPT V1')}" / f"{h}.json").exists()
-    assert not (sem / f"{h}.json").exists(), (
+    assert (sem / f"p{prompt_fingerprint('PROMPT V1')}" / h[:2] / f"{h}.json").exists()
+    assert not (sem / h[:2] / f"{h}.json").exists(), (
         "a known-vintage entry must never be written into the flat unknown-vintage layout"
     )
 
@@ -1599,7 +1623,7 @@ def test_semantic_cache_prompt_and_mode_compose(tmp_path):
                         root=tmp_path, mode="deep", prompt="PROMPT V1")
 
     deep = tmp_path / "graphify-out" / "cache" / "semantic-deep"
-    assert list(deep.glob("p*/*.json")), "deep + prompt must nest under semantic-deep/p{fp}/"
+    assert list(deep.glob("p*/??/*.json")), "deep + prompt must nest under semantic-deep/p{fp}/"
 
     # Right mode, wrong prompt -> miss. Right prompt, wrong mode -> miss.
     _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, mode="deep",
@@ -1825,7 +1849,7 @@ def test_corrupt_semantic_entry_warns_and_is_a_miss(tmp_path):
     # Corrupt the on-disk entry (e.g. an old producer wrote unescaped
     # backslashes, or a partial write left truncated JSON).
     h = file_hash(f, tmp_path)
-    entry = cache_dir(tmp_path, "semantic") / f"{h}.json"
+    entry = cache_dir(tmp_path, "semantic") / h[:2] / f"{h}.json"
     assert entry.exists()
     entry.write_text('{"nodes": [ this is not valid json')
 

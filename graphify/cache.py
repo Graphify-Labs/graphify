@@ -1110,6 +1110,18 @@ def _salted_key(h: str, salt: str | None) -> str:
     return hashlib.sha256(f"{h}:{salt}".encode("utf-8")).hexdigest()
 
 
+def _cache_entry_path(root: Path, kind: str, digest: str, prompt_fp: str | None = None,
+                      *, for_write: bool = False) -> Path:
+    """Prefer the hash shard within the requested semantic prompt namespace."""
+    namespace = cache_dir(root, kind, prompt_fp)
+    flat = namespace / f"{digest}.json"
+    if kind.startswith("semantic"):
+        shard = namespace / digest[:2] / flat.name
+        if for_write or os.path.isfile(_os_long_path(shard)):
+            return shard
+    return flat
+
+
 def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
                 prompt_file: "str | Path | None" = None,
@@ -1119,8 +1131,8 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     """Return cached extraction for this file if hash matches, else None.
 
     Cache key: SHA256 of file contents.
-    Cache value: stored as graphify-out/cache/{kind}/{hash}.json (AST entries
-    under the per-version subdirectory, see :func:`cache_dir`).
+    Semantic entries use {hash[:2]}/{hash}.json inside their namespace.
+    Older entries directly inside that namespace are also readable.
 
     ``root`` anchors the content-hash key and source_file relativization (it
     must stay the inferred common parent so keys remain portable). ``cache_root``
@@ -1159,10 +1171,10 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     h = _salted_key(h, salt)
     prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
     # Extended-length form so a deep root does not push the entry past MAX_PATH.
-    entry = Path(_os_long_path(cache_dir(location, kind, prompt_fp) / f"{h}.json"))
+    entry = Path(_os_long_path(_cache_entry_path(location, kind, h, prompt_fp)))
     legacy_hit = False
     if prompt_fp and not entry.exists() and allow_legacy:
-        legacy = Path(_os_long_path(cache_dir(location, kind) / f"{h}.json"))
+        legacy = Path(_os_long_path(_cache_entry_path(location, kind, h)))
         if legacy.exists():
             entry, legacy_hit = legacy, True
     if entry.exists():
@@ -1422,7 +1434,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     ``salt`` must match what the corresponding :func:`load_cached` passes
     (see there); it namespaces the key, not the directory.
 
-    Stores as graphify-out/cache/{kind}/{hash}.json where hash = SHA256 of current file contents.
+    Each semantic namespace groups entries by the first two hex digits of the cache key.
     result should be a dict with 'nodes' and 'edges' lists.
 
     ``root`` anchors the content-hash key and source_file relativization;
@@ -1471,8 +1483,11 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     location = cache_root if cache_root is not None else root
     # Extended-length form: under a deep root the entry, and its longer temp
     # name, overrun Windows MAX_PATH and the write fails the whole extraction.
-    target_dir = _os_long_path(cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file)))
-    entry = os.path.join(target_dir, f"{h}.json")
+    prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
+    entry = _os_long_path(_cache_entry_path(location, kind, h, prompt_fp, for_write=True))
+    target_dir = os.path.dirname(entry)
+    if kind.startswith("semantic"):
+        os.makedirs(target_dir, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
     try:
         os.write(fd, json.dumps(on_disk).encode())
@@ -1536,7 +1551,7 @@ def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
     AST version-cleanup, so every content change or file deletion leaves a
     permanent orphan entry that accumulates unbounded.
 
-    This sweeps ``cache/semantic/*.json`` AND ``cache/semantic-deep/*.json``
+    This sweeps ``cache/semantic/**/*.json`` AND ``cache/semantic-deep/**/*.json``
     (the ``--mode deep`` namespace, #1894) and deletes any entry whose stem
     (the content hash) is not in ``live_hashes`` — the hashes of the current
     live document set. Both namespaces are pruned against the SAME live set:
@@ -2080,10 +2095,10 @@ def mark_semantic_cache_partial(
             continue
         candidates: list[Path] = []
         if prompt_fp:
-            candidates.append(cache_dir(location, kind, prompt_fp) / f"{h}.json")
-        candidates.append(cache_dir(location, kind) / f"{h}.json")
+            candidates.append(_cache_entry_path(location, kind, h, prompt_fp))
+        candidates.append(_cache_entry_path(location, kind, h))
         entry = next(
-            (c for c in candidates if c.exists()), None
+            (c for c in candidates if os.path.isfile(_os_long_path(c))), None
         )
         if entry is None:
             continue
