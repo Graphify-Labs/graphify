@@ -473,7 +473,11 @@ def test_two_megabyte_file_is_fast(tmp_path):
     root = _theme(tmp_path, {"sections/a.liquid": body})
     start = time.perf_counter()
     extract_liquid(root / "sections/a.liquid")
-    assert time.perf_counter() - start < 2
+    # Guards against pathological (quadratic) blowup, not a tight wall-clock SLA:
+    # a healthy linear scan is ~2s, a real regression is orders of magnitude
+    # slower, so a generous budget stays robust on slow/contended CI runners
+    # (this flaked at ~2.03s on a Python 3.14 runner under the 2s budget).
+    assert time.perf_counter() - start < 15
 
 
 def test_inline_asset_content_filter_links_the_asset(tmp_path):
