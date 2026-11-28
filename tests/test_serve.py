@@ -2394,6 +2394,14 @@ def test_who_calls_question_reaches_a_caller_in_another_repo():
     assert "Checkout" in text
 
 
+def test_strip_diacritics_ascii_fast_path_and_unicode_folding():
+    assert _strip_diacritics("") == ""
+    assert _strip_diacritics("hello_world_123") == "hello_world_123"
+    assert _strip_diacritics(None) == ""
+    assert _strip_diacritics(123) == "123"
+    assert _strip_diacritics("café naïve résumé") == "cafe naive resume"
+
+
 def test_shortest_path_handles_mixed_int_and_str_node_ids():
     """Mixed int/str node IDs must not raise TypeError in _path_search_graph."""
     G = nx.DiGraph()

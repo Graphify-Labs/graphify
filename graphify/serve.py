@@ -5,6 +5,7 @@ import math
 import os
 import re
 import sys
+import unicodedata
 import warnings
 from array import array
 from collections import OrderedDict
@@ -264,9 +265,10 @@ def _node_arg(arguments: dict) -> str:
 
 
 def _strip_diacritics(text: str | None) -> str:
-    import unicodedata
     if not isinstance(text, str):
         text = "" if text is None else str(text)
+    if text.isascii():
+        return text
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
