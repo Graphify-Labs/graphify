@@ -1060,3 +1060,150 @@ def test_label_cli_drops_sentinel_and_bare_key_echoes(tmp_path, monkeypatch):
     assert labels["0"] == "Order Management"            # real name survives
     assert labels["5"] == "PaymentService"              # sentinel echo dropped -> hub label
     assert labels["7"] == "ShippingService"             # bare-key echo dropped -> hub label
+
+
+def _write_cost_ledger(out, input_tokens, output_tokens):
+    (out / "cost.json").write_text(json.dumps({
+        "runs": [{"date": "2026-11-21T00:00:00+00:00", "input_tokens": input_tokens,
+                  "output_tokens": output_tokens, "files": 3}],
+        "total_input_tokens": input_tokens,
+        "total_output_tokens": output_tokens,
+    }), encoding="utf-8")
+
+
+def test_cluster_only_reports_cost_json_totals(tmp_path, monkeypatch):
+    """#3658: after a paid `extract`, cluster-only wrote "Token cost: 0 input ·
+    0 output" (only its own labeling usage) while `graphify update` on the same
+    folder reports the cost.json totals (#5154)."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    _write_cost_ledger(out, 12000, 3400)
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-label", "--no-viz"],
+    )
+
+    cli.main()
+
+    report = (out / "GRAPH_REPORT.md").read_text(encoding="utf-8")
+    assert "Token cost: 12,000 input · 3,400 output" in report
+    # No labeling call was made, so nothing is added to the ledger.
+    ledger = json.loads((out / "cost.json").read_text(encoding="utf-8"))
+    assert len(ledger["runs"]) == 1
+    assert (ledger["total_input_tokens"], ledger["total_output_tokens"]) == (12000, 3400)
+
+
+def test_label_adds_labeling_usage_to_cost_json(tmp_path, monkeypatch):
+    """#3658: labeling tokens go into the ledger, so this report and a later
+    `graphify update` both count them."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    _write_cost_ledger(out, 12000, 3400)
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+        usage_out["input"] += 100
+        usage_out["output"] += 10
+        return {cid: f"Fresh community {cid}" for cid in communities}, "llm"
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr(
+        sys, "argv", ["graphify", "label", str(tmp_path), "--backend", "gemini", "--no-viz"],
+    )
+
+    cli.main()
+
+    ledger = json.loads((out / "cost.json").read_text(encoding="utf-8"))
+    assert (ledger["total_input_tokens"], ledger["total_output_tokens"]) == (12100, 3410)
+    assert ledger["runs"][-1]["input_tokens"] == 100
+    assert ledger["runs"][-1]["output_tokens"] == 10
+    report = (out / "GRAPH_REPORT.md").read_text(encoding="utf-8")
+    assert "Token cost: 12,100 input · 3,410 output" in report
+
+
+def test_label_reports_its_usage_when_the_ledger_is_unreadable(tmp_path, monkeypatch):
+    """#3658 review: a damaged cost.json can't take the labeling run, but this
+    report must still show the tokens the run spent, and the file is left alone."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    (out / "cost.json").write_text("{not json", encoding="utf-8")
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+        usage_out["input"] += 100
+        usage_out["output"] += 10
+        return {cid: f"Fresh community {cid}" for cid in communities}, "llm"
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr(
+        sys, "argv", ["graphify", "label", str(tmp_path), "--backend", "gemini", "--no-viz"],
+    )
+
+    cli.main()
+
+    report = (out / "GRAPH_REPORT.md").read_text(encoding="utf-8")
+    assert "Token cost: 100 input · 10 output" in report
+    assert (out / "cost.json").read_text(encoding="utf-8") == "{not json"
+
+
+def test_label_records_its_usage_even_when_graph_json_is_refused(tmp_path, monkeypatch, capsys):
+    """#3658 review: the labeling tokens are spent before the #479 guard can
+    refuse to write graph.json, so they reach the ledger even then."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    _write_cost_ledger(out, 12000, 3400)
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+        usage_out["input"] += 100
+        usage_out["output"] += 10
+        return {cid: f"Fresh community {cid}" for cid in communities}, "llm"
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.export.to_json", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        sys, "argv", ["graphify", "label", str(tmp_path), "--backend", "gemini", "--no-viz"],
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    ledger = json.loads((out / "cost.json").read_text(encoding="utf-8"))
+    assert (ledger["total_input_tokens"], ledger["total_output_tokens"]) == (12100, 3410)
+    assert "labeling tokens: 100 in / 10 out" in capsys.readouterr().out
+    assert not (out / "GRAPH_REPORT.md").exists()
+
+
+def test_cluster_only_without_ledger_reports_zero_and_creates_none(tmp_path, monkeypatch):
+    """No cost.json and no labeling call: the report stays at zero and no ledger
+    is invented."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-label", "--no-viz"],
+    )
+
+    cli.main()
+
+    report = (out / "GRAPH_REPORT.md").read_text(encoding="utf-8")
+    assert "Token cost: 0 input · 0 output" in report
+    assert not (out / "cost.json").exists()

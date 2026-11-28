@@ -1456,6 +1456,21 @@ def _is_cloud_cta_section_line(line: str) -> bool:
     )
 
 
+def _is_cluster_only_ledger_fix_line(line: str) -> bool:
+    """Whether a line is the aider/devin --cluster-only token-cost fix (#3658).
+
+    The monoliths' own --cluster-only script passed a hard-coded zero to
+    ``generate()``, so after a paid extract the report said "0 input · 0 output"
+    while `graphify update` reports the cost.json totals (#5154). The zero line
+    is removed and the ledger read is added, as the CLI's cluster-only does.
+    """
+    return line.strip() in {
+        "tokens = {'input': 0, 'output': 0}",
+        "from graphify.report import load_report_token_cost",
+        "tokens = load_report_token_cost(Path('graphify-out'))",
+    }
+
+
 _MCP_TOOLS_LINE = (
     "This starts a stdio MCP server that exposes tools: {tools}. Add to Claude Desktop"
     " or any MCP-compatible agent orchestrator so other agents can query the graph live."
@@ -1506,6 +1521,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_when_to_build_guidance_line,
     _is_hub_bypass_check_fix_line,
     _is_get_section_tool_line,
+    _is_cluster_only_ledger_fix_line,
 )
 
 
@@ -1524,7 +1540,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    semantic-cache source scoping (#1757), and the hub bypass check (#4426).
+    semantic-cache source scoping (#1757), the hub bypass check (#4426), and the
+    --cluster-only ledger read (#3658).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``
