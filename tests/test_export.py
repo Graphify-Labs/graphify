@@ -345,7 +345,7 @@ def test_to_html_contains_visjs():
     communities = cluster(G)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
-        to_html(G, communities, str(out))
+        to_html(G, communities, str(out), mode="2d")
         content = out.read_text()
         assert "vis-network" in content
 
@@ -415,7 +415,7 @@ def test_to_html_pins_visjs_version_with_sri():
     communities = cluster(G)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
-        to_html(G, communities, str(out))
+        to_html(G, communities, str(out), mode="2d")
         content = out.read_text()
 
     # Versioned URL — unversioned `vis-network/standalone/...` is rejected.
@@ -1459,7 +1459,7 @@ def test_to_html_pins_vis_network_version_for_tooltip_xss_boundary():
     communities = cluster(G)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
-        to_html(G, communities, str(out))
+        to_html(G, communities, str(out), mode="2d")
         content = out.read_text()
         assert "vis-network@9.1.6" in content, (
             "vis-network pin changed — re-verify Popup.setText renders a string "
@@ -1477,7 +1477,7 @@ def test_to_html_spiral_seed_uses_a_real_map_index():
     communities = cluster(G)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
-        to_html(G, communities, str(out))
+        to_html(G, communities, str(out), mode="2d")
         content = out.read_text()
         if "Math.sqrt(i)" in content:  # spiral seed present
             assert "RAW_NODES.map((n, i)" in content, (
@@ -1494,7 +1494,7 @@ def test_to_html_canonical_node_schema_mapping(tmp_path):
     G = nx.Graph()
     G.add_node("n_sample", label="SampleNode", file_type="code", source_file="src/sample.py")
     out = tmp_path / "graph.html"
-    to_html(G, {0: ["n_sample"]}, str(out), community_labels={0: "Core"})
+    to_html(G, {0: ["n_sample"]}, str(out), community_labels={0: "Core"}, mode="2d")
     content = out.read_text(encoding="utf-8")
 
     # RAW_NODES carries canonical un-prefixed fields
@@ -1617,7 +1617,7 @@ def test_to_html_show_info_runtime_renders_node_fields(tmp_path):
     G.add_edge("n_sample", "n_other", relation="references", confidence="EXTRACTED")
 
     out = tmp_path / "graph.html"
-    to_html(G, {0: ["n_sample", "n_other"]}, str(out), community_labels={0: "Core"})
+    to_html(G, {0: ["n_sample", "n_other"]}, str(out), community_labels={0: "Core"}, mode="2d")
     content = out.read_text(encoding="utf-8")
 
     info_html = _run_node_info_harness(content, "n_sample")
@@ -1647,7 +1647,7 @@ def test_to_html_aggregated_community_nodes_runtime(tmp_path):
         {0: ["0"], 1: ["1"]},
         str(out),
         community_labels={0: "Core Systems", 1: "UI Layer"},
-        member_counts={0: 25, 1: 10},
+        member_counts={0: 25, 1: 10}, mode="2d",
     )
     content = out.read_text(encoding="utf-8")
 
@@ -1724,7 +1724,7 @@ def test_to_html_legend_label_escaped_once_without_title(tmp_path):
         G.add_node(nid, label=nid, file_type="code", source_file=f"{nid}.py")
     label = "Team \"A\" & <B> 'c'"
     out = tmp_path / "graph.html"
-    to_html(G, {0: ["n1", "n2", "n3"], 1: ["n4"]}, str(out), community_labels={0: label, 1: "Solo"})
+    to_html(G, {0: ["n1", "n2", "n3"], 1: ["n4"]}, str(out), community_labels={0: label, 1: "Solo"}, mode="2d")
     items = _run_sidebar_harness(out.read_text(encoding="utf-8"),
                                  "console.log(JSON.stringify(legendEl.children.map(c => c.innerHTML)));")
     assert "&amp;amp;" not in items[0]
@@ -1743,7 +1743,7 @@ def test_to_html_sidebar_tooltip_shows_truncated_text_and_node_counts(tmp_path):
     G.add_node("a", label="a", file_type="code", source_file="a.py")
     label = "Team \"A\" & <b>B</b> 'c' <img src=x onerror=alert(1)>"
     out = tmp_path / "graph.html"
-    to_html(G, {0: ["a"]}, str(out), community_labels={0: "Core"})
+    to_html(G, {0: ["a"]}, str(out), community_labels={0: "Core"}, mode="2d")
     content = out.read_text(encoding="utf-8")
     assert "sidebarTip.innerHTML" not in content
     assert "max-width: 360px; overflow-wrap: break-word" in content
@@ -1814,7 +1814,7 @@ def _sidebar_tip_graph_html(tmp_path, label: str = "Core") -> str:
     G = nx.Graph()
     G.add_node("a", label="a", file_type="code", source_file="a.py")
     out = tmp_path / "graph.html"
-    to_html(G, {0: ["a"]}, str(out), community_labels={0: label})
+    to_html(G, {0: ["a"]}, str(out), community_labels={0: label}, mode="2d")
     return out.read_text(encoding="utf-8")
 
 

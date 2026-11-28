@@ -446,6 +446,7 @@ See the [full command reference](#full-command-reference) below.
 - **`--missing-only`**: `label --missing-only` keeps existing labels and names only unnamed / `Community N` entries. Use `label` (full relabel) to refresh names after the community set changes.
 - **`.graphify_labels.json.sig`**: records the community membership signature; labels survive a re-cluster only while it matches.
 - **`export html`**: 5,000-node default; above it graphify renders an aggregated community view. Use `--node-limit N`. `GRAPHIFY_VIZ_NODE_LIMIT` / `.graphifyrc` `viz_node_limit=N` apply to `cluster-only`, `update`, `watch`, and hooks, not `export html`.
+- **`graph.html` viewer**: a 3D force graph (three.js) by default. Click a node to fly to it and open a card with its kind, signature, the doc comment from its source (or a summary built from its edges), and its relationships grouped as Calls / Called by / Methods / Uses and so on. Set `GRAPHIFY_VIZ_MODE=2d` for the flat vis-network page.
 - **Leiden fallback**: without the `leiden` extra, clustering silently uses networkx Louvain. Switching later reshuffles every community, so plan a full relabel.
 
 ---
