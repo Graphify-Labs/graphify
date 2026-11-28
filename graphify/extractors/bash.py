@@ -314,7 +314,7 @@ def extract_bash(path: Path) -> dict:
         if not raw.endswith(".sh"):
             # A bare command is looked up on PATH. Only inspect extensionless
             # path operands, after applying the same scan-root gate as .sh files.
-            if Path(raw).suffix or raw.startswith("-") or (not runner and "/" not in word):
+            if Path(raw).suffix or raw.startswith("-") or "/" not in word:
                 return None
         resolved = _resolve_safe(base / raw, scan_root)
         if resolved is None or not resolved.is_file():
