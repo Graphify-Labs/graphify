@@ -263,6 +263,24 @@ def _node_arg(arguments: dict) -> str:
     return v if isinstance(v, str) else str(v)
 
 
+def _int_arg(
+    arguments: dict,
+    key: str,
+    default: int,
+    *,
+    min_val: int | None = None,
+    max_val: int | None = None,
+) -> int:
+    """Extract an integer argument, treating None as default and optionally clamping."""
+    raw = arguments.get(key)
+    val = int(default if raw is None else raw)
+    if min_val is not None and val < min_val:
+        val = min_val
+    if max_val is not None and val > max_val:
+        val = max_val
+    return val
+
+
 def _strip_diacritics(text: str | None) -> str:
     import unicodedata
     if not isinstance(text, str):
@@ -3107,7 +3125,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
                     f"warning: {name} match was ambiguous "
                     f"(top score {top:g}, runner-up {runner:g})"
                 )
-    max_hops = int(arguments.get("max_hops", 8))
+    max_hops = _int_arg(arguments, "max_hops", 8, min_val=1)
     undirected = bool(arguments.get("undirected", False))
     try:
         path_nodes, n_routes, routes_capped = _weakest_shortest_path(
@@ -3548,11 +3566,12 @@ def _build_server(graph_path: str):
         import time as _time
         from graphify import querylog
         question = arguments["question"]
-        mode = arguments.get("mode", "bfs")
-        depth = min(int(arguments.get("depth", 3)), 6)
-        budget = int(arguments.get("token_budget", 2000))
+        mode = arguments.get("mode") or "bfs"
+        depth = _int_arg(arguments, "depth", 3, min_val=1, max_val=6)
+        budget = _int_arg(arguments, "token_budget", 2000, min_val=1)
         context_filter = arguments.get("context_filter")
-        demote_docs = arguments.get("demote_docs", True)
+        raw_demote = arguments.get("demote_docs")
+        demote_docs = True if raw_demote is None else raw_demote
         if isinstance(demote_docs, str):
             demote_docs = demote_docs.lower() not in ("false", "0", "no")
         seeds = arguments.get("seeds")
@@ -3607,10 +3626,9 @@ def _build_server(graph_path: str):
         if not isinstance(target, str) or not target.strip():
             return "Provide a target (node id, label or file path)."
         try:
-            depth = int(arguments.get("depth", 2))
+            depth = _int_arg(arguments, "depth", 2, min_val=1, max_val=6)
         except (TypeError, ValueError):
             return "error: depth must be an integer"
-        depth = max(1, min(depth, 6))
         relations = arguments.get("relations")
         if isinstance(relations, str):
             relations = [relations]
@@ -3686,7 +3704,7 @@ def _build_server(graph_path: str):
         if nid is None:
             return err
         d = G.nodes[nid]
-        max_chars = max(1, int(arguments.get("max_chars", DEFAULT_MAX_CHARS)))
+        max_chars = _int_arg(arguments, "max_chars", DEFAULT_MAX_CHARS, min_val=1)
         section, reason = read_section(d, section_root(Path(active_graph_path)), max_chars)
         if section is None:
             return sanitize_label(reason)
@@ -3697,13 +3715,13 @@ def _build_server(graph_path: str):
         if not raw:
             return "Provide a node label or id (accepted keys: label, node_id, id)."
         label = raw
-        rel_filter = arguments.get("relation_filter", "").lower()
+        rel_filter = (arguments.get("relation_filter") or "").lower()
         nid, err = _resolve_single_node(G, label)
         if err:
             return err
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
         lines.extend(_neighbor_lines(G, nid, rel_filter))
-        budget = int(arguments.get("token_budget", 2000))
+        budget = _int_arg(arguments, "token_budget", 2000, min_val=1)
         return _cut_lines_to_budget(
             lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"
         )
@@ -3722,7 +3740,7 @@ def _build_server(graph_path: str):
                 f"  {sanitize_label(d.get('label', n))} "
                 f"[{sanitize_label(str(d.get('source_file', '')))}]"
             )
-        budget = int(arguments.get("token_budget", 2000))
+        budget = _int_arg(arguments, "token_budget", 2000, min_val=1)
         return _cut_lines_to_budget(
             lines, budget, "Raise token_budget or use get_node for specific members"
         )
@@ -3730,8 +3748,7 @@ def _build_server(graph_path: str):
     def _tool_god_nodes(arguments: dict) -> str:
         from graphify.analyze import god_nodes as _god_nodes
         _pct = arguments.get("exclude_hubs_percentile")
-        _raw_top = arguments.get("top_n")
-        top_n = max(0, int(10 if _raw_top is None else _raw_top))
+        top_n = _int_arg(arguments, "top_n", 10, min_val=0)
         nodes = _god_nodes(
             G, top_n=top_n,
             exclude_hubs_percentile=float(_pct) if _pct is not None else None,

@@ -11,6 +11,7 @@ from networkx.readwrite import json_graph
 
 from graphify.serve import (
     _node_arg,
+    _int_arg,
     _strip_diacritics,
     _communities_from_graph,
     _score_nodes,
@@ -2392,6 +2393,19 @@ def test_who_calls_question_reaches_a_caller_in_another_repo():
     text = _query_graph_text(_make_two_repo_graph(), "who calls charge", mode="bfs", depth=1, token_budget=2000)
     assert "Context: call (heuristic)" in text
     assert "Checkout" in text
+
+
+def test_int_arg_and_shortest_path_handle_null_arguments():
+    assert _int_arg({"depth": None}, "depth", 3, min_val=1, max_val=6) == 3
+    assert _int_arg({}, "depth", 3, min_val=1, max_val=6) == 3
+    assert _int_arg({"depth": 0}, "depth", 3, min_val=1, max_val=6) == 1
+    assert _int_arg({"depth": 99}, "depth", 3, min_val=1, max_val=6) == 6
+
+    out = _shortest_path_text(
+        _make_graph(),
+        {"source": "extract", "target": "build", "max_hops": None, "undirected": None},
+    )
+    assert "extract" in out and "build" in out
 
 
 def test_shortest_path_handles_mixed_int_and_str_node_ids():
