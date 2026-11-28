@@ -305,13 +305,16 @@ def test_watch_rebuild_passes_cost_json_totals_to_the_report():
 
 def test_report_handles_null_and_non_numeric_confidence_scores():
     G, communities, cohesion, labels, _, _, detection, tokens = make_inputs()
-    # Set explicit null and non-finite/bool confidence_score values on INFERRED edges
-    for u, v, d in G.edges(data=True):
+    # Replace all INFERRED edge scores with invalid values so each falls back to 0.5.
+    invalid_values = [None, True, float("nan"), float("inf"), 10**400]
+    idx = 0
+    for _, _, d in G.edges(data=True):
         if d.get("confidence") == "INFERRED":
-            d["confidence_score"] = None
-            break
+            d["confidence_score"] = invalid_values[idx % len(invalid_values)]
+            idx += 1
     G.graph["hyperedges"] = [
         {"id": "h1", "label": "Group", "nodes": ["a"], "confidence": "INFERRED", "confidence_score": None},
+        {"id": "h2", "label": "Overflow", "nodes": ["a"], "confidence": "INFERRED", "confidence_score": 10**400},
     ]
     surprises = [
         {
@@ -322,10 +325,21 @@ def test_report_handles_null_and_non_numeric_confidence_scores():
             "confidence_score": "bad",
             "source_files": ["a.py", "b.py"],
             "note": "",
-        }
+        },
+        {
+            "source": "b",
+            "target": "c",
+            "relation": "calls",
+            "confidence": "EXTRACTED",
+            "confidence_score": 10**400,
+            "source_files": ["b.py", "c.py"],
+            "note": "",
+        },
     ]
     out = generate(G, communities, cohesion, labels, [], surprises, detection, tokens, "./project")
     assert "## Summary" in out
-    assert "avg confidence:" in out
+    assert "avg confidence: 0.5" in out
     assert "**Group**" in out
+    assert "**Overflow**" in out
     assert "[INFERRED]" in out
+    assert "[EXTRACTED]" in out

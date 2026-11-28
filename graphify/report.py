@@ -8,8 +8,13 @@ import networkx as nx
 
 
 def _valid_score(value: object) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-        return float(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            val = float(value)
+        except OverflowError:
+            return None
+        if math.isfinite(val):
+            return val
     return None
 
 
@@ -319,8 +324,8 @@ def generate(
             note = s.get("note", "")
             files = s.get("source_files", ["", ""])
             conf = s.get("confidence", "EXTRACTED")
-            cscore = _valid_score(s.get("confidence_score"))
-            if conf == "INFERRED" and cscore is not None:
+            cscore = _valid_score(s.get("confidence_score")) if conf == "INFERRED" else None
+            if cscore is not None:
                 conf_tag = f"INFERRED {cscore:.2f}"
             else:
                 conf_tag = conf
