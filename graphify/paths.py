@@ -280,17 +280,66 @@ def write_text_atomic_if_changed(path: "str | Path", text: str) -> bool:
     return True
 
 
+_JSON_STREAM_THRESHOLD = 1024
+_JSON_STREAM_CHUNK = 2048
+
+
+def _write_json_payload(
+    f,
+    obj,
+    *,
+    indent: "int | None",
+    ensure_ascii: bool,
+    separators: "tuple[str, str] | None",
+) -> None:
+    """Encode ``obj`` using C-backed ``json.dumps`` while chunking large top-level lists."""
+    if (
+        indent is None
+        and isinstance(obj, dict)
+        and all(isinstance(k, str) for k in obj)
+        and any(isinstance(v, list) and len(v) >= _JSON_STREAM_THRESHOLD for v in obj.values())
+    ):
+        item_sep, kv_sep = separators if separators is not None else (", ", ": ")
+        f.write("{")
+        for idx, (k, v) in enumerate(obj.items()):
+            if idx:
+                f.write(item_sep)
+            f.write(json.dumps(k, ensure_ascii=ensure_ascii))
+            f.write(kv_sep)
+            if isinstance(v, list) and len(v) >= _JSON_STREAM_THRESHOLD:
+                f.write("[")
+                for start in range(0, len(v), _JSON_STREAM_CHUNK):
+                    if start:
+                        f.write(item_sep)
+                    encoded = json.dumps(
+                        v[start : start + _JSON_STREAM_CHUNK],
+                        ensure_ascii=ensure_ascii,
+                        separators=(item_sep, kv_sep),
+                    )
+                    f.write(encoded[1:-1])
+                f.write("]")
+            else:
+                f.write(json.dumps(v, ensure_ascii=ensure_ascii, separators=separators))
+        f.write("}")
+        return
+    f.write(json.dumps(obj, indent=indent, ensure_ascii=ensure_ascii, separators=separators))
+
+
 def write_json_atomic(
     path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True, compact: bool = False
 ) -> None:
-    """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
-    temp file rather than materializing the whole string first (matters for very
-    large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
-    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. ``compact`` writes one
-    line with no padding after ``,``/``:`` (graph.json, #3413). See :func:`_atomic_replace`."""
+    """Atomically write ``obj`` as JSON to ``path``, streaming large top-level lists
+    in C-encoded chunks rather than materializing the whole string first (matters
+    for very large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that
+    emit raw UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. ``compact``
+    writes one line with no padding after ``,``/``:`` (graph.json, #3413). See
+    :func:`_atomic_replace`."""
     separators = (",", ":") if compact else None
     _atomic_replace(
-        path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii, separators=separators)
+        path,
+        lambda f: _write_json_payload(
+            f, obj, indent=indent, ensure_ascii=ensure_ascii, separators=separators
+        ),
     )
 
 # Directory segments that, when they appear as a whole path component, mark the

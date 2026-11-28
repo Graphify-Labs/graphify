@@ -1,0 +1,14 @@
+/*
+ * ------------------------------------------------------------
+ * IMPORTANT: The contents of this file are auto-generated.
+ * ------------------------------------------------------------
+ */
+{
+  "sections": {
+    "main": {
+      "type": "featured",
+      "settings": {}
+    }
+  },
+  "order": ["main"]
+}

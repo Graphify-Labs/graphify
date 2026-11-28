@@ -300,6 +300,19 @@ def edge_evidence(d: dict) -> list[dict]:
     return [d, *(a for a in also if isinstance(a, dict))] if isinstance(also, list) else [d]
 
 
+def edge_lines(d: dict) -> list[int]:
+    """Every line of an edge's own file where it was seen, ascending: ``source_location`` plus ``also_seen``."""
+    own = d.get("source_file")
+    lines: set[int] = set()
+    for ev in edge_evidence(d):
+        if ev is not d and ev.get("source_file") not in (None, "", own):
+            continue
+        m = re.fullmatch(r"L(\d+)", str(ev.get("source_location") or ""))
+        if m:
+            lines.add(int(m.group(1)))
+    return sorted(lines)
+
+
 def _fold_also_seen(winner: dict, loser: dict) -> None:
     """Record ``loser``'s provenance on ``winner`` when the two collapse (#4881).
 
@@ -581,6 +594,7 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".php7": "php", ".phps": "php",
     ".luau": "lua",
     ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".liquid": "liquid",
     ".r": "r", ".sol": "solidity",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
     ".zig": "zig", ".ex": "elixir", ".exs": "elixir", ".jl": "julia",
@@ -865,6 +879,56 @@ def _coerce_non_string_ids(extraction: dict) -> None:
             members = he.get(key)
             if isinstance(members, list):
                 he[key] = [_coerce_id(ref) for ref in members]
+
+
+def _repair_extraction_field_types(extraction: dict) -> None:
+    """Keep valid records usable before deduplication or graph assembly."""
+    dropped_nodes = dropped_edges = repaired_fields = 0
+    nodes = []
+    for node in extraction.get("nodes", []):
+        if isinstance(node, dict):
+            node_id = node.get("id")
+            if "id" in node and not isinstance(node_id, str):
+                dropped_nodes += 1
+                continue
+            if "label" in node and not isinstance(node["label"], str):
+                alias = node.get("name")
+                node["label"] = alias if isinstance(alias, str) and alias else node_id or ""
+                repaired_fields += 1
+            if "source_file" in node and not isinstance(node["source_file"], str):
+                node["source_file"] = ""
+                repaired_fields += 1
+        nodes.append(node)
+    if "nodes" in extraction:
+        extraction["nodes"] = nodes
+
+    edges = []
+    for edge in extraction.get("edges", []):
+        if isinstance(edge, dict):
+            if "relation" in edge and not isinstance(edge["relation"], str):
+                _fold_edge_aliases(edge)
+            if (
+                ("relation" in edge and not isinstance(edge["relation"], str))
+                or any(
+                    canonical in edge or alias in edge
+                    for canonical, alias in (("source", "from"), ("target", "to"))
+                    if not isinstance(edge.get(canonical, edge.get(alias)), str)
+                )
+            ):
+                dropped_edges += 1
+                continue
+            if "source_file" in edge and not isinstance(edge["source_file"], str):
+                edge["source_file"] = ""
+                repaired_fields += 1
+        edges.append(edge)
+    if "edges" in extraction:
+        extraction["edges"] = edges
+    if dropped_nodes or dropped_edges or repaired_fields:
+        print(
+            f"[graphify] WARNING: malformed field types: skipped {dropped_nodes} node(s) "
+            f"and {dropped_edges} edge(s), repaired {repaired_fields} field(s).",
+            file=sys.stderr,
+        )
 
 
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
@@ -1360,49 +1424,78 @@ def _alias_index(nodes: "Iterable[tuple[str, dict]]") -> dict[str, str]:
     from graphify.extractors.csharp import bare_csharp_method_label
     from graphify.extractors.resolution import _PYTHON_STDLIB_MODULE_NAMES
 
-    alias_candidates: dict[str, set[str]] = {}
+    _AMBIGUOUS = object()
+    alias_map: dict[str, str | object] = {}
+
+    def _register(key: str, nid: str) -> None:
+        prev = alias_map.get(key)
+        if prev is None:
+            alias_map[key] = nid
+        elif prev is not _AMBIGUOUS and prev != nid:
+            alias_map[key] = _AMBIGUOUS
+
+    # Many nodes share the same source_file; cache per-file Path/stem/stdlib work.
+    file_cache: dict[str, tuple[str, str, tuple[tuple[str, str], ...]] | None] = {}
     for nid, attrs in nodes:
         if not isinstance(nid, str) or not isinstance(attrs, dict):
             continue
         sf = attrs.get("source_file")
         if not sf:
             continue
-        rel = Path(str(sf))
-        if _is_abs(str(sf)):
-            continue
-        new_stem = make_id(_fs(rel))
-        if not new_stem:
-            continue
-        is_py_stdlib_stem = (
-            rel.suffix.lower() in (".py", ".pyi")
-            and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
-        )
-        if str(attrs.get("label", "")) == rel.name:
+        sf_str = str(sf)
+        cached = file_cache.get(sf_str)
+        if cached is None:
+            if sf_str in file_cache:
+                continue
+            if _is_abs(sf_str):
+                file_cache[sf_str] = None
+                continue
+            rel = Path(sf_str)
+            new_stem = make_id(_fs(rel))
+            if not new_stem:
+                file_cache[sf_str] = None
+                continue
+            is_py_stdlib_stem = (
+                rel.suffix.lower() in (".py", ".pyi")
+                and make_id(rel.stem) in _PYTHON_STDLIB_MODULE_NAMES
+            )
+            collected_stems: list[tuple[str, str]] = []
+            for old_stem in _old_file_stems(rel):
+                if old_stem == new_stem:
+                    continue
+                if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
+                    continue
+                collected_stems.append((old_stem, _normalize_id(old_stem)))
+            cached = (new_stem, rel.name, tuple(collected_stems))
+            file_cache[sf_str] = cached
+        new_stem, rel_name, stem_pairs = cached
+        raw_label = str(attrs.get("label", ""))
+        norm_nid = _normalize_id(nid)
+        if raw_label == rel_name:
             suffix = ""  # this node IS the file, whatever its (possibly salted) id
         else:
-            suffix = ""
-            if _normalize_id(nid).startswith(new_stem):
-                suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
-        for old_stem in _old_file_stems(rel):
-            if old_stem == new_stem:
-                continue
-            if is_py_stdlib_stem and old_stem in _PYTHON_STDLIB_MODULE_NAMES:
-                continue
+            suffix = norm_nid[len(new_stem):] if norm_nid.startswith(new_stem) else ""
+        for old_stem, norm_old_stem in stem_pairs:
             alias = old_stem + suffix
-            alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
-            alias_candidates.setdefault(alias, set()).add(nid)
-        m_label = str(attrs.get("label", ""))
-        m_label = bare_csharp_method_label(m_label.strip(), sf) or m_label
-        if attrs.get("_origin") == "ast" and m_label.startswith("."):
-            m_name = make_id(m_label.strip().removeprefix(".").removesuffix("()"))
-            m_alias = f"{new_stem}_{m_name}"
-            if _normalize_id(nid) != _normalize_id(m_alias):
-                alias_candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
-                alias_candidates.setdefault(m_alias, set()).add(nid)
+            norm_alias = _normalize_id(alias) if suffix else norm_old_stem
+            _register(norm_alias, nid)
+            if alias != norm_alias:
+                _register(alias, nid)
+        if attrs.get("_origin") == "ast":
+            stripped = raw_label.strip()
+            m_label = (bare_csharp_method_label(stripped, sf) if stripped.endswith("()") else None) or raw_label
+            if m_label.startswith("."):
+                m_name = make_id(m_label.strip().removeprefix(".").removesuffix("()"))
+                m_alias = f"{new_stem}_{m_name}"
+                norm_m_alias = _normalize_id(m_alias)
+                if norm_nid != norm_m_alias:
+                    _register(norm_m_alias, nid)
+                    if m_alias != norm_m_alias:
+                        _register(m_alias, nid)
     return {
-        alias_key: next(iter(candidates))
-        for alias_key, candidates in alias_candidates.items()
-        if len(candidates) == 1
+        alias_key: target
+        for alias_key, target in alias_map.items()
+        if isinstance(target, str)
     }
 
 
@@ -1769,6 +1862,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if isinstance(edge, dict):
             _fold_edge_aliases(edge)
 
+    _repair_extraction_field_types(extraction)
     errors = validate_extraction(extraction)
     # Dangling edges (stdlib/external imports) are expected - only warn about real schema errors.
     real_errors = [e for e in errors if "does not match any node id" not in e]
@@ -2129,6 +2223,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
     # and makes the serialized graph churn. Sorting fixes the last-write outcome.
     dropped_schema_edges = 0
+    _ext_cache: dict[str, str] = {"": ""}
+
+    def _sf_ext(sf: object) -> str:
+        s = str(sf) if sf else ""
+        ext = _ext_cache.get(s)
+        if ext is None:
+            ext = Path(s).suffix.lower()
+            _ext_cache[s] = ext
+        return ext
+
     for edge in sorted(
         extraction.get("edges", []),
         key=lambda e: (
@@ -2245,8 +2349,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # Python `import time` must not bind to a `time.ts`, #1749).
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
-            src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
-            tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
+            src_ext = _sf_ext(G.nodes[src].get("source_file"))
+            tgt_ext = _sf_ext(G.nodes[tgt].get("source_file"))
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
             tgt_fam = _EDGE_LANG_FAMILY.get(tgt_ext)
             if _edge_rel == "calls":
@@ -2261,7 +2365,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # imports/references: drop only when BOTH endpoints are known code
                 # languages of different families, so a config->code reference
                 # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
-                if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam:
+                # A .liquid file legitimately references assets of other languages
+                # (assets/x.js); the Liquid extractor only emits file-verified edges.
+                if (
+                    src_fam is not None and tgt_fam is not None and src_fam != tgt_fam
+                    and src_fam != "liquid"
+                ):
                     continue
         # A file-level import or re-export cannot carry useful connectivity when
         # both endpoints resolve to the same node.  This most often happens when
@@ -2384,11 +2493,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                             _fold_also_seen(existing_attrs, attrs)
                             continue
                 _fold_also_seen(attrs, existing_attrs)
-                # add_edge merges into the stored dict: a field only the loser
-                # carried (its score, its line) would otherwise stay on the winner.
-                for _key in (*_EVIDENCE_KEYS, "also_seen"):
-                    if _key not in attrs:
-                        existing_attrs.pop(_key, None)
+            # add_edge merges into the stored dict: a field only the loser
+            # carried (its score, its line, its also_seen) would otherwise stay
+            # on the winner. That holds when a different relation replaces the
+            # stored edge too: its also_seen records another relation's sites.
+            for _key in (*_EVIDENCE_KEYS, "also_seen"):
+                if _key not in attrs:
+                    existing_attrs.pop(_key, None)
         G.add_edge(src, tgt, **attrs)
     if dropped_schema_edges:
         print(
@@ -2504,6 +2615,7 @@ def build(
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
         # coerces too, but that runs after dedup — too late for this path.
         _coerce_non_string_ids(combined)
+        _repair_extraction_field_types(combined)
         # Fold legacy node field aliases before dedup (#2194): dedup runs BEFORE
         # build_from_json and keys on `label`, so a `name`/`file`/`path` alias node
         # would be invisible to it and only label-dedup one build later, after

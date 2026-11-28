@@ -45,6 +45,7 @@ _LANG_FAMILY: dict[str, str] = {
     **{e: "php" for e in (".php",)},
     **{e: "r" for e in (".r",)},
     **{e: "cobol" for e in (".cbl", ".cob", ".cobol", ".cpy")},
+    **{e: "liquid" for e in (".liquid",)},
     **{e: "solidity" for e in (".sol",)},
     **{e: "erlang" for e in (".erl", ".hrl", ".escript")},
 }
@@ -129,6 +130,8 @@ def god_nodes(G: nx.Graph, top_n: int = 10,
     suppresses utility hubs in the ranking AND in community resolution,
     instead of only the latter. ``None`` keeps the historical ranking.
     """
+    if top_n <= 0:
+        return []
     degree = dict(G.degree())
     hub_threshold: float | None = None
     if exclude_hubs_percentile is not None:
@@ -173,6 +176,8 @@ def surprising_connections(
     Concept nodes (empty source_file, or injected semantic annotations) are excluded
     from surprising connections because they are intentional, not discovered.
     """
+    if top_n <= 0:
+        return []
     # Identify unique source files (ignore empty/null source_file)
     source_files = {
         data.get("source_file", "")
@@ -198,7 +203,7 @@ def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
     """
     data = G.nodes[node_id]
     source = data.get("source_file", "")
-    if not source:
+    if not isinstance(source, str) or not source:
         return True
     # Has no file extension → probably a concept label, not a real file
     if "." not in source.split("/")[-1]:
@@ -403,6 +408,8 @@ def _cross_community_surprises(
 
     Falls back to high-betweenness edges if no community info is provided.
     """
+    if top_n <= 0:
+        return []
     if not communities:
         # No community info - use edge betweenness centrality
         if G.number_of_edges() == 0:
@@ -741,10 +748,15 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
         for n in removed_node_ids
     ]
 
-    def edge_key(G: nx.Graph, u: str, v: str, data: dict) -> tuple:
+    def edge_key(G: nx.Graph, u, v, data: dict) -> tuple:
+        rel = data.get("relation", "")
         if G.is_directed():
-            return (u, v, data.get("relation", ""))
-        return (min(u, v), max(u, v), data.get("relation", ""))
+            return (u, v, rel)
+        if isinstance(u, str) and isinstance(v, str):
+            return (u, v, rel) if u <= v else (v, u, rel)
+        if (type(u).__name__, str(u)) <= (type(v).__name__, str(v)):
+            return (u, v, rel)
+        return (v, u, rel)
 
     def edge_dir(data: dict) -> tuple | None:
         # Stored direction of an undirected edge (build_from_json, load_node_link_graph).
@@ -752,14 +764,17 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
             return (data["_src"], data["_tgt"])
         return None
 
-    old_edge_dirs = {
-        edge_key(G_old, u, v, d): edge_dir(d)
-        for u, v, d in G_old.edges(data=True)
-    }
-    new_edge_dirs = {
-        edge_key(G_new, u, v, d): edge_dir(d)
-        for u, v, d in G_new.edges(data=True)
-    }
+    def _collect_edges(G: nx.Graph) -> tuple[dict[tuple, tuple | None], dict[tuple, list[tuple]]]:
+        dirs: dict[tuple, tuple | None] = {}
+        raw: dict[tuple, list[tuple]] = {}
+        for u, v, d in G.edges(data=True):
+            k = edge_key(G, u, v, d)
+            dirs[k] = edge_dir(d)
+            raw.setdefault(k, []).append((u, v, d))
+        return dirs, raw
+
+    old_edge_dirs, old_raw_edges = _collect_edges(G_old)
+    new_edge_dirs, new_raw_edges = _collect_edges(G_new)
     old_edge_keys = set(old_edge_dirs)
     new_edge_keys = set(new_edge_dirs)
 
@@ -773,25 +788,27 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     added_edge_keys = (new_edge_keys - old_edge_keys) | reversed_edge_keys
     removed_edge_keys = (old_edge_keys - new_edge_keys) | reversed_edge_keys
 
-    new_edges_list = []
-    for u, v, d in G_new.edges(data=True):
-        if edge_key(G_new, u, v, d) in added_edge_keys:
-            new_edges_list.append({
-                "source": d.get("_src", u),
-                "target": d.get("_tgt", v),
-                "relation": d.get("relation", ""),
-                "confidence": d.get("confidence", ""),
-            })
+    new_edges_list = [
+        {
+            "source": d.get("_src", u),
+            "target": d.get("_tgt", v),
+            "relation": d.get("relation", ""),
+            "confidence": d.get("confidence", ""),
+        }
+        for k in added_edge_keys
+        for u, v, d in new_raw_edges[k]
+    ]
 
-    removed_edges_list = []
-    for u, v, d in G_old.edges(data=True):
-        if edge_key(G_old, u, v, d) in removed_edge_keys:
-            removed_edges_list.append({
-                "source": d.get("_src", u),
-                "target": d.get("_tgt", v),
-                "relation": d.get("relation", ""),
-                "confidence": d.get("confidence", ""),
-            })
+    removed_edges_list = [
+        {
+            "source": d.get("_src", u),
+            "target": d.get("_tgt", v),
+            "relation": d.get("relation", ""),
+            "confidence": d.get("confidence", ""),
+        }
+        for k in removed_edge_keys
+        for u, v, d in old_raw_edges[k]
+    ]
 
     parts = []
     if new_nodes_list:

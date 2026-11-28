@@ -29,6 +29,21 @@ def _viz_node_limit() -> int:
     except ValueError:
         return MAX_NODES_FOR_VIZ
 
+def _load_learning_overlay(output_path: str, learning_overlay: dict | None) -> dict:
+    """Return the explicit overlay, or best-effort load the work-memory sidecar.
+
+    ``.graphify_learning.json`` lives next to ``graph.json`` and therefore next
+    to ``graph.html``.  Missing or unreadable sidecars yield ``{}`` so an
+    un-annotated render stays byte-identical to the pre-feature output.
+    """
+    if learning_overlay is not None:
+        return learning_overlay
+    try:
+        from graphify.reflect import load_learning_overlay as _llo
+        return _llo(Path(output_path))
+    except Exception:
+        return {}
+
 def _html_styles() -> str:
     return """<style>
   :root {
@@ -528,6 +543,11 @@ def to_html(
 
     If node_limit is set and the graph exceeds it, automatically builds an
     aggregated community-level meta-graph instead of raising ValueError.
+    Without an explicit node_limit, a graph above the effective limit (the
+    env override or MAX_NODES_FOR_VIZ) raises ValueError instead.
+    When the graph is above the vis-network comfort threshold but still within
+    the requested limit, a self-contained Canvas renderer is used instead of
+    the force-simulation view (see ``html_large``).
 
     Returns True when the output was written. Returns False when an aggregated
     view would contain fewer than two communities and is intentionally skipped.
@@ -593,6 +613,25 @@ def to_html(
             f"or reduce input size."
         )
 
+    # Above the vis-network comfort zone, use the Canvas renderer instead of
+    # feeding 20k+ nodes and 50k edges into a browser-side force simulation.
+    # This branch is reached when the effective limit allows node-level output:
+    # an explicit --node-limit from the CLI (its default of 5000 aggregates
+    # instead) or a larger GRAPHIFY_VIZ_NODE_LIMIT.  A bare node_limit=None
+    # above the effective limit raises earlier rather than aggregating.
+    if G.number_of_nodes() > MAX_NODES_FOR_VIZ:
+        from graphify.exporters.html_large import to_large_html
+        written = to_large_html(
+            G,
+            communities,
+            output_path,
+            community_labels=community_labels,
+            member_counts=member_counts,
+            learning_overlay=_load_learning_overlay(output_path, learning_overlay),
+            title=_html_document_title(output_path),
+        )
+        return bool(written)
+
     node_community = _node_community_map(communities)
     degree = dict(G.degree())
     max_deg = max(degree.values(), default=1) or 1
@@ -602,13 +641,7 @@ def to_html(
     # best-effort from the sibling .graphify_learning.json next to the output
     # graph.html (which lives beside graph.json). Empty/missing => no learning
     # fields, so the un-annotated render is byte-identical to pre-feature.
-    if learning_overlay is None:
-        learning_overlay = {}
-        try:
-            from graphify.reflect import load_learning_overlay as _llo
-            learning_overlay = _llo(Path(output_path))
-        except Exception:
-            learning_overlay = {}
+    learning_overlay = _load_learning_overlay(output_path, learning_overlay)
     # Status -> ring color. preferred=green, contested=amber. Tentative gets no
     # ring (it's not yet trustworthy enough to highlight in the map).
     _RING = {"preferred": "#22c55e", "contested": "#f59e0b"}

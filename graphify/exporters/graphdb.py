@@ -6,17 +6,25 @@ import networkx as nx
 import re
 
 
+def _safe_label(file_type: object) -> str:
+    """Derive and sanitize a Cypher node label from a node's file_type."""
+    raw = (file_type if isinstance(file_type, str) and file_type else "Entity").capitalize()
+    return re.sub(r"[^A-Za-z0-9_]", "", raw) or "Entity"
+
+
+def _safe_rel(relation: object) -> str:
+    """Derive and sanitize a Cypher relationship type from an edge's relation."""
+    raw = (relation if isinstance(relation, str) and relation else "RELATED_TO").upper().replace(" ", "_").replace("-", "_")
+    return re.sub(r"[^A-Z0-9_]", "_", raw) or "RELATED_TO"
+
+
 def _distinct_node_labels(G: nx.Graph) -> list[str]:
     """Distinct Cypher labels the node-upsert loop will write, sorted.
 
     The label is derived exactly as the push loops derive it, so the indexes
     created up front cover every label the MERGE statements will match against.
     """
-    labels = set()
-    for _, data in G.nodes(data=True):
-        label = data.get("file_type", "Entity").capitalize()
-        labels.add(re.sub(r"[^A-Za-z0-9_]", "", label) or "Entity")
-    return sorted(labels)
+    return sorted({_safe_label(data.get("file_type")) for _, data in G.nodes(data=True)})
 
 
 def push_to_neo4j(
@@ -42,14 +50,6 @@ def push_to_neo4j(
 
     node_community = _node_community_map(communities) if communities else {}
 
-    def _safe_rel(relation: str) -> str:
-        return re.sub(r"[^A-Z0-9_]", "_", relation.upper().replace(" ", "_").replace("-", "_")) or "RELATED_TO"
-
-    def _safe_label(label: str) -> str:
-        """Sanitize a Neo4j node label to prevent Cypher injection."""
-        sanitized = re.sub(r"[^A-Za-z0-9_]", "", label)
-        return sanitized if sanitized else "Entity"
-
     driver = GraphDatabase.driver(uri, auth=(user, password))
     nodes_pushed = 0
     edges_pushed = 0
@@ -74,7 +74,7 @@ def push_to_neo4j(
             cid = node_community.get(node_id)
             if cid is not None:
                 props["community"] = cid
-            ftype = _safe_label(data.get("file_type", "Entity").capitalize())
+            ftype = _safe_label(data.get("file_type"))
             session.run(
                 f"MERGE (n:{ftype} {{id: $id}}) SET n += $props",
                 id=node_id,
@@ -83,16 +83,18 @@ def push_to_neo4j(
             nodes_pushed += 1
 
         for u, v, data in G.edges(data=True):
-            rel = _safe_rel(data.get("relation", "RELATED_TO"))
+            rel = _safe_rel(data.get("relation"))
             props = {
                 k: v for k, v in data.items()
                 if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
             }
+            src = data["_src"] if data.get("_src") is not None else u
+            tgt = data["_tgt"] if data.get("_tgt") is not None else v
             session.run(
                 f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
                 f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-                src=data.get("_src", u),
-                tgt=data.get("_tgt", v),
+                src=src,
+                tgt=tgt,
                 props=props,
             )
             edges_pushed += 1
@@ -139,14 +141,6 @@ def push_to_falkordb(
 
     node_community = _node_community_map(communities) if communities else {}
 
-    def _safe_rel(relation: str) -> str:
-        return re.sub(r"[^A-Z0-9_]", "_", relation.upper().replace(" ", "_").replace("-", "_")) or "RELATED_TO"
-
-    def _safe_label(label: str) -> str:
-        """Sanitize a FalkorDB node label to prevent Cypher injection."""
-        sanitized = re.sub(r"[^A-Za-z0-9_]", "", label)
-        return sanitized if sanitized else "Entity"
-
     parsed = urlparse(uri if "://" in uri else f"redis://{uri}")
     # FalkorDB auth is optional. Only send credentials when a password is
     # provided; otherwise connect anonymously and ignore any bolt-style default
@@ -187,7 +181,7 @@ def push_to_falkordb(
         cid = node_community.get(node_id)
         if cid is not None:
             props["community"] = cid
-        ftype = _safe_label(data.get("file_type", "Entity").capitalize())
+        ftype = _safe_label(data.get("file_type"))
         graph.query(
             f"MERGE (n:{ftype} {{id: $id}}) SET n += $props",
             {"id": node_id, "props": props},
@@ -195,15 +189,17 @@ def push_to_falkordb(
         nodes_pushed += 1
 
     for u, v, data in G.edges(data=True):
-        rel = _safe_rel(data.get("relation", "RELATED_TO"))
+        rel = _safe_rel(data.get("relation"))
         props = {
             k: v for k, v in data.items()
             if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
         }
+        src = data["_src"] if data.get("_src") is not None else u
+        tgt = data["_tgt"] if data.get("_tgt") is not None else v
         graph.query(
             f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
             f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-            {"src": data.get("_src", u), "tgt": data.get("_tgt", v), "props": props},
+            {"src": src, "tgt": tgt, "props": props},
         )
         edges_pushed += 1
 

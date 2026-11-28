@@ -1262,6 +1262,10 @@ def test_no_cluster_incremental_prunes_newly_excluded_file(
         mainmod.main()
     assert exc.value.code == 0
     graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = graph_path.with_name("manifest.json")
+    keep_stamp = _manifest_row(manifest_path, "keep.py")
+    assert keep_stamp and keep_stamp["ast_hash"]
+    assert _manifest_row(manifest_path, "x.py")
     assert any("x.py" in s for s in _node_sources(graph_path))
     capsys.readouterr()
 
@@ -1279,6 +1283,136 @@ def test_no_cluster_incremental_prunes_newly_excluded_file(
         f"--no-cluster early exit must prune excluded sources, still see {sources}"
     )
     assert any("keep.py" in s for s in sources)
+    assert _manifest_row(manifest_path, "x.py") is None
+    assert _manifest_row(manifest_path, "keep.py") == keep_stamp
+
+
+@pytest.mark.parametrize("same_tick", [False, True], ids=["mtime-changes", "same-tick"])
+def test_no_cluster_incremental_detects_an_edit_after_noop_scan(
+    monkeypatch, tmp_path, capsys, same_tick
+):
+    import json
+    import time
+
+    from graphify import detect
+
+    source = tmp_path / "app.py"
+    source.write_text("def baseline():\n    return 0\n", encoding="utf-8")
+    old_mtime = 1_600_000_000
+    os.utime(source, (old_mtime, old_mtime))
+    if same_tick:
+        # Keep the manifest and stat-index observations inside the same tick.
+        monkeypatch.setattr(time, "time", lambda: float(old_mtime))
+        monkeypatch.setattr(time, "time_ns", lambda: old_mtime * 1_000_000_000)
+        monkeypatch.setenv("GRAPHIFY_MTIME_GRANULARITY_MS", "2000")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = ["graphify", "extract", str(tmp_path), "--code-only", "--no-cluster"]
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    manifest_path = graph_path.with_name("manifest.json")
+
+    def graph_labels():
+        return {node["label"] for node in json.loads(graph_path.read_bytes())["nodes"]}
+
+    assert "baseline()" in graph_labels()
+    stamp = _manifest_row(manifest_path, "app.py")
+    real_save = detect.save_manifest
+    edit_injected = False
+
+    def edit_before_save(*args, **kwargs):
+        nonlocal edit_injected
+        edit_injected = True
+        source.write_text("def modified():\n    return 1\n", encoding="utf-8")
+        mtime = old_mtime if same_tick else old_mtime + 10
+        os.utime(source, (mtime, mtime))
+        return real_save(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(detect, "save_manifest", edit_before_save)
+        _run_extract(monkeypatch, argv)
+    assert edit_injected
+    assert "no incremental changes detected" in capsys.readouterr().out
+    assert "baseline()" in graph_labels()
+    stamp_during_noop = _manifest_row(manifest_path, "app.py")
+
+    _run_extract(monkeypatch, argv)
+    assert "modified()" in graph_labels()
+    assert "baseline()" not in graph_labels()
+    assert stamp_during_noop == stamp
+
+
+@pytest.mark.parametrize("touch", [False, True], ids=["settled", "identical-touch"])
+def test_no_cluster_noop_hashes_only_when_required_by_scan(
+    monkeypatch, tmp_path, capsys, touch
+):
+    from graphify import detect
+
+    project = _two_file_corpus(tmp_path)
+    old_mtime = 1_600_000_000
+    for source in project.glob("*.py"):
+        os.utime(source, (old_mtime, old_mtime))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = ["graphify", "extract", str(project), "--code-only", "--no-cluster"]
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+    manifest_path = project / "graphify-out" / "manifest.json"
+    stamp = manifest_path.read_bytes()
+    source = project / "keep.py"
+    touched_mtime = old_mtime + 10
+    if touch:
+        os.utime(source, (touched_mtime, touched_mtime))
+
+    hashed_paths = []
+    real_md5 = detect._md5_file
+
+    def record_hash(path):
+        hashed_paths.append(path)
+        return real_md5(path)
+
+    monkeypatch.setattr(detect, "_md5_file", record_hash)
+    _run_extract(monkeypatch, argv)
+
+    assert "no incremental changes detected" in capsys.readouterr().out
+    assert hashed_paths == ([source.resolve()] if touch else [])
+    assert manifest_path.read_bytes() == stamp
+
+    if touch:
+        # A later edit can still share the touched mtime. The original stamp
+        # keeps the next scan comparing content until extraction incorporates it.
+        source.write_text("def modified():\n    return 1\n", encoding="utf-8")
+        os.utime(source, (touched_mtime, touched_mtime))
+        _run_extract(monkeypatch, argv)
+        assert "1 code, 0 docs" in capsys.readouterr().out
+        assert manifest_path.read_bytes() != stamp
+
+
+def test_no_cluster_noop_prunes_previous_checkout_manifest_rows(monkeypatch, tmp_path, capsys):
+    import json
+    import shutil
+
+    project = _two_file_corpus(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = ["graphify", "extract", str(project), "--code-only", "--no-cluster"]
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+
+    manifest_path = project / "graphify-out" / "manifest.json"
+    rows = json.loads(manifest_path.read_bytes())
+    previous_checkout = tmp_path / "previous-checkout"
+    previous_checkout.mkdir()
+    stale = {
+        str(shutil.copy2(project / relative, previous_checkout)): stamp
+        for relative, stamp in rows.items()
+    }
+    absolute_rows = {str(project / relative): stamp for relative, stamp in rows.items()}
+    manifest_path.write_text(json.dumps({**absolute_rows, **stale}), encoding="utf-8")
+
+    _run_extract(monkeypatch, argv)
+
+    assert "no incremental changes detected" in capsys.readouterr().out
+    assert json.loads(manifest_path.read_bytes()) == rows
 
 
 # ---------------------------------------------------------------------------
@@ -1423,6 +1557,55 @@ def test_success_and_unchanged_unaffected(monkeypatch, tmp_path, capsys):
         assert _manifest_row(manifest_path, name)["ast_hash"] != "", (
             f"{name} must keep its live stamp on a no-op run"
         )
+
+
+def test_warm_code_only_no_cluster_reads_graph_once(monkeypatch, tmp_path, capsys):
+    import json
+    from pathlib import Path
+
+    project = _two_file_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = [
+        "graphify", "extract", str(project), "--code-only", "--no-cluster",
+        "--out", str(out_dir),
+    ]
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+
+    graph_path = (out_dir / "graphify-out" / "graph.json").resolve()
+    saved_graph = graph_path.read_bytes()
+    saved_mtime = graph_path.stat().st_mtime_ns
+    assert json.loads(saved_graph)["nodes"]
+
+    reads = parses = 0
+    open_path = Path.open
+    loads = json.loads
+
+    def count_graph_reads(path, mode="r", *args, **kwargs):
+        nonlocal reads
+        if path == graph_path and "r" in mode:
+            reads += 1
+        return open_path(path, mode, *args, **kwargs)
+
+    def count_graph_parses(data, *args, **kwargs):
+        nonlocal parses
+        if data == saved_graph_text or data == saved_graph:
+            parses += 1
+        return loads(data, *args, **kwargs)
+
+    saved_graph_text = saved_graph.decode("utf-8")
+    with monkeypatch.context() as warm_run:
+        warm_run.setattr(Path, "open", count_graph_reads)
+        warm_run.setattr(json, "loads", count_graph_parses)
+        _run_extract(monkeypatch, argv)
+
+    assert "no incremental changes detected" in capsys.readouterr().out
+    assert graph_path.read_bytes() == saved_graph
+    assert graph_path.stat().st_mtime_ns == saved_mtime
+    assert (reads, parses) == (1, 1)
 
 
 def test_poisoned_manifest_is_healed(monkeypatch, tmp_path, capsys):

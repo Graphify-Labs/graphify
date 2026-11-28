@@ -2,6 +2,69 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.122 (2026-11-28)
+
+A new Shopify/Liquid theme extractor, TypeScript and C++ extractor accuracy, incremental-extraction correctness (two silent-corruption/data-loss fixes), and a batch of robustness and performance work across sixteen community pull requests. The TypeScript, C++, Markdown and Shopify-theme changes alter extraction output, so the AST cache schema bumps (57 to 58) and those inputs re-extract on the first build after upgrading; everything else needs no rebuild.
+
+### Features
+- **shopify** a Shopify theme is turned into a graph: the Liquid extractor reads `.liquid` templates and their `render`/`include`/section references, `templates/*.json` wires sections to blocks, and CSS classes, settings, custom elements and metafields are linked. Pure-stdlib scanners (no new dependencies), gated to a theme root (`layout/theme.liquid`) so non-theme `.css`/`.json` files are unaffected (#5553, #5554, #5555, #5557, thanks @dalexhd).
+
+### Extractor fixes
+- **typescript** a named object type alias extracts its direct function-typed properties (`type Port = { cb: () => void }`) as members alongside method signatures, kept out of bare-call/module lookup (#5525, thanks @rvitaliy).
+- **typescript** a call through a local `const` bound to an explicitly-typed parameter property (`const a = ports.authority; a.m()`) resolves to the property type's exact method, including through closures, fail-closed on unknown/ambiguous/reassigned receivers (#5529, thanks @rvitaliy).
+- **cpp** an export/visibility macro leading a function or variable declaration (`MYLIB_API void f();`) is blanked (byte-length preserving) before parsing, so the declaration and the members after it are no longer dropped (#5550, thanks @Deepjyoti-Sarmah).
+- **cpp** a `/* */` block comment inside a `#define` directive is blanked before parsing so it no longer derails the parse (#5551, thanks @leninworld).
+- **markdown** a file's YAML frontmatter is folded into its AST cache key, so a frontmatter-only edit re-extracts instead of serving the stale body (#5480, thanks @sdivyanshu90).
+
+### Incremental extraction
+- **extract** `graphify extract` now re-extracts JS/TS code when a resolver input changes (a tsconfig alias can retarget an import even when importer bytes are identical), matching a full rebuild instead of leaving stale edges (#5533, thanks @rvitaliy).
+- **extract** a no-op incremental extraction preserves existing manifest stamps, so an edit saved during the scan is still picked up on the next run instead of being silently dropped (#5531, thanks @rvitaliy).
+- **extract** the saved graph is reused during incremental extraction (read once instead of three times) with byte-identical output (#5527, thanks @rvitaliy).
+
+### Correctness & robustness
+- **analyze** `god_nodes` and `surprising_connections` return empty for `top_n <= 0` instead of everything, and non-string node fields no longer crash (#5544, thanks @Gaurav-meena95).
+- **serve** `_path_search_graph` handles mixed int/str node IDs instead of crashing (the serve-side companion to 0.9.121's `graph_diff` fix) (#5543, thanks @Gaurav-meena95).
+- **build** malformed extraction field types are repaired or skipped with a warning instead of crashing assembly (#5539, thanks @sdivyanshu90).
+- **export** the Cypher exporter preserves parallel call sites between the same pair instead of collapsing them to one Neo4j relationship (#5540, thanks @sdivyanshu90).
+- **watch** a removed or moved directory subtree now triggers a rebuild so its stale nodes are pruned (#5479, thanks @sdivyanshu90).
+
+### Performance (output byte-identical)
+- **cluster** `_native_leiden` avoids a `G.copy()` deepcopy and a SubGraphView fallback, and `cohesion_score` avoids a per-call SubGraphView allocation (#5548, #5549, thanks @Gaurav-meena95).
+
+## 0.9.121 (2026-11-26)
+
+A large batch across community pull requests: extractor accuracy (C#, TypeScript, Rust, COBOL, Python), node-id and edge correctness on incremental rebuilds, a self-contained Canvas renderer for large graphs, and a wave of byte-identical performance work. The C#, TypeScript, Rust, COBOL and Python changes alter node/edge output, so the AST cache schema bumps (56 to 57) and those languages re-extract on the first build after upgrading; everything else needs no rebuild.
+
+### Features
+- **serve/viz** `graph.html` gains a self-contained Canvas 2D renderer for large graphs: above the vis-network comfort threshold (and within `--node-limit`/`GRAPHIFY_VIZ_NODE_LIMIT`) it emits a deterministic, community-packed Canvas view with viewport culling and sparse labels at low zoom, embedded as a base64 payload with no external scripts. Small graphs keep the existing vis-network output (#5521, thanks @GwungTz).
+
+### Extractor fixes
+- **csharp** a call through a namespace-qualified receiver (`Acme.Audio.Mixer.Instance.Play()`, `Acme.Audio.Mixer.Reset()`, or a `var m = Acme.Audio.Mixer.Instance; m.Play()` chain, plus null-conditional forms) resolves through the named type the same way the short name under `using` already did, binding the exact namespace and failing closed on an unknown or ambiguous path (#5473, thanks @aliyapici).
+- **typescript** a named object type alias (`type Port = { read(): number }`, including an unqualified `Readonly<{...}>`) retains its method signatures as method nodes so a typed-receiver call resolves to them, while the signatures stay out of bare-call, static-call and module-symbol lookup (#5455, thanks @rvitaliy).
+- **typescript** an extensionless import of a declaration file (`./types/api`, or a tsconfig `paths` alias) resolves to the adjacent `.d.ts`/`index.d.ts` instead of a sourceless stub, with a real implementation file still winning the guess (#5472, thanks @Deepjyoti-Sarmah).
+- **rust** a `use` of a module path or a grouped `self` (`use krate::m::{self, X}`, `use crate::a::b`) resolves to the real module-file node (`m.rs`/`m/mod.rs`) instead of a sourceless bare-name stub, with external-crate paths still failing closed (#5398, thanks @Deepjyoti-Sarmah).
+- **python** a function-local import's shadow climbs every enclosing function scope, so a bare call in a nested def is still shadowed by an outer function's import instead of falling back to a same-named module-level twin (#5421 follow-up, thanks @ayushcodes10).
+- **cobol** a `PERFORM A THRU Z` links every paragraph in the range (not only the endpoints, and nothing outside it); a procedure copybook's own paragraphs and intra-copybook PERFORMs are extracted; and a `PERFORM` between a program and its copybook resolves cross-file, fail-closed on an unknown or ambiguous target (#5424, #5425, #5426, thanks @pavansystems).
+
+### Correctness fixes
+- **incremental** same-stem files (`math.c`/`math.h`, `index.ts`/`index.js`) keep the same node ids on a changed-files rebuild as on a full build: the colliding files are re-extracted together so disambiguation sees the whole group, and a deleted sibling drops its partner back to the bare id (#5464, thanks @0xkaushik-ai).
+- **extract** the XAML code-behind class no longer keeps an absolute-checkout-path id (or duplicates) when only the `.xaml` file is re-extracted; out-of-batch source files are canonicalized in the id-remap (#5466, thanks @0xkaushik-ai).
+- **extract** the decl/def fold's edge de-dup is scoped to the merged ids, so folding a header/impl pair no longer drops unrelated edges (a recursive self-call, or same-stem `.cu`/`.metal` member edges) order-dependently (#5468, thanks @0xkaushik-ai).
+- **watch** the event path is resolved so a manual observer matches events under a symlinked root (#5498, thanks @madhusudanpatnaik).
+- **build** a different-relation edge winner no longer inherits the replaced edge's `also_seen` and score (#5490, thanks @poberherr).
+- **analyze** `graph_diff` handles mixed int/str node IDs and MultiGraph parallel edges instead of crashing or overwriting (#5512, thanks @Gaurav-meena95).
+- **cargo** a member crate's `dependency.workspace = true` resolves inherited deps against the workspace manifest dir rather than the scan root (#5496, thanks @madhusudanpatnaik).
+- **graphdb** a node with a null `file_type` or an edge with a null `relation` no longer crashes label/relation formatting (#5497, thanks @madhusudanpatnaik).
+
+### Performance (output byte-identical)
+- **build** per-file stems and alias work are cached with a sentinel map in `_alias_index`, and edge-endpoint suffixes are memoized per source_file (#5492, #5494, thanks @madhusudanpatnaik).
+- **paths** large top-level JSON lists are written in C-encoded chunks for lower peak memory (#5493, thanks @madhusudanpatnaik).
+- **report** edge and node scans are folded into single passes with a memoized `_real_node` (#5495, thanks @madhusudanpatnaik).
+- **detect** ignore, symlink and paper checks are sped up (3000-char paper read, lexical relative-path containment, a POSIX non-symlink fastpath) (#5499, thanks @madhusudanpatnaik).
+- **cluster** `score_all` is computed in a single O(|E|) pass without per-community SubGraphViews, and canonical edges are passed straight to native Leiden without rebuilding the stable graph (#5510 thanks @Gaurav-meena95, #5401 thanks @Max17190).
+- **export** `to_graphml` fast-paths XML sanitization and cleans nodes/edges in one pass, and the NetworkX loader releases graph rows as it consumes them (#5511 thanks @Gaurav-meena95, #5434 thanks @Max17190).
+- **callflow** archetype keywords are counted in one word-scan pass instead of a regex per keyword (#5433, thanks @Max17190).
+
 ## 0.9.120 (2026-11-25)
 
 A batch of resolution, serve, export, clustering and performance fixes across nine community pull requests. The Python function-local-import change alters node/edge output, so the AST cache schema bumps (55 to 56) and Python re-extracts on the first build after upgrading; the other fixes need no rebuild.

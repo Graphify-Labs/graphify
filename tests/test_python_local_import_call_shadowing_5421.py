@@ -102,3 +102,84 @@ def test_module_level_import_of_same_name_is_unaffected(tmp_path: Path) -> None:
     assert len(calls) == 1
     nodes = {n["id"]: n for n in result["nodes"]}
     assert nodes[calls[0]["target"]]["source_file"] == "helper.py"
+
+
+def test_nested_def_still_shadowed_by_an_outer_functions_local_import(tmp_path: Path) -> None:
+    """A closure keeps an outer function's own local import visible to a
+    nested def, the same way a captured parameter already is: a miss at the
+    nearest enclosing function must keep climbing to the next enclosing
+    function instead of stopping and falling back to a same file twin."""
+    result = _extract(tmp_path, {
+        "mod.py": (
+            "def main():\n"
+            "    pass\n\n\n"
+            "def outer():\n"
+            "    from absent_external_package import main\n"
+            "    def inner():\n"
+            "        return main()\n"
+            "    return inner\n"
+        ),
+    })
+    assert _calls_from(result, "inner()") == []
+
+
+def test_nested_def_shadowed_by_an_outer_plain_import_too(tmp_path: Path) -> None:
+    """The closure fix above is form agnostic (`_python_local_import_names`
+    already handles both statement types), but a plain `import x`/`import x
+    as y` is covered by its own test since it is the surface form namesake
+    issue #5421's own follow up singled out separately from the nested
+    `from x import y` case."""
+    result = _extract(tmp_path, {
+        "mod.py": (
+            "def main():\n"
+            "    pass\n\n\n"
+            "def outer():\n"
+            "    import absent_external_package as main\n"
+            "    def inner():\n"
+            "        return main()\n"
+            "    return inner\n"
+        ),
+    })
+    assert _calls_from(result, "inner()") == []
+
+
+def test_a_class_bodys_own_local_import_does_not_shadow_its_methods(tmp_path: Path) -> None:
+    """A class body is not part of the closure chain: a method cannot see a
+    name its own class bound at class body level without `self`/the class
+    name, so the class's own local import must not suppress a bare call in
+    one of its methods, which keeps resolving normally."""
+    result = _extract(tmp_path, {
+        "mod.py": (
+            "def target():\n"
+            "    pass\n\n\n"
+            "class C:\n"
+            "    from absent_external_package import target\n\n"
+            "    def run(self):\n"
+            "        return target()\n"
+        ),
+    })
+    calls = _calls_from(result, ".run()")
+    assert len(calls) == 1
+    nodes = {n["id"]: n for n in result["nodes"]}
+    assert nodes[calls[0]["target"]]["label"] == "target()"
+    assert nodes[calls[0]["target"]]["source_file"] == "mod.py"
+
+
+def test_a_class_bodys_own_direct_code_is_still_shadowed_by_its_own_import(tmp_path: Path) -> None:
+    """Class body level code (not inside any method) executes in the class's
+    own scope at define time, so it keeps seeing the class's own local
+    import exactly like a function body would."""
+    result = _extract(tmp_path, {
+        "mod.py": (
+            "def target():\n"
+            "    pass\n\n\n"
+            "class C:\n"
+            "    from absent_external_package import target\n"
+            "    x = target()\n"
+        ),
+    })
+    nodes_by_id = {n["id"]: n for n in result["nodes"]}
+    class_ids = {nid for nid, n in nodes_by_id.items() if n.get("label") == "C"}
+    assert class_ids
+    class_calls = [e for e in result["edges"] if e["relation"] == "calls" and e["source"] in class_ids]
+    assert class_calls == []

@@ -212,15 +212,15 @@ def test_to_cypher_contains_merge_statements():
         out = Path(tmp) / "cypher.txt"
         to_cypher(G, str(out))
         content = out.read_text()
-        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Transformer';" in content
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Transformer'" in content
         assert "{id: 'n_transformer', label:" not in content
 
         G.nodes["n_transformer"]["label"] = "Renamed Transformer"
         to_cypher(G, str(out))
         refreshed = out.read_text()
-        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Renamed Transformer';" in refreshed
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Renamed Transformer'" in refreshed
         assert "{id: 'n_transformer', label:" not in refreshed
-        assert "SET n.label = 'Transformer';" not in refreshed
+        assert "SET n.label = 'Transformer'" not in refreshed
 
 def test_to_graphml_creates_file():
     G = make_graph()
@@ -1892,4 +1892,44 @@ def test_exporters_create_missing_parent_directories(tmp_path):
     to_svg(G, communities, str(svg_path), community_labels={0: "Core"})
     assert svg_path.exists()
     assert "<svg" in svg_path.read_text(encoding="utf-8")
+
+
+def test_strip_xml_illegal_fast_path_and_to_graphml_single_pass(tmp_path):
+    """_strip_xml_illegal preserves printable ASCII and valid XML whitespace, strips C0
+    controls, and to_graphml strips _-prefixed attributes and relabels illegal node IDs."""
+    import xml.etree.ElementTree as ET
+    import networkx as nx
+    from graphify.export import _strip_xml_illegal
+
+    # Fast-path printable ASCII and empty string
+    assert _strip_xml_illegal("") == ""
+    assert _strip_xml_illegal("hello_world_123") == "hello_world_123"
+    # Valid XML whitespace (\t, \n, \r) and non-ASCII preserved; C0 controls stripped
+    assert _strip_xml_illegal("a\tb\nc\rd\x00e\x0bf\x1fg") == "a\tb\nc\rdefg"
+    assert _strip_xml_illegal("café\x00") == "café"
+
+    G = nx.Graph()
+    G.add_node("bad\x00id", label="node\x07one", _internal="drop_me", _origin="file.py")
+    G.add_node("clean_id", label="café\tline\n", _internal="also_drop")
+    G.add_edge("bad\x00id", "clean_id", relation="calls\x0c", _edge_meta="secret")
+
+    out = tmp_path / "single_pass.graphml"
+    to_graphml(G, {0: ["bad\x00id", "clean_id"]}, str(out))
+
+    xml_text = out.read_text(encoding="utf-8")
+    assert "_internal" not in xml_text
+    assert "_origin" not in xml_text
+    assert "_edge_meta" not in xml_text
+    assert "drop_me" not in xml_text
+    assert "secret" not in xml_text
+
+    # Must parse cleanly as XML and have relabeled node ID without \x00
+    root = ET.fromstring(xml_text)
+    ns = {"g": "http://graphml.graphdrawing.org/xmlns"}
+    node_ids = {el.attrib["id"] for el in root.findall(".//g:node", ns)}
+    assert node_ids == {"badid", "clean_id"}
+    edge = root.find(".//g:edge", ns)
+    assert edge is not None
+    assert {edge.attrib["source"], edge.attrib["target"]} == {"badid", "clean_id"}
+
 

@@ -329,6 +329,20 @@ class CsharpNameResolver:
             for node in all_nodes
             if node.get("type") == "namespace" and isinstance(node.get("label"), str)
         }
+        # Every namespace a C# file declares, with its enclosing namespaces:
+        # `namespace A.B.C` declares `A` and `A.B` too.
+        self.declared_namespaces: set[str] = set()
+        for node in all_nodes:
+            label = node.get("label")
+            if (
+                node.get("type") == "namespace"
+                and isinstance(label, str)
+                and label
+                and _is_cs_file(node.get("source_file"))
+            ):
+                parts = label.split(".")
+                for i in range(1, len(parts) + 1):
+                    self.declared_namespaces.add(".".join(parts[:i]))
 
         self.namespace_usings_by_file: dict[str, list[tuple[str, str, str | None]]] = {}
         self.aliases_by_file: dict[str, dict[str, list[tuple[str, str, str | None]]]] = {}
@@ -414,6 +428,9 @@ class CsharpNameResolver:
                 ),
             )[0]["id"]
             self.nested_types_by_holder.setdefault(holder_nid, {})[label] = canonical_nid
+        self.nested_type_labels = {
+            label for nested in self.nested_types_by_holder.values() for label in nested
+        }
 
     @staticmethod
     def _namespace(node: dict | None) -> str:
@@ -595,6 +612,64 @@ class CsharpNameResolver:
                     return hit, True
 
         return None, False
+
+    def resolve_receiver_type_path(
+        self, segments: list[str], source_node: dict, source_file: str
+    ) -> str | None:
+        """The one type a dotted call receiver names, else None.
+
+        ``segments`` is the receiver as written (``["Audio", "Mixer"]``,
+        ``["Acme", "Systems", "Audio", "Mixer"]``); the caller has already
+        ruled out a local, parameter, field or property named like the head.
+        A head that is a type or alias in scope makes the rest a nested-type
+        or alias path, by the rules of :meth:`resolve_type_name`. Otherwise
+        the head is a namespace, looked up in each enclosing namespace of the
+        caller from the innermost outwards, as C# does: the first level that
+        declares it binds, and a type missing there is not looked for further
+        out. A head that is both a type and a namespace here, or that any
+        nested type in the corpus is named like (whether the head would
+        otherwise read as a type or as a namespace), is left unresolved, since
+        that precedence is not modelled.
+        """
+        if len(segments) < 2 or not all(segments):
+            return None
+        head = segments[0]
+        if head in self.nested_type_labels:
+            # A nested type of the caller's own, enclosing or base type hides
+            # both an outer type and a namespace of that name. Nested types
+            # are not in the scoped index, so that lookup cannot be made here.
+            return None
+        namespace_parts = [part for part in self._namespace(source_node).split(".") if part]
+        head_is_namespace = False
+        namespace_type: str | None = None
+        for i in range(len(namespace_parts), -1, -1):
+            if ".".join(namespace_parts[:i] + [head]) in self.declared_namespaces:
+                head_is_namespace = True
+                namespace_type = self._resolve_holder_nid(
+                    ".".join(namespace_parts[:i] + segments)
+                )
+                break
+        head_type, decisive = self.resolve_type_name(head, source_node, source_file)
+        if head_type or decisive:
+            if head_is_namespace:
+                return None
+            resolved, _decisive = self.resolve_type_name(
+                ".".join(segments), source_node, source_file
+            )
+            return resolved
+        if not head_is_namespace:
+            return None
+        return namespace_type
+
+    def static_using_holders(self, source_node: dict, source_file: str) -> list[str]:
+        """Type ids of the ``using static`` directives in scope at ``source_node``."""
+        holders: list[str] = []
+        for target_fqn, scope_kind, scope_id in self.static_usings_by_file.get(source_file, []):
+            if self._using_in_scope(scope_kind, scope_id, source_node):
+                holder = self._resolve_holder_nid(target_fqn)
+                if holder and holder not in holders:
+                    holders.append(holder)
+        return holders
 
     def resolve_label(self, label: str, source_node: dict, source_file: str) -> str | None:
         resolved, _decisive = self.resolve_type_name(label, source_node, source_file)

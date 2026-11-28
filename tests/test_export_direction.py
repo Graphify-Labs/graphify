@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 PYTHON = sys.executable
 # A fixed positive limit, so HTML rendering never depends on the caller's
 # shell (GRAPHIFY_VIZ_NODE_LIMIT=0 disables it, e.g. on CI runners).
@@ -86,11 +88,29 @@ def test_load_node_link_graph_stamps_stored_direction(tmp_path):
     assert arcs == TRUE_ARCS
 
 
-def test_export_html_draws_arrows_in_stored_direction(tmp_path):
-    _graph_json(tmp_path)
+@pytest.mark.parametrize("edge_key", ["links", "edges"])
+def test_export_html_draws_arrows_in_stored_direction(tmp_path, edge_key):
+    path = _graph_json(tmp_path)
+    if edge_key == "edges":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["edges"] = data.pop("links")
+        path.write_text(json.dumps(data), encoding="utf-8")
     r = _run(["export", "html"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert _html_arcs(tmp_path / "graphify-out" / "graph.html") == TRUE_ARCS
+
+
+def test_export_html_rejects_invalid_links_even_with_alternate_edges(tmp_path):
+    path = _graph_json(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["edges"] = data["links"]
+    data["links"] = [*data["links"], {"source": {}, "target": "callee"}]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    r = _run(["export", "html"], tmp_path)
+
+    assert r.returncode != 0
+    assert not (path.parent / "graph.html").exists()
 
 
 def test_export_cypher_merges_edges_in_stored_direction(tmp_path):

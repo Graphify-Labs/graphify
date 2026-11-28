@@ -553,10 +553,13 @@ def _node_fields(G: nx.Graph) -> dict[str, _NodeFields]:
         return cached[1]
     fields: dict[str, _NodeFields] = {}
     for nid, data in G.nodes(data=True):
-        label = data.get("label") or ""
+        raw_label = data.get("label") or ""
+        label = raw_label if isinstance(raw_label, str) else str(raw_label)
         norm_label = data.get("norm_label") or _strip_diacritics(label).lower()
-        source_file = data.get("source_file") or ""
-        nid_lower = nid.lower()
+        raw_source = data.get("source_file") or ""
+        source_file = raw_source if isinstance(raw_source, str) else str(raw_source)
+        nid_str = nid if isinstance(nid, str) else str(nid)
+        nid_lower = nid_str.lower()
         attr_norm, attr_tokens = _node_attributes_text(data)
         fields[nid] = _NodeFields(
             norm_label=norm_label,
@@ -565,11 +568,11 @@ def _node_fields(G: nx.Graph) -> dict[str, _NodeFields]:
             source=source_file.lower(),
             source_tokens=" ".join(_search_tokens(source_file)),
             nid_lower=nid_lower,
-            nid_norm=nid_lower if nid.isascii() else _strip_diacritics(nid).lower(),
+            nid_norm=nid_lower if nid_str.isascii() else _strip_diacritics(nid_str).lower(),
             rationale=_node_rationale_text(data),
             attr_norm=attr_norm,
             attr_tokens=attr_tokens,
-            label_len=len(label or nid),
+            label_len=len(label or nid_str),
         )
     G.graph["_node_fields_cache"] = (n, fields)
     return fields
@@ -2842,6 +2845,28 @@ def _query_uses_known_words(G: nx.Graph, terms: list[str]) -> bool:
     return True
 
 
+def _safe_sort_nodes(nodes) -> list:
+    items = list(nodes)
+    try:
+        items.sort()
+    except TypeError:
+        items.sort(key=lambda n: (type(n).__qualname__, str(n)))
+    return items
+
+
+def _safe_sort_edges(edges: list[tuple]) -> list[tuple]:
+    try:
+        edges.sort()
+    except TypeError:
+        edges.sort(
+            key=lambda e: (
+                (type(e[0]).__qualname__, str(e[0])),
+                (type(e[1]).__qualname__, str(e[1])),
+            )
+        )
+    return edges
+
+
 def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
     """The sorted, materialized graph `_shortest_path_text` searches.
 
@@ -2860,33 +2885,46 @@ def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
     cached = cache.get(undirected)
     if cached is not None:
         return cached
+    sorted_nodes = _safe_sort_nodes(G.nodes)
     if undirected:
         H = nx.Graph()
-        H.add_nodes_from(sorted(G.nodes))
-        H.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+        H.add_nodes_from(sorted_nodes)
+        edges: list[tuple] = []
+        for u, v in G.edges():
+            try:
+                pair = (u, v) if u <= v else (v, u)
+            except TypeError:
+                ku = (type(u).__qualname__, str(u))
+                kv = (type(v).__qualname__, str(v))
+                pair = (u, v) if ku <= kv else (v, u)
+            edges.append(pair)
+        H.add_edges_from(_safe_sort_edges(edges))
     else:
         # Directed by default (#2487). True direction is NOT raw arc
         # order: legacy canonicalized files persist a flipped arc with
         # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
         # (falling back to the loaded arc) rather than to_directed().
         H = nx.DiGraph()
-        H.add_nodes_from(sorted(G.nodes))
-        H.add_edges_from(sorted(
-            (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
-        ))
-        # A `contains` edge only runs file -> symbol; there is no stored
-        # edge back out to the containing file, so a route that reaches a
-        # symbol (via an `imports`/`calls`/`references` hop) can never
-        # continue on to the file that defines it, and a file-to-file
-        # dependency routed through a shared symbol finds no path at all
-        # even though both halves exist (#3878). Add the implied reverse hop
-        # for traversal only — the printed segment still recovers the real
-        # stored `contains` edge and its true direction from G below.
-        H.add_edges_from(sorted(
-            (d.get("_tgt", v), d.get("_src", u))
-            for u, v, d in G.edges(data=True)
-            if d.get("relation") == "contains"
-        ))
+        H.add_nodes_from(sorted_nodes)
+        fwd_edges: list[tuple] = []
+        rev_contains: list[tuple] = []
+        for u, v, d in G.edges(data=True):
+            src = d.get("_src", u)
+            tgt = d.get("_tgt", v)
+            fwd_edges.append((src, tgt))
+            # A `contains` edge only runs file -> symbol; there is no stored
+            # edge back out to the containing file, so a route that reaches a
+            # symbol (via an `imports`/`calls`/`references` hop) can never
+            # continue on to the file that defines it, and a file-to-file
+            # dependency routed through a shared symbol finds no path at all
+            # even though both halves exist (#3878). Add the implied reverse hop
+            # for traversal only — the printed segment still recovers the real
+            # stored `contains` edge and its true direction from G below.
+            if d.get("relation") == "contains":
+                rev_contains.append((tgt, src))
+        H.add_edges_from(_safe_sort_edges(fwd_edges))
+        if rev_contains:
+            H.add_edges_from(_safe_sort_edges(rev_contains))
     cache[undirected] = H
     return H
 
@@ -3692,8 +3730,10 @@ def _build_server(graph_path: str):
     def _tool_god_nodes(arguments: dict) -> str:
         from graphify.analyze import god_nodes as _god_nodes
         _pct = arguments.get("exclude_hubs_percentile")
+        _raw_top = arguments.get("top_n")
+        top_n = max(0, int(10 if _raw_top is None else _raw_top))
         nodes = _god_nodes(
-            G, top_n=int(arguments.get("top_n", 10)),
+            G, top_n=top_n,
             exclude_hubs_percentile=float(_pct) if _pct is not None else None,
         )
         lines = ["God nodes (most connected):"]

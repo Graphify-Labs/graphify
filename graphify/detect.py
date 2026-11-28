@@ -45,7 +45,7 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.yaml', '.yml', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.liquid', '.css', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.yaml', '.yml', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.j2', '.jinja', '.jinja2'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -332,9 +332,15 @@ def _looks_like_paper(path: Path) -> bool:
     """Heuristic: does this text file read like an academic paper?"""
     try:
         # Only scan first 3000 chars for speed
-        text = path.read_text(encoding="utf-8", errors="ignore")[:3000]
-        hits = sum(1 for pattern in _PAPER_SIGNALS if pattern.search(text))
-        return hits >= _PAPER_SIGNAL_THRESHOLD
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            text = f.read(3000)
+        hits = 0
+        for pattern in _PAPER_SIGNALS:
+            if pattern.search(text):
+                hits += 1
+                if hits >= _PAPER_SIGNAL_THRESHOLD:
+                    return True
+        return False
     except Exception:
         return False
 
@@ -1431,9 +1437,7 @@ def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
         if not raw:
             continue
         path = Path(os.path.abspath(vcs_root / os.fsdecode(raw)))
-        try:
-            path.relative_to(root)
-        except ValueError:
+        if _relative_parts(path, root) is None:
             continue
         # Deleted index entries and submodule gitlinks are not discoverable
         # files. Symlinks to regular files remain eligible; the existing
@@ -1777,6 +1781,28 @@ def _parse_ignore_pattern(pattern: str) -> tuple[bool, bool, bool, str]:
 _CASEFOLD_PATHS = os.path.normcase("Aa") != "Aa"
 
 
+def _relative_parts(path: Path, root: Path) -> tuple[str, ...] | None:
+    """Return ``path.relative_to(root).parts`` lexically, or None if outside."""
+    root_parts = root.parts
+    if not root_parts:
+        try:
+            return path.relative_to(root).parts
+        except ValueError:
+            return None
+    path_parts = path.parts
+    n = len(root_parts)
+    if len(path_parts) < n:
+        return None
+    head = path_parts[:n]
+    if head != root_parts and (
+        not _CASEFOLD_PATHS
+        or tuple(map(os.path.normcase, head))
+        != tuple(map(os.path.normcase, root_parts))
+    ):
+        return None
+    return path_parts[n:]
+
+
 def _lexical_relative(
     target: Path, target_parts: tuple[str, ...], anchor: Path
 ) -> str | None:
@@ -1930,7 +1956,9 @@ def _is_ignored(
             # with `!dir/` without its files.
             if target_name_nfc is None:
                 target_name_nfc = _nfc(target.name)
-            return fnmatch.fnmatch(target_name_nfc, p)
+            if _CASEFOLD_PATHS:
+                return fnmatch.fnmatch(target_name_nfc, p)
+            return fnmatch.fnmatchcase(target_name_nfc, p)
 
         result = False
         for anchor, pattern in patterns:
@@ -1967,9 +1995,8 @@ def _is_ignored(
     # whose ancestor directory is already excluded. Walk ancestors top-down;
     # if any ancestor is excluded, the file is excluded regardless of later
     # ! patterns targeting the file or a sub-path.
-    try:
-        rel_parts = path.relative_to(root).parts
-    except ValueError:
+    rel_parts = _relative_parts(path, root)
+    if rel_parts is None:
         return _eval(path)
 
     ancestor = root
@@ -2324,12 +2351,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         safe_dirs.append(d)
                     dirnames[:] = safe_dirs
             for fname in filenames:
-                if fname in _SKIP_FILES:
-                    if is_resolution_input(fname):
-                        # Not corpus input, but a JS/TS resolution input: record
-                        # it so the no-change gate can compare its content
-                        # (#4740). It stays out of the scan exactly as before.
-                        resolution_inputs.append(str(dp / fname))
+                if fname in _SKIP_FILES and not is_resolution_input(fname):
                     continue
                 p = dp / fname
                 if _is_installed_graphify_file(p):
@@ -2353,7 +2375,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         if not in_memory and _ignored_for_scan(p):
             ignored.append(str(p))
             continue
-        if not _resolves_under_root(p, root):
+        # When follow_symlinks=False on POSIX and we are not in memory_dir (which may
+        # traverse a symlinked graphify-out/), os.walk only visits real
+        # directories under the already-resolved root; a non-symlink file
+        # cannot resolve outside root. On Windows, always check _resolves_under_root
+        # because directory junctions are not reported as symlinks on Python 3.11.
+        if (
+            os.name != "posix" or follow_symlinks or in_memory or p.is_symlink()
+        ) and not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
             continue
         if not _is_regular_file(p):
@@ -2370,6 +2399,11 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
+            continue
+        if p.name in _SKIP_FILES and is_resolution_input(p):
+            # These lockfiles can move JS/TS edges without changing source
+            # bytes. Track admitted files for the manifest, outside the corpus.
+            resolution_inputs.append(str(p))
             continue
         ftype = classify_file(p)
         if not ftype:
@@ -2792,6 +2826,7 @@ def save_manifest(
     clear_semantic: set[str] | list[str] | None = None,
     clear_ast: set[str] | list[str] | None = None,
     ast_empty: set[str] | list[str] | None = None,
+    restamp: bool = True,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -2841,6 +2876,12 @@ def save_manifest(
     Marks their row ``ast_empty: true`` so the #2543 heal can tell an intentional
     empty from a poisoned stamp and stop re-queuing them. Preserved across
     incrementals for unchanged rows; dropped once a file starts producing nodes.
+
+    ``restamp=False`` preserves existing file stamps without reading source
+    contents. Use it when no sources were extracted, so bytes modified since
+    detection do not get stamped as graph-backed. The supplied ``files`` still
+    identify relative keys for previous-checkout cleanup. Pruning, clearing and
+    legacy key normalization continue to apply.
     """
     # Another root may have activated different overrides in this thread.
     if root is not None:
@@ -2983,13 +3024,14 @@ def save_manifest(
             normalised = {**normalised, "semantic_hash": ""}
         manifest[f] = normalised
 
-    with ThreadPoolExecutor() as pool:
-        raw = pool.map(_stat_and_hash, all_files)
-    hashed: dict[str, tuple[float, str]] = {
-        r[0]: (r[1], r[2]) for r in raw if r is not None
-    }
+    stamp_files = all_files if restamp else []
+    hashed: dict[str, tuple[float, str]] = {}
+    if stamp_files:
+        with ThreadPoolExecutor() as pool:
+            raw = pool.map(_stat_and_hash, stamp_files)
+        hashed = {r[0]: (r[1], r[2]) for r in raw if r is not None}
 
-    for f in all_files:
+    for f in stamp_files:
         if f not in hashed:
             continue  # file deleted between detect() and manifest write
         mtime, h = hashed[f]
@@ -3273,6 +3315,9 @@ def detect_incremental(
     kind="ast": a file is "changed" when its ast_hash is missing or its
         content has changed. Use this for `graphify update`.
 
+    ``resolution_inputs_changed`` signals changes to JS/TS resolution inputs,
+    including lockfiles tracked outside the extraction corpus.
+
     Fast path: mtime unchanged + hash matches → unchanged (free, no disk IO
     beyond stat). Slow path: mtime bumped → compare MD5 against the relevant
     hash field before re-extracting.
@@ -3316,6 +3361,10 @@ def detect_incremental(
         return full
 
     new_files, unchanged_files = classify_manifest_files(full["files"], manifest, kind=kind)
+    resolution_inputs = full.get("resolution_inputs", [])
+    changed_lockfiles, _ = classify_manifest_files(
+        {"resolution_inputs": resolution_inputs}, manifest, kind="ast"
+    )
 
     # Manifest rows that left the corpus, split by disk existence (#1908):
     # a row whose file is gone from DISK is a genuine deletion (its cached
@@ -3333,7 +3382,7 @@ def detect_incremental(
             for flist in full["files"].values()
             for f in flist
         ]
-        + list(full.get("resolution_inputs", [])),
+        + resolution_inputs,
         root=root,
     )
 
@@ -3344,4 +3393,9 @@ def detect_incremental(
     full["new_total"] = new_total
     full["deleted_files"] = deleted_files
     full["excluded_files"] = excluded_files
+    full["resolution_inputs_changed"] = bool(changed_lockfiles["resolution_inputs"]) or any(
+        is_resolution_input(f)
+        for files in (*new_files.values(), deleted_files, excluded_files)
+        for f in files
+    )
     return full
