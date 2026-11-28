@@ -227,6 +227,25 @@ def test_label_batch_uses_claude_cli_model_env(monkeypatch):
     assert argv[argv.index("--model") + 1] == "haiku"
 
 
+@pytest.mark.parametrize("extracting", [True, False])
+def test_extra_args_reach_claude_cli_as_separate_arguments(fake_claude, monkeypatch, extracting):
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_ARGS", """--strict-mcp-config --mcp-config '{"mcpServers":{}}'""")
+    if extracting:
+        llm._call_claude_cli("source")
+    else:
+        llm._call_llm("label", backend="claude-cli")
+    argv = fake_claude.call_args.args[0]
+    start = argv.index("--strict-mcp-config")
+    assert argv[start:start + 3] == ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
+
+
+def test_malformed_extra_args_report_the_setting(fake_claude, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_ARGS", "--add-dir 'unfinished")
+    with pytest.raises(ValueError, match="GRAPHIFY_CLAUDE_CLI_ARGS"):
+        llm._call_llm("label", backend="claude-cli")
+    fake_claude.assert_not_called()
+
+
 _MCP_PREAMBLE = (
     "Client.listTools() called but server does not advertise tools capability "
     "- returning empty list\n"
