@@ -3781,12 +3781,15 @@ def _build_server(graph_path: str):
     def _tool_list_prs(arguments: dict) -> str:
         from graphify.prs import fetch_prs, fetch_worktrees, format_prs_text, _detect_default_branch
         repo = arguments.get("repo") or None
-        base = arguments.get("base") or _detect_default_branch(repo)
+        # When the MCP server is started outside the graph's repo, gh must be
+        # pointed at that repo via cwd (or --repo). See #5535.
+        gh_cwd = None if repo else _graph_root()
+        base = arguments.get("base") or _detect_default_branch(repo, cwd=gh_cwd)
         try:
-            prs = fetch_prs(repo=repo, base=base)
+            prs = fetch_prs(repo=repo, base=base, cwd=gh_cwd)
         except RuntimeError as e:
             raise ToolError(f"Error: {e}") from e
-        worktrees = fetch_worktrees()
+        worktrees = fetch_worktrees(cwd=gh_cwd)
         for pr in prs:
             pr.worktree_path = worktrees.get(pr.branch)
         return format_prs_text(prs, base)
@@ -3795,15 +3798,16 @@ def _build_server(graph_path: str):
         from graphify.prs import fetch_pr_files, compute_pr_impact, _gh, _parse_ci
         number = int(arguments["pr_number"])
         repo = arguments.get("repo") or None
+        gh_cwd = None if repo else _graph_root()
         # Use gh pr view directly — works for any base branch, not just the default
         view_args = ["pr", "view", str(number), "--json",
                      "title,headRefName,baseRefName,author,isDraft,reviewDecision,statusCheckRollup,updatedAt"]
         if repo:
             view_args += ["--repo", repo]
-        pr_data = _gh(*view_args)
+        pr_data = _gh(*view_args, cwd=gh_cwd)
         if pr_data is None:
             raise ToolError(f"PR #{number} not found or gh not authenticated.")
-        files = fetch_pr_files(number, repo)
+        files = fetch_pr_files(number, repo, cwd=gh_cwd)
         if not files:
             return f"PR #{number}: no changed files found (may require gh auth)."
         comms, nodes = compute_pr_impact(files, G)
@@ -3825,12 +3829,13 @@ def _build_server(graph_path: str):
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from graphify.prs import fetch_prs, fetch_worktrees, fetch_pr_files, compute_pr_impact, _STATUS_ORDER, _detect_default_branch
         repo = arguments.get("repo") or None
-        base = arguments.get("base") or _detect_default_branch(repo)
+        gh_cwd = None if repo else _graph_root()
+        base = arguments.get("base") or _detect_default_branch(repo, cwd=gh_cwd)
         try:
-            prs = fetch_prs(repo=repo, base=base)
+            prs = fetch_prs(repo=repo, base=base, cwd=gh_cwd)
         except RuntimeError as e:
             raise ToolError(f"Error: {e}") from e
-        worktrees = fetch_worktrees()
+        worktrees = fetch_worktrees(cwd=gh_cwd)
         for pr in prs:
             pr.worktree_path = worktrees.get(pr.branch)
         actionable = [p for p in prs if p.base_branch == base and p.status not in ("WRONG-BASE", "STALE")]
@@ -3839,7 +3844,10 @@ def _build_server(graph_path: str):
         # Fetch diffs concurrently then compute graph impact using in-memory G
         workers = min(8, len(actionable))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_to_pr = {pool.submit(fetch_pr_files, pr.number, repo): pr for pr in actionable}
+            future_to_pr = {
+                pool.submit(fetch_pr_files, pr.number, repo, gh_cwd): pr
+                for pr in actionable
+            }
             for fut in as_completed(future_to_pr):
                 pr = future_to_pr[fut]
                 try:
