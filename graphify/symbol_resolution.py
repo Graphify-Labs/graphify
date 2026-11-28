@@ -619,6 +619,35 @@ def _resolve_bash_var_source_target(
     return file_nid_by_path.get(resolved)
 
 
+def _extract_site_var_state(
+    entry: dict[str, Any],
+    fallback_vars: dict[str, str],
+    fallback_blocked: set[str],
+) -> tuple[dict[str, str], set[str]]:
+    """Return ``(var_bases, blocked_vars)`` active at a single source site."""
+    if "var_bases" in entry:
+        raw_bases = entry.get("var_bases")
+        site_vars: dict[str, str] = {}
+        if isinstance(raw_bases, dict):
+            for vn, vb in raw_bases.items():
+                if isinstance(vn, str) and vn and isinstance(vb, str) and vb:
+                    site_vars[vn] = vb
+    else:
+        site_vars = dict(fallback_vars)
+
+    if "assigned_unknown_vars" in entry:
+        raw_blocked = entry.get("assigned_unknown_vars")
+        site_blocked: set[str] = set()
+        if isinstance(raw_blocked, (list, tuple, set)):
+            for vn in raw_blocked:
+                if isinstance(vn, str) and vn:
+                    site_blocked.add(vn)
+    else:
+        site_blocked = set(fallback_blocked)
+
+    return site_vars, site_blocked
+
+
 def resolve_bash_source_edges(
     per_file: Sequence[dict | None],
     paths: Sequence[Path],
@@ -730,7 +759,6 @@ def resolve_bash_source_edges(
                             fallback_counts[(file_nid, fb_nid, loc_str)] += 1
 
     sourced_files: dict[str, set[str]] = {}
-    always_sourced_files: dict[str, set[str]] = {}
     concrete_source_items: list[tuple[str, str, dict[str, Any], str]] = []
     fallback_source_items: list[tuple[str, str, dict[str, Any], str]] = []
 
@@ -769,18 +797,45 @@ def resolve_bash_source_edges(
                 fallback_counts[fb_key] -= 1
                 fallback_source_items.append((src_file_nid, target_file_nid, source, str(path)))
             else:
-                always_sourced_files.setdefault(src_file_nid, set()).add(target_file_nid)
                 concrete_source_items.append((src_file_nid, target_file_nid, source, str(path)))
 
-    # Propagate variable base directories from loaders to sourced scripts via
-    # bounded fixed-point iteration (#5563): if a file uses `$VAR/x` without
-    # setting VAR, resolve against VAR from the files that load it (directly or
-    # transitively). Fail closed when loaders disagree on VAR's value.
+    # Propagate per-source-site variable base snapshots from loaders to sourced
+    # scripts via bounded fixed-point iteration (#5563): if a file uses `$VAR/x`
+    # without setting VAR before that site, resolve against VAR active at the
+    # loader's `source` site (directly or transitively). Fail closed when active
+    # loader sites disagree on VAR's value.
+    concrete_site_states = [
+        _extract_site_var_state(
+            src_obj,
+            local_vars.get(src_nid, {}),
+            blocked_vars.get(src_nid, set()),
+        )
+        for src_nid, _tgt_nid, src_obj, _ in concrete_source_items
+    ]
+    var_source_site_states: dict[tuple[str, int], tuple[dict[str, str], set[str]]] = {
+        (src_nid, idx): _extract_site_var_state(
+            vs,
+            local_vars.get(src_nid, {}),
+            blocked_vars.get(src_nid, set()),
+        )
+        for src_nid, items in var_sources_by_file.items()
+        for idx, vs in enumerate(items)
+    }
+    has_any_var_bases = (
+        bool(local_vars)
+        or any(sv for sv, _ in concrete_site_states)
+        or any(sv for sv, _ in var_source_site_states.values())
+    )
+
     resolved_var_targets: dict[tuple[str, int], str] = {}
-    if var_sources_by_file and local_vars:
+    if var_sources_by_file and has_any_var_bases:
         all_var_names: set[str] = set()
         for vars_map in local_vars.values():
             all_var_names.update(vars_map.keys())
+        for sv, _ in concrete_site_states:
+            all_var_names.update(sv.keys())
+        for sv, _ in var_source_site_states.values():
+            all_var_names.update(sv.keys())
         for items in var_sources_by_file.values():
             for vs in items:
                 vn = vs.get("var_name")
@@ -789,39 +844,40 @@ def resolve_bash_source_edges(
 
         max_iters = max(len(file_nid_by_path), 1) + 2
         for _ in range(max_iters):
-            active_edges: dict[str, set[str]] = {
-                k: set(v) for k, v in always_sourced_files.items()
-            }
-            for (src_nid, _idx), tgt_nid in resolved_var_targets.items():
-                active_edges.setdefault(src_nid, set()).add(tgt_nid)
+            active_sites_to_target: dict[str, list[tuple[str, dict[str, str], set[str]]]] = {}
+            for (src_nid, tgt_nid, _src_obj, _), (site_vars, site_blocked) in zip(
+                concrete_source_items, concrete_site_states
+            ):
+                if src_nid != tgt_nid:
+                    active_sites_to_target.setdefault(tgt_nid, []).append(
+                        (src_nid, site_vars, site_blocked)
+                    )
+            for (src_nid, idx), tgt_nid in resolved_var_targets.items():
+                if src_nid != tgt_nid:
+                    site_vars, site_blocked = var_source_site_states[(src_nid, idx)]
+                    active_sites_to_target.setdefault(tgt_nid, []).append(
+                        (src_nid, site_vars, site_blocked)
+                    )
             for (src_nid, idx), fb_nid in fallback_for_entry.items():
-                if (src_nid, idx) not in resolved_var_targets:
-                    active_edges.setdefault(src_nid, set()).add(fb_nid)
+                if (src_nid, idx) not in resolved_var_targets and src_nid != fb_nid:
+                    site_vars, site_blocked = var_source_site_states[(src_nid, idx)]
+                    active_sites_to_target.setdefault(fb_nid, []).append(
+                        (src_nid, site_vars, site_blocked)
+                    )
 
-            loaders_of: dict[str, set[str]] = {}
-            for loader_nid, targets in active_edges.items():
-                for tgt_nid in targets:
-                    if tgt_nid != loader_nid:
-                        loaders_of.setdefault(tgt_nid, set()).add(loader_nid)
-
-            effective_vars: dict[str, dict[str, set[str]]] = {
-                fnid: {vn: {vb} for vn, vb in vars_map.items()}
-                for fnid, vars_map in local_vars.items()
-            }
+            incoming_vars: dict[str, dict[str, set[str]]] = {}
             for var_name in sorted(all_var_names):
                 changed = True
                 while changed:
                     changed = False
-                    for fnid in sorted(loaders_of):
-                        if (
-                            var_name in local_vars.get(fnid, {})
-                            or var_name in blocked_vars.get(fnid, ())
-                        ):
-                            continue
-                        cur = effective_vars.setdefault(fnid, {}).setdefault(var_name, set())
+                    for tgt_nid in sorted(active_sites_to_target):
+                        cur = incoming_vars.setdefault(tgt_nid, {}).setdefault(var_name, set())
                         before = len(cur)
-                        for loader_nid in loaders_of[fnid]:
-                            cur.update(effective_vars.get(loader_nid, {}).get(var_name, ()))
+                        for loader_nid, site_vars, site_blocked in active_sites_to_target[tgt_nid]:
+                            if var_name in site_vars:
+                                cur.add(site_vars[var_name])
+                            elif var_name not in site_blocked:
+                                cur.update(incoming_vars.get(loader_nid, {}).get(var_name, ()))
                         if len(cur) != before:
                             changed = True
 
@@ -831,12 +887,10 @@ def resolve_bash_source_edges(
                     var_name = vs.get("var_name")
                     if not isinstance(var_name, str) or not var_name:
                         continue
-                    if (
-                        var_name in local_vars.get(src_nid, {})
-                        or var_name in blocked_vars.get(src_nid, ())
-                    ):
+                    site_vars, site_blocked = var_source_site_states[(src_nid, idx)]
+                    if var_name in site_vars or var_name in site_blocked:
                         continue
-                    candidates = effective_vars.get(src_nid, {}).get(var_name, set())
+                    candidates = incoming_vars.get(src_nid, {}).get(var_name, set())
                     if not candidates:
                         continue
                     norm_map: dict[Path, str] = {}

