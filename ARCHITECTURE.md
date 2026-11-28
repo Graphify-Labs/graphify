@@ -140,6 +140,16 @@ contained type IDs. Type metadata records a label-based `type_path`, including
 C# generic arity. Exported field tables use this path and namespace, not raw
 node IDs, to survive cache relocation and corpus ID remapping.
 
+Tree-sitter TypeScript 0.23 can parse generic tagged templates as comparisons
+or put their opening backtick in an error node. Extraction and import
+resolution share a compatibility pass for tags such as `sql<number>`, with
+the opening angle adjacent to an identifier or member expression. It
+verifies the type arguments against the generic-call
+grammar or against a parsed instantiation next to the error. It then blanks
+only the type arguments, preserving byte offsets and line breaks for the
+tag and its substitutions. Comparisons and unverified syntax keep their
+original source.
+
 TypeScript object type aliases own nodes for direct method signatures and
 properties with an explicit function type. This includes inline objects wrapped
 in an unqualified `Readonly` when the alias's scope does not shadow that name.

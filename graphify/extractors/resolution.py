@@ -13,6 +13,7 @@ from graphify.extractors.base import (  # noqa: F401
     _read_text,
 )
 from graphify.extractors.python_scope import _python_param_shadow_checker
+from graphify.extractors.typescript_tags import _TS_TYPED_TAG_END_RE, mask_ts_tag_type_arguments
 from graphify.ids import normalize_id
 from graphify.rcfile import effective_suffix, get_language_overrides
 import functools
@@ -2143,7 +2144,12 @@ def _parse_js_tree(path: Path):
             import tree_sitter_javascript as tsjavascript
             language = Language(tsjavascript.language())
         parser = Parser(language)
-        return source, parser.parse(source).root_node
+        root = parser.parse(source).root_node
+        if suffix in (".ts", ".tsx", ".mts", ".cts"):
+            endings = list(_TS_TYPED_TAG_END_RE.finditer(source))
+            if endings and (normalized := mask_ts_tag_type_arguments(source, parser, root, endings)):
+                return normalized, parser.parse(normalized).root_node
+        return source, root
     except Exception:
         return None
 
