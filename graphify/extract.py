@@ -108,7 +108,7 @@ from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
 
-from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
+from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _TS_INDEXED_METHOD_KIND, _TS_TYPE_ONLY_METHOD_KINDS, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 
 from graphify.extractors.resolution import (  # noqa: E402,F401
     _DECLDEF_HEADER_SUFFIXES,
@@ -6985,6 +6985,13 @@ def _resolve_typescript_member_calls(
         all_raw_calls.extend(result.get("raw_calls", []))
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # Indexed properties require lexical type evidence. The legacy table
+    # can reuse a name bound by a different function in the same file.
+    indexed_members = {
+        (node_by_id.get(owner, {}).get("label"), member)
+        for (owner, member), nid in method_exact.items()
+        if (node_by_id[nid].get("metadata") or {}).get("kind") == _TS_INDEXED_METHOD_KIND
+    }
     for rc in all_raw_calls:
         if not rc.get("is_member_call"):
             continue
@@ -6994,6 +7001,10 @@ def _resolve_typescript_member_calls(
         if not receiver or not callee or not caller:
             continue
         property_receiver = rc.get("_ts_property_receiver")
+        indexed_receiver = rc.get("_ts_indexed_receiver")
+        if (property_receiver is None and indexed_receiver is not None
+                and (indexed_receiver[0], callee) in indexed_members):
+            property_receiver = indexed_receiver
         if property_receiver is None and not has_legacy_receiver_evidence:
             continue
         declaring_nid: str | None = None
@@ -7090,7 +7101,10 @@ def _resolve_typescript_member_calls(
         # declares a public `foo` (the node is marked); otherwise its `foo` comes
         # from elsewhere and the private method is not the target.
         method_node = node_by_id.get(method_nid, {})
-        if type_qualified and (method_node.get("metadata") or {}).get("kind") == "type_alias_method":
+        kind = (method_node.get("metadata") or {}).get("kind")
+        if type_qualified and kind in _TS_TYPE_ONLY_METHOD_KINDS:
+            continue
+        if kind == _TS_INDEXED_METHOD_KIND and (not exact or property_receiver is None):
             continue
         if (not exact and str(method_node.get("label", "")).lstrip(".").startswith("#")
                 and not str(callee).startswith("#")
@@ -13845,7 +13859,7 @@ def extract(
         # an explicit interface implementation is called only through the interface.
         # TypeScript alias signatures require a typed receiver.
         if (is_csharp_constructor_node(n) or is_csharp_explicit_interface_node(n)
-                or (n.get("metadata") or {}).get("kind") == "type_alias_method"):
+                or (n.get("metadata") or {}).get("kind") in _TS_TYPE_ONLY_METHOD_KINDS):
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 from pathlib import Path
-from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
+from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _TS_TYPE_ONLY_METHOD_KINDS, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -1404,7 +1404,7 @@ def _apply_symbol_resolution_facts(
         for node in resolution_context_nodes:
             nid = node.get("id")
             if (not nid or nid in _fresh_node_ids
-                    or (node.get("metadata") or {}).get("kind") == "type_alias_method"):
+                    or (node.get("metadata") or {}).get("kind") in _TS_TYPE_ONLY_METHOD_KINDS):
                 continue
             source_path = _js_source_path(str(node.get("source_file", "")), root)
             if source_path is None or source_path in _fresh_paths:
@@ -1423,7 +1423,7 @@ def _apply_symbol_resolution_facts(
             symbol_nodes[key] = str(nid)
 
     for node in nodes:
-        if (node.get("metadata") or {}).get("kind") == "type_alias_method":
+        if (node.get("metadata") or {}).get("kind") in _TS_TYPE_ONLY_METHOD_KINDS:
             continue
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
