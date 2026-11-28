@@ -429,3 +429,72 @@ def test_affected_absolute_seed_with_graph_not_under_out_dir(tmp_path, monkeypat
     assert "Affected nodes for Foo" in out
     assert "X()" in out
 
+
+
+def test_affected_lists_every_call_line_of_an_edge_ascending(monkeypatch, tmp_path, capsys):
+    """An edge folded from several call sites shows all its lines, sorted numerically."""
+    g = nx.DiGraph()
+    g.add_node("caller", label="caller.liquid", source_file="snippets/caller.liquid", source_location="L1")
+    g.add_node("callee", label="callee.liquid", source_file="snippets/callee.liquid", source_location="L1")
+    g.add_edge("caller", "callee", relation="renders", confidence="EXTRACTED",
+               source_file="snippets/caller.liquid", source_location="L100",
+               also_seen=[{"confidence": "EXTRACTED", "source_file": "snippets/caller.liquid", "source_location": "L58"},
+                          {"confidence": "EXTRACTED", "source_file": "snippets/other.liquid", "source_location": "L7"}])
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", "callee.liquid", "--relation", "renders", "--graph", str(gp)])
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "snippets/caller.liquid:L58,L100" in out
+    assert "L7" not in out
+
+
+def _class_theme_graph(tmp_path, with_css: bool):
+    from graphify.build import build_from_json
+    from graphify.extract import extract
+
+    root = tmp_path / ("with" if with_css else "without")
+    files = {
+        "layout/theme.liquid": "{{ content_for_layout }}\n",
+        "sections/main.liquid": "{% render 'card' %}\n<div class=\"btn\"></div>\n",
+        "snippets/card.liquid": "<a class=\"btn\"></a>\n{% stylesheet %}\n.card-x { color: red }\n{% endstylesheet %}\n",
+        "snippets/other.liquid": "<i class=\"btn card-x\"></i>\n",
+    }
+    if with_css:
+        files["assets/base.css"] = ".btn { color: red }\n"
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    paths = sorted(p for p in root.rglob("*") if p.suffix in {".liquid", ".css"})
+    return build_from_json(extract(paths, cache_root=root, root=root, parallel=False), directed=True)
+
+
+def _affected_sources(graph, label: str) -> set[str]:
+    from graphify.affected import affected_nodes
+
+    seed = next(n for n, d in graph.nodes(data=True) if d.get("label") == label)
+    return {str(graph.nodes[h.node_id].get("source_file")) for h in affected_nodes(graph, seed)}
+
+
+def test_affected_of_a_liquid_file_does_not_grow_with_css_class_edges(tmp_path):
+    without = _affected_sources(_class_theme_graph(tmp_path, False), "card.liquid")
+    with_css = _affected_sources(_class_theme_graph(tmp_path, True), "card.liquid")
+    assert len(with_css) == len(without) and any(s.endswith("sections/main.liquid") for s in with_css)
+
+
+def test_affected_of_a_css_file_lists_the_liquid_that_uses_its_classes(tmp_path):
+    sources = _affected_sources(_class_theme_graph(tmp_path, True), "base.css")
+    assert any(s.endswith("sections/main.liquid") for s in sources)
+    assert any(s.endswith("snippets/card.liquid") for s in sources)
+
+
+def test_affected_single_line_edge_keeps_plain_format(monkeypatch, tmp_path, capsys):
+    gp = _write_callsite_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", "transition_state", "--graph", str(gp)])
+    mainmod.main()
+    assert "apollo_pipeline_status.py:L158\n" in capsys.readouterr().out + "\n"

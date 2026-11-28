@@ -300,6 +300,19 @@ def edge_evidence(d: dict) -> list[dict]:
     return [d, *(a for a in also if isinstance(a, dict))] if isinstance(also, list) else [d]
 
 
+def edge_lines(d: dict) -> list[int]:
+    """Every line of an edge's own file where it was seen, ascending: ``source_location`` plus ``also_seen``."""
+    own = d.get("source_file")
+    lines: set[int] = set()
+    for ev in edge_evidence(d):
+        if ev is not d and ev.get("source_file") not in (None, "", own):
+            continue
+        m = re.fullmatch(r"L(\d+)", str(ev.get("source_location") or ""))
+        if m:
+            lines.add(int(m.group(1)))
+    return sorted(lines)
+
+
 def _fold_also_seen(winner: dict, loser: dict) -> None:
     """Record ``loser``'s provenance on ``winner`` when the two collapse (#4881).
 
@@ -581,6 +594,7 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".php7": "php", ".phps": "php",
     ".luau": "lua",
     ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".liquid": "liquid",
     ".r": "r", ".sol": "solidity",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
     ".zig": "zig", ".ex": "elixir", ".exs": "elixir", ".jl": "julia",
@@ -2351,7 +2365,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # imports/references: drop only when BOTH endpoints are known code
                 # languages of different families, so a config->code reference
                 # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
-                if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam:
+                # A .liquid file legitimately references assets of other languages
+                # (assets/x.js); the Liquid extractor only emits file-verified edges.
+                if (
+                    src_fam is not None and tgt_fam is not None and src_fam != tgt_fam
+                    and src_fam != "liquid"
+                ):
                     continue
         # A file-level import or re-export cannot carry useful connectivity when
         # both endpoints resolve to the same node.  This most often happens when

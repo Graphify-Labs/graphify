@@ -1255,7 +1255,7 @@ def _disambiguate_colliding_node_ids(
         # every language and to re_exports. `pop` it as we consume it: this is the
         # hint's only reader, and its absolute path must not persist into graph.json.
         target_file = edge.pop("target_file", None)
-        if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports"):
+        if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports", "references"):
             target_edge_key = _source_key(str(target_file), root)
         else:
             target_edge_key = edge_source_key

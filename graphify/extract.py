@@ -61,6 +61,12 @@ from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.cobol import extract_cobol, resolve_cobol_copybook_performs  # noqa: F401
+from graphify.extractors.liquid import extract_liquid  # noqa: F401
+from graphify.extractors.css import extract_css  # noqa: F401
+from graphify.extractors.shopify_theme_json import (  # noqa: F401
+    extract_shopify_theme_json,
+    is_shopify_theme_json_path,
+)
 from graphify.extractors.csharp import (
     CsharpNameResolver,
     _is_cs_file,
@@ -4888,6 +4894,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".go": "go",
     ".rs": "rust",
     ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".liquid": "liquid",
     ".r": "r",
     ".sol": "solidity",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
@@ -11771,6 +11778,8 @@ _DISPATCH: dict[str, Any] = {
     ".cob": extract_cobol,
     ".cobol": extract_cobol,
     ".cpy": extract_cobol,
+    ".liquid": extract_liquid,
+    ".css": extract_css,
     ".vb": extract_vbnet,
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,
@@ -12019,6 +12028,11 @@ def _get_extractor(path: Path, *, sniff_headers: bool = True) -> Any | None:
     # (servers, commands, packages, env vars) instead of opaque JSON keys.
     if is_mcp_config_path(path):
         return extract_mcp_config
+    # Shopify theme templates, section groups and settings_schema.json (inside a
+    # theme root) place sections; routed before generic .json so a `$schema` key
+    # does not send them to the config walker.
+    if is_shopify_theme_json_path(path):
+        return extract_shopify_theme_json
     # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) → a canonical
     # package node + depends_on edges, by filename before generic suffix dispatch
     # (#1377). apm.yml would otherwise be a .yml document handled by the LLM.

@@ -45,6 +45,7 @@ _LANG_FAMILY: dict[str, str] = {
     **{e: "php" for e in (".php",)},
     **{e: "r" for e in (".r",)},
     **{e: "cobol" for e in (".cbl", ".cob", ".cobol", ".cpy")},
+    **{e: "liquid" for e in (".liquid",)},
     **{e: "solidity" for e in (".sol",)},
     **{e: "erlang" for e in (".erl", ".hrl", ".escript")},
 }

@@ -2794,6 +2794,8 @@ def dispatch_command(cmd: str) -> None:
             f"  Source:    {d.get('source_file', '')} {d.get('source_location', '')}".rstrip()
         )
         print(f"  Type:      {d.get('file_type', '')}")
+        if d.get("warning"):
+            print(f"  warning: {d['warning']}")
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
@@ -2847,7 +2849,9 @@ def dispatch_command(cmd: str) -> None:
                 # Append the edge's location — the actual call/import/reference
                 # SITE (in the caller's file for an incoming call), not a def
                 # line (#BUG1). Labeled by [rel] so the meaning is unambiguous.
-                loc = edata.get("source_location") or ""
+                from graphify.build import edge_lines
+                lines = edge_lines(edata)
+                loc = ",".join(f"L{n}" for n in lines) if len(lines) > 1 else (edata.get("source_location") or "")
                 sfile = edata.get("source_file") or ""
                 at = f" {sfile}:{loc}" if loc else ""
                 print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
