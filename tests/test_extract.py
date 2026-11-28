@@ -4541,6 +4541,29 @@ def test_extract_bash_nested_function_calls_recorded(tmp_path):
     )
 
 
+def test_extract_bash_call_after_keyword_following_assignments_recorded(tmp_path):
+    """#5572: a line of assignments only, then `elif ok "$1"; then`, can parse as
+    one command named `elif`; the call to `ok` must still be recorded."""
+    script = tmp_path / "tool.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        'ok() { [ -n "$1" ]; }\n'
+        "main() {\n"
+        '  if [ -z "${1:-}" ]; then\n'
+        '    v=a w="$(echo b)"\n'
+        '  elif ok "$1"; then\n'
+        '    echo "$v$w"\n'
+        "  fi\n"
+        "}\n"
+    )
+    result = extract_bash(script)
+    node_id_by_label = {n["label"].rstrip("()"): n["id"] for n in result["nodes"]}
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "calls"}
+    assert (node_id_by_label["main"], node_id_by_label["ok"]) in calls, calls
+    callees = {c["callee"] for c in result["raw_calls"]}
+    assert not callees & {"if", "then", "elif", "else", "do", "while", "until"}, callees
+
+
 def test_extract_bash_source_user_defined_emits_calls_not_imports_from(tmp_path):
     """When 'source' is a user-defined function, 'source ./file.sh' must emit a
     calls edge, not an imports_from edge.  The user-defined function shadows the
