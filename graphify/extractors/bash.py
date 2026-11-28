@@ -129,6 +129,10 @@ _BASH_LEADING_VAR = re.compile(
 # trailing `/..` hops applied to the dirname result.
 _BASH_DIRNAME_IDIOM = re.compile(r"dirname[^)]*\)((?:/\.\.)*)")
 
+# The literal path after the idiom's closing `&& pwd)`, as in
+# `"$(cd "$(dirname "$0")/.." && pwd)/lib/x"` -> `/lib/x` (#5560).
+_BASH_PWD_SUFFIX = re.compile(r"&&\s*pwd\s*\)((?:/[A-Za-z0-9._-]+)+)/?$")
+
 
 def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
     """Resolve a top-level assignment's value to a directory, or None if untracked.
@@ -152,6 +156,11 @@ def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
         base = script_dir
         for _ in range((m.group(1).count("..") if m else 0)):
             base = base.parent
+        # A literal suffix after `pwd)` names a folder below that base (#5560).
+        # A suffix with `..` is left out: the base stays the idiom's folder.
+        tail = _BASH_PWD_SUFFIX.search(val)
+        if tail and ".." not in tail.group(1).split("/"):
+            base = base / tail.group(1).lstrip("/")
         return base
     if "$" in val or "`" in val:
         return None
