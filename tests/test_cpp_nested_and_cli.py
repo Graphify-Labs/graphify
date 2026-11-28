@@ -668,3 +668,148 @@ def test_cpp_export_decl_macro_keeps_offsets_and_defines():
     assert lines[1] == b"          int f();"
     assert lines[2] == b"DWORD WINAPI run(void*);"
     assert lines[3] == b"EXPORT int g();"
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "// Implementation of the Widget class\n",
+        "// Implementation of the Widget struct\n",
+        "// Implementation of the Widget class\r\n",
+        "// see class\n// Implementation of the Widget class\n",
+    ],
+    ids=["line-class", "line-struct", "line-class-crlf", "two-comment-lines"],
+)
+def test_cpp_export_macro_in_comment_keeps_return_type_reference(tmp_path, comment):
+    source = tmp_path / "commented.cpp"
+    control = tmp_path / "control.cpp"
+    definition = "DWORD Widget::run() { return 0; }\n"
+    source.write_text(comment + definition, encoding="utf-8")
+    control.write_text(definition, encoding="utf-8")
+
+    commented_result = extract_cpp(source)
+    control_result = extract_cpp(control)
+
+    def graph_facts(result):
+        labels = {node["id"]: node["label"] for node in result["nodes"]}
+        edges = {
+            (labels.get(edge["source"]), edge["relation"], labels.get(edge["target"]))
+            for edge in result["edges"]
+        }
+        return set(labels.values()), edges
+
+    commented_labels, commented_edges = graph_facts(commented_result)
+    control_labels, control_edges = graph_facts(control_result)
+    assert ("Widget::run()", "references", "DWORD") in commented_edges
+    assert ("Widget::run()", "references", "DWORD") in control_edges
+    assert commented_labels - {source.name} == control_labels - {control.name}
+
+
+def test_cpp_export_macro_after_directive_comment_keeps_return_type_reference(tmp_path):
+    source = tmp_path / "directive.cpp"
+    source.write_text(
+        '#include "w.h" // the Widget class\n'
+        "DWORD Widget::run() { return 0; }\n",
+        encoding="utf-8",
+    )
+
+    result = extract_cpp(source)
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    edges = {
+        (labels.get(edge["source"]), edge["relation"], labels.get(edge["target"]))
+        for edge in result["edges"]
+    }
+    assert ("Widget::run()", "references", "DWORD") in edges
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b'const char *s = "see MYLIB_API docs";',
+        b"char c = 'A'; // MYLIB_EXPORT uint64_t f(int);",
+        b"/* MYLIB_API int f(); */",
+        b'R"x(\nMYLIB_API int f();\n)x"',
+        b'u8R"x(\nMYLIB_API int f();\n)x"',
+        b'const char *k = "class FOO Bar : Base";',
+        b"// class MODULE_API Widget : public Base {",
+        b"/* class MODULE_API Widget { */",
+        b'R"x(int a;\nclass MODULE_API Widget : Base {\n)x"',
+        b"'MYLIB_API int f();'",
+        b"'class MODULE_API Widget :'",
+    ],
+)
+def test_cpp_export_macros_inside_comments_and_literals_are_unchanged(source):
+    from graphify.extract import _normalize_cpp_export_macros
+
+    assert _normalize_cpp_export_macros(source) == source
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b"#define X 1 // class MODULE_API W : B\n",
+        b"#include <x> /* note\nMYLIB_API int f(); */\nint g();\n",
+        b'"a\\\nMYLIB_API int f();"',
+    ],
+    ids=["directive-line-comment", "multiline-directive-comment", "spliced-string"],
+)
+def test_cpp_export_macros_in_directive_tokens_are_unchanged(source):
+    from graphify.extract import _normalize_cpp_export_macros
+
+    assert _normalize_cpp_export_macros(source) == source
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        (
+            b"/* c */ MYLIB_API int f();",
+            b"/* c */           int f();",
+        ),
+        (
+            b'"s"; class MODULE_API W {};',
+            b'"s"; class            W {};',
+        ),
+        (
+            b'R"x(\nMYLIB_API int hidden();\n)x"\nMYLIB_API int f();',
+            b'R"x(\nMYLIB_API int hidden();\n)x"\n          int f();',
+        ),
+        (
+            b"#endif /* a\n don't */\nMYLIB_API int f();",
+            b"#endif /* a\n don't */\n          int f();",
+        ),
+        (
+            b"#if 0\nthis isn't built\n#endif\nMYLIB_API int f();\nchar c = 'x';\n",
+            b"#if 0\nthis isn't built\n#endif\n          int f();\nchar c = 'x';\n",
+        ),
+    ],
+)
+def test_cpp_export_macro_code_after_excluded_token_is_still_blanked(source, expected):
+    from graphify.extract import _normalize_cpp_export_macros
+
+    output = _normalize_cpp_export_macros(source)
+    assert output == expected
+    assert len(output) == len(source)
+
+
+def test_cpp_export_macro_guard_and_blanking_preserve_crlf_positions():
+    from graphify.extract import _normalize_cpp_export_macros
+
+    source = (
+        b"// MYLIB_API int hidden();\r\n"
+        b"MYLIB_API int f();\r\n"
+        b'"class MODULE_API Hidden {";\r\n'
+        b"class MODULE_API Visible {};\r\n"
+    )
+    expected = (
+        b"// MYLIB_API int hidden();\r\n"
+        b"          int f();\r\n"
+        b'"class MODULE_API Hidden {";\r\n'
+        b"class            Visible {};\r\n"
+    )
+    output = _normalize_cpp_export_macros(source)
+    assert output == expected
+    assert len(output) == len(source)
+    assert [i for i, byte in enumerate(output) if byte in b"\r\n"] == [
+        i for i, byte in enumerate(source) if byte in b"\r\n"
+    ]
