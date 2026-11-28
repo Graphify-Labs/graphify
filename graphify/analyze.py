@@ -830,6 +830,55 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     }
 
 
+def file_level_graph(G: nx.DiGraph) -> nx.MultiDiGraph:
+    """Project source-backed nodes onto files and count cross-file edges."""
+    from graphify.build import _evidence, _evidence_sort_key, edge_evidence
+
+    projected = nx.MultiDiGraph(granularity="file")
+    node_files = {}
+    for nid, attrs in G.nodes(data=True):
+        source_file = attrs.get("source_file")
+        if not source_file or attrs.get("external"):
+            continue
+        node_files[nid] = source_file
+        if source_file not in projected:
+            projected.add_node(
+                source_file, label=source_file, source_file=source_file,
+                file_type=attrs.get("file_type", "code"),
+            )
+
+    # Keep relations and import timing distinct so dependency queries can still
+    # distinguish runtime imports from deferred and type-only imports.
+    groups = {}
+    for source, target, attrs in G.edges(data=True):
+        src_file = node_files.get(source)
+        tgt_file = node_files.get(target)
+        if not src_file or not tgt_file or src_file == tgt_file:
+            continue
+        group = (src_file, tgt_file, attrs["relation"],
+                 bool(attrs.get("deferred")), bool(attrs.get("type_only")))
+        groups.setdefault(group, []).append(attrs)
+
+    for (source, target, relation, deferred, type_only), edges in groups.items():
+        records = {}
+        for edge in edges:
+            for entry in edge_evidence(edge):
+                if record := _evidence(entry):
+                    records[tuple(record.items())] = record
+        evidence = sorted(records.values(), key=_evidence_sort_key)
+        # Use the least certain contributing record as the primary evidence.
+        primary = evidence[0] if evidence else {"source_file": source}
+        attrs = {"relation": relation, "weight": len(edges), **primary}
+        if len(evidence) > 1:
+            attrs["also_seen"] = evidence[1:]
+        if deferred:
+            attrs["deferred"] = True
+        if type_only:
+            attrs["type_only"] = True
+        projected.add_edge(source, target, **attrs)
+    return projected
+
+
 def find_import_cycles(
     G: nx.Graph,
     max_cycle_length: int = 5,
