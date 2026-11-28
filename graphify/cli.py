@@ -3602,6 +3602,24 @@ def dispatch_command(cmd: str) -> None:
             strict="--strict" in sys.argv[3:],
         )
         sys.exit(0)
+    elif cmd == "token-guard":
+        # Claude Code hooks that keep the context window small (re-read guard,
+        # context budget notice, large Bash output cap) plus their
+        # install/uninstall/status. Hook subcommands fail open inside main().
+        from graphify.tokenguard import main as _token_guard_main
+
+        sys.exit(_token_guard_main(sys.argv[2:]))
+    elif cmd == "usage":
+        # Where the tokens went: per-model/day/project totals, context-size
+        # buckets, heaviest sessions and re-reads from Claude Code transcripts.
+        from graphify.usage import main as _usage_main
+
+        sys.exit(_usage_main(sys.argv[2:]))
+    elif cmd == "handoff":
+        # Deterministic handoff note so a fresh session can replace a bloated one.
+        from graphify.handoff import main as _handoff_main
+
+        sys.exit(_handoff_main(sys.argv[2:]))
     elif cmd == "check-update":
         if len(sys.argv) < 3:
             print("Usage: graphify check-update <path>", file=sys.stderr)

@@ -840,7 +840,7 @@ def _run_cli() -> None:
     # Skip during install/uninstall (hook writes trigger a fresh check anyway).
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
-    _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
+    _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard", "token-guard"}
     _FREE_TEXT_CMDS = {"query", "explain", "section", "path", "save-result", "install", "uninstall"}
     _help_flags = {"-h", "--help", "-?"}
     # Version and help only report, so they leave installed files alone (#4545).
@@ -1014,6 +1014,17 @@ def _run_cli() -> None:
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
+        print("  usage                   where Claude Code tokens went: models, days, projects, context size, re-reads")
+        print("    --days N                only the last N days")
+        print("    --project SUBSTR        only projects whose name contains SUBSTR")
+        print("    --json                  machine-readable output")
+        print("    --html [PATH]           write a self-contained HTML report (default graphify-out/usage.html)")
+        print("  handoff                 write graphify-out/HANDOFF.md so a fresh session can replace a bloated one")
+        print("  token-guard install     add context-saving Claude Code hooks (re-read guard, context budget, Bash output cap, daily savings notice)")
+        print("    --project               write to ./.claude/settings.json instead of the user settings")
+        print("  token-guard uninstall   remove those hooks")
+        print("  token-guard status      show whether those hooks are installed")
+        print("  token-guard savings     what the hooks kept out of context per day [--days N] [--json]")
         print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N, default 5000] [--no-viz]")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
         print("                          [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]")
