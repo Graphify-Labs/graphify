@@ -1103,3 +1103,52 @@ def test_resolve_python_import_guided_calls_metadata_sanitizes_hostile_alias(
     assert metadata["resolver"] == "python_import_guided"
     assert metadata["imported_name"] == "transform"
     assert metadata["module_stem"] == "helper"
+
+
+def test_bash_caller_var_handles_cycles_and_malformed_fields(tmp_path: Path) -> None:
+    """Cyclic sources and malformed bash_var_bases/bash_var_sources resolve
+    cleanly without infinite loops or KeyError/TypeError."""
+    a_sh = tmp_path / "a.sh"
+    b_sh = tmp_path / "lib" / "b.sh"
+    c_sh = tmp_path / "lib" / "c.sh"
+    b_sh.parent.mkdir(parents=True)
+    a_sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    b_sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    c_sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    per_file = [
+        {
+            "nodes": [{"id": "a", "label": "a.sh", "file_type": "code", "source_file": str(a_sh)}],
+            "edges": [],
+            "raw_calls": [],
+            "bash_sources": [{"target_path": str(b_sh), "source_file": str(a_sh), "source_location": "L1"}],
+            "bash_var_bases": {"ROOT": str(tmp_path), "": str(tmp_path), 99: "bad"},  # type: ignore[dict-item]
+            "bash_var_sources": [None, "bad", {"var_name": "", "suffix": "x"}],
+            "bash_assigned_unknown_vars": [None, 123],
+        },
+        {
+            "nodes": [{"id": "lib_b", "label": "b.sh", "file_type": "code", "source_file": str(b_sh)}],
+            "edges": [],
+            "raw_calls": [{"language": "bash", "caller_nid": "lib_b__entry", "callee": "c_fn", "source_file": str(b_sh), "source_location": "L3"}],
+            "bash_sources": [{"target_path": str(a_sh), "source_file": str(b_sh), "source_location": "L1"}],
+            "bash_var_bases": "malformed",  # type: ignore[dict-item]
+            "bash_var_sources": [
+                {"var_name": "ROOT", "suffix": "lib/c.sh", "dirname": False, "source_file": str(b_sh), "source_location": "L2"}
+            ],
+            "bash_assigned_unknown_vars": "malformed",  # type: ignore[dict-item]
+        },
+        {
+            "nodes": [
+                {"id": "lib_c", "label": "c.sh", "file_type": "code", "source_file": str(c_sh)},
+                {"id": "lib_c_c_fn", "label": "c_fn()", "file_type": "code", "source_file": str(c_sh), "metadata": {"kind": "bash_function"}},
+            ],
+            "edges": [],
+            "raw_calls": [],
+            "bash_sources": [],
+        },
+    ]
+
+    edges = resolve_bash_source_edges(per_file, [a_sh, b_sh, c_sh], tmp_path)
+    pairs = {(e["source"], e["target"], e["relation"], e.get("confidence")) for e in edges}
+    assert ("lib_b", "lib_c", "imports_from", "INFERRED") in pairs
+    assert ("lib_b__entry", "lib_c_c_fn", "calls", "EXTRACTED") in pairs

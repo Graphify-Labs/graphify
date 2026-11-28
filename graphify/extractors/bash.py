@@ -130,19 +130,25 @@ _BASH_LEADING_VAR = re.compile(
 _BASH_DIRNAME_IDIOM = re.compile(r"dirname[^)]*\)((?:/\.\.)*)")
 
 
-def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
+def _bash_assignment_base(
+    value: str,
+    script_dir: Path,
+    var_bases: dict[str, Path] | None = None,
+) -> Path | None:
     """Resolve a top-level assignment's value to a directory, or None if untracked.
 
-    Covers the two forms that make a ``source "${VAR}/lib/x.sh"`` target knowable
+    Covers the forms that make a ``source "${VAR}/lib/x.sh"`` target knowable
     statically (#2172):
 
     * the script-dir idiom ``"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"``,
       including any number of trailing ``/..`` hops (and the ``$0`` spelling)
+    * a leading tracked variable plus literal subpath (``"$ROOT/lib"``) when
+      *var_bases* already holds ``ROOT`` and no command substitution is present
     * a literal path, absolute or relative to the script's own directory
 
-    Anything else -- a value built from other variables, or command substitution
-    we do not model -- is left untracked so the caller keeps its previous
-    script-dir guess rather than binding somewhere invented.
+    Anything else -- a value built from untracked variables, or command
+    substitution we do not model -- is left untracked so the caller keeps its
+    previous script-dir guess rather than binding somewhere invented.
     """
     val = value.strip().strip("'\"")
     if not val:
@@ -153,7 +159,19 @@ def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
         for _ in range((m.group(1).count("..") if m else 0)):
             base = base.parent
         return base
-    if "$" in val or "`" in val:
+    if "`" in val or "$(" in val:
+        return None
+    if "$" in val:
+        if var_bases:
+            m = _BASH_LEADING_VAR.match(val)
+            if m:
+                vn = m.group(1) or m.group(2)
+                if vn in var_bases:
+                    sub = val[m.end():].lstrip("/")
+                    if "$" not in sub:
+                        if not sub:
+                            return var_bases[vn]
+                        return Path(os.path.normpath(var_bases[vn] / sub))
         return None
     candidate = Path(val)
     return candidate if candidate.is_absolute() else script_dir / candidate
@@ -192,6 +210,7 @@ def extract_bash(path: Path) -> dict:
     # can't resolve these itself (#2141).
     raw_calls: list[dict] = []
     bash_sources: list[dict] = []
+    bash_var_sources: list[dict] = []
     raw_seen: set[tuple[str, str]] = set()
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, Any]] = []
@@ -446,10 +465,12 @@ def extract_bash(path: Path) -> dict:
                                 # _bash_source_suffix(allow_dotdot=False); without
                                 # it, `$(dirname "$VAR")/../../../etc/passwd`
                                 # resolves and gets probed/recorded (#2596).
+                                resolved_dirname: Path | None = None
                                 if (suffix and "$" not in suffix
                                         and ".." not in suffix.split("/")):
                                     resolved = _resolve_safe(base / suffix, scan_root)
                                     if resolved is not None and resolved.is_file():
+                                        resolved_dirname = resolved
                                         add_edge(file_nid, _make_id(str(resolved)),
                                                  "imports_from", line,
                                                  confidence="INFERRED", context="import",
@@ -459,6 +480,18 @@ def extract_bash(path: Path) -> dict:
                                             "source_file": str_path,
                                             "source_location": f"L{line}",
                                         })
+                                    if (var_name not in var_bases
+                                            and var_name not in assigned_unknown_vars):
+                                        var_entry: dict[str, Any] = {
+                                            "var_name": var_name,
+                                            "suffix": suffix,
+                                            "dirname": True,
+                                            "source_file": str_path,
+                                            "source_location": f"L{line}",
+                                        }
+                                        if resolved_dirname is not None:
+                                            var_entry["fallback_target_path"] = str(resolved_dirname)
+                                        bash_var_sources.append(var_entry)
                             else:
                                 # Check if the leading variable is tracked
                                 # before deciding whether to allow `..` in
@@ -466,20 +499,20 @@ def extract_bash(path: Path) -> dict:
                                 # is a known var_bases entry, `..` is safe.
                                 var_match = _BASH_LEADING_VAR.match(raw)
                                 allow_dotdot = False
+                                var_name = ""
                                 if var_match:
-                                    _vn = var_match.group(1) or var_match.group(2)
-                                    if _vn in var_bases:
+                                    var_name = var_match.group(1) or var_match.group(2)
+                                    if var_name in var_bases:
                                         allow_dotdot = True
                                 suffix = _bash_source_suffix(raw, allow_dotdot=allow_dotdot)
+                                fallback_resolved: Path | None = None
                                 if suffix:
                                     # Resolve against the variable's tracked base
                                     # when we know it, else fall back to the
                                     # script's own directory as before (#2172).
                                     base = path.parent
-                                    if var_match:
-                                        var_name = var_match.group(1) or var_match.group(2)
-                                        if var_name in var_bases:
-                                            base = var_bases[var_name]
+                                    if var_match and var_name in var_bases:
+                                        base = var_bases[var_name]
                                     if var_match and var_name in var_bases:
                                         resolved = Path(os.path.normpath(base / suffix))
                                         # A tracked base may reach a sibling via
@@ -494,6 +527,8 @@ def extract_bash(path: Path) -> dict:
                                         # under base; the gate is belt-and-braces.
                                         ceiling = base
                                     if _within_tree(ceiling, resolved) and resolved.is_file():
+                                        if not (var_match and var_name in var_bases):
+                                            fallback_resolved = resolved
                                         add_edge(file_nid, _make_id(str(resolved)),
                                                  "imports_from", line,
                                                  confidence="INFERRED", context="import",
@@ -509,6 +544,22 @@ def extract_bash(path: Path) -> dict:
                                             "source_file": str_path,
                                             "source_location": f"L{line}",
                                         })
+                                if (var_match and var_name not in var_bases
+                                        and var_name not in assigned_unknown_vars):
+                                    # Defer variable-built source to cross-file
+                                    # bash resolution so a loader's VAR wins (#5563).
+                                    var_suffix = _bash_source_suffix(raw, allow_dotdot=True)
+                                    if var_suffix:
+                                        var_entry = {
+                                            "var_name": var_name,
+                                            "suffix": var_suffix,
+                                            "dirname": False,
+                                            "source_file": str_path,
+                                            "source_location": f"L{line}",
+                                        }
+                                        if fallback_resolved is not None:
+                                            var_entry["fallback_target_path"] = str(fallback_resolved)
+                                        bash_var_sources.append(var_entry)
                         else:
                             # Bare `source lib.sh` (no leading ./ or /). Bash
                             # itself resolves such a name via $PATH at runtime,
@@ -670,19 +721,35 @@ def extract_bash(path: Path) -> dict:
     # decoy under the script dir bound to the decoy. Track top-level assignments so
     # the real base is used; untracked variables keep the script-dir guess.
     var_bases: dict[str, Path] = {}
-    for _assign in root.children:
-        if _assign.type != "variable_assignment":
-            continue
-        _name_node = _assign.child_by_field_name("name")
-        _value_node = _assign.child_by_field_name("value")
+    assigned_unknown_vars: set[str] = set()
+
+    def _record_top_level_assignment(assign_node) -> None:
+        _name_node = assign_node.child_by_field_name("name")
+        _value_node = assign_node.child_by_field_name("value")
         if _name_node is None or _value_node is None:
-            continue
+            return
         _name = _read_text(_name_node, source).strip()
         if not _name:
-            continue
-        _base = _bash_assignment_base(_read_text(_value_node, source), path.parent)
+            return
+        _rhs = _read_text(_value_node, source)
+        _base = _bash_assignment_base(_rhs, path.parent, var_bases=var_bases)
         if _base is not None:
             var_bases[_name] = _base
+            assigned_unknown_vars.discard(_name)
+        elif not re.search(rf"\$\{{?{re.escape(_name)}(?:[^A-Za-z0-9_]|$)", _rhs):
+            # Variable was explicitly overwritten with an unmodeled dynamic
+            # value that does not fall back to itself — do not inherit a
+            # loader's stale value.
+            var_bases.pop(_name, None)
+            assigned_unknown_vars.add(_name)
+
+    for _stmt in root.children:
+        if _stmt.type == "variable_assignment":
+            _record_top_level_assignment(_stmt)
+        elif _stmt.type == "declaration_command":
+            for _child in _stmt.children:
+                if _child.type == "variable_assignment":
+                    _record_top_level_assignment(_child)
 
     walk(root, file_nid)
 
@@ -692,5 +759,29 @@ def extract_bash(path: Path) -> dict:
     for fn_nid, body in function_bodies:
         walk_calls(body, fn_nid, set())
 
-    return {"nodes": nodes, "edges": edges,
-            "raw_calls": raw_calls, "bash_sources": bash_sources}
+    # Serialize tracked variable bases as absolute strings so cached AST entries
+    # stay portable across roots via _relativize_ids_cow. Only keep bases inside
+    # the active scan root (when known) so parent directory names never leak
+    # into portable cache entries or enable out-of-tree probing (#2257, #5563).
+    serialized_var_bases: dict[str, str] = {}
+    if scan_root is None:
+        for _vn, _vb in var_bases.items():
+            _abs_vb = Path(os.path.abspath(str(_vb)))
+            if _safe_to_probe(_abs_vb, None):
+                serialized_var_bases[_vn] = str(_abs_vb)
+    else:
+        _scan_roots = (scan_root, scan_root.resolve())
+        for _vn, _vb in var_bases.items():
+            _abs_vb = Path(os.path.abspath(str(_vb)))
+            if any(_safe_to_probe(_abs_vb, _sr) for _sr in _scan_roots):
+                serialized_var_bases[_vn] = str(_abs_vb)
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "raw_calls": raw_calls,
+        "bash_sources": bash_sources,
+        "bash_var_bases": serialized_var_bases,
+        "bash_var_sources": bash_var_sources,
+        "bash_assigned_unknown_vars": sorted(assigned_unknown_vars),
+    }

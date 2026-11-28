@@ -4999,6 +4999,307 @@ def test_extract_bash_source_dotdot_tracked_var_cannot_escape_to_root(tmp_path):
     assert not leaked, f"traversal target leaked as an edge: {leaked}"
 
 
+def test_extract_bash_sourced_file_resolves_caller_var_5563(tmp_path):
+    """Regression test for #5563: `. "$ROOT/lib/beta.sh"` inside a sourced
+    library must inherit ROOT from the script that loads it."""
+    root = Path(os.path.realpath(tmp_path))
+    bin_dir = root / "bin"
+    lib_dir = root / "lib"
+    bin_dir.mkdir()
+    lib_dir.mkdir()
+
+    tool = bin_dir / "tool"
+    alpha = lib_dir / "alpha.sh"
+    beta = lib_dir / "beta.sh"
+
+    tool.write_text(
+        '#!/usr/bin/env bash\n'
+        'ROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        '. "$ROOT/lib/alpha.sh"\n'
+        'alpha\n',
+        encoding="utf-8",
+    )
+    alpha.write_text(
+        '. "$ROOT/lib/beta.sh"\n'
+        'alpha() { beta; }\n',
+        encoding="utf-8",
+    )
+    beta.write_text(
+        'beta() { echo beta; }\n',
+        encoding="utf-8",
+    )
+
+    result = extract([tool, alpha, beta], cache_root=root, root=root)
+
+    imports = {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e["relation"] == "imports_from"
+    }
+    calls = {
+        (e["source"], e["target"], e.get("confidence"))
+        for e in result["edges"]
+        if e["relation"] == "calls"
+    }
+
+    assert ("bin_tool", "lib_alpha") in imports, sorted(imports)
+    assert ("lib_alpha", "lib_beta") in imports, sorted(imports)
+    assert ("bin_tool__entry", "lib_alpha_alpha", "EXTRACTED") in calls, sorted(calls)
+    assert ("lib_alpha_alpha", "lib_beta_beta", "EXTRACTED") in calls, sorted(calls)
+    alpha_beta_import = next(
+        e for e in result["edges"]
+        if e["relation"] == "imports_from"
+        and e["source"] == "lib_alpha"
+        and e["target"] == "lib_beta"
+    )
+    assert alpha_beta_import.get("confidence") == "INFERRED"
+    assert alpha_beta_import.get("confidence_score") == 0.85
+
+
+def test_extract_bash_caller_var_transitive_export_dirname_and_dotdot_5563(tmp_path):
+    """#5563: variable base directories flow transitively through multiple
+    sourced files, support `export ROOT=...`, Form 3 `$(dirname "$VAR")`,
+    Form 4 `$VAR/../lib`, and defensive `${VAR:-$OTHER}` fallbacks."""
+    root = Path(os.path.realpath(tmp_path))
+    bin_dir = root / "bin"
+    lib_dir = root / "lib"
+    bin_dir.mkdir()
+    lib_dir.mkdir()
+
+    entry = bin_dir / "entry"
+    layer1 = lib_dir / "layer1.sh"
+    layer2 = lib_dir / "layer2.sh"
+    layer3 = lib_dir / "layer3.sh"
+    form3 = lib_dir / "form3.sh"
+    form4 = lib_dir / "form4.sh"
+
+    entry.write_text(
+        '#!/usr/bin/env bash\n'
+        'export ROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        'TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        '. "$ROOT/lib/layer1.sh"\n',
+        encoding="utf-8",
+    )
+    layer1.write_text(
+        'ROOT="${ROOT:-$FALLBACK_DEFAULT}"\n'
+        '. "$ROOT/lib/layer2.sh"\n'
+        '. "$(dirname "$TOOLS_DIR")/lib/form3.sh"\n'
+        '. "$TOOLS_DIR/../lib/form4.sh"\n',
+        encoding="utf-8",
+    )
+    layer2.write_text(
+        '. "$ROOT/lib/layer3.sh"\n'
+        'l2_run() { l3_leaf; }\n',
+        encoding="utf-8",
+    )
+    layer3.write_text('l3_leaf() { echo ok; }\n', encoding="utf-8")
+    form3.write_text('f3_fn() { echo f3; }\n', encoding="utf-8")
+    form4.write_text('f4_fn() { echo f4; }\n', encoding="utf-8")
+
+    result = extract([entry, layer1, layer2, layer3, form3, form4], cache_root=root, root=root)
+    imports = {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e["relation"] == "imports_from"
+    }
+    calls = {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e["relation"] == "calls"
+    }
+    assert ("bin_entry", "lib_layer1") in imports
+    assert ("lib_layer1", "lib_layer2") in imports
+    assert ("lib_layer1", "lib_form3") in imports
+    assert ("lib_layer1", "lib_form4") in imports
+    assert ("lib_layer2", "lib_layer3") in imports
+    assert ("lib_layer2_l2_run", "lib_layer3_l3_leaf") in calls
+
+
+def test_extract_bash_caller_var_conflicts_local_overrides_and_decoy_5563(tmp_path):
+    """#5563 invariants: conflicting loader values fail closed; a file's own
+    assignment wins downstream; an unmodeled overwrite blocks inheritance; a
+    loader-resolved VAR supersedes a wrong script-dir fallback decoy; and an
+    unloaded script keeps existing script-dir fallback behavior."""
+    root = Path(os.path.realpath(tmp_path))
+    for sub in ("bin", "a", "b", "sub", "lib/lib"):
+        (root / sub).mkdir(parents=True)
+
+    # 1. Conflict: two loaders assign CONFLICT_ROOT to different dirs -> fail closed
+    c1 = root / "bin" / "c1.sh"
+    c2 = root / "bin" / "c2.sh"
+    shared = root / "lib" / "shared.sh"
+    cfg_a = root / "a" / "cfg.sh"
+    cfg_b = root / "b" / "cfg.sh"
+    c1.write_text('#!/usr/bin/env bash\nCONFLICT_ROOT="../a"\n. "../lib/shared.sh"\n', encoding="utf-8")
+    c2.write_text('#!/usr/bin/env bash\nCONFLICT_ROOT="../b"\n. "../lib/shared.sh"\n', encoding="utf-8")
+    shared.write_text('. "$CONFLICT_ROOT/cfg.sh"\n', encoding="utf-8")
+    cfg_a.write_text('ca() { :; }\n', encoding="utf-8")
+    cfg_b.write_text('cb() { :; }\n', encoding="utf-8")
+
+    # 2. Local override + dynamic overwrite blocker
+    over_entry = root / "bin" / "over.sh"
+    mid = root / "lib" / "mid.sh"
+    sub_leaf = root / "sub" / "leaf.sh"
+    dyn = root / "lib" / "dyn.sh"
+    over_entry.write_text(
+        '#!/usr/bin/env bash\n'
+        'BASE="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        '. "$BASE/lib/mid.sh"\n'
+        '. "$BASE/lib/dyn.sh"\n',
+        encoding="utf-8",
+    )
+    mid.write_text('BASE="../sub"\n. "$BASE/leaf.sh"\n', encoding="utf-8")
+    sub_leaf.write_text('leaf_fn() { :; }\n', encoding="utf-8")
+    dyn.write_text('BASE="$(compute_dynamic)"\n. "$BASE/sub/leaf.sh"\n', encoding="utf-8")
+
+    # 3. Decoy under lib/lib/beta.sh superseded by loader ROOT
+    decoy_entry = root / "bin" / "decoy_entry.sh"
+    alpha_dec = root / "lib" / "alpha_dec.sh"
+    real_beta = root / "lib" / "real_beta.sh"
+    decoy_beta = root / "lib" / "lib" / "real_beta.sh"
+    decoy_entry.write_text(
+        '#!/usr/bin/env bash\n'
+        'DROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        '. "$DROOT/lib/alpha_dec.sh"\n',
+        encoding="utf-8",
+    )
+    alpha_dec.write_text('. "$DROOT/lib/real_beta.sh"\nwrap() { real_only; }\n', encoding="utf-8")
+    real_beta.write_text('real_only() { :; }\n', encoding="utf-8")
+    decoy_beta.write_text('real_only() { :; }\n', encoding="utf-8")
+
+    # 4. Standalone with no loader preserves script-dir fallback
+    standalone = root / "standalone.sh"
+    standalone.write_text('#!/usr/bin/env bash\n. "${EXT_DIR}/lib/real_beta.sh"\n', encoding="utf-8")
+
+    paths = [
+        c1, c2, shared, cfg_a, cfg_b,
+        over_entry, mid, sub_leaf, dyn,
+        decoy_entry, alpha_dec, real_beta, decoy_beta,
+        standalone,
+    ]
+    result = extract(paths, cache_root=root, root=root)
+    imports = {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e["relation"] == "imports_from"
+    }
+    calls = {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e["relation"] == "calls"
+    }
+
+    assert ("lib_shared", "a_cfg") not in imports
+    assert ("lib_shared", "b_cfg") not in imports
+    assert ("lib_mid", "sub_leaf") in imports
+    assert ("lib_dyn", "sub_leaf") not in imports
+    assert ("lib_alpha_dec", "lib_real_beta") in imports
+    assert ("lib_alpha_dec", "lib_lib_real_beta") not in imports
+    assert ("lib_alpha_dec_wrap", "lib_real_beta_real_only") in calls
+    assert ("standalone", "lib_real_beta") in imports
+
+
+def test_extract_bash_caller_var_blocks_out_of_tree_and_unc_traversal_5563(tmp_path):
+    """#5563 hardening: out-of-tree literal paths, traversal via `..` past
+    root, and UNC bases from loaders never resolve or probe outside scan_root."""
+    outside = tmp_path / "outside.sh"
+    outside.write_text("leak() { :; }\n", encoding="utf-8")
+
+    root = Path(os.path.realpath(tmp_path / "proj"))
+    (root / "bin").mkdir(parents=True)
+    (root / "lib").mkdir()
+
+    tool = root / "bin" / "tool"
+    lib_esc = root / "lib" / "esc.sh"
+    lib_unc = root / "lib" / "unc.sh"
+    lib_abs = root / "lib" / "abs.sh"
+
+    tool.write_text(
+        '#!/usr/bin/env bash\n'
+        'ROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        'UNC="\\\\\\\\attacker\\\\share"\n'
+        'OUT="' + str(tmp_path) + '"\n'
+        '. "$ROOT/lib/esc.sh"\n'
+        '. "$ROOT/lib/unc.sh"\n'
+        '. "$ROOT/lib/abs.sh"\n',
+        encoding="utf-8",
+    )
+    lib_esc.write_text('. "$ROOT/../outside.sh"\n. "$ROOT/../../outside.sh"\n', encoding="utf-8")
+    lib_unc.write_text('. "$UNC/outside.sh"\n', encoding="utf-8")
+    lib_abs.write_text('. "$OUT/outside.sh"\n', encoding="utf-8")
+
+    result = extract([tool, lib_esc, lib_unc, lib_abs], cache_root=root, root=root)
+    leaked = [
+        e for e in result["edges"]
+        if e.get("relation") == "imports_from" and "outside" in str(e.get("target", ""))
+    ]
+    assert leaked == [], leaked
+
+
+def test_extract_bash_caller_var_cache_portability_and_schema_5563(tmp_path, monkeypatch):
+    """#5563 cache: bash_var_bases anchors cleanly via $graphify-root$ when
+    moved to another root, and old schema < 59 caches miss cleanly."""
+    import shutil
+    import graphify.cache as cache_mod
+
+    assert cache_mod._AST_CACHE_SCHEMA >= 59
+
+    a_root = Path(os.path.realpath(tmp_path / "aaa_bash_origin"))
+    (a_root / "bin").mkdir(parents=True)
+    (a_root / "lib").mkdir()
+    (a_root / "bin" / "tool").write_text(
+        '#!/usr/bin/env bash\nROOT="$(cd "$(dirname "$0")/.." && pwd)"\n. "$ROOT/lib/alpha.sh"\n',
+        encoding="utf-8",
+    )
+    (a_root / "lib" / "alpha.sh").write_text(
+        '. "$ROOT/lib/beta.sh"\nalpha() { beta; }\n',
+        encoding="utf-8",
+    )
+    (a_root / "lib" / "beta.sh").write_text('beta() { echo hi; }\n', encoding="utf-8")
+
+    paths_a = [a_root / "bin" / "tool", a_root / "lib" / "alpha.sh", a_root / "lib" / "beta.sh"]
+    extract(paths_a, cache_root=a_root, root=a_root, parallel=False)
+
+    cache_entries = sorted((a_root / "graphify-out" / "cache" / "ast").rglob("*.json"))
+    assert cache_entries
+    for entry in cache_entries:
+        raw_blob = entry.read_text(encoding="utf-8")
+        assert "aaa_bash_origin" not in raw_blob.lower(), entry.name
+
+    b_root = Path(os.path.realpath(tmp_path / "bbb_bash_reloc"))
+    shutil.copytree(a_root, b_root)
+    paths_b = [b_root / "bin" / "tool", b_root / "lib" / "alpha.sh", b_root / "lib" / "beta.sh"]
+    res_b = extract(paths_b, cache_root=b_root, root=b_root, parallel=False)
+    imports_b = {(e["source"], e["target"]) for e in res_b["edges"] if e["relation"] == "imports_from"}
+    calls_b = {(e["source"], e["target"]) for e in res_b["edges"] if e["relation"] == "calls"}
+    assert ("lib_alpha", "lib_beta") in imports_b, sorted(imports_b)
+    assert ("lib_alpha_alpha", "lib_beta_beta") in calls_b, sorted(calls_b)
+
+    # Old schema (< 59) must miss and re-extract rather than serving stale bash payloads.
+    c_root = Path(os.path.realpath(tmp_path / "ccc_schema_check"))
+    (c_root / "bin").mkdir(parents=True)
+    (c_root / "lib").mkdir()
+    (c_root / "bin" / "tool").write_text(
+        '#!/usr/bin/env bash\nROOT="$(cd "$(dirname "$0")/.." && pwd)"\n. "$ROOT/lib/alpha.sh"\n',
+        encoding="utf-8",
+    )
+    (c_root / "lib" / "alpha.sh").write_text(
+        '. "$ROOT/lib/beta.sh"\nalpha() { beta; }\n',
+        encoding="utf-8",
+    )
+    (c_root / "lib" / "beta.sh").write_text('beta() { echo hi; }\n', encoding="utf-8")
+    paths_c = [c_root / "bin" / "tool", c_root / "lib" / "alpha.sh", c_root / "lib" / "beta.sh"]
+
+    current_schema = cache_mod._AST_CACHE_SCHEMA
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 58)
+    extract(paths_c, cache_root=c_root, root=c_root, parallel=False)
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current_schema)
+    res_c = extract(paths_c, cache_root=c_root, root=c_root, parallel=False)
+    assert ("lib_alpha", "lib_beta") in {
+        (e["source"], e["target"]) for e in res_c["edges"] if e["relation"] == "imports_from"
+    }
+
+
 # ---------------------------------------------------------------------------
 # JSON extractor tests (#866)
 # ---------------------------------------------------------------------------
