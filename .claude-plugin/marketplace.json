@@ -1,0 +1,19 @@
+{
+  "name": "graphify",
+  "owner": {
+    "name": "Graphify Labs",
+    "url": "https://github.com/Graphify-Labs/graphify"
+  },
+  "metadata": {
+    "description": "Knowledge graph and codebase architecture intelligence for AI coding assistants",
+    "version": "0.9.120"
+  },
+  "plugins": [
+    {
+      "name": "graphify",
+      "source": "./",
+      "description": "Turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph with AST parsing, Leiden community detection, and local MCP tools.",
+      "version": "0.9.120"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "graphify",
+  "version": "0.9.120",
+  "description": "Turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph with AST parsing, Leiden community detection, and local MCP tools.",
+  "author": {
+    "name": "Graphify Labs",
+    "url": "https://github.com/Graphify-Labs/graphify"
+  },
+  "repository": "https://github.com/Graphify-Labs/graphify",
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": {
+    "graphify": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "graphifyy[sql,mcp]==0.9.120",
+        "graphify-mcp"
+      ]
+    }
+  }
+}
