@@ -557,11 +557,21 @@ def _file_node_id_for_path(path: Path, root: Path) -> str:
     return _bash_make_id(_bash_file_stem(rel))
 
 
+def _context_file_nid(source_file: str, root: Path) -> str:
+    p = Path(source_file)
+    if not p.is_absolute():
+        return _bash_make_id(_bash_file_stem(p))
+    return _file_node_id_for_path(p, root)
+
+
 def resolve_bash_source_edges(
     per_file: Sequence[dict | None],
     paths: Sequence[Path],
     root: Path,
     existing_edges: list[dict] | None = None,
+    *,
+    context_nodes: Sequence[dict] | None = None,
+    context_edges: Sequence[dict] | None = None,
 ) -> list[dict]:
     """Resolve Bash source/import edges and source-backed function calls.
 
@@ -585,6 +595,7 @@ def resolve_bash_source_edges(
     """
     path_by_index = [Path(p).resolve() for p in paths]
     file_nid_by_path = {p: _file_node_id_for_path(p, root) for p in path_by_index}  # resolved paths only
+    bash_file_nids: set[str] = set(file_nid_by_path.values())
 
     functions_by_file: dict[str, dict[str, str]] = {}
     for result, path in zip(per_file, path_by_index):
@@ -608,9 +619,40 @@ def resolve_bash_source_edges(
                 continue
             functions_by_file.setdefault(file_nid, {})[name] = str(node_id)
 
+    for node in context_nodes or ():
+        if not isinstance(node, dict):
+            continue
+        metadata = node.get("metadata", {})
+        if not isinstance(metadata, dict) or metadata.get("language") != "bash":
+            continue
+        kind = metadata.get("kind")
+        if kind == "file" and node.get("id"):
+            bash_file_nids.add(str(node["id"]))
+            continue
+        if kind != "bash_function":
+            continue
+        sf = node.get("source_file")
+        name = str(node.get("label", "")).removesuffix("()").strip()
+        node_id = node.get("id")
+        if not isinstance(sf, str) or not sf or not name or not node_id:
+            continue
+        ctx_file_nid = _context_file_nid(sf, root)
+        bash_file_nids.add(ctx_file_nid)
+        functions_by_file.setdefault(ctx_file_nid, {}).setdefault(name, str(node_id))
+
     sourced_files: dict[str, set[str]] = {}
     resolved_edges: list[dict] = []
     existing = existing_edge_pairs(existing_edges or [])
+
+    for edge in context_edges or ():
+        if not isinstance(edge, dict) or edge.get("relation") != "imports_from":
+            continue
+        src, tgt = edge.get("source"), edge.get("target")
+        if not src or not tgt:
+            continue
+        src_s, tgt_s = str(src), str(tgt)
+        if src_s in bash_file_nids or tgt_s in bash_file_nids:
+            sourced_files.setdefault(src_s, set()).add(tgt_s)
 
     for result, path in zip(per_file, path_by_index):
         if not isinstance(result, dict):
@@ -659,12 +701,67 @@ def resolve_bash_source_edges(
                 }
             )
 
+    def _transitive_loads(start_fid: str) -> set[str]:
+        """All file IDs transitively sourced by *start_fid*, cycle-safe."""
+        seen: set[str] = set()
+        stack = list(sourced_files.get(start_fid, ()))
+        while stack:
+            fid = stack.pop()
+            if fid in seen or fid == start_fid:
+                continue
+            seen.add(fid)
+            stack.extend(sourced_files.get(fid, ()))
+        return seen
+
+    all_sourced_targets = {tgt for tgts in sourced_files.values() for tgt in tgts}
+    entry_roots = sorted(
+        fid for fid, tgts in sourced_files.items() if tgts and fid not in all_sourced_targets
+    )
+    entry_pools: dict[str, set[str]] = {
+        entry_fid: _transitive_loads(entry_fid) for entry_fid in entry_roots
+    }
+    pools_for_file: dict[str, list[set[str]]] = {}
+    for entry_fid in entry_roots:
+        pool = entry_pools[entry_fid]
+        for member_fid in sorted(pool):
+            pools_for_file.setdefault(member_fid, []).append(pool)
+
+    def _emit_call(
+        caller_nid: str,
+        target: str,
+        raw_call: dict,
+        path: Path,
+        *,
+        confidence: str,
+        confidence_score: float,
+    ) -> None:
+        key = (caller_nid, target, "calls")
+        if key in existing:
+            return
+        existing.add(key)
+        resolved_edges.append(
+            {
+                "source": caller_nid,
+                "target": target,
+                "relation": "calls",
+                "context": "call",
+                "confidence": confidence,
+                "confidence_score": confidence_score,
+                "source_file": raw_call.get("source_file", str(path)),
+                "source_location": raw_call.get("source_location", ""),
+                "weight": 1.0,
+            }
+        )
+
     for result, path in zip(per_file, path_by_index):
         if not isinstance(result, dict):
             continue
         caller_file_nid = file_nid_by_path[path]
-        imported_file_ids = sourced_files.get(caller_file_nid, set())
-        if not imported_file_ids:
+        direct_files = sorted(sourced_files.get(caller_file_nid, ()))
+        own_reach = _transitive_loads(caller_file_nid)
+        transitive_only = sorted(own_reach - set(direct_files))
+        member_pools = pools_for_file.get(caller_file_nid, ())
+        if not own_reach and not member_pools:
             continue
         raw_calls = result.get("raw_calls", [])
         if not isinstance(raw_calls, list):
@@ -681,30 +778,47 @@ def resolve_bash_source_edges(
             # `in functions_by_file[...]` membership check below.
             if not isinstance(callee, str) or not callee or not caller_nid:
                 continue
-            matches = [
-                functions_by_file[file_nid][callee]
-                for file_nid in imported_file_ids
-                if callee in functions_by_file.get(file_nid, {})
+            caller_nid_str = str(caller_nid)
+
+            direct_matches = [
+                functions_by_file[fid][callee]
+                for fid in direct_files
+                if callee in functions_by_file.get(fid, {})
             ]
-            if len(matches) != 1:
+            if len(direct_matches) > 1:
                 continue
-            target = matches[0]
-            key = (str(caller_nid), target, "calls")
-            if key in existing:
+            if len(direct_matches) == 1:
+                _emit_call(
+                    caller_nid_str, direct_matches[0], raw_call, path,
+                    confidence="EXTRACTED", confidence_score=1.0,
+                )
                 continue
-            existing.add(key)
-            resolved_edges.append(
-                {
-                    "source": str(caller_nid),
-                    "target": target,
-                    "relation": "calls",
-                    "context": "call",
-                    "confidence": "EXTRACTED",
-                    "confidence_score": 1.0,
-                    "source_file": raw_call.get("source_file", str(path)),
-                    "source_location": raw_call.get("source_location", ""),
-                    "weight": 1.0,
-                }
-            )
+
+            if transitive_only:
+                trans_matches = [
+                    functions_by_file[fid][callee]
+                    for fid in transitive_only
+                    if callee in functions_by_file.get(fid, {})
+                ]
+                if len(trans_matches) > 1:
+                    continue
+                if len(trans_matches) == 1:
+                    _emit_call(
+                        caller_nid_str, trans_matches[0], raw_call, path,
+                        confidence="EXTRACTED", confidence_score=1.0,
+                    )
+                    continue
+
+            for pool in member_pools:
+                pool_matches = [
+                    functions_by_file[fid][callee]
+                    for fid in sorted(pool)
+                    if callee in functions_by_file.get(fid, {})
+                ]
+                if len(pool_matches) == 1:
+                    _emit_call(
+                        caller_nid_str, pool_matches[0], raw_call, path,
+                        confidence="INFERRED", confidence_score=0.85,
+                    )
 
     return resolved_edges

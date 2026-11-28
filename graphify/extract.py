@@ -13760,7 +13760,14 @@ def extract(
         sh_paths = [p for _, p in sh_pairs]
         try:
             all_edges.extend(
-                resolve_bash_source_edges(sh_results, sh_paths, root, existing_edges=all_edges)
+                resolve_bash_source_edges(
+                    sh_results,
+                    sh_paths,
+                    root,
+                    existing_edges=all_edges,
+                    context_nodes=resolution_context_nodes,
+                    context_edges=resolution_context_edges,
+                )
             )
         except Exception as exc:
             import logging
