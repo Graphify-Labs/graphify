@@ -1,6 +1,7 @@
 """engine — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import hashlib
 import importlib
 import json
@@ -14,7 +15,7 @@ from graphify.extractors.base import (
     _read_source_bytes,
     _read_text,
 )
-from graphify.ids import DeclIdRegistry, normalize_id
+from graphify.ids import DeclIdRegistry, decl_salt, normalize_id
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.python_scope import _python_param_names, _python_param_shadow_checker
 from graphify.extractors.resolution import _resolve_js_import_target, _walk_js_tree
@@ -5961,91 +5962,157 @@ def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges
 _JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
 
 
+@dataclass
+class _TsCallableScopes:
+    bindings: dict[Node, dict[str, str]] = field(default_factory=dict)
+    body_owners: dict[str, Node] = field(default_factory=dict)
+    local_names: set[str] = field(default_factory=set)
+    local_call_offsets: set[int] = field(default_factory=set)
+    returned_arrows: set[str] = field(default_factory=set)
+
+
+def _ts_direct_callables(body, source: bytes):
+    """Find function-valued consts and inline members of a returned object."""
+    returned = []
+    if body.type == "statement_block":
+        for statement in body.named_children:
+            if statement.type == "lexical_declaration" and statement.children[0].type == "const":
+                for declaration in statement.named_children:
+                    name = declaration.child_by_field_name("name")
+                    function = declaration.child_by_field_name("value")
+                    if (name is not None and name.type == "identifier" and function is not None
+                            and function.type in _JS_FUNCTION_VALUE_TYPES):
+                        yield name, function, "contains"
+            if statement.type == "return_statement":
+                returned.extend(child for child in statement.named_children if not child.is_extra)
+    else:
+        returned.append(body)
+    if len(returned) != 1:
+        return
+    obj = returned[0]
+    while obj.type == "parenthesized_expression":
+        children = [child for child in obj.named_children if not child.is_extra]
+        if len(children) != 1:
+            return
+        obj = children[0]
+    if obj.type != "object":
+        return
+    member_names: dict[str, list[tuple[Node, Node]]] = {}
+    for member in obj.named_children:
+        if member.type == "method_definition":
+            if any(child.type in ("get", "set") for child in member.children):
+                continue
+            name = member.child_by_field_name("name")
+            function = member
+        elif member.type == "pair":
+            name = member.child_by_field_name("key")
+            function = member.child_by_field_name("value")
+            if function is None or function.type not in _JS_FUNCTION_VALUE_TYPES:
+                continue
+        else:
+            continue
+        if name is not None and name.type == "property_identifier":
+            member_names.setdefault(_read_text(name, source), []).append((name, function))
+    for candidates in member_names.values():
+        if len(candidates) == 1:
+            name, function = candidates[0]
+            yield name, function, "method"
+
+
 def _scan_js_nested_function_declarations(
     container_node, parent_nid: str, *, source: bytes, config,
     add_node, add_edge, callable_def_nids: set | None,
     local_bound_names: dict | None, function_bodies: list,
     scope_parents: dict[str, str] | None = None,
     lexical_nids_by_scope: dict[str, dict[str, str]] | None = None,
+    ts_scopes: _TsCallableScopes | None = None,
 ) -> None:
-    """Emit a node + `contains` edge for every named `function`/generator
-    declaration lexically nested inside *container_node*, scoped under
-    *parent_nid*, and track its body so calls made from inside it resolve
-    instead of dangling (#2653).
+    """Index named nested declarations and TypeScript's directly owned callables.
 
-    Recurses through non-function children AND through the bodies of nested
-    arrow / function expressions, so a `function` declared inside an arrow
-    callback (`useEffect(() => { function h(){} })`) or inside an arrow-defined
-    component (`const Panel = () => { function handleClick(){} }`, the React
-    idiom that motivated #2653) is captured too. Anonymous closures themselves
-    are not noded — they are attributed to the nearest enclosing named scope,
-    which is *parent_nid*.
+    Anonymous callbacks keep their enclosing caller. Their named declarations
+    are visited, but their local consts and returned objects stay anonymous.
     """
-    if container_node is None:
-        return
-    for child in container_node.children:
-        if child.type in ("function_declaration", "generator_function_declaration"):
-            name_node = child.child_by_field_name(config.name_field)
-            if name_node is None:
-                for c in child.children:
-                    if c.type in config.name_fallback_child_types:
-                        name_node = c
-                        break
-            func_name = _read_text(name_node, source) if name_node else None
-            # A name that normalizes to nothing (e.g. minified `$`) would collapse
-            # the nested id onto parent_nid and leak the scan path (#1899); skip it.
-            if func_name and normalize_id(func_name):
-                line = child.start_point[0] + 1
-                nested_nid = _make_id(parent_nid, func_name)
-                add_node(nested_nid, f"{func_name}()", line)
-                add_edge(parent_nid, nested_nid, "contains", line)
-                # Record the nesting so a call resolves to the nearest `inner`
-                # in scope, not to whichever same-named function the file-wide
-                # name map saw last (the Python #3405 scheme).
-                if scope_parents is not None:
-                    scope_parents[nested_nid] = parent_nid
-                if lexical_nids_by_scope is not None:
-                    lexical_nids_by_scope.setdefault(parent_nid, {})[func_name] = nested_nid
-                    lexical_nids_by_scope.setdefault(nested_nid, {})[func_name] = nested_nid
-                if callable_def_nids is not None:
-                    callable_def_nids.add(nested_nid)
-                if local_bound_names is not None:
-                    local_bound_names[nested_nid] = _js_local_bound_names(child, source)
-                nested_body = _find_body(child, config)
-                if nested_body:
-                    function_bodies.append((nested_nid, nested_body))
-                    _scan_js_nested_function_declarations(
-                        nested_body, nested_nid, source=source, config=config,
-                        add_node=add_node, add_edge=add_edge,
-                        callable_def_nids=callable_def_nids,
-                        local_bound_names=local_bound_names,
-                        function_bodies=function_bodies,
-                        scope_parents=scope_parents,
-                        lexical_nids_by_scope=lexical_nids_by_scope,
-                    )
-        elif child.type in _JS_FUNCTION_VALUE_TYPES:
-            # An anonymous arrow/function expression is not itself a node, but a
-            # `function` declared inside its body still belongs to the enclosing
-            # named scope — descend into the body keeping the SAME parent_nid.
-            _scan_js_nested_function_declarations(
-                _find_body(child, config), parent_nid, source=source, config=config,
-                add_node=add_node, add_edge=add_edge,
-                callable_def_nids=callable_def_nids,
-                local_bound_names=local_bound_names,
-                function_bodies=function_bodies,
-                scope_parents=scope_parents,
-                lexical_nids_by_scope=lexical_nids_by_scope,
-            )
+    planned: dict[Node, str] = {}
+
+    def emit(function, owner: str, name: str, line: int, relation: str, *, scoped: bool) -> str:
+        nid = _make_id(owner, name)
+        if scoped:
+            # Separate local/return definitions from class methods, ordinary
+            # nested declarations, and case/underscore-equivalent spellings.
+            kind = "local" if relation == "contains" else "returned"
+            nid = _make_id(nid, decl_salt(f"typescript_{kind}:{name}"))
+            add_node(nid, f"{'.' if relation == 'method' else ''}{name}()", line,
+                     metadata={"kind": "ts_scoped_callable"})
         else:
-            _scan_js_nested_function_declarations(
-                child, parent_nid, source=source, config=config,
-                add_node=add_node, add_edge=add_edge,
-                callable_def_nids=callable_def_nids,
-                local_bound_names=local_bound_names,
-                function_bodies=function_bodies,
-                scope_parents=scope_parents,
-                lexical_nids_by_scope=lexical_nids_by_scope,
-            )
+            add_node(nid, f"{name}()", line)
+        add_edge(owner, nid, relation, line)
+        if callable_def_nids is not None:
+            callable_def_nids.add(nid)
+        if local_bound_names is not None:
+            local_bound_names[nid] = _js_local_bound_names(function, source)
+        if scope_parents is not None:
+            scope_parents[nid] = owner
+        return nid
+
+    def scan(container, owner: str, *, named: bool = False, scoped: bool = False) -> None:
+        if container is None:
+            return
+        if named and ts_scopes is not None:
+            for name_node, function, relation in _ts_direct_callables(container, source):
+                name = _read_text(name_node, source)
+                if not normalize_id(name):
+                    continue
+                nid = emit(function, owner, name, name_node.start_point[0] + 1, relation, scoped=True)
+                planned[function] = nid
+                if relation == "method" and function.type == "arrow_function":
+                    ts_scopes.returned_arrows.add(nid)
+                if relation == "contains":
+                    ts_scopes.bindings.setdefault(container, {})[name] = nid
+                    ts_scopes.local_names.add(name)
+                    own_name = function.child_by_field_name("name")
+                    if own_name is not None:
+                        own_spelling = _read_text(own_name, source)
+                        if own_spelling not in _js_local_bound_names(function, source):
+                            ts_scopes.bindings.setdefault(function, {})[own_spelling] = nid
+                            ts_scopes.local_names.add(own_spelling)
+            # A concise arrow can have the object itself as its body. The normal
+            # child traversal below reaches its member definitions as well.
+        for child in container.children:
+            if child in planned:
+                nid = planned[child]
+                body = _find_body(child, config)
+                if body is not None and ts_scopes is not None:
+                    function_bodies.append((nid, body))
+                    ts_scopes.body_owners[nid] = body
+                    scan(body, nid, named=True, scoped=True)
+            elif child.type in ("function_declaration", "generator_function_declaration"):
+                name_node = child.child_by_field_name(config.name_field)
+                if name_node is None:
+                    name_node = next((c for c in child.children
+                                      if c.type in config.name_fallback_child_types), None)
+                name = _read_text(name_node, source) if name_node is not None else ""
+                if not normalize_id(name):
+                    continue
+                nid = emit(child, owner, name, child.start_point[0] + 1, "contains", scoped=False)
+                if lexical_nids_by_scope is not None:
+                    lexical_nids_by_scope.setdefault(owner, {})[name] = nid
+                    lexical_nids_by_scope.setdefault(nid, {})[name] = nid
+                if ts_scopes is not None:
+                    ts_scopes.bindings.setdefault(container, {})[name] = nid
+                    if name not in _js_local_bound_names(child, source):
+                        ts_scopes.bindings.setdefault(child, {})[name] = nid
+                body = _find_body(child, config)
+                if body is not None:
+                    function_bodies.append((nid, body))
+                    if scoped and ts_scopes is not None:
+                        ts_scopes.body_owners[nid] = body
+                    scan(body, nid, named=True, scoped=scoped)
+            elif child.type in _JS_FUNCTION_VALUE_TYPES:
+                scan(_find_body(child, config), owner, scoped=scoped)
+            else:
+                scan(child, owner, scoped=scoped)
+
+    scan(container_node, parent_nid, named=True)
 
 
 def _scan_python_nested_function_declarations(
@@ -6333,6 +6400,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    config=None, js_member_groups: dict | None = None,
                    scope_parents: dict | None = None,
                    lexical_nids_by_scope: dict | None = None,
+                   ts_scopes: _TsCallableScopes | None = None,
                    decl_node_fn=None, decl_lookup_fn=None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
     def _decl(nid, name, kind, label, line):
@@ -6567,6 +6635,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                     function_bodies=function_bodies,
                                     scope_parents=scope_parents,
                                     lexical_nids_by_scope=lexical_nids_by_scope,
+                                    ts_scopes=ts_scopes,
                                 )
                                 # #3408: `this.X = fn` members were captured only
                                 # when the enclosing function was a DECLARATION;
@@ -8433,6 +8502,7 @@ def _extract_generic(
     # params/locals instead of a shared union that over-suppresses siblings.
     closure_locals_by_body: dict[int, set[str]] = {}
     js_receiver_bindings: dict = {}
+    ts_callable_scopes = _TsCallableScopes() if config.ts_module == "tree_sitter_typescript" else None
     ts_property_receiver_bindings: dict = {}
     ts_property_receiver_types: dict[tuple[Node, str], tuple[int, str, bool] | None] = {}
     # PHP only: ordinal counter for anonymous closures, keyed by scope id
@@ -11147,6 +11217,7 @@ def _extract_generic(
                         function_bodies=function_bodies,
                         scope_parents=scope_parents,
                         lexical_nids_by_scope=lexical_nids_by_scope,
+                        ts_scopes=ts_callable_scopes,
                     )
                 if config.ts_module == "tree_sitter_python":
                     _scan_python_nested_function_declarations(
@@ -11309,7 +11380,8 @@ def _extract_generic(
                               decl_lookup_fn=decl_registry.lookup,
                               js_member_groups=js_member_groups,
                               scope_parents=scope_parents,
-                              lexical_nids_by_scope=lexical_nids_by_scope):
+                              lexical_nids_by_scope=lexical_nids_by_scope,
+                              ts_scopes=ts_callable_scopes):
                 return
 
         # TS enum members, and namespace / module containers
@@ -11698,7 +11770,10 @@ def _extract_generic(
                 # method's. Owner only: it is never a call target by name.
                 method_owner.setdefault(e["target"], e["source"])
             if e["relation"] == "method":
-                method_owner[e["target"]] = e["source"]
+                # Returned arrows are object members but capture the factory's
+                # 'this'. They do not use the returned object as the receiver.
+                if ts_callable_scopes is None or e["target"] not in ts_callable_scopes.returned_arrows:
+                    method_owner[e["target"]] = e["source"]
                 name = label_by_nid.get(e["target"], "").strip("()").lstrip(".")
                 if config.ts_module == "tree_sitter_php":
                     name = name.casefold()
@@ -12904,7 +12979,21 @@ def _extract_generic(
                          or (cpp_binding is None and member_receiver in cpp_unknown_fields.get(
                              method_owner.get(caller_nid, ""), ())))
                 )
-                if _python_defer or _java_defer or _csharp_defer or _kotlin_member_defer or _swift_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
+                ts_local_binding = None
+                if (ts_callable_scopes is not None and not is_member_call
+                        and func_node is not None and func_node.type == "identifier"
+                        and (caller_nid in ts_callable_scopes.body_owners
+                             or callee_name in ts_callable_scopes.local_names)):
+                    binding = _js_receiver_binding_scope(
+                        func_node, callee_name, source, ts_property_receiver_bindings,
+                        for_property_alias=True,
+                    )
+                    if binding is not None and binding.type != "program":
+                        ts_local_binding = binding
+                        ts_callable_scopes.local_call_offsets.add(node.start_byte)
+                if ts_local_binding is not None and ts_callable_scopes is not None:
+                    tgt_nid = ts_callable_scopes.bindings.get(ts_local_binding, {}).get(callee_name)
+                elif _python_defer or _java_defer or _csharp_defer or _kotlin_member_defer or _swift_defer or _js_member_defer or _cpp_member_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
@@ -13049,7 +13138,7 @@ def _extract_generic(
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-                elif callee_name and (not tgt_nid or external_stub_target):
+                elif callee_name and ts_local_binding is None and (not tgt_nid or external_stub_target):
                     # In Python, if an unqualified call names a local non-callable variable or parameter,
                     # do NOT append it to raw_calls (#3405 Part 3/4).
                     is_py_local_data = (
@@ -13654,6 +13743,11 @@ def _extract_generic(
     # (scoped, #2472) per-method receiver tables merge without collision — the
     # stamp site branches on language to read the matching shape.
     receiver_types_by_body = {**java_receiver_types, **csharp_receiver_types}
+    if ts_callable_scopes is not None:
+        for body in ts_callable_scopes.body_owners.values():
+            closure = body.parent
+            if closure is not None:
+                closure_locals_by_body[id(body)] = _js_enclosing_bound_names(closure, source)
     for caller_nid, body_node in function_bodies:
         walk_calls(
             body_node,
@@ -13779,6 +13873,12 @@ def _extract_generic(
         ))
     raw_calls.extend(csharp_ctor_records)
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
+    if ts_callable_scopes is not None and ts_callable_scopes.body_owners:
+        result["_ts_owned_callable_bodies"] = {
+            nid: (body.start_byte, body.end_byte)
+            for nid, body in ts_callable_scopes.body_owners.items()
+        }
+        result["_ts_local_call_offsets"] = sorted(ts_callable_scopes.local_call_offsets)
     # Export the per-file field->type tables for the corpus member-call
     # resolvers (#3151): a field declared on a superclass in ANOTHER file can
     # only be typed once the whole graph is visible. Keyed by class label +

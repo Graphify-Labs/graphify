@@ -1397,14 +1397,14 @@ def _apply_symbol_resolution_facts(
     # and never let a member shadow a same-named top-level symbol.
     member_symbol_keys: set[tuple[Path, str]] = set()
 
-    # Structural alias signatures are only members, never module bindings.
+    # Structural alias signatures and factory-local callables aren't module bindings.
     if resolution_context_nodes:
         _fresh_node_ids = {n.get("id") for n in nodes if n.get("id")}
         _fresh_paths = {_resolve_cached(p) for p in paths}
         for node in resolution_context_nodes:
             nid = node.get("id")
             if (not nid or nid in _fresh_node_ids
-                    or (node.get("metadata") or {}).get("kind") == "type_alias_method"):
+                    or (node.get("metadata") or {}).get("kind") in ("type_alias_method", "ts_scoped_callable")):
                 continue
             source_path = _js_source_path(str(node.get("source_file", "")), root)
             if source_path is None or source_path in _fresh_paths:
@@ -1423,7 +1423,7 @@ def _apply_symbol_resolution_facts(
             symbol_nodes[key] = str(nid)
 
     for node in nodes:
-        if (node.get("metadata") or {}).get("kind") == "type_alias_method":
+        if (node.get("metadata") or {}).get("kind") in ("type_alias_method", "ts_scoped_callable"):
             continue
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
@@ -2147,15 +2147,17 @@ def _parse_js_tree(path: Path):
     except Exception:
         return None
 
-def _walk_js_tree(node):
+def _walk_js_tree(node, *, skip_ranges=()):
     # Pre-order walk with a TreeCursor, which skips building a ``.children``
     # list at every node. A cursor is bounded by the node it starts from, so
     # goto_parent() fails at ``node`` and a subtree walk never leaves it.
     cursor = node.walk()
     while True:
-        yield cursor.node
-        if cursor.goto_first_child():
-            continue
+        current = cursor.node
+        if not skip_ranges or (current.start_byte, current.end_byte) not in skip_ranges:
+            yield current
+            if cursor.goto_first_child():
+                continue
         while not cursor.goto_next_sibling():
             if not cursor.goto_parent():
                 return
@@ -2769,13 +2771,26 @@ _JS_FACT_NODE_TYPES = frozenset({
 })
 
 
-def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
+def _collect_js_symbol_resolution_facts(
+    paths: list[Path], facts: _SymbolResolutionFacts, *,
+    ts_callable_scopes: dict[Path, tuple[dict[str, tuple[int, int]], list[int]]] | None = None,
+    raw_calls: list[dict] | None = None,
+) -> None:
     js_paths = [
         path for path in paths
         if effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
     ]
     if not js_paths:
         return
+    ts_callable_scopes = ts_callable_scopes or {}
+    scope_calls: dict[str, list[dict]] = {}
+    if ts_callable_scopes:
+        scoped_files = {str(path) for path in ts_callable_scopes}
+        for call in raw_calls or ():
+            source_file = call.get("source_file")
+            if (source_file in scoped_files and not call.get("is_member_call")
+                    and not call.get("indirect")):
+                scope_calls.setdefault(source_file, []).append(call)
 
     # One parse per file, dropped before the next: holding every file's source and syntax tree
     # across the passes held the whole corpus (1.9 GB on Next.js). Class-member uses still follow
@@ -3003,10 +3018,13 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
+        owned_bodies, local_offsets = ts_callable_scopes.get(path, ({}, []))
+        skip_ranges = set(owned_bodies.values())
+        skip_calls = set(local_offsets)
         for source_id, body in _js_top_level_function_bodies(path, root_node, source):
-            for node in _walk_js_tree(body):
+            for node in _walk_js_tree(body, skip_ranges=skip_ranges):
                 imported_name = _js_call_identifier(node, source)
-                if imported_name is None:
+                if imported_name is None or node.start_byte in skip_calls:
                     continue
                 facts.uses.append(
                     _SymbolUseFact(
@@ -3018,6 +3036,15 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         node.start_point[0] + 1,
                     )
                 )
+
+        # The structural pass already walked each explicitly owned callable
+        # with its correct caller and filtered shadowed lexical bindings.
+        for call in scope_calls.get(str(path), ()):
+            if call["caller_nid"] in owned_bodies:
+                facts.uses.append(_SymbolUseFact(
+                    path, call["caller_nid"], call["callee"], "calls", "call",
+                    int(call["source_location"].removeprefix("L")),
+                ))
 
         stem = _file_stem(path)
         for node in indexed:
@@ -3630,9 +3657,12 @@ def _augment_symbol_resolution_edges(
     ambiguous_python_modules: set[str] | None = None,
     resolution_context_nodes: list[dict] | None = None,
     raw_calls: list[dict] | None = None,
+    ts_callable_scopes: dict[Path, tuple[dict[str, tuple[int, int]], list[int]]] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
-    _collect_js_symbol_resolution_facts(paths, facts)
+    _collect_js_symbol_resolution_facts(
+        paths, facts, ts_callable_scopes=ts_callable_scopes, raw_calls=raw_calls,
+    )
     _collect_python_symbol_resolution_facts(
         paths, root, facts,
         ambiguous_python_modules=ambiguous_python_modules,
