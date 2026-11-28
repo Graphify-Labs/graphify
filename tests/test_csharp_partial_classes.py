@@ -4,9 +4,9 @@
 carries the per-file stem), so the type's members split across the halves and
 every receiver-typed lookup on `Foo` bailed as ambiguous — cross-half calls
 never resolved. `_merge_csharp_partial_class_nodes` collapses the halves onto
-one canonical node, keyed by (assembly, namespace, label); same-named types in
-other namespaces, non-partial declarations, and nested partial types are left
-alone. The assembly key is the nearest ancestor dir holding a `*.csproj`/
+one canonical node, keyed by (assembly, namespace, type path); same-named types
+in other namespaces, non-partial declarations, and nested types under a
+different enclosing chain are left alone (#4363). The assembly key is the nearest ancestor dir holding a `*.csproj`/
 `*.fsproj`/`*.vbproj` (#2411: `partial` never fuses across assemblies), with
 "" — halves under no project at all, which still merge — as the sentinel.
 """
@@ -625,3 +625,85 @@ def test_receiver_qualified_calls_are_not_rebound_to_the_own_type(tmp_path):
     assert (go, _find(r, ".Stop()", "valve")) in calls
     assert (go, _find(r, ".Reset()", "engine")) not in calls
     assert (go, _find(r, ".Stop()", "engine")) not in calls
+
+
+def _methods_owned_by(r, nid):
+    targets = {e["target"] for e in r["edges"] if e["relation"] == "method" and e["source"] == nid}
+    return {n["label"] for n in r["nodes"] if n["id"] in targets}
+
+
+def test_partial_half_with_a_path_colliding_id_keeps_its_members(tmp_path):
+    """`Cfg/Helpers.cs` and `Cfg_Helpers.cs` mint the same file stem, so the
+    halves declared there share one id and get salted apart by path. The merge
+    used to run first: it rewired the third half's `method` edges onto that
+    shared id, the salting then keyed them by the third half's own file, missed,
+    and left them dangling, so `Gamma()` had no owner and the two colliding
+    halves stayed two `Cfg` nodes."""
+    _, r = _extract(tmp_path, {
+        "Lib.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>\n",
+        "Cfg/Helpers.cs": "namespace App { public partial class Cfg { public void Alpha() {} } }\n",
+        "Cfg_Helpers.cs": "namespace App { public partial class Cfg { public void Beta() {} } }\n",
+        "generated/Cfg.cs": (
+            "namespace App { public partial class Cfg {"
+            " public void Gamma() { Alpha(); Beta(); } } }\n"
+        ),
+    })
+    cfgs = _nodes_labeled(r, "Cfg")
+    assert len(cfgs) == 1, cfgs
+    assert _methods_owned_by(r, cfgs[0]["id"]) == {".Alpha()", ".Beta()", ".Gamma()"}
+
+
+def test_partial_half_colliding_with_an_underscore_sibling_keeps_its_members(tmp_path):
+    """`Spec.cs` and `_Spec.cs` collide the same way (the leading underscore is
+    dropped from the stem). The merged `Spec` must own the generated half's
+    methods, and the unrelated `_Spec` must stay a separate type deriving from it."""
+    _, r = _extract(tmp_path, {
+        "Spec.cs": "namespace App { public partial class Spec { public int Size; } }\n",
+        "_Spec.cs": "namespace App { public class _Spec : Spec { public void Extra() { Move(); } } }\n",
+        "generated/Spec.cs": (
+            "namespace App { public partial class Spec {"
+            " public void Move() {} public void Copy() {} } }\n"
+        ),
+    })
+    specs = _nodes_labeled(r, "Spec")
+    assert len(specs) == 1, specs
+    spec = specs[0]["id"]
+    assert _methods_owned_by(r, spec) == {".Move()", ".Copy()"}
+    sub = _nodes_labeled(r, "_Spec")
+    assert len(sub) == 1 and sub[0]["id"] != spec, sub
+    assert (sub[0]["id"], spec) in {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "inherits"}
+
+
+def test_outer_partial_halves_in_path_colliding_files_merge(tmp_path):
+    """The colliding files both declare `partial class Tools`: identical ids
+    from two files. Salted apart first, the halves now merge by type path
+    instead of staying two `Tools` nodes (and losing the third half)."""
+    _, r = _extract(tmp_path, {
+        "Spec.cs": "namespace App { public static partial class Tools { public static void A() {} } }\n",
+        "_Spec.cs": "namespace App { public static partial class Tools { public static void B() {} } }\n",
+        "generated/Spec.cs": "namespace App { public static partial class Tools { public static void C() {} } }\n",
+    })
+    tools = _nodes_labeled(r, "Tools")
+    assert len(tools) == 1, tools
+    assert _methods_owned_by(r, tools[0]["id"]) == {".A()", ".B()", ".C()"}
+
+
+def test_merge_does_not_delete_an_unrelated_node_sharing_a_half_id(tmp_path):
+    """A half's id can collide with an unrelated node in another file: here the
+    method `Helpers.App.Cfg()` in `Cfg.cs` mints the same id as the half of
+    `App.Cfg` in `Cfg/Helpers.cs`. The merge removes merged-away halves by id,
+    so before ids were salted apart it also deleted that method, and the
+    method's `calls` edge was rewired onto the type."""
+    calls, r = _extract(tmp_path, {
+        "A/Cfg.cs": "namespace App { public partial class Cfg { public void Alpha() {} } }\n",
+        "Cfg/Helpers.cs": "namespace App { public partial class Cfg { public void Beta() {} } }\n",
+        "Cfg.cs": (
+            "namespace Helpers { public class App {"
+            " public void Cfg() { Other(); } public void Other() {} } }\n"
+        ),
+    })
+    method = _nodes_labeled(r, ".Cfg()")
+    assert len(method) == 1 and method[0]["source_file"] == "Cfg.cs", method
+    assert (method[0]["id"], _find(r, ".Other()", "")) in calls
+    cfgs = _nodes_labeled(r, "Cfg")
+    assert len(cfgs) == 1 and _methods_owned_by(r, cfgs[0]["id"]) == {".Alpha()", ".Beta()"}, cfgs

@@ -1,8 +1,12 @@
 """Language declarations must invalidate incremental state and reach watch events."""
 import hashlib
 import json
+import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,7 +165,10 @@ def drive_watch(root, monkeypatch, actions, *, observed_roots=None):
     monkeypatch.setattr(observers, "Observer", Observer)
     monkeypatch.setattr(polling, "PollingObserver", Observer)
     monkeypatch.setattr(watch_mod, "_rebuild_code", rebuild)
-    monkeypatch.setattr(watch_mod.time, "sleep", pump)
+    # Replace the name in watch.py only: time.sleep is shared with the whole
+    # process, and subprocess waits call it during a rebuild.
+    monkeypatch.setattr(watch_mod, "time",
+                        SimpleNamespace(sleep=pump, monotonic=time.monotonic))
     watch_mod.watch(root, debounce=0)
 
 
@@ -184,13 +191,36 @@ def test_watch_declared_code_updates_graph_on_observer_thread(tmp_path, monkeypa
     assert not (tmp_path / "graphify-out" / "needs_update").exists()
 
 
+def test_drive_watch_clock_does_not_reach_subprocess_waits(tmp_path, monkeypatch):
+    """A child that outlives its pipes makes subprocess sleep during the rebuild."""
+    events = pytest.importorskip("watchdog.events")
+    source = tmp_path / "page.py"
+    waited = []
+
+    def slow_git_head(*_args, **_kwargs):
+        # Closing both pipes ends communicate(); the child then keeps wait() polling.
+        waited.append(subprocess.run(
+            [sys.executable, "-c", "import os, time; os.close(1); os.close(2); time.sleep(0.3)"],
+            capture_output=True, timeout=30,
+        ).returncode)
+
+    def change():
+        source.write_text("def watched(): pass\n")
+        return events.FileModifiedEvent(str(source))
+
+    monkeypatch.setattr(watch_mod, "_git_head", slow_git_head)
+    drive_watch(tmp_path, monkeypatch, [change])
+    assert waited
+    assert "watched()" in graph_labels(tmp_path)
+
+
 def test_watch_document_override_marks_semantic_work_instead_of_rebuilding(tmp_path, monkeypatch):
     events = pytest.importorskip("watchdog.events")
-    (tmp_path / ".graphifyrc").write_text("language.tpl=yaml\n")
+    (tmp_path / ".graphifyrc").write_text("language.tpl=markdown\n")
     source = tmp_path / "notes.tpl"
 
     def change():
-        source.write_text("service: database\n")
+        source.write_text("# notes\n\nservice: database\n")
         return events.FileModifiedEvent(str(source))
 
     drive_watch(tmp_path, monkeypatch, [change])
@@ -291,3 +321,28 @@ def test_watch_relative_roots_receive_config_events_without_rebasing_source_path
     graph = json.loads((root / "graphify-out" / "graph.json").read_text())
     paths = {node["source_file"] for node in graph["nodes"] if node["label"] == "watched()"}
     assert paths == {str(Path(argument) / "page.tpl")}
+
+
+def test_watch_symlinked_root_processes_events_under_manual_observer(tmp_path, monkeypatch):
+    import sys
+    events = pytest.importorskip("watchdog.events")
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    symlink_dir = tmp_path / "symlink"
+    try:
+        symlink_dir.symlink_to(real_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlinks not supported on this platform/filesystem")
+
+    (symlink_dir / ".graphifyrc").write_text("language.tpl=php\n")
+    source = symlink_dir / "page.tpl"
+
+    def change():
+        source.write_text("<?php function watched() {}\n")
+        return events.FileModifiedEvent(str(source))
+
+    # Simulate Linux where manual observer tree walking is active (#5033)
+    monkeypatch.setattr(sys, "platform", "linux")
+    drive_watch(symlink_dir, monkeypatch, [change])
+    assert "watched()" in graph_labels(symlink_dir)
+

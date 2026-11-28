@@ -72,8 +72,29 @@ def _isolate_backend_env(monkeypatch):
     reads before each test; a test that wants one sets it with monkeypatch."""
     from graphify.llm import backend_detection_env_vars
 
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_PROMPT_CACHE", raising=False)
     for key in backend_detection_env_vars():
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _cold_stat_index(monkeypatch):
+    """Cold-start the module-global stat index before every test.
+
+    The stat index (graphify/cache.py) is a process-wide cache keyed by scan
+    root. Across the full suite thousands of roots are hashed in one process, so
+    a warm index left by an earlier test can serve a stale file hash to the next
+    test's no-change gate and make a rebuild skip re-extraction (#3989, which
+    says library callers crossing roots in one process must use a fresh process
+    per root — a real `graphify update`/extract always does). Resetting to the
+    cold init state makes each test behave like that fresh process."""
+    from graphify import cache
+
+    monkeypatch.setattr(cache, "_stat_index", {}, raising=False)
+    monkeypatch.setattr(cache, "_stat_index_root", None, raising=False)
+    monkeypatch.setattr(cache, "_stat_index_anchor", None, raising=False)
+    monkeypatch.setattr(cache, "_stat_index_path", None, raising=False)
+    monkeypatch.setattr(cache, "_stat_index_dirty", False, raising=False)
 
 
 _ANALYZE_WARNING_FILTERS = (
@@ -84,8 +105,23 @@ _ANALYZE_WARNING_FILTERS = (
 )
 
 
+# Test modules that drive a real `graphify watch` / watchdog loop. These assert
+# that a rebuild lands within a wall-clock budget, which is flaky under xdist CPU
+# contention (the rebuild loses the race and graph.json isn't written in time), so
+# they are marked `serial` to run outside the parallel pass. Keyed by module stem.
+_SERIAL_WATCH_MODULES = frozenset({
+    "test_watch",
+    "test_watch_pruned",
+    "test_watch_inotify_overflow",
+    "test_language_override_lifecycle",
+    "test_jsconfig_baseurl",
+})
+
+
 def pytest_collection_modifyitems(items: list[Any]) -> None:
     for item in items:
+        if item.path.stem in _SERIAL_WATCH_MODULES:
+            item.add_marker(pytest.mark.serial)
         if item.path.name != "test_analyze.py":
             continue
         for warning_filter in _ANALYZE_WARNING_FILTERS:

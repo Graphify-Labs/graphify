@@ -9,7 +9,7 @@
 <div align="center">
 <details><summary><b>Read this in other languages</b></summary>
 
-🇺🇸 <a href="../../README.md">English</a> | 🇨🇳 <a href="README.zh-CN.md">简体中文</a> | 🇯🇵 <a href="README.ja-JP.md">日本語</a> | 🇰🇷 <a href="README.ko-KR.md">한국어</a> | 🇩🇪 <a href="README.de-DE.md">Deutsch</a> | 🇫🇷 <a href="README.fr-FR.md">Français</a> | 🇪🇸 <a href="README.es-ES.md">Español</a> | 🇮🇳 <a href="README.hi-IN.md">हिन्दी</a> | 🇧🇷 <a href="README.pt-BR.md">Português</a> | 🇷🇺 <a href="README.ru-RU.md">Русский</a> | 🇸🇦 <a href="README.ar-SA.md">العربية</a> | 🇮🇷 <a href="README.fa-IR.md">فارسی</a> | 🇮🇹 <a href="README.it-IT.md">Italiano</a> | 🇵🇱 <a href="README.pl-PL.md">Polski</a> | 🇳🇱 <a href="README.nl-NL.md">Nederlands</a> | 🇹🇷 <a href="README.tr-TR.md">Türkçe</a> | 🇺🇦 <a href="README.uk-UA.md">Українська</a> | 🇻🇳 <a href="README.vi-VN.md">Tiếng Việt</a> | 🇮🇩 <a href="README.id-ID.md">Bahasa Indonesia</a> | 🇸🇪 <a href="README.sv-SE.md">Svenska</a> | 🇬🇷 <a href="README.el-GR.md">Ελληνικά</a> | 🇷🇴 <a href="README.ro-RO.md">Română</a> | 🇨🇿 <a href="README.cs-CZ.md">Čeština</a> | 🇫🇮 <a href="README.fi-FI.md">Suomi</a> | 🇩🇰 <a href="README.da-DK.md">Dansk</a> | 🇳🇴 <a href="README.no-NO.md">Norsk</a> | 🇭🇺 <a href="README.hu-HU.md">Magyar</a> | 🇹🇭 <a href="README.th-TH.md">ภาษาไทย</a> | 🇺🇿 <a href="README.uz-UZ.md">Oʻzbekcha</a> | 🇹🇼 <a href="README.zh-TW.md">繁體中文</a> | 🇵🇭 <a href="README.fil-PH.md">Filipino</a> | 🇮🇱 <a href="README.he-IL.md">עברית</a>
+<a href="../../README.md">English</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja-JP.md">日本語</a> | <a href="README.ko-KR.md">한국어</a> | <a href="README.de-DE.md">Deutsch</a> | <a href="README.fr-FR.md">Français</a> | <a href="README.es-ES.md">Español</a> | <a href="README.hi-IN.md">हिन्दी</a> | <a href="README.pt-BR.md">Português</a> | <a href="README.ru-RU.md">Русский</a> | <a href="README.ar-SA.md">العربية</a> | <a href="README.fa-IR.md">فارسی</a> | <a href="README.it-IT.md">Italiano</a> | <a href="README.pl-PL.md">Polski</a> | <a href="README.nl-NL.md">Nederlands</a> | <a href="README.tr-TR.md">Türkçe</a> | <a href="README.uk-UA.md">Українська</a> | <a href="README.vi-VN.md">Tiếng Việt</a> | <a href="README.id-ID.md">Bahasa Indonesia</a> | <a href="README.sv-SE.md">Svenska</a> | <a href="README.el-GR.md">Ελληνικά</a> | <a href="README.ro-RO.md">Română</a> | <a href="README.cs-CZ.md">Čeština</a> | <a href="README.fi-FI.md">Suomi</a> | <a href="README.da-DK.md">Dansk</a> | <a href="README.no-NO.md">Norsk</a> | <a href="README.hu-HU.md">Magyar</a> | <a href="README.th-TH.md">ภาษาไทย</a> | <a href="README.uz-UZ.md">Oʻzbekcha</a> | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.fil-PH.md">Filipino</a> | <a href="README.he-IL.md">עברית</a>
 
 </details>
 </div>
@@ -20,15 +20,21 @@
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
-  <a href="https://app.graphify.com/login"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><img src="https://img.shields.io/badge/Graphify%20Cloud-app.graphify.com-118d4f?style=flat&logoColor=white" alt="Graphify Cloud"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>Réduisez de 80 % les dépenses en tokens de vos agents.</b> Graphify Cloud est une mémoire toujours active qui gouverne vos agents, maintient une haute qualité de code et prouve la justesse par vérification formelle. <a href="https://app.graphify.com/login"><b>Commencez un essai gratuit de 14 jours &rarr;</b></a>
+  <b>Un contexte de base de code partagé pour les agents et les humains.</b>
+  <br/>
+  Transformez votre base de code en un graphe de connaissances interrogeable. Tracez les dépendances, comprenez comment les composants se connectent, et donnez à votre agent de codage un contexte réutilisable d'une session à l'autre.
+</p>
+
+<p align="center">
+  <a href="https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss"><b>Commencez gratuitement, sans carte &rarr;</b></a> &nbsp;&middot;&nbsp; <b>Graphify Cloud</b> maintient ce graphe toujours actif sur l'ensemble de votre SDLC.
 </p>
 
 Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemble de votre projet (code, documents, PDF, images, vidéos) dans un **graphe de connaissances** que vous pouvez **interroger au lieu de faire un grep** à travers les fichiers.
@@ -38,21 +44,30 @@ Tapez `/graphify` dans votre assistant de codage IA, et il cartographie l'ensemb
 - **Pas un index vectoriel.** Pas d'embeddings, pas de magasin de vecteurs : un vrai graphe que vous parcourez. Posez une question, tracez le chemin entre deux choses, ou expliquez un concept.
 
 > [!NOTE]
-> **Vous voulez cela en permanence ?** [Graphify Cloud](https://app.graphify.com/login) maintient le graphe à jour sur l'ensemble de votre SDLC : prise en charge des monorepos et du multi-dépôt, vérification formelle et revue de code avec une vue d'ensemble de votre SDLC, plus des connecteurs pour Sentry, Jira et davantage, afin que les incidents et les tickets se trouvent dans le même graphe que votre code. **[Commencez un essai gratuit de 14 jours sur app.graphify.com](https://app.graphify.com/login)**.
+> **Vous voulez cela en permanence ?** [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) maintient le graphe à jour sur l'ensemble de votre SDLC : prise en charge des monorepos et du multi-dépôt, vérification formelle et revue de code avec une vue d'ensemble de votre SDLC, plus des connecteurs pour Sentry, Jira et davantage, afin que les incidents et les tickets se trouvent dans le même graphe que votre code. **[Commencez gratuitement, sans carte](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected subsystems" width="900">
 </p>
 <p align="center">
-  <em>La base de code FastAPI cartographiée par graphify. Chaque nœud est un concept, les couleurs sont des communautés détectées, et l'ensemble est cliquable dans graph.html.</em>
+  <em>La base de code FastAPI cartographiée par graphify. Chaque nœud est un concept, les couleurs sont des sous-systèmes détectés, et l'ensemble est cliquable dans graph.html.</em>
 </p>
 
-**Pour démarrer** (30 secondes) :
+**Pour démarrer** (30 secondes). Nécessite Python 3.11.5–3.14 et uv (ou pipx) :
 
 ```bash
 uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
-graphify install               # register the skill with your AI assistant
+graphify install               # sets up Claude Code (the default)
 ```
+
+Vous utilisez un autre assistant ? Nommez-le explicitement :
+
+```bash
+graphify cursor install              # Cursor
+graphify install --platform codex    # Codex (invoke with $graphify, not /graphify)
+```
+
+Voir [choisissez votre plateforme](#install) pour les 20+ assistants.
 
 Ensuite, dans votre assistant IA :
 
@@ -64,30 +79,16 @@ C'est tout. Vous obtenez **trois fichiers** :
 
 ```
 graphify-out/
-├── graph.html       open in any browser — click nodes, filter, search
+├── graph.html       open in any browser: click nodes, filter, search
 ├── GRAPH_REPORT.md  the highlights: key concepts, surprising connections, suggested questions
-└── graph.json       the full graph — query it anytime without re-reading your files
+└── graph.json       the full graph: query it anytime without re-reading your files
 ```
 
 Le graphe persistant inclut `graph.schema_version` afin que les intégrations puissent détecter
 les changements de format incompatibles, ainsi que `graph.graphify_version` identifiant la
 version de Graphify qui l'a produit.
 
-**Fonctionne dans** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot et plus de 15 autres — [choisissez votre plateforme](#install).
-
----
-
-## Documentation
-
-Guides complets et référence disponibles sur **[docs.graphify.com](https://docs.graphify.com)** :
-
-- **[Quickstart](https://docs.graphify.com/quickstart)** — construisez votre premier graphe
-- **[CLI reference](https://docs.graphify.com/reference/overview)** — chaque commande et chaque option
-- **[Ask better graph questions](https://docs.graphify.com/guides/querying)** — modèles de requêtes
-- **[Configuration](https://docs.graphify.com/reference/configuration)** — variables d'environnement et réglages
-- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)** — langages et types de fichiers
-- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** et **[PR review](https://docs.graphify.com/guides/pull-requests)**
-- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** et **[How it works](https://docs.graphify.com/concepts/architecture)**
+**Une seule installation, tout assistant, tout OS.** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot et plus de 20 autres, sur macOS, Linux et Windows : [choisissez votre plateforme](#install).
 
 ---
 
@@ -128,8 +129,8 @@ Ce que vous obtenez d'emblée :
 
 | Capacité | Ce que vous obtenez |
 |---|---|
-| **God nodes** | Les concepts les plus connectés, pour voir par où tout transite |
-| **Communities** | Le graphe découpé en sous-systèmes (Leiden), avec des étiquettes sans LLM |
+| **Composants les plus connectés** | Les concepts par lesquels tout transite — les hubs du graphe (aussi appelés *god nodes*) |
+| **Sous-systèmes** | Le graphe découpé en groupes cohérents (Leiden *communautés*), chacun avec une étiquette sans LLM |
 | **Liens inter-fichiers** | `calls` / `imports` / `inherits` / `mixes_in` résolus à travers ~40 langages via l'AST de tree-sitter |
 | **Query, path, explain** | Posez une question, tracez le chemin entre deux choses, ou expliquez un concept, le tout sur `graph.json` |
 | **Justification + réf. doc** | Les commentaires `# NOTE:` / `# WHY:` et les citations ADR/RFC deviennent des nœuds de première classe liés au code |
@@ -137,11 +138,24 @@ Ce que vous obtenez d'emblée :
 | **Local-first** | Le code est analysé localement avec tree-sitter (pas de LLM, rien ne quitte votre machine) ; seule la passe sémantique sur les documents/médias appelle un backend, et seulement si vous en configurez un |
 
 > [!TIP]
-> Vous exécutez cela sur de nombreux dépôts ou un monorepo ? [Graphify Cloud](https://app.graphify.com/login) le fait en continu et réduit de 80 % les dépenses en tokens des agents, avec des liens multi-dépôt, une revue de code à l'échelle du SDLC, la vérification formelle et des connecteurs Sentry/Jira. [Commencez un essai gratuit de 14 jours &rarr;](https://app.graphify.com/login)
+> Vous exécutez cela sur de nombreux dépôts ou un monorepo ? [Graphify Cloud](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) le fait en continu et réduit de 80 % les dépenses en tokens des agents, avec des liens multi-dépôt, une revue de code à l'échelle du SDLC, la vérification formelle et des connecteurs Sentry/Jira. [Commencez gratuitement, sans carte &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)
 
 ---
 
-## Benchmarks
+## Quand recourir à Graphify
+
+Recourez au graphe lorsque vous devez comprendre une base de code, et pas seulement la parcourir :
+
+| Situation | Quoi demander à Graphify |
+|---|---|
+| Rejoindre un projet inconnu | « Expliquez comment les principaux composants sont reliés. » |
+| Modifier un composant partagé | « Tracez ses appelants et ses dépendances. » |
+| Enquêter sur un bug | « Montrez le chemin entre cet endpoint et le stockage. » |
+| Revenir sur un travail antérieur | « Trouvez les décisions de conception et les notes pertinentes. » |
+
+---
+
+## Benchmarks: 0.497 recall@10, 0 LLM credits
 
 | Benchmark | Métrique | graphify | Domaine |
 |---|---|---|---|
@@ -155,11 +169,25 @@ Chaque système a tourné sur le même harnais avec le même modèle et les mêm
 
 ---
 
+## Documentation
+
+Guides complets et référence disponibles sur **[docs.graphify.com](https://docs.graphify.com)** :
+
+- **[Quickstart](https://docs.graphify.com/quickstart)** : construisez votre premier graphe
+- **[CLI reference](https://docs.graphify.com/reference/overview)** : chaque commande et chaque option
+- **[Ask better graph questions](https://docs.graphify.com/guides/querying)** : modèles de requêtes
+- **[Configuration](https://docs.graphify.com/reference/configuration)** : variables d'environnement et réglages
+- **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)** : langages et types de fichiers
+- **[Team workflows](https://docs.graphify.com/guides/team-workflows)** et **[PR review](https://docs.graphify.com/guides/pull-requests)**
+- **[Troubleshooting](https://docs.graphify.com/troubleshooting)** et **[How it works](https://docs.graphify.com/concepts/architecture)**
+
+---
+
 ## Prerequisites
 
 | Exigence | Minimum | Vérifier | Installer |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.11.5–3.14 | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommandé)* | toute version | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | toute version | `pipx --version` | `pip install pipx` |
 
@@ -189,24 +217,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Le dépôt source officiel est [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
-**Étape 1 — installer le paquet :**
+Le quickstart en deux commandes se trouve en haut de ce README. Cette section couvre les méthodes d'installation, les installations à portée projet et chaque plateforme prise en charge.
+
+**Méthodes d'installation** (choisissez-en une) :
 
 ```bash
-# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
-
-# Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup — see note below
+uv tool install graphifyy   # recommended, isolated env (if 'graphify' isn't found after, run: uv tool update-shell)
+pipx install graphifyy      # alternative
+pip install graphifyy       # may need PATH setup, see Troubleshooting below
 ```
 
-**Étape 2 — enregistrer la skill auprès de votre assistant IA :**
-
-```bash
-graphify install
-```
-
-C'est tout. Ouvrez votre assistant IA et tapez `/graphify .`
+Ensuite, exécutez `graphify install` une fois. Il détecte quel assistant vous utilisez et enregistre la skill, il n'y a donc aucune configuration par assistant. Ouvrez votre assistant IA et tapez `/graphify .`
 
 Pour installer la skill de l'assistant dans le dépôt courant plutôt que dans votre
 profil utilisateur, ajoutez `--project` :
@@ -234,7 +255,7 @@ par exemple `graphify claude install --project` ou `graphify codex install --pro
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (détecté automatiquement) ou `graphify install --platform windows` |
 | CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
+| Codex | `graphify install --platform codex` (invoquer avec `$graphify`) |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
@@ -250,14 +271,16 @@ par exemple `graphify claude install --project` ou `graphify codex install --pro
 | Amp | `graphify amp install` |
 | Agent Skills (multi-frameworks) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
+| Pi coding agent | `graphify install --platform pi`, plus `graphify pi guard install` pour le garde natif |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
 Les utilisateurs de Codex ont aussi besoin de `multi_agent = true` sous `[features]` dans `~/.codex/config.toml` pour l'extraction parallèle. CodeBuddy utilise le même mécanisme d'outil Agent et de hook PreToolUse que Claude Code. Factory Droid utilise l'outil `Task` pour le dispatch parallèle des sous-agents. OpenClaw et Aider utilisent une extraction séquentielle (la prise en charge des agents parallèles en est encore à ses débuts sur ces plateformes). Trae utilise l'outil Agent pour le dispatch parallèle des sous-agents et ne prend **pas** en charge les hooks `PreToolUse`, donc AGENTS.md est le mécanisme toujours actif.
 
-`--platform agents` (alias `--platform skills`) cible les emplacements génériques et multi-frameworks d'[Agent-Skills](https://github.com/anthropics/skills) : le `~/.agents/skills/` global de l'utilisateur défini par la spécification (lu par `npx skills` et les frameworks conformes à la spécification) pour une installation globale, et `./.agents/skills/` pour une installation projet (`--project`). Le `graphify install` nu reste mono-plateforme (Claude Code) par conception — utilisez la plateforme nommée `agents` lorsque vous voulez que la skill soit découvrable par n'importe quel framework qui lit `.agents/skills`.
+`--platform agents` (alias `--platform skills`) cible les emplacements génériques et multi-frameworks d'[Agent-Skills](https://github.com/anthropics/skills) : le `~/.agents/skills/` global de l'utilisateur défini par la spécification (lu par `npx skills` et les frameworks conformes à la spécification) pour une installation globale, et `./.agents/skills/` pour une installation projet (`--project`). Le `graphify install` nu reste mono-plateforme (Claude Code) par conception : utilisez la plateforme nommée `agents` lorsque vous voulez que la skill soit découvrable par n'importe quel framework qui lit `.agents/skills`.
+
+Pi n'a pas de hook `PreToolUse`, donc `graphify pi guard install` enregistre une extension Pi native (via le propre `pi install <package directory>` de Pi) qui exécute le `graphify hook-guard` installé avant les appels `read`, `grep`, `find` et les appels `bash` de type recherche de Pi. Les décisions de graphe frais/périmé et le refus de lecture indexée une fois par session via `GRAPHIFY_HOOK_STRICT=1` proviennent de cette même politique, de sorte que Pi reproduit le comportement de hook de Claude Code ; les consignes arrivent sous forme de message d'orientation `<system-reminder source="graphify">`. Il nécessite Pi 0.58.4 ou plus récent : les versions antérieures laissent un message d'orientation sauter le reste d'un lot d'appels d'outils parallèles. Le paquet est livré à l'intérieur de l'installation de Graphify, installez donc Graphify de façon persistante (`uv tool install graphifyy` ou `pipx install graphifyy`, pas `uvx`), redémarrez Pi après l'installation ou la mise à niveau, et retirez-le avec `graphify pi guard uninstall`. Seules les cibles de fichiers locaux sont inspectées ; le hook a besoin de `graphify` sur une entrée `PATH` absolue en dehors du projet, est borné à un appel de deux secondes, 256 KiB-in/64 KiB-out, et échoue en mode ouvert. Le même paquet se charge aussi dans [Oh My Pi](https://github.com/can1357/oh-my-pi) : `omp plugin install "$(graphify pi guard path)"`. Le chemin enregistré contient la version de Python et le venv, donc réexécutez `graphify pi guard install` après avoir changé l'un ou l'autre, et retirez l'ancienne entrée avec `pi remove <old path>`.
 
 > Codex utilise `$graphify` au lieu de `/graphify`.
 
@@ -311,25 +334,66 @@ Cela écrit un petit fichier de configuration qui indique à votre assistant de 
 
 `GRAPH_REPORT.md` reste disponible pour une revue d'architecture globale.
 
-**CodeBuddy** fait les deux mêmes choses que Claude Code : il écrit une section `CODEBUDDY.md` indiquant à CodeBuddy de lire `graphify-out/GRAPH_REPORT.md` avant de répondre aux questions d'architecture, et installe des hooks `PreToolUse` (`.codebuddy/settings.json`) qui se déclenchent avant les commandes de recherche Bash et les lectures de fichiers, orientant plutôt vers `graphify query`.
-
-**Codex** écrit dans `AGENTS.md`, qui est ce qui porte réellement la consigne de graphe toujours active sur cette plateforme. `graphify codex install` enregistre aussi un hook `PreToolUse` dans `.codex/hooks.json` (`graphify hook-check`), mais cette entrée est délibérément un **no-op** : Codex Desktop rejette `hookSpecificOutput.additionalContext` sur `PreToolUse`, donc émettre une incitation à cet endroit casserait les appels d'outils Bash. Contrairement à Claude Code, où le hook (`graphify hook-guard`) fait l'incitation, sur Codex le hook se déclenche et ne fait intentionnellement rien, et `AGENTS.md` est le mécanisme toujours actif.
-
-**Kilo Code** installe la skill Graphify dans `~/.config/kilo/skills/graphify/SKILL.md` et une commande native `/graphify` dans `~/.config/kilo/command/graphify.md`. `graphify kilo install` écrit aussi `AGENTS.md` plus un plugin natif `tool.execute.before` (`.kilo/plugins/graphify.js` + enregistrement dans `.kilo/kilo.json` ou `.kilo/kilo.jsonc`) afin que Kilo bénéficie du même rappel de graphe toujours actif via la configuration native `.kilo`.
-
-**Cursor** écrit `.cursor/rules/graphify.mdc` avec `alwaysApply: true`, de sorte que Cursor l'inclut automatiquement dans chaque conversation, sans hook nécessaire.
+Exactement quels fichiers chaque plateforme écrit (le `CODEBUDDY.md` + les hooks `PreToolUse` de CodeBuddy, l'`AGENTS.md` de Codex, le plugin natif `.kilo` de Kilo, la règle `alwaysApply` de Cursor, et ainsi de suite) est couvert dans **[Always-on setup](https://docs.graphify.com/open-source/vibe-coding)**.
 
 Pour retirer graphify de toutes les plateformes d'un coup : `graphify uninstall` (ajoutez `--purge` pour supprimer aussi `graphify-out/`). Ou utilisez la commande par plateforme (par ex. `graphify claude uninstall`).
+
+### CLI skills or MCP instructions?
+
+Les instructions installées par `graphify install` et celles fournies avec une connexion Graphify MCP décrivent différentes façons d'interroger un graphe :
+
+| Configuration | Consigne à utiliser | Accès aux requêtes |
+|---|---|---|
+| CLI locale et skill d'assistant installée | Les instructions de plateforme écrites par `graphify install` | Exécutez `graphify query`, `graphify path` et `graphify explain` contre le graphe local (`graphify-out/` par défaut). |
+| Serveur Graphify MCP connecté | Les instructions de la connexion et les outils listés par ce serveur | Appelez les outils MCP listés contre le graphe servi par cette connexion. Les noms et descriptions des outils proviennent du serveur. |
+
+Les deux encouragent les requêtes de graphe ciblées avant les recherches de source larges. Choisissez les instructions qui correspondent aux outils auxquels votre assistant peut réellement accéder ; aucun des deux blocs n'établit de règle de préséance universelle pour les fichiers d'instructions de votre assistant. Si vous utilisez les deux intégrations, identifiez quel graphe chacune interroge et choisissez un chemin de requête principal plutôt que de copier deux blocs d'instructions inconditionnels dans `AGENTS.md`.
+
+`graphify install` installe l'intégration locale de l'assistant ; il n'établit pas de connexion MCP. Un client MCP n'a pas besoin d'exécuter des requêtes CLI locales pour utiliser son serveur connecté. Un serveur hébergé localement a toujours besoin de sa propre installation de Graphify et de son propre graphe, tandis qu'une connexion hébergée peut servir un graphe qui n'est pas présent dans le répertoire de travail du client. Si les outils attendus sont manquants, vérifiez l'installation CLI ou la connexion MCP concernée plutôt que de traiter les instructions de l'autre configuration comme interchangeables.
+
+---
+
+## Connectez votre assistant via MCP
+
+Pointez n'importe quel assistant compatible MCP vers un graphe Graphify et il interroge le graphe directement au lieu de grepper des fichiers. Connectez-vous au graphe hébergé (Graphify Cloud, plan gratuit, sans carte) :
+
+```bash
+# Claude Code
+claude mcp add --transport http graphify https://api.graphify.com/mcp
+
+# Codex
+codex mcp add graphify --url https://api.graphify.com/mcp
+
+# Gemini CLI
+gemini extensions install https://github.com/Graphify-Labs/Graphify-gemini-extension
+```
+
+[![Install in Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-Install%20extension-4285F4?logo=googlegemini&logoColor=white)](https://github.com/Graphify-Labs/Graphify-gemini-extension)
+
+Vous préférez rester en local ? Installez le serveur stdio avec `uv tool install "graphifyy[mcp]"` et exécutez `graphify-mcp` contre votre propre `graph.json` — aucun compte requis.
+
+Une fois connecté, votre assistant obtient ces outils :
+
+| Outil | Ce qu'il fait |
+|---|---|
+| `query_graph` | Posez une question en langage naturel et récupérez le sous-graphe pertinent |
+| `shortest_path` | Retracer comment deux nœuds se connectent |
+| `get_node` / `get_neighbors` | Rechercher un nœud et ce avec quoi il est en contact |
+| `get_community` / `god_nodes` | Communautés détectées et les hubs les plus connectés |
+| `get_section` | Lire une région étiquetée du graphe |
+| `graph_stats` | Taille, langages et répartition des arêtes du graphe |
+
+Le serveur expose aussi des outils de PR (`list_prs`, `get_pr_impact`, `triage_prs`) pour que votre assistant puisse examiner les pull requests avec le contexte du graphe.
 
 ---
 
 ## What's in the report
 
-`GRAPH_REPORT.md` résume les god nodes, les communautés et les chemins clés pour une revue d'architecture globale. Comment le graphe est construit et ce qu'il contient : **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
+`GRAPH_REPORT.md` résume les composants les plus connectés, les sous-systèmes et les chemins clés pour une revue d'architecture globale. Comment le graphe est construit et ce qu'il contient : **[How graphify works](https://docs.graphify.com/concepts/architecture)**.
 
 ---
 
-## What files it handles
+## What files it handles: ~40 languages
 
 graphify analyse ~40 langages de programmation localement avec l'AST de tree-sitter, et cartographie les documents, PDF, images et audio/vidéo via une passe sémantique optionnelle. Liste complète : **[Supported inputs](https://docs.graphify.com/concepts/supported-inputs)**.
 
@@ -341,8 +405,8 @@ graphify analyse ~40 langages de programmation localement avec l'AST de tree-sit
 /graphify .                        # build graph for current folder
 /graphify ./docs --update          # re-extract only changed files
 /graphify . --cluster-only         # rerun clustering without re-extracting
-/graphify . --cluster-only --resolution 1.5      # more granular communities
-/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
+/graphify . --cluster-only --resolution 1.5      # more granular subsystems
+/graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from most-connected-component rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
@@ -354,13 +418,13 @@ graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-r
 /graphify add https://arxiv.org/abs/1706.03762   # fetch a paper and add it
 /graphify add <youtube-url>                       # transcribe and add a video
 
-graphify hook install              # auto-rebuild on commit + branch checkout (run `graphify update .` after `git pull` — see "Recommended workflow" below)
+graphify hook install              # auto-rebuild on commit + branch checkout (run `graphify update .` after `git pull`: see "Recommended workflow" below)
 graphify merge-graphs a.json b.json              # combine two graphs
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
 graphify prs --triage              # AI ranks your review queue (uses whatever backend is configured)
-graphify prs --conflicts           # PRs sharing graph communities — merge-order risk
+graphify prs --conflicts           # PRs sharing graph subsystems: merge-order risk
 ```
 
 Voir la [référence complète des commandes](#full-command-reference) ci-dessous.
@@ -370,6 +434,25 @@ Voir la [référence complète des commandes](#full-command-reference) ci-dessou
 ## Ignoring files
 
 graphify respecte `.gitignore` et prend en charge les motifs `--exclude` ainsi qu'un fichier de projet `.graphifyignore`. Détails : **[Configuration](https://docs.graphify.com/reference/configuration)**.
+
+
+## Project configuration
+
+Créez un `.graphifyrc` dans la racine de scan pour les réglages qui appartiennent au projet plutôt qu'à une seule exécution. Un `key=value` par ligne ; les lignes commençant par `#` sont des commentaires.
+
+**Extensions ambiguës.** Certaines extensions désignent des langages différents selon les projets : `.inc` est du PHP sur pfSense, du Pascal dans une arborescence Delphi, du SQL ou de l'assembleur ailleurs ; `.h` est du C ou du C++ ; `.m` est de l'Objective-C ou du MATLAB. graphify doit choisir une valeur par défaut globale, et lorsqu'il choisit mal le fichier n'échoue pas : il est analysé comme le mauvais langage et produit une poignée de nœuds accessoires, de sorte que le graphe semble peuplé alors que les vrais symboles sont absents. Déclarez ce que l'extension signifie dans votre dépôt :
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+La déclaration traverse la classification, la sélection d'extracteur, la grammaire et la résolution, les imports, `graphify watch` et le cache AST (un fichier réanalysé sous un langage différent ne réutilise jamais l'ancienne entrée), et le même `.graphifyrc` est lu par `extract`, `update`, les hooks, le serveur MCP et la skill `/graphify`. Une faute de frappe est signalée une fois sur stderr et le scan se poursuit avec les valeurs par défaut. Comment les déclarations interagissent avec la mise en cache, les reconstructions incrémentales et la résolution des imports : **[Configuration](https://docs.graphify.com/reference/configuration)**.
 
 ---
 
@@ -381,7 +464,7 @@ Commitez ou partagez le graphe pour que toute votre équipe interroge le même c
 
 ## Using the graph directly
 
-Au-delà de votre assistant IA, interrogez `graph.json` directement depuis la CLI avec `graphify query`, `graphify path` et `graphify explain`. Voir **[Ask better graph questions](https://docs.graphify.com/guides/querying)** et la **[query reference](https://docs.graphify.com/reference/query)**.
+Au-delà de votre assistant IA, interrogez `graph.json` directement depuis la CLI avec `graphify query`, `graphify path` et `graphify explain`. Un nom qui correspond à plusieurs nœuds est refusé avec les candidats listés plutôt que deviné. Les scripts peuvent lire le résultat depuis le code de sortie : `0` une réponse, `3` un nom ambigu, `4` aucun nœud correspondant. Voir **[Ask better graph questions](https://docs.graphify.com/guides/querying)** et la **[query reference](https://docs.graphify.com/reference/query)**.
 
 ---
 
@@ -393,12 +476,12 @@ Les backends, les clés d'API, le comportement des hooks et les réglages sont c
 
 ## Privacy
 
-- **Fichiers de code** — traités localement via tree-sitter. Rien ne quitte votre machine. Un corpus composé uniquement de code ne nécessite aucune clé d'API — `graphify extract` tourne entièrement hors ligne. Sur un dépôt mixte, ajoutez `--code-only` pour n'indexer que le code et ignorer les documents/PDF/images qui nécessiteraient autrement un LLM.
-- **Vidéo / audio** — transcrits localement avec faster-whisper. Rien ne quitte votre machine.
-- **Documents, PDF, images** — envoyés à votre assistant IA pour une extraction sémantique (via la skill `/graphify`, en utilisant le modèle que votre session IDE exécute). En mode headless, `graphify extract` nécessite `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), une instance Ollama en cours d'exécution (`OLLAMA_BASE_URL`), des identifiants AWS via la chaîne de fournisseurs standard (Bedrock — pas de clé d'API nécessaire, utilise IAM), ou le binaire CLI `claude` (Claude Code — pas de clé d'API nécessaire, utilise votre abonnement Claude). L'option `--dedup-llm` utilise la même clé.
-- **Résidence des données** — `graphify extract` détecte automatiquement quel fournisseur utiliser en fonction de la clé d'API définie (priorité : Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Pour du code soumis à des exigences de résidence des données, utilisez `--backend ollama` (entièrement local) ou passez une option `--backend` explicite. Kimi (`MOONSHOT_API_KEY`) achemine vers les serveurs de Moonshot AI en Chine.
+- **Fichiers de code** : traités localement via tree-sitter. Rien ne quitte votre machine. Un corpus composé uniquement de code ne nécessite aucune clé d'API : `graphify extract` tourne entièrement hors ligne. Sur un dépôt mixte, ajoutez `--code-only` pour n'indexer que le code et ignorer les documents/PDF/images qui nécessiteraient autrement un LLM.
+- **Vidéo / audio** : transcrits localement avec faster-whisper. Rien ne quitte votre machine.
+- **Documents, PDF, images** : envoyés à votre assistant IA pour une extraction sémantique (via la skill `/graphify`, en utilisant le modèle que votre session IDE exécute). En mode headless, `graphify extract` nécessite `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), une instance Ollama en cours d'exécution (`OLLAMA_BASE_URL`), des identifiants AWS via la chaîne de fournisseurs standard (Bedrock : pas de clé d'API nécessaire, utilise IAM), ou le binaire CLI `claude` (Claude Code : pas de clé d'API nécessaire, utilise votre abonnement Claude). L'option `--dedup-llm` utilise la même clé.
+- **Résidence des données** : `graphify extract` détecte automatiquement quel fournisseur utiliser en fonction de la clé d'API définie (priorité : Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). Pour du code soumis à des exigences de résidence des données, utilisez `--backend ollama` (entièrement local) ou passez une option `--backend` explicite. Kimi (`MOONSHOT_API_KEY`) achemine vers les serveurs de Moonshot AI en Chine.
 - **Pas de télémétrie**, pas de suivi d'utilisation, pas d'analytique.
-- **Journalisation des requêtes** — chaque appel `graphify query`, `graphify path`, `graphify explain` et MCP `query_graph` est journalisé dans `~/.cache/graphify-queries.log` au format JSON Lines (horodatage, question, corpus, nœuds renvoyés, durée). Les réponses complètes du sous-graphe ne sont **pas** stockées par défaut. Définissez `GRAPHIFY_QUERY_LOG_DISABLE=1` pour vous désinscrire, ou `GRAPHIFY_QUERY_LOG=/dev/null` pour le rendre silencieux sans désactiver le chemin de code.
+- **Journalisation des requêtes** : chaque appel `graphify query`, `graphify path`, `graphify explain` et MCP `query_graph` est journalisé dans `~/.cache/graphify-queries.log` au format JSON Lines (horodatage, question, corpus, nœuds renvoyés, durée). Les réponses complètes du sous-graphe ne sont **pas** stockées par défaut. Définissez `GRAPHIFY_QUERY_LOG_DISABLE=1` pour vous désinscrire, ou `GRAPHIFY_QUERY_LOG=/dev/null` pour le rendre silencieux sans désactiver le chemin de code.
 
 ---
 
@@ -416,26 +499,26 @@ Chaque commande et chaque option, avec des exemples : **[CLI reference](https://
 
 ## Learn more
 
-- [docs.graphify.com](https://docs.graphify.com) — documentation complète : guides, référence des commandes et intégrations
-- [How it works](../how-it-works.md) — le pipeline d'extraction, la détection de communautés, le scoring de confiance, les benchmarks
-- [ARCHITECTURE.md](../../ARCHITECTURE.md) — découpage des modules, comment ajouter un langage
-- [Optional integrations](../docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
-- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo) — le livre sur les idées derrière graphify, l'architecture de bout en bout
+- [docs.graphify.com](https://docs.graphify.com) : documentation complète : guides, référence des commandes et intégrations
+- [How it works](../how-it-works.md) : le pipeline d'extraction, la détection de communautés, le scoring de confiance, les benchmarks
+- [ARCHITECTURE.md](../../ARCHITECTURE.md) : découpage des modules, comment ajouter un langage
+- [Optional integrations](../docker-mcp-sqlite.md) : Docker MCP Toolkit + SQLite
+- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo) : le livre sur les idées derrière graphify, l'architecture de bout en bout
 
 ---
 
 ## Graphify Cloud
 
-[**Graphify Cloud**](https://app.graphify.com/login) est la couche toujours active construite au-dessus de graphify. Au lieu d'un graphe que vous reconstruisez à la demande par dossier, elle maintient un graphe vivant unique sur l'ensemble de votre cycle de vie de développement logiciel :
+[**Graphify Cloud**](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss) est la couche toujours active construite au-dessus de graphify. Au lieu d'un graphe que vous reconstruisez à la demande par dossier, elle maintient un graphe vivant unique sur l'ensemble de votre cycle de vie de développement logiciel :
 
-- **80 % de tokens en moins** — une mémoire toujours active signifie que vos agents cessent de relire et de ré-expliquer la base de code à chaque session.
-- **Monorepo et multi-dépôt** — un seul graphe connecté sur chaque service et dépôt, pas un graphe par dossier.
-- **Vérification formelle** — vérifiez les invariants d'architecture et de dépendances contre le graphe vivant.
-- **Revue de code avec une vue d'ensemble de votre SDLC** — voyez comment un changement se répercute sur tout le système avant de merger.
-- **Connecteurs SDLC** — intégrez Sentry, Jira et davantage, afin que les incidents, les tickets et le code vivent dans un seul graphe.
-- **Toujours actif** — se met à jour en continu en arrière-plan sur le code, les documents et les réunions.
+- **80 % de tokens en moins** : une mémoire toujours active signifie que vos agents cessent de relire et de ré-expliquer la base de code à chaque session.
+- **Monorepo et multi-dépôt** : un seul graphe connecté sur chaque service et dépôt, pas un graphe par dossier.
+- **Vérification formelle** : vérifiez les invariants d'architecture et de dépendances contre le graphe vivant.
+- **Revue de code avec une vue d'ensemble de votre SDLC** : voyez comment un changement se répercute sur tout le système avant de merger.
+- **Connecteurs SDLC** : intégrez Sentry, Jira et davantage, afin que les incidents, les tickets et le code vivent dans un seul graphe.
+- **Toujours actif** : se met à jour en continu en arrière-plan sur le code, les documents et les réunions.
 
-**[Commencez un essai gratuit de 14 jours sur app.graphify.com &rarr;](https://app.graphify.com/login)**
+**[Commencez gratuitement, sans carte &rarr;](https://app.graphify.com/signup?utm_source=github&utm_medium=readme&utm_campaign=oss)**
 
 ---
 
@@ -443,7 +526,7 @@ Chaque commande et chaque option, avec des exemples : **[CLI reference](https://
 
 Les contributions sont les bienvenues. Voir **[CONTRIBUTING.md](../../CONTRIBUTING.md)** pour la configuration de développement, les commandes de test et de parité CI, le workflow git, et ce qui fait une contribution solide (les exemples travaillés et les rapports de bugs d'extraction sont les plus utiles). Architecture et comment ajouter un langage : [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-Nouveau ici ? Dites bonjour sur [Discord](https://discord.gg/XDnKVpzdXB) ou dans les [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+Nouveau ici ? Dites bonjour sur [Discord](https://discord.gg/graphify) ou dans les [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
@@ -473,7 +556,7 @@ Vous construisez quelque chose dans l'écosystème graphify ? C'est encouragé. 
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/graphify"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

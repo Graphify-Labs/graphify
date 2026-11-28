@@ -144,7 +144,9 @@ def test_element_access_without_element_type_gives_no_edge(tmp_path):
     assert not {t for s, t in calls if s == save}
 
 
-def test_constructor_calls_are_attributed_to_the_type(tmp_path):
+def test_constructor_calls_are_attributed_to_the_constructor(tmp_path):
+    # A constructor is its own node, so its body's calls are its calls, not
+    # the type's (#4246 credited them to the type before constructors had nodes).
     calls, r = _calls(tmp_path, {
         "Bound.cs": (
             "namespace Demo\n{\n"
@@ -159,7 +161,9 @@ def test_constructor_calls_are_attributed_to_the_type(tmp_path):
             "    }\n}\n"
         ),
     })
-    assert (_find(r, "BoundFunc", "boundfunc"), _find(r, ".GameObjectOf()", "bound")) in calls
+    game_object_of = _find(r, ".GameObjectOf()", "bound")
+    assert (_find(r, ".BoundFunc()", "boundfunc"), game_object_of) in calls
+    assert (_find(r, "BoundFunc", "boundfunc"), game_object_of) not in calls
 
 
 def test_constructor_typed_parameter_and_this_calls_resolve(tmp_path):
@@ -173,7 +177,7 @@ def test_constructor_typed_parameter_and_this_calls_resolve(tmp_path):
             "    }\n}\n"
         ),
     })
-    holder = _find(r, "Holder", "holder")
+    holder = _find(r, ".Holder()", "holder")
     assert (holder, _find(r, ".Apply()", "sequence")) in calls
     assert (holder, _find(r, ".Apply()", "decoy")) not in calls
     assert (holder, _find(r, ".Ping()", "basesvc")) in calls
@@ -238,3 +242,45 @@ def test_element_of_nested_list_stays_unresolved(tmp_path):
         ),
     })
     assert not [c for c in calls if "grid" in c[0]]
+
+
+# A member call whose receiver is not a simple identifier, `this` or `base`
+# (`run.Sequence.Apply()`, `Make().Apply()`, `s.Items.Count()`) captured no
+# receiver name. With no receiver to defer on, the call fell back to the
+# file's bare-name map and bound to the caller's own same-named method — a
+# false self-loop or a wrong sibling edge, written as EXTRACTED.
+
+
+def test_member_chain_never_binds_to_the_callers_same_named_method(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "Model.cs": _MODEL,
+        "Controller.cs": _controller("run.Sequence.Apply();", "public void Apply() { }"),
+    })
+    tick = _find(r, ".Tick()", "controller")
+    assert (tick, _find(r, ".Apply()", "controller")) not in calls
+    assert (tick, _find(r, ".Apply()", "sequence")) in calls
+
+
+def test_chained_receiver_in_one_file_gives_no_self_loop(tmp_path):
+    calls, r = _calls(tmp_path, {"Crowd.cs": (
+        "namespace Demo\n{\n"
+        "    public class Crowd\n    {\n"
+        "        public void LateUpdate() { Pick().look.LateUpdate(); }\n"
+        "        object Pick() { return null; }\n"
+        "    }\n}\n"
+    )})
+    late = _find(r, ".LateUpdate()", "crowd")
+    assert (late, late) not in calls
+
+
+def test_untyped_chain_never_binds_to_a_same_file_method(tmp_path):
+    calls, r = _calls(tmp_path, {"Inventory.cs": (
+        "using System.Collections.Generic;\nnamespace Demo\n{\n"
+        "    public class State { public List<int> Items; }\n"
+        "    public class Inventory\n    {\n"
+        "        public int Count() { return 0; }\n"
+        "        public int Owned(State s) { return s.Items.Count(); }\n"
+        "    }\n}\n"
+    )})
+    owned = _find(r, ".Owned()", "inventory")
+    assert (owned, _find(r, ".Count()", "inventory")) not in calls

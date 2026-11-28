@@ -29,6 +29,21 @@ def _viz_node_limit() -> int:
     except ValueError:
         return MAX_NODES_FOR_VIZ
 
+def _load_learning_overlay(output_path: str, learning_overlay: dict | None) -> dict:
+    """Return the explicit overlay, or best-effort load the work-memory sidecar.
+
+    ``.graphify_learning.json`` lives next to ``graph.json`` and therefore next
+    to ``graph.html``.  Missing or unreadable sidecars yield ``{}`` so an
+    un-annotated render stays byte-identical to the pre-feature output.
+    """
+    if learning_overlay is not None:
+        return learning_overlay
+    try:
+        from graphify.reflect import load_learning_overlay as _llo
+        return _llo(Path(output_path))
+    except Exception:
+        return {}
+
 def _html_styles() -> str:
     return """<style>
   :root {
@@ -112,7 +127,10 @@ function convexHull(pts) {{
 }}
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
+        // Legend toggles only set `hidden` on nodes; getPositions() still
+        // returns them, so skip hidden members or their hull lingers.
         const positions = h.nodes
+            .filter(nid => {{ const n = nodesDS.get(nid); return n && n.hidden !== true; }})
             .map(nid => network.getPositions([nid])[nid])
             .filter(p => p !== undefined);
         if (positions.length < 2) return;
@@ -299,6 +317,52 @@ document.addEventListener('click', e => {{
   if (el && el.dataset.nid !== undefined) focusNode(el.dataset.nid);
 }});
 
+// Sidebar tooltips reuse vis-network's .vis-tooltip style and 100ms tooltipDelay.
+// Names get one only when CSS ellipsis truncates them (the full text is still in
+// the DOM); counts always get one, to say what the number is. Text is set with
+// textContent only (labels are untrusted). Delegated on document so rows rebuilt
+// later (search results, showInfo()) are covered.
+const sidebarTip = document.createElement('div');
+sidebarTip.className = 'vis-tooltip';
+sidebarTip.style.cssText = 'white-space: normal; max-width: 360px; overflow-wrap: break-word;';
+document.body.appendChild(sidebarTip);
+let sidebarTipTimer = null;
+let sidebarTipEl = null;    // element whose text the tooltip shows
+let sidebarTipZone = null;  // element the pointer must leave to hide it
+function hideSidebarTip() {{
+  clearTimeout(sidebarTipTimer);
+  sidebarTip.style.visibility = 'hidden';
+  sidebarTip.textContent = '';
+  sidebarTipEl = sidebarTipZone = null;
+}}
+document.addEventListener('mouseover', e => {{
+  const zone = e.target.closest && e.target.closest('.legend-count, .legend-item, .search-item, .neighbor-link');
+  // Anywhere on a legend row except its count (dot, checkbox, gaps, padding)
+  // stands for the row's name, so moving within the row never re-triggers it.
+  const el = zone && zone.classList.contains('legend-item') ? zone.querySelector('.legend-label') : zone;
+  if (!el || el === sidebarTipEl) return;
+  hideSidebarTip();
+  const isCount = el.classList.contains('legend-count');
+  if (!isCount && el.scrollWidth <= el.clientWidth) return;
+  const text = isCount ? `${{el.textContent}} ${{el.textContent === '1' ? 'node' : 'nodes'}}` : el.textContent;
+  sidebarTipEl = el;
+  sidebarTipZone = zone;
+  const x = e.clientX, y = e.clientY;
+  sidebarTipTimer = setTimeout(() => {{
+    sidebarTip.textContent = text;
+    sidebarTip.style.left = sidebarTip.style.top = '0px';  // measure at full max-width
+    sidebarTip.style.visibility = 'visible';
+    const w = sidebarTip.offsetWidth, h = sidebarTip.offsetHeight;
+    sidebarTip.style.left = Math.max(4, Math.min(x + 12, window.innerWidth - w - 4)) + 'px';
+    sidebarTip.style.top = (y + 16 + h > window.innerHeight ? Math.max(4, y - h - 8) : y + 16) + 'px';
+  }}, 100);
+}});
+document.addEventListener('mouseout', e => {{
+  if (sidebarTipZone && !sidebarTipZone.contains(e.relatedTarget)) hideSidebarTip();
+}});
+// A click rebuilds or hides the row (showInfo(), search pick) without a mouseout.
+document.addEventListener('mousedown', hideSidebarTip);
+
 // Track hovered node — hover detection is more reliable than click params
 let hoveredNodeId = null;
 network.on('hoverNode', params => {{
@@ -479,6 +543,11 @@ def to_html(
 
     If node_limit is set and the graph exceeds it, automatically builds an
     aggregated community-level meta-graph instead of raising ValueError.
+    Without an explicit node_limit, a graph above the effective limit (the
+    env override or MAX_NODES_FOR_VIZ) raises ValueError instead.
+    When the graph is above the vis-network comfort threshold but still within
+    the requested limit, a self-contained Canvas renderer is used instead of
+    the force-simulation view (see ``html_large``).
 
     Returns True when the output was written. Returns False when an aggregated
     view would contain fewer than two communities and is intentionally skipped.
@@ -544,6 +613,25 @@ def to_html(
             f"or reduce input size."
         )
 
+    # Above the vis-network comfort zone, use the Canvas renderer instead of
+    # feeding 20k+ nodes and 50k edges into a browser-side force simulation.
+    # This branch is reached when the effective limit allows node-level output:
+    # an explicit --node-limit from the CLI (its default of 5000 aggregates
+    # instead) or a larger GRAPHIFY_VIZ_NODE_LIMIT.  A bare node_limit=None
+    # above the effective limit raises earlier rather than aggregating.
+    if G.number_of_nodes() > MAX_NODES_FOR_VIZ:
+        from graphify.exporters.html_large import to_large_html
+        written = to_large_html(
+            G,
+            communities,
+            output_path,
+            community_labels=community_labels,
+            member_counts=member_counts,
+            learning_overlay=_load_learning_overlay(output_path, learning_overlay),
+            title=_html_document_title(output_path),
+        )
+        return bool(written)
+
     node_community = _node_community_map(communities)
     degree = dict(G.degree())
     max_deg = max(degree.values(), default=1) or 1
@@ -553,13 +641,7 @@ def to_html(
     # best-effort from the sibling .graphify_learning.json next to the output
     # graph.html (which lives beside graph.json). Empty/missing => no learning
     # fields, so the un-annotated render is byte-identical to pre-feature.
-    if learning_overlay is None:
-        learning_overlay = {}
-        try:
-            from graphify.reflect import load_learning_overlay as _llo
-            learning_overlay = _llo(Path(output_path))
-        except Exception:
-            learning_overlay = {}
+    learning_overlay = _load_learning_overlay(output_path, learning_overlay)
     # Status -> ring color. preferred=green, contested=amber. Tentative gets no
     # ring (it's not yet trustworthy enough to highlight in the map).
     _RING = {"preferred": "#22c55e", "contested": "#f59e0b"}

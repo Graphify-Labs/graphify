@@ -11,6 +11,15 @@ from graphify.extractors.base import (
     _make_id,
     _read_source_bytes,
 )
+from graphify.extractors.engine import _underscore_salted_nid
+from graphify.ids import normalize_id
+
+_ELIXIR_CONTAINER_KEYWORDS = frozenset({"defmodule", "defprotocol", "defimpl"})
+_ELIXIR_DEF_KEYWORDS = frozenset({"def", "defp", "defmacro", "defmacrop",
+                                  "defguard", "defguardp", "defdelegate"})
+# `get!` / `valid?` are the raising / predicate twins of `get` / `valid`: the
+# plain name is the one callers mean, so it keeps the plain id.
+_ELIXIR_PRIVATE_SUFFIXES = ("!", "?")
 
 
 def extract_elixir(path: Path) -> dict:
@@ -193,6 +202,77 @@ def extract_elixir(path: Path) -> dict:
                         return sub
         return None
 
+    def _call_keyword(node) -> str | None:
+        for child in node.children:
+            if child.type == "identifier":
+                return source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+        return None
+
+    def _def_name(arguments_node) -> str | None:
+        for child in arguments_node.children:
+            while child.type == "binary_operator":
+                head = None
+                for sub in child.children:
+                    if sub.type in ("call", "identifier", "binary_operator"):
+                        head = sub
+                        break
+                if head is None:
+                    break
+                child = head
+            if child.type == "call":
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        return source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
+            elif child.type == "identifier":
+                return source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+        return None
+
+    # (container id, container span) -> {plain id: names minting it}.
+    def_groups: dict[tuple[str, int, int], dict[str, set[str]]] = {}
+
+    def _def_nid(container: str, def_node, func_name: str) -> str:
+        """Id for a def, salted when a sibling def differs only by `_`/case/`!`/`?`.
+
+        ``make_id`` drops ``_``, ``!`` and ``?`` and folds case, so
+        ``__schema__`` / ``schema``, ``get`` / ``get!`` or ``valid?`` / ``valid``
+        of one module minted one id: the second def vanished and its calls were
+        credited to its twin. Group the defs of the enclosing module (or of
+        the file, outside any module) by the id they would get, then apply
+        ``_underscore_salted_nid``, the Python/C#/Solidity/Java rule (#3302,
+        #4415, #5058, #5151): a unique public name keeps the plain id, every
+        other colliding name is salted. Defs that collide with nothing keep
+        their old id; clauses of one function share one name, so they are not
+        a collision.
+        """
+        scope = def_node.parent
+        while scope is not None and not (
+                scope.type == "call" and _call_keyword(scope) in _ELIXIR_CONTAINER_KEYWORDS):
+            scope = scope.parent
+        if scope is None:
+            scope = root
+        key = (container, scope.start_byte, scope.end_byte)
+        groups = def_groups.get(key)
+        if groups is None:
+            names: dict[str, set[str]] = {}
+            stack = list(scope.children)
+            while stack:
+                n = stack.pop()
+                if n.type == "call":
+                    keyword = _call_keyword(n)
+                    if keyword in _ELIXIR_CONTAINER_KEYWORDS:
+                        continue
+                    if keyword in _ELIXIR_DEF_KEYWORDS:
+                        args = next((c for c in n.children if c.type == "arguments"), None)
+                        name = _def_name(args) if args is not None else None
+                        if name and normalize_id(name):
+                            names.setdefault(_make_id(container, name), set()).add(name)
+                        continue
+                stack.extend(n.children)
+            groups = {nid: ns for nid, ns in names.items() if len(ns) >= 2}
+            def_groups[key] = groups
+        return _underscore_salted_nid(_make_id(container, func_name), func_name, groups,
+                                      private_suffixes=_ELIXIR_PRIVATE_SUFFIXES)
+
     def walk(node, parent_module_nid: str | None = None) -> None:
         if node.type != "call":
             for child in node.children:
@@ -322,14 +402,18 @@ def extract_elixir(path: Path) -> dict:
             if not func_name:
                 return
             container = parent_module_nid or file_nid
-            func_nid = _make_id(container, func_name)
+            func_nid = _def_nid(container, node, func_name)
             add_node(func_nid, f"{func_name}()", line)
             enclosing[func_nid] = parent_module_nid
             if parent_module_nid:
                 add_edge(parent_module_nid, func_nid, "method", line)
-                module_defs.setdefault((parent_module_nid, func_name), func_nid)
             else:
                 add_edge(file_nid, func_nid, "contains", line)
+            # Keyed by the def's own container (module, or the file for a
+            # top-level def) so a bare call can be resolved to the def that is
+            # actually in scope for its caller, never to an unrelated
+            # same-named def elsewhere in the file (see walk_calls below).
+            module_defs.setdefault((container, func_name), func_nid)
             if do_block_node:
                 function_bodies.append((func_nid, do_block_node))
             else:
@@ -358,11 +442,6 @@ def extract_elixir(path: Path) -> dict:
             walk(child, parent_module_nid)
 
     walk(root)
-
-    label_to_nid: dict[str, str] = {}
-    for n in nodes:
-        normalised = n["label"].strip("()").lstrip(".")
-        label_to_nid[normalised] = n["id"]
 
     module_nid_by_name = {name: nid for nid, name in module_names.items()}
     _MODULE_REF = re.compile(r"(__MODULE__|[A-Z]\w*)(\.[A-Z]\w*)*")
@@ -434,8 +513,26 @@ def extract_elixir(path: Path) -> dict:
             if receiver_module is not None:
                 mod_nid = module_nid_by_name.get(receiver_module)
                 tgt_nid = module_defs.get((mod_nid, callee_name)) if mod_nid else None
+            elif is_member_call:
+                tgt_nid = None
             else:
-                tgt_nid = None if is_member_call else label_to_nid.get(callee_name)
+                # A bare call only ever reaches a def that is actually in
+                # scope for this caller: its own module (or the file, for a
+                # top-level caller) first, then each module brought into
+                # scope by `import`/`use`. Without this a same-named def in
+                # an unrelated sibling module in the same file silently won
+                # over the caller's own def, since both shared one flat
+                # name -> id table.
+                own_container = enclosing.get(caller_nid) or file_nid
+                tgt_nid = module_defs.get((own_container, callee_name))
+                if tgt_nid is None:
+                    for scope_name in _call_scope_for(caller_nid):
+                        scope_nid = module_nid_by_name.get(scope_name)
+                        if scope_nid is None:
+                            continue
+                        tgt_nid = module_defs.get((scope_nid, callee_name))
+                        if tgt_nid is not None:
+                            break
             if tgt_nid and tgt_nid != caller_nid:
                 pair = (caller_nid, tgt_nid)
                 if pair not in seen_call_pairs:

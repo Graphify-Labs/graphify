@@ -106,6 +106,15 @@ def resolve_pascal_inherited_calls(
         name_lower = rc.get("callee")
         if not caller or not name_lower:
             continue
+        if rc.get("qualifier"):
+            # Written as `Obj.Method`, so it is a call on another object, not
+            # an unqualified call that Delphi would look up the caller's own
+            # ancestor chain. Resolving it here would bind it to whichever
+            # ancestor happens to declare that name;
+            # graphify.pascal_singleton_resolution resolves it through the
+            # object instead. (`Self.Method` is not marked as qualified by the
+            # extractor, so it still arrives here.)
+            continue
         owner = owner_of.get(caller)
         if not owner:
             continue

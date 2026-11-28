@@ -701,6 +701,22 @@ def test_razor_inherits():
     assert "inherits" in _relations(r)
 
 
+def test_razor_implements(tmp_path: Path):
+    page = tmp_path / "Clock.razor"
+    page.write_text(
+        "@implements IDisposable\n@implements IAsyncDisposable\n",
+        encoding="utf-8",
+    )
+    r = extract_razor(page)
+    labels = _labels(r)
+    assert "IDisposable" in labels
+    assert "IAsyncDisposable" in labels
+    implements_targets = {
+        e["target"] for e in r["edges"] if e["relation"] == "implements"
+    }
+    assert len(implements_targets) == 2
+
+
 def test_razor_code_methods():
     r = extract_razor(FIXTURES / "sample.razor")
     labels = _labels(r)
@@ -725,3 +741,33 @@ def test_code_extensions():
     from graphify.detect import CODE_EXTENSIONS
     for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".xaml", ".razor", ".cshtml"):
         assert ext in CODE_EXTENSIONS, f"{ext} missing"
+
+
+def test_xaml_codebehind_resolution_does_not_depend_on_directory_order():
+    """Two siblings can match the codebehind name case-insensitively on a
+    case-sensitive filesystem. iterdir() returns them in filesystem order, so
+    resolving the first match made the extracted codebehind -- and every symbol
+    and edge taken from it -- depend on directory layout instead of on the
+    inputs. Before the fix each order below returned a different file."""
+    from unittest.mock import patch
+    from graphify.extract import _xaml_codebehind_path
+
+    xaml = Path("/proj/App.xaml")
+    variants = [Path("/proj/app.xaml.cs"), Path("/proj/App.xaml.CS")]
+
+    resolved = []
+    for order in (variants, list(reversed(variants))):
+        # exists() False forces the sibling scan; the exact-name hit short-
+        # circuits before it and would not exercise this path.
+        with patch.object(Path, "exists", lambda self: False), \
+             patch.object(Path, "iterdir", lambda self, _o=order: iter(_o)):
+            got = _xaml_codebehind_path(xaml)
+        # Compare the exact name, not the Path. WindowsPath.__eq__ is
+        # case-insensitive, so comparing Path objects here would hold on
+        # Windows even when the two orders resolved to different files, and
+        # the test would pass for the wrong reason on half the platforms.
+        resolved.append(got.name if got else None)
+
+    assert resolved[0] == resolved[1], (
+        f"codebehind resolution changed with directory order: {resolved}"
+    )

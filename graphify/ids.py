@@ -41,12 +41,24 @@ how many times the caller has already casefolded.
 """
 from __future__ import annotations
 
+import functools
+import hashlib
 import re
 import unicodedata
+from pathlib import Path
 
-__all__ = ["normalize_id", "make_id"]
+__all__ = ["normalize_id", "make_id", "decl_salt", "DeclIdRegistry"]
+
+# Pre-compiled at module level so the hot path (hundreds of thousands of calls
+# per large-repo extract) doesn't re-parse the pattern on every call. ``re`` caches
+# compiled patterns internally, but compiling once here skips even the cache lookup
+# and makes the UNICODE semantics explicit. ``\w`` on a ``str`` pattern already
+# matches Unicode word characters, so ``re.UNICODE`` is redundant but kept for intent.
+_NONWORD_RE = re.compile(r"[^\w]+", re.UNICODE)
+_COLLAPSE_UNDERSCORE_RE = re.compile(r"_+")
 
 
+@functools.lru_cache(maxsize=1 << 17)
 def normalize_id(s: str) -> str:
     r"""Normalize a single ID string to its canonical form.
 
@@ -71,16 +83,136 @@ def normalize_id(s: str) -> str:
     with a hard cap as a termination guard. Only then apply the ``[^\w]+`` filter,
     so every combining mark casefold introduced has been fully normalized before
     it is filtered (#2614 and its combining-mark follow-on).
+
+    Performance: the result is memoised (``functools.lru_cache``) because the same
+    id strings recur across the AST extractor, the builder's edge-endpoint
+    reconciliation and the dedup pass, and pure-ASCII inputs — the overwhelming
+    majority of real identifiers — take an ASCII fast-path. For a pure-ASCII ``s``,
+    ``s.casefold() == s.lower()`` stays ASCII, NFKC is the identity on ASCII, and the
+    loop therefore reaches its fixpoint at ``s.lower()`` in two passes; computing
+    ``s.lower()`` directly is byte-identical to running the loop, verified by a
+    differential check over every identifier harvested from this source tree plus an
+    adversarial Unicode set. Non-ASCII inputs still run the full fixpoint loop, so
+    semantics are unchanged for every input.
     """
-    cur = s
-    for _ in range(6):
-        nxt = unicodedata.normalize("NFKC", cur.casefold())
-        if nxt == cur:
-            break
-        cur = nxt
-    cur = re.sub(r"[^\w]+", "_", cur, flags=re.UNICODE)
-    cur = re.sub(r"_+", "_", cur)
+    if s.isascii():
+        # ASCII fast-path: casefold==lower and NFKC is the identity on ASCII, so the
+        # fixpoint loop would converge to exactly s.lower() (see docstring).
+        cur = s.lower()
+    else:
+        cur = s
+        for _ in range(6):
+            nxt = unicodedata.normalize("NFKC", cur.casefold())
+            if nxt == cur:
+                break
+            cur = nxt
+    cur = _NONWORD_RE.sub("_", cur)
+    cur = _COLLAPSE_UNDERSCORE_RE.sub("_", cur)
     return cur.strip("_")
+
+
+def decl_salt(name: str) -> str:
+    """Stable 12-hex digest appended when a declaration id collides (#4854)."""
+    return hashlib.sha1(
+        name.encode("utf-8", "replace"), usedforsecurity=False
+    ).hexdigest()[:12]
+
+
+class DeclIdRegistry:
+    """Assign unique ids to declarations in one file.
+
+    Ownership is keyed by the id the declaration would have used plus its kind.
+    The first declaration to claim an id keeps it; a later one whose names
+    normalize alike is salted apart when it is a different kind spelled
+    differently (``class Foo`` / ``function foo``, #4904) or the same kind
+    spelled differently only by leading/trailing underscores (``_save`` /
+    ``save``, #2810). A same-kind respelling that differs otherwise (``Foo`` /
+    ``FOO``) and an identical spelling (prototype + body, a reopened class) reuse
+    the id. A reference lookup by name only answers when exactly one
+    declaration in the file spells that name; an ambiguous name keeps the
+    caller's existing fallback.
+    """
+
+    def __init__(self, reserved_ids=()):
+        self._assigned: dict[tuple[str, str], str] = {}
+        self._owners: dict[str, tuple[str, str]] = {
+            rid: ("file", rid) for rid in reserved_ids
+        }
+        self._by_name: dict[tuple[str, str], set[str]] = {}
+        self._salted: set[str] = set()
+        self._spelled: dict[str, str] = {}
+        self._respelled: dict[tuple[str, str, str], str] = {}
+
+    def resolve(self, nid: str, name: str, kind: str, taken) -> str:
+        key = (kind, nid)
+        owner = self._owners.get(nid)
+        if owner == key:
+            first = self._spelled.get(nid, name)
+            if name == first or name.strip("_") != first.strip("_"):
+                return self._assigned[key]
+            # Same kind, spelled apart only by underscores (`_save` then
+            # `save`): two declarations, not a re-declaration (#2810). Salted
+            # from the spelling like any other collision, memoised per spelling.
+            respelled = self._respelled.get((kind, nid, name))
+            if respelled is not None:
+                return respelled
+            candidate = self._salt(nid, name, kind, taken)
+            self._owners[candidate] = (kind, candidate)
+            self._assigned[(kind, candidate)] = candidate
+            self._respelled[(kind, nid, name)] = candidate
+            return candidate
+        if nid not in taken and owner is None:
+            self._owners[nid] = key
+            self._assigned[key] = nid
+            self._spelled[nid] = name
+            self._by_name.setdefault((kind, normalize_id(name)), set()).add(nid)
+            return nid
+        assigned = self._assigned.get(key)
+        if assigned is not None:
+            return assigned
+        # An id already used by a real declaration is a duplicate reference to
+        # that declaration (prototype owner, same name re-declared); reuse it
+        # instead of minting a second node. Only a salted id, whose owner stole
+        # the spelling from this declaration, forces a counter-salt (#4854). A
+        # different kind only counts as a duplicate when spelled the same (TS
+        # `class Foo` + `namespace Foo`): `class Foo` + `function foo` are two (#4904).
+        if (nid in taken and owner is not None and owner[0] != "file"
+                and nid not in self._salted
+                and (owner[0] == kind or self._spelled.get(nid) == name)):
+            return nid
+        candidate = self._salt(nid, name, kind, taken)
+        self._owners[candidate] = key
+        self._assigned[key] = candidate
+        return candidate
+
+    def _salt(self, nid: str, name: str, kind: str, taken) -> str:
+        """Mint and record a salted id for ``name``; the caller records ownership."""
+        base = make_id(nid, decl_salt(name))
+        candidate = base
+        counter = 2
+        while candidate in taken or candidate in self._owners:
+            candidate = make_id(base, str(counter))
+            counter += 1
+        self._salted.add(candidate)
+        self._spelled[candidate] = name
+        self._by_name.setdefault((kind, normalize_id(name)), set()).add(candidate)
+        return candidate
+
+    def lookup(self, name: str, kinds=("type", "fn", "var", "ns", "alias")) -> str | None:
+        norm = normalize_id(name)
+        # A declaration spelled exactly like the reference wins over one that
+        # only normalizes alike: once #4904 keeps `Session` and `session()`
+        # apart, `Session s;` names the declaration spelled `Session`, whatever
+        # its kind. Without an exact spelling the kind order decides, as before.
+        exact = {i for kind in kinds for i in self._by_name.get((kind, norm), ())
+                 if self._spelled.get(i) == name}
+        if len(exact) == 1:
+            return next(iter(exact))
+        for kind in kinds:
+            ids = self._by_name.get((kind, norm))
+            if ids:
+                return next(iter(ids)) if len(ids) == 1 else None
+        return None
 
 
 def make_id(*parts: str) -> str:
@@ -91,3 +223,29 @@ def make_id(*parts: str) -> str:
     what the builder produces from the joined string.
     """
     return normalize_id("_".join(p.strip("_.") for p in parts if p))
+
+
+def _file_stem(path: Path) -> str:
+    """Stem used as the node-ID prefix for a file and its symbols.
+
+    The full path (extension dropped) is preserved as path segments; ``make_id``
+    later collapses the separators to underscores. Using every segment — not just
+    the immediate parent dir (#1504) — means same-named files in different
+    directories get distinct IDs instead of colliding into one
+    last-writer-wins node:
+
+        docs/v1/api/README.md -> docs/v1/api/README -> docs_v1_api_readme
+        docs/v2/api/README.md -> docs/v2/api/README -> docs_v2_api_readme
+
+    Top-level files keep a bare stem (``setup.py`` -> ``setup``). When passed an
+    absolute path the whole path is encoded; the extract() id-remap post-pass
+    re-derives the canonical repo-relative form from ``source_file`` so the on-disk
+    location can't leak into the persisted IDs (#502).
+
+    Returns "" for a path with no name (``Path('.')`` — a source_file that equals
+    the scan root, so it has no per-file stem). Guarding here keeps
+    ``path.with_suffix("")`` from raising ``ValueError: '.' has an empty name`` and
+    protects every caller, not just ``_semantic_id_remap`` (#1618)."""
+    if not path.name:
+        return ""
+    return path.with_suffix("").as_posix()

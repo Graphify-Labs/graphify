@@ -791,6 +791,41 @@ def test_cross_file_call_god_node_guard_two_real_defs(tmp_path):
     assert save_calls == [], f"god-node guard must bail, got {save_calls}"
 
 
+def test_module_import_does_not_promote_unimported_same_named_call(tmp_path):
+    """#2945: importing a module for a different symbol must not certify a
+    same-named call it never imported.
+
+    ``c.py`` does ``from b import other`` and calls ``_make_id()``. ``_make_id``
+    exists in both ``a.py`` and ``b.py``, but ``c`` never imported it. The edge
+    may still resolve through module evidence (for connectivity), but it must
+    stay INFERRED rather than being labelled EXTRACTED.
+    """
+    (tmp_path / "a.py").write_text("def _make_id(*parts):\n    return 'a'\n")
+    (tmp_path / "b.py").write_text(
+        "def _make_id(*parts):\n    return 'b'\n\n\ndef other():\n    return 1\n"
+    )
+    (tmp_path / "c.py").write_text(
+        "from b import other\n\n\ndef caller():\n    return _make_id('x')\n"
+    )
+
+    result = extract(
+        [tmp_path / "a.py", tmp_path / "b.py", tmp_path / "c.py"],
+        cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "caller()"
+        and nodes[e["target"]]["label"] == "_make_id()"
+    ]
+    assert calls, "the call should still resolve for graph connectivity"
+    assert all(e["confidence"] != "EXTRACTED" for e in calls), (
+        "module-only import evidence must not certify an unimported symbol: "
+        f"{calls}"
+    )
+
+
 def test_cross_file_call_survives_many_test_mocks(tmp_path):
     """One src def + many same-named test stubs + caller => exactly one src edge."""
     src = tmp_path / "src"
@@ -1811,6 +1846,74 @@ def test_python_module_call_resolves_when_same_file_imports_function_with_nested
     assert edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_python_module_qualified_call_resolves_from_enclosing_scopes(tmp_path):
+    """`mod.func()` inside a class method or a nested function resolves against
+    the enclosing file's imports (#2447, cause C).
+
+    A method hangs off its class via a `method` edge rather than a `contains`
+    edge from the file node, and a nested function's `contains` parent is the
+    enclosing function, so looking up `file_of_node.get(caller)` directly missed
+    the file node's import set in both cases."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    mod = scripts / "mod.py"
+    mod.write_text("def func():\n    return 1\n")
+    caller = scripts / "caller.py"
+    caller.write_text(
+        "import mod\n\n"
+        "class Worker:\n"
+        "    def run(self):\n"
+        "        return mod.func()\n\n"
+        "class OuterClass:\n"
+        "    class InnerClass:\n"
+        "        def nested_run(self):\n"
+        "            return mod.func()\n\n"
+        "def outer():\n"
+        "    def inner():\n"
+        "        def deep_inner():\n"
+        "            return mod.func()\n"
+        "        return mod.func() + deep_inner()\n"
+        "    return inner()\n"
+    )
+    result = extract([mod, caller], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+
+    def call_edges_from(caller_label: str) -> list[dict]:
+        return [
+            e for e in result["edges"]
+            if e["relation"] == "calls"
+            and nodes[e["source"]]["label"].lstrip(".").removesuffix("()") == caller_label
+            and "func" in nodes[e["target"]]["label"]
+            and "mod.py" in (nodes[e["target"]].get("source_file") or "")
+        ]
+
+    for caller_label in ("run", "nested_run", "inner", "deep_inner"):
+        edges = call_edges_from(caller_label)
+        assert len(edges) == 1, f"expected {caller_label}->func edge, got {edges}"
+        assert edges[0]["confidence"] == "EXTRACTED"
+
+    # Cause A guard: bare `import mod` at the scan root when `mod.py` lives only
+    # under `scripts/` still does not resolve from either file scope or a method.
+    root_caller = tmp_path / "root_caller.py"
+    root_caller.write_text(
+        "import mod\n\n"
+        "def root_use():\n"
+        "    return mod.func()\n\n"
+        "class RootWorker:\n"
+        "    def root_run(self):\n"
+        "        return mod.func()\n"
+    )
+    root_result = extract([mod, root_caller], cache_root=tmp_path, root=tmp_path)
+    root_nodes = {n["id"]: n for n in root_result["nodes"]}
+    root_calls = [
+        e for e in root_result["edges"]
+        if e["relation"] == "calls"
+        and "func" in root_nodes.get(e["target"], {}).get("label", "")
+        and "mod.py" in (root_nodes.get(e["target"], {}).get("source_file") or "")
+    ]
+    assert root_calls == [], f"unresolvable root import must not link to scripts/mod.py: {root_calls}"
+
+
 def test_python_from_import_alias_module_call_resolves(tmp_path):
     """`from pkg import mod as alias` must resolve `alias.func()` the same way the
     unaliased `from pkg import mod` / `mod.func()` form already does (#2082). The
@@ -2814,12 +2917,12 @@ def test_unqualified_call_binds_to_the_nearest_class_that_declares_it(tmp_path, 
     calls = _single_file_call_pairs(tmp_path, source, ext)
     assert ("svc_outer_a", "svc_outer_b") in calls
     assert ("svc_outer_a", "svc_base_ping") in calls
-    assert ("svc_inner_c", "svc_inner_b") in calls
-    assert ("svc_inner_c", "svc_outer_s") in calls
+    assert ("svc_outer_inner_c", "svc_outer_inner_b") in calls
+    assert ("svc_outer_inner_c", "svc_outer_s") in calls
     assert ("svc_child_run", "svc_child_ping") in calls
     assert not any(tgt.startswith("svc_other_") for _, tgt in calls), calls
-    assert ("svc_outer_a", "svc_inner_b") not in calls
-    assert ("svc_inner_c", "svc_outer_b") not in calls
+    assert ("svc_outer_a", "svc_outer_inner_b") not in calls
+    assert ("svc_outer_inner_c", "svc_outer_b") not in calls
     assert ("svc_child_run", "svc_base_ping") not in calls
     # the second run reads the AST cache written by the first
     assert _single_file_call_pairs(tmp_path, source, ext) == calls
@@ -2839,7 +2942,7 @@ def test_nested_class_declared_after_the_method_does_not_capture_the_call(tmp_pa
     b() in Outer.a to Inner.b."""
     calls = _single_file_call_pairs(tmp_path, _NESTED_SAME_NAME_SOURCES[ext], ext)
     assert ("svc_outer_a", "svc_outer_b") in calls
-    assert ("svc_outer_a", "svc_inner_b") not in calls
+    assert ("svc_outer_a", "svc_outer_inner_b") not in calls
 
 
 # Each fixture has a method that only one class on the caller's path declares and an
@@ -2872,8 +2975,8 @@ _TWO_LEVELS_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_TWO_LEVELS_SOURCES))
 def test_unqualified_call_walks_out_through_every_enclosing_class(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _TWO_LEVELS_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_outer_b") in calls
-    assert ("svc_inner_run", "svc_later_b") not in calls
+    assert ("svc_outer_mid_inner_run", "svc_outer_b") in calls
+    assert ("svc_outer_mid_inner_run", "svc_later_b") not in calls
 
 
 _ENCLOSING_BASE_SOURCES = {
@@ -2887,8 +2990,8 @@ _ENCLOSING_BASE_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_ENCLOSING_BASE_SOURCES))
 def test_unqualified_call_reaches_a_base_of_the_enclosing_class(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _ENCLOSING_BASE_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_base_ping") in calls
-    assert ("svc_inner_run", "svc_other_ping") not in calls
+    assert ("svc_outer_inner_run", "svc_base_ping") in calls
+    assert ("svc_outer_inner_run", "svc_other_ping") not in calls
 
 
 # Scala 3 rejects this shape (b is defined in Outer and inherited in Inner), so Scala has no fixture.
@@ -2903,9 +3006,9 @@ _OWN_BASE_FIRST_SOURCES = {
 def test_unqualified_call_prefers_the_callers_base_to_the_enclosing_class(tmp_path, ext):
     """Inner inherits b() from Base, which is nearer than the b() of the Outer around it."""
     calls = _single_file_call_pairs(tmp_path, _OWN_BASE_FIRST_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_base_b") in calls
-    assert ("svc_inner_run", "svc_outer_b") not in calls
-    assert ("svc_inner_run", "svc_other_b") not in calls
+    assert ("svc_outer_inner_run", "svc_base_b") in calls
+    assert ("svc_outer_inner_run", "svc_outer_b") not in calls
+    assert ("svc_outer_inner_run", "svc_other_b") not in calls
 
 
 # A base declared further down the file used to be invisible to the lookup, which then
@@ -2951,11 +3054,11 @@ _BASE_AFTER_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_BASE_AFTER_SOURCES))
 def test_unqualified_call_reaches_a_base_declared_after_the_class(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _BASE_AFTER_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_base_b") in calls
+    assert ("svc_outer_inner_run", "svc_base_b") in calls
     assert ("svc_child_run", "svc_base_ping") in calls
     assert ("svc_leaf_run", "svc_base_ping") in calls
     assert not any(tgt.startswith("svc_other_") for _, tgt in calls), calls
-    assert ("svc_inner_run", "svc_outer_b") not in calls
+    assert ("svc_outer_inner_run", "svc_outer_b") not in calls
 
 
 _ORDER_BLOCKS = {
@@ -2990,7 +3093,7 @@ def test_unqualified_call_targets_do_not_depend_on_declaration_order(tmp_path, e
 
     expected = {
         ("svc_outer_a", "svc_outer_b"), ("svc_outer_a", "svc_base_ping"), ("svc_outer_a", "svc_mid_pong"),
-        ("svc_inner_c", "svc_base_ping"), ("svc_inner_c", "svc_outer_b"),
+        ("svc_outer_inner_c", "svc_base_ping"), ("svc_outer_inner_c", "svc_outer_b"),
     }
     for i, order in enumerate(itertools.permutations(_ORDER_BLOCKS[ext])):
         src_dir = tmp_path / str(i)
@@ -3024,9 +3127,9 @@ _RELATION_SOURCES = {
 @pytest.mark.parametrize("ext", sorted(_RELATION_SOURCES))
 def test_unqualified_call_reaches_an_interface_default_method_or_a_mixed_in_trait(tmp_path, ext):
     calls = _single_file_call_pairs(tmp_path, _RELATION_SOURCES[ext], ext)
-    assert ("svc_inner_run", "svc_greeter_greet") in calls
-    assert ("svc_inner_run", "svc_outer_greet") not in calls
-    assert ("svc_inner_run", "svc_other_greet") not in calls
+    assert ("svc_outer_inner_run", "svc_greeter_greet") in calls
+    assert ("svc_outer_inner_run", "svc_outer_greet") not in calls
+    assert ("svc_outer_inner_run", "svc_other_greet") not in calls
 
 
 def test_csharp_class_does_not_inherit_the_members_of_an_interface(tmp_path):
@@ -3041,10 +3144,10 @@ def test_csharp_class_does_not_inherit_the_members_of_an_interface(tmp_path):
         "interface IThing { void b() {} }\n"
         "interface Thing { void b() {} }\n"
     ), "cs")
-    assert ("svc_inner_run", "svc_outer_b") in calls
-    assert ("svc_inner_run", "svc_ithing_b") not in calls
-    assert ("svc_inner2_run2", "svc_outer_b") in calls
-    assert ("svc_inner2_run2", "svc_thing_b") not in calls
+    assert ("svc_outer_inner_run", "svc_outer_b") in calls
+    assert ("svc_outer_inner_run", "svc_ithing_b") not in calls
+    assert ("svc_outer_inner2_run2", "svc_outer_b") in calls
+    assert ("svc_outer_inner2_run2", "svc_thing_b") not in calls
 
 
 def test_csharp_base_class_named_like_an_interface_is_a_base(tmp_path):
@@ -3058,9 +3161,9 @@ def test_csharp_base_class_named_like_an_interface_is_a_base(tmp_path):
         "class IOBase { public void b() {} }\n"
         "class Other { public void b() {} }\n"
     ), "cs")
-    assert ("svc_inner_run", "svc_iobase_b") in calls
-    assert ("svc_inner_run", "svc_outer_b") not in calls
-    assert ("svc_inner_run", "svc_other_b") not in calls
+    assert ("svc_outer_inner_run", "svc_iobase_b") in calls
+    assert ("svc_outer_inner_run", "svc_outer_b") not in calls
+    assert ("svc_outer_inner_run", "svc_other_b") not in calls
 
 
 _RECEIVER_CALL_SOURCES = {
@@ -3122,24 +3225,26 @@ def test_csharp_two_classes_of_one_name_leave_a_base_unresolved(tmp_path):
     assert ("svc_n3_child_run", "svc_n2_base_ping") not in calls, calls
 
 
-def test_java_same_named_nested_classes_end_the_walk(tmp_path):
-    """Two nested classes with one simple name are one node, so which class lies
-    around it is unknown: the walk neither chooses the first nor the last, and the
-    call keeps the file-wide lookup that applies when no class on the path has the name."""
+def test_java_same_named_nested_classes_resolve_to_their_own_owner(tmp_path):
+    """Two nested classes sharing one simple name (A.Node, B.Node) are now distinct
+    owner-qualified nodes (#5185), so a call in A.Node.run resolves out through its
+    own enclosing A to A.m, never to B.m or a collapsed shared node."""
     calls = _single_file_call_pairs(tmp_path, (
         "class A { void m() {} class Node { void run() { m(); } } }\n"
         "class B { void m() {} class Node {} }\n"
         "class C { void m() {} }\n"
     ), "java")
-    assert ("svc_node_run", "svc_a_m") not in calls
-    assert ("svc_node_run", "svc_b_m") not in calls
-    # a name the shared node itself declares is still its own
+    assert ("svc_a_node_run", "svc_a_m") in calls
+    assert ("svc_a_node_run", "svc_b_m") not in calls
+    assert ("svc_a_node_run", "svc_c_m") not in calls
+    # a name the nested class itself declares is still its own, not the enclosing one
     calls = _single_file_call_pairs(tmp_path, (
         "class A { void m() {} class Node { void m() {} void run() { m(); } } }\n"
         "class B { void m() {} class Node {} }\n"
         "class C { void m() {} }\n"
     ), "java")
-    assert ("svc_node_run", "svc_node_m") in calls
+    assert ("svc_a_node_run", "svc_a_node_m") in calls
+    assert ("svc_a_node_run", "svc_a_m") not in calls
 
 
 def test_java_anonymous_class_reads_the_in_file_type_it_extends(tmp_path):
@@ -5045,7 +5150,9 @@ def test_extract_json_large_file_skipped(tmp_path):
     # Write a JSON file just over 1 MiB
     big.write_bytes(b'{"x": "' + b"a" * (1_048_576) + b'"}')
     result = extract_json(big)
-    assert "error" in result
+    # Declined by design (#1224 size cap), so it is a skip, not a failed source.
+    assert "error" not in result
+    assert "skipped" in result
     assert result["nodes"] == []
 
 
@@ -5139,6 +5246,11 @@ def test_extensionless_shebang_via_dispatch(tmp_path):
     split = tmp_path / "runner"
     split.write_text("#!/usr/bin/env -S bash -eu\necho hi\n")
     assert _get_extractor(split) is extract_bash
+
+    # A version-suffixed interpreter resolves like the generic name
+    versioned = tmp_path / "tool"
+    versioned.write_text("#!/usr/bin/env python3.12\nprint('hi')\n")
+    assert _get_extractor(versioned) is extract_python
 
 
 def test_extensionless_without_usable_shebang_stays_unsupported(tmp_path):
@@ -5551,6 +5663,47 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
     # final progress line reports the uncached count (100), not the total (105)
     assert "100/100 uncached files (100%)" in out
     assert "105/105 files" not in out, "final line must not switch to total_files (#1693)"
+
+
+def test_extract_reports_ast_cache_hit_rate_over_file_total(tmp_path, capsys):
+    # #4740: every progress line counts against uncached_work, so a run whose
+    # only uncached files are the JS/TS ones ends at "5/5 uncached files (100%)"
+    # and reads as a perfect cache hit rate. The new "AST cache:" line reports
+    # the hit rate against the FILE TOTAL, so the denominator cannot shrink to
+    # the uncached set.
+    py = []
+    for i in range(100):
+        p = tmp_path / f"m{i}.py"
+        p.write_text(f"def f{i}():\n    return {i}\n")
+        py.append(p)
+    ts = []
+    for i in range(5):
+        p = tmp_path / f"t{i}.ts"  # JS/TS bypass the AST cache entirely
+        p.write_text(f"export function g{i}() {{ return {i}; }}\n")
+        ts.append(p)
+
+    # 1. cold run: nothing is cached yet, so the hit count is 0 of the total
+    extract(py, cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+    assert "AST cache: 0/100 files served from cache (0%); 100 to extract" in out
+    assert "100/100 uncached files (100%)" in out  # progress line is unchanged
+
+    # 2. warm run over the cacheable-only corpus: every file served from cache
+    extract(py, cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+    assert "AST cache: 100/100 files served from cache (100%); 0 to extract" in out
+
+    # 3. mixed corpus: only the 5 .ts files are uncached, so the progress line
+    #    reports "5/5 uncached files (100%)" while the real hit rate over the 105
+    #    files is 95%. This is the case the fix exists for.
+    extract(py + ts, cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+    assert "AST cache: 100/105 files served from cache (95%); 5 to extract" in out
+    assert "5/5 uncached files (100%)" in out, (
+        "the progress line still counts the uncached set; only the summary line "
+        "reports the total (#4740)"
+    )
+    assert "105/105 uncached files" not in out
 
 
 def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
@@ -6164,6 +6317,57 @@ def test_3252_metadata_preservation(tmp_path):
     assert node_by_id[param_ref["target"]]["source_file"] == "models.py"
 
 
+def test_3252_repoint_visits_only_the_importing_files_edges(tmp_path, monkeypatch):
+    """#4980: the #3252 repoint pass must not scan every edge once per file.
+
+    It used to loop over all of ``all_edges`` for each Python file with import
+    targets, so the pass cost files x edges. Counting full passes over
+    ``all_edges`` shows the count no longer grows with the number of importing
+    files, and every consumer's reference is still repointed.
+    """
+    import graphify.extract as extract_mod
+
+    (tmp_path / "models.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    consumers = [tmp_path / f"service_{i}.py" for i in range(8)]
+    for i, path in enumerate(consumers):
+        path.write_text(
+            f"from models import User\ndef get_user_{i}(u: User) -> User:\n    pass\n",
+            encoding="utf-8",
+        )
+
+    class _CountingEdges(list):
+        full_passes = 0
+
+        def __iter__(self):
+            self.full_passes += 1
+            return super().__iter__()
+
+    passes: list[int] = []
+    real_resolve = extract_mod._resolve_cross_file_imports
+
+    def counting_resolve(per_file, paths, all_nodes=None, all_edges=None, **kwargs):
+        edges = _CountingEdges(all_edges or [])
+        result = real_resolve(per_file, paths, all_nodes, edges, **kwargs)
+        passes.append(edges.full_passes)
+        return result
+
+    monkeypatch.setattr(extract_mod, "_resolve_cross_file_imports", counting_resolve)
+    res = extract([tmp_path / "models.py", *consumers], root=tmp_path, cache_root=tmp_path)
+
+    assert passes, "cross-file import resolution did not run"
+    # One pass builds the per-file index; two more collect the still-referenced ids.
+    # The old code added one full pass per importing file (8 here).
+    assert max(passes) <= 3, passes
+
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+    param_refs = [
+        e for e in res["edges"]
+        if e.get("relation") == "references" and e.get("context") == "parameter_type"
+    ]
+    assert len(param_refs) == len(consumers)
+    assert all(node_by_id[e["target"]]["source_file"] == "models.py" for e in param_refs)
+
+
 def test_python_external_calls_survive_real_incremental_context(tmp_path):
     """A changed caller shares an external stub with an unchanged caller."""
     import subprocess
@@ -6200,3 +6404,264 @@ def test_python_external_calls_survive_real_incremental_context(tmp_path):
     assert "incremental scan" in incremental_stdout
     assert "AST extraction on 2 code files" in incremental_stdout
     assert incremental_calls == [("ext_a_fetch_a", "requests", "L5"), ("ext_b_fetch_b", "requests", "L4")]
+
+
+# ── #4569: a package.json dependency has a manifest entry (key node) and a ref node ──
+import networkx as nx  # noqa: E402
+
+_PKG = """{
+  "name": "demo",
+  "version": "1.0.0",
+  "scripts": {"build": "vite build"},
+  "%s": {
+    "react": "^19.0.0"
+  }
+}
+"""
+_TSX = 'import React from "react";\nexport const App = () => React.createElement("div");\n'
+_DEP_BLOCKS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+
+
+def _built(tmp_path, files):
+    paths = []
+    for name, body in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        paths.append(path)
+    return build_from_json(extract(paths, cache_root=tmp_path, parallel=False), directed=True)
+
+
+def _manifest(G, manifest="package.json"):
+    return next(n for n, d in G.nodes(data=True)
+                if str(d.get("source_file", "")).endswith(manifest) and str(d.get("label", "")).endswith("package.json"))
+
+
+def _entries(G, name, manifest="package.json"):
+    """A manifest's entries for dependency `name`, found by their place in the graph and not by
+    label: every node a dependency block `contains` for it (a fix may decorate the label as
+    `name@range`), plus every node the manifest `imports` under that name."""
+    def is_entry(label):
+        return label == name or str(label).startswith(name + "@")
+
+    root, found = _manifest(G, manifest), []
+    for _, block, d in G.edges(root, data=True):
+        if d.get("relation") == "contains" and G.nodes[block].get("label") in _DEP_BLOCKS:
+            found += [c for _, c, e in G.edges(block, data=True)
+                      if e.get("relation") == "contains" and is_entry(G.nodes[c].get("label"))]
+    found += [t for _, t, d in G.edges(root, data=True)
+              if d.get("relation") == "imports" and is_entry(G.nodes[t].get("label"))]
+    return list(dict.fromkeys(found))
+
+
+def _node(G, label, suffix):
+    return next(n for n, d in G.nodes(data=True)
+                if d.get("label") == label and str(d.get("source_file", "")).endswith(suffix))
+
+
+def _hops(G, a, b):
+    U = G.to_undirected()
+    return nx.shortest_path_length(U, a, b) if nx.has_path(U, a, b) else None
+
+
+def test_a_dependency_entry_is_connected_to_the_code_that_imports_the_package(tmp_path):
+    G = _built(tmp_path, {"package.json": _PKG % "dependencies", "src/main.tsx": _TSX})
+    main, entries = _node(G, "main.tsx", "main.tsx"), _entries(G, "react")
+    assert entries
+    for entry in entries:
+        hops = _hops(G, entry, main)
+        assert hops is not None and hops <= 2, f"{entry} is {hops} hops from main.tsx"
+
+
+@pytest.mark.parametrize("key", _DEP_BLOCKS)
+def test_every_dependency_block_connects_its_entries_to_the_importing_code(tmp_path, key):
+    G = _built(tmp_path, {"package.json": _PKG % key, "src/main.tsx": _TSX})
+    main = _node(G, "main.tsx", "main.tsx")
+    entries = _entries(G, "react")
+    assert entries
+    for entry in entries:
+        hops = _hops(G, entry, main)
+        assert hops is not None and hops <= 2, f"{key}: {entry} is {hops} hops away"
+
+
+def test_no_import_runs_between_two_nodes_with_the_same_label_and_no_edge_is_a_self_loop(tmp_path):
+    G = _built(tmp_path, {"package.json": _PKG % "dependencies", "src/main.tsx": _TSX})
+    for u, v, d in G.edges(data=True):
+        assert u != v, f"self-loop {u}"
+        if d.get("relation") in ("imports", "imports_from"):
+            assert G.nodes[u].get("label") != G.nodes[v].get("label"), f"{d['relation']}: {u} -> {v}"
+
+
+def test_a_dependency_named_like_a_local_module_stays_a_namespaced_external_ref(tmp_path):
+    pkg = '{\n  "name": "demo",\n  "dependencies": {\n    "utils": "^1.0.0"\n  }\n}\n'
+    G = _built(tmp_path, {"package.json": pkg, "src/utils.ts": "export const x = 1;\n"})
+    local = _node(G, "utils.ts", "utils.ts")
+    manifest = _manifest(G)
+    targets = [v for _, v, d in G.edges(manifest, data=True) if d.get("relation") == "imports"]
+    assert targets and local not in targets
+    assert all(t.startswith("ref") and G.nodes[t].get("file_type") == "concept" for t in targets), targets
+
+
+def test_the_line_that_declares_a_dependency_is_still_recorded(tmp_path):
+    G = _built(tmp_path, {"package.json": _PKG % "dependencies", "src/main.tsx": _TSX})
+    react = set(_entries(G, "react"))
+    on_a_node = any(G.nodes[n].get("source_location") == "L6" for n in react)
+    on_an_edge = any(d.get("source_location") == "L6" and str(d.get("source_file", "")).endswith("package.json")
+                     and (u in react or v in react) for u, v, d in G.edges(data=True))
+    assert on_a_node or on_an_edge
+
+
+def test_two_manifests_that_depend_on_react_each_keep_their_declaring_line(tmp_path):
+    a = _PKG % "dependencies"                      # react is on line 6
+    b = '{\n  "name": "b",\n  "dependencies": {\n    "left-pad": "1",\n    "react": "^18.0.0"\n  }\n}\n'  # line 5
+    G = _built(tmp_path, {"a/package.json": a, "a/src/index.tsx": _TSX, "b/package.json": b, "b/src/index.tsx": _TSX + "// b\n"})
+    for manifest, line in (("a/package.json", "L6"), ("b/package.json", "L5")):
+        entries = set(_entries(G, "react", manifest))
+        on_a_node = any(G.nodes[n].get("source_location") == line for n in entries)
+        on_an_edge = any(d.get("source_location") == line and str(d.get("source_file", "")).endswith(manifest)
+                         and (u in entries or v in entries) for u, v, d in G.edges(data=True))
+        assert on_a_node or on_an_edge, f"{manifest} lost its declaring line"
+
+
+def test_keys_that_are_not_dependencies_are_unchanged(tmp_path):
+    path = tmp_path / "package.json"
+    path.write_text('{\n  "name": "demo",\n  "version": "1.0.0",\n  "scripts": {"build": "vite build"}\n}\n')
+    result = extract_json(path)
+    assert sorted(n["label"] for n in result["nodes"]) == ["build", "name", "package.json", "scripts", "version"]
+    assert {e["relation"] for e in result["edges"]} == {"contains"}
+    assert len(result["edges"]) == 4
+
+
+def test_a_cache_entry_from_before_the_dependency_link_is_not_served(tmp_path, monkeypatch):
+    import graphify.cache as cache_mod
+    from graphify.cache import save_cached
+
+    path = tmp_path / "package.json"
+    path.write_text(_PKG % "dependencies", encoding="utf-8")
+    current = cache_mod._AST_CACHE_SCHEMA
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 20)  # the schema before this fix (v8, 0.9.93)
+    stale = {"nodes": [{"id": "stale_sentinel", "label": "STALE", "file_type": "code",
+                        "source_file": str(path), "source_location": "L1"}], "edges": []}
+    save_cached(path, stale, tmp_path, cache_root=tmp_path)
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current)
+    result = extract([path], cache_root=tmp_path, parallel=False)
+    assert "stale_sentinel" not in {n["id"] for n in result["nodes"]}
+
+
+def test_a_dependency_has_a_single_node_labelled_with_its_bare_name(tmp_path):
+    G = _built(tmp_path, {"package.json": _PKG % "dependencies", "src/main.tsx": _TSX})
+    assert len([n for n, d in G.nodes(data=True) if d.get("label") == "react"]) == 1
+
+
+# Known gap, not part of #4569: with two package.json files the manifests' ref nodes are
+# file-qualified (a_package_json_ref_react) while the code imports an external stub
+# `ref_react`, so no fix to the key/ref split can connect them. strict=True flags the day
+# that is fixed, so this xfail can be turned into a plain test.
+@pytest.mark.xfail(strict=True, reason="two-manifest corpora qualify the manifests' ref ids; the code imports a separate `ref_react` stub")
+def test_in_a_two_manifest_corpus_the_code_reaches_its_own_manifest_entry(tmp_path):
+    a = _PKG % "dependencies"
+    G = _built(tmp_path, {"a/package.json": a, "a/src/index.tsx": _TSX, "b/package.json": a, "b/src/index.tsx": _TSX + "// b\n"})
+    index = _node(G, "a/src/index.tsx", "a/src/index.tsx")
+    entries = _entries(G, "react", "a/package.json")
+    assert entries
+    for entry in entries:
+        hops = _hops(G, entry, index)
+        assert hops is not None and hops <= 3, f"{entry} is {hops} hops from a/src/index.tsx"
+
+
+def test_no_edge_of_any_relation_joins_two_nodes_with_the_same_label(tmp_path):
+    """#1764's concern was a view that reads `react -> react`; H3 only covers imports."""
+    G = _built(tmp_path, {"package.json": _PKG % "dependencies", "src/main.tsx": _TSX})
+    same = [(G.nodes[u]["label"], d.get("relation"), G.nodes[v]["label"]) for u, v, d in G.edges(data=True)
+            if G.nodes[u].get("label") == G.nodes[v].get("label")]
+    assert same == []
+
+
+def test_the_package_name_resolves_to_a_single_node_for_explain_and_affected(tmp_path):
+    from graphify.affected import resolve_seed
+    from graphify.serve import _resolve_single_node
+
+    G = _built(tmp_path, {"package.json": _PKG % "dependencies", "src/main.tsx": _TSX})
+    nid, refusal = _resolve_single_node(G, "react")   # what `graphify explain react` calls
+    assert nid is not None, refusal
+    assert resolve_seed(G, "react") is not None       # what `graphify affected react` calls
+
+
+def test_a_dev_dependency_nothing_imports_is_not_reported_isolated(tmp_path):
+    from graphify.analyze import god_nodes, surprising_connections
+    from graphify.cluster import cluster, score_all
+    from graphify.report import generate
+
+    pkg = '{\n  "name": "demo",\n  "devDependencies": {\n    "@types/react": "^19.0.0"\n  }\n}\n'
+    G = _built(tmp_path, {"package.json": pkg, "src/main.tsx": _TSX})
+    communities = cluster(G)
+    text = generate(G, communities, score_all(G, communities), {c: f"c{c}" for c in communities},
+                    god_nodes(G), surprising_connections(G, communities),
+                    {"total_files": 2, "total_words": 0, "files": {}}, {"input": 0, "output": 0}, str(tmp_path))
+    isolated = [ln for ln in text.splitlines() if "isolated node(s)" in ln]
+    assert not any("@types/react" in ln for ln in isolated), isolated
+
+
+# ── #4569: the manifest entry's label carries its version range ──
+
+def _dep_entry(tmp_path, value):
+    path = tmp_path / "package.json"
+    path.write_text(json.dumps({"name": "demo", "dependencies": {"react": value}}, indent=2) + "\n", encoding="utf-8")
+    result = extract_json(path)
+    entry = next(n for n in result["nodes"] if n["id"].endswith("_dependencies_react"))
+    return entry["label"], result
+
+
+@pytest.mark.parametrize("value,label", [
+    ("^19.0.0", "react@^19.0.0"), ("workspace:*", "react@workspace:*"), ("file:../x", "react@file:../x"),
+    ("npm:other@1.0.0", "react@npm:other@1.0.0"), ("github:user/repo#abc123", "react@github:user/repo#abc123"),
+    ("https://example.com/pkg.tgz", "react@https://example.com/pkg.tgz"),
+    ("^1.0.0   ||   ^2.0.0", "react@^1.0.0 || ^2.0.0"),
+    ("https://example.com/" + "a" * 180, "react@https://example.com/" + "a" * 17 + "..."),
+], ids=["caret", "workspace", "file", "alias", "git", "url", "spaced", "long"])
+def test_the_manifest_entry_label_carries_a_one_line_capped_version(tmp_path, value, label):
+    assert _dep_entry(tmp_path, value)[0] == label
+
+
+def test_the_ref_node_keeps_the_bare_name_whatever_the_range(tmp_path):
+    for value in ("^19.0.0", "workspace:*", "https://example.com/" + "a" * 180):
+        _, result = _dep_entry(tmp_path, value)
+        ref = [n for n in result["nodes"] if n["file_type"] == "concept"]
+        assert [(n["id"], n["label"]) for n in ref] == [("ref_react", "react")]
+
+
+@pytest.mark.parametrize("value", ["", "   "], ids=["empty", "blank"])
+def test_an_empty_or_blank_version_keeps_the_bare_name_and_makes_no_ref_or_link(tmp_path, value):
+    label, result = _dep_entry(tmp_path, value)
+    assert label == "react"
+    assert [n for n in result["nodes"] if n["file_type"] == "concept"] == []
+    assert {e["relation"] for e in result["edges"]} == {"contains"}
+
+
+def test_dependency_values_that_are_not_strings_are_extracted_as_before(tmp_path):
+    path = tmp_path / "package.json"
+    path.write_text(json.dumps({
+        "name": "demo",
+        "dependencies": {"num": 1, "obj": {"version": "1.0.0", "nested": "x"}, "arr": ["a", "b"],
+                         "nul": None, "flag": True, "empty": ""},
+        "devDependencies": {"float": 1.5}}, indent=2) + "\n", encoding="utf-8")
+    result = extract_json(path)
+    assert sorted(n["label"] for n in result["nodes"]) == sorted([
+        "package.json", "name", "dependencies", "num", "obj", "version", "nested", "arr", "nul", "flag",
+        "empty", "devDependencies", "float"])
+    assert {e["relation"] for e in result["edges"]} == {"contains"}
+    assert not [n for n in result["nodes"] if n["file_type"] == "concept"]
+
+
+def test_a_key_shared_by_two_sibling_blocks_is_labelled_with_the_range_on_its_own_line(tmp_path):
+    """Two blocks that each hold `dependencies.semver` mint one key node (its id carries only the
+    immediate parent). Its label and its line must describe the same entry."""
+    text = ('{\n  "name": "demo",\n  "a": {\n    "dependencies": {\n      "semver": "^7.5.0"\n    }\n  },\n'
+            '  "b": {\n    "dependencies": {\n      "semver": "^6.0.0"\n    }\n  }\n}\n')
+    path = tmp_path / "package.json"
+    path.write_text(text, encoding="utf-8")
+    shared = [n for n in extract_json(path)["nodes"] if n["id"].endswith("_dependencies_semver")]
+    assert len(shared) == 1
+    label, line = shared[0]["label"], int(shared[0]["source_location"][1:])
+    assert label.startswith("semver@"), label
+    assert label.split("@", 1)[1] in text.splitlines()[line - 1], (label, line)

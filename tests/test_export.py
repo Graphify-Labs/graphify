@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
-from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
+from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian, to_svg
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -212,7 +212,15 @@ def test_to_cypher_contains_merge_statements():
         out = Path(tmp) / "cypher.txt"
         to_cypher(G, str(out))
         content = out.read_text()
-        assert "MERGE" in content
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Transformer';" in content
+        assert "{id: 'n_transformer', label:" not in content
+
+        G.nodes["n_transformer"]["label"] = "Renamed Transformer"
+        to_cypher(G, str(out))
+        refreshed = out.read_text()
+        assert "MERGE (n:Code {id: 'n_transformer'}) SET n.label = 'Renamed Transformer';" in refreshed
+        assert "{id: 'n_transformer', label:" not in refreshed
+        assert "SET n.label = 'Transformer';" not in refreshed
 
 def test_to_graphml_creates_file():
     G = make_graph()
@@ -280,6 +288,30 @@ def test_to_graphml_tolerates_dict_and_list_attribute_values():
         assert json.loads(H.nodes[a_node]["tags"]) == ["x", "y"]
         assert json.loads(H.graph["hyperedges"]) == [{"nodes": [a_node], "label": "h"}]
         assert not (Path(tmp) / "graph.graphml.tmp").exists()
+
+
+def test_to_graphml_exports_multigraph_parallel_edges():
+    """graph.json is loaded as a MultiGraph when it carries parallel edges
+    (#4500), e.g. `imports` and `calls` between the same two nodes. The edge
+    coercion loop indexed H.edges[u, v], which needs a key on a MultiGraph, so
+    the export crashed; every parallel edge must reach the file, coerced."""
+    import networkx as nx
+    G = nx.MultiGraph()
+    G.add_node("a", label="A")
+    G.add_node("b", label="B")
+    G.add_edge("a", "b", relation="imports", confidence="EXTRACTED", note=None)
+    G.add_edge("a", "b", relation="calls", confidence="INFERRED", ctx={"k": "v"})
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "g.graphml"
+        to_graphml(G, {0: ["a", "b"]}, str(out))
+        H = nx.read_graphml(str(out))
+        assert H.number_of_edges() == 2
+        edges = [d for _, _, d in H.edges(data=True)]
+        assert sorted(d["relation"] for d in edges) == ["calls", "imports"]
+        calls = next(d for d in edges if d["relation"] == "calls")
+        imports = next(d for d in edges if d["relation"] == "imports")
+        assert json.loads(calls["ctx"]) == {"k": "v"}
+        assert imports["note"] == ""
 
 
 def test_to_graphml_preserves_native_scalar_types():
@@ -1029,6 +1061,65 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     assert backup_if_protected(tmp_path) is None
 
 
+# ── Issue #3769: incomplete backups reported as successful ──────────────────
+
+def test_backup_failed_copy_warns_and_returns_none(tmp_path, monkeypatch, capsys):
+    """A copy that fails part-way leaves a stale snapshot; it must be warned
+    and reported as no backup, not printed as a success (#3769)."""
+    import shutil
+    from datetime import date
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[{"id":"new"}],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    # A same-day snapshot holding the pre-overwrite graph: its graph.json is
+    # stale but readable, so the copy attempt fails rather than the hash check.
+    backup_dir = tmp_path / date.today().isoformat()
+    backup_dir.mkdir()
+    stale = backup_dir / "graph.json"
+    stale.write_text('{"nodes":[{"id":"old"}],"links":[]}')
+
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src, dst):
+        if Path(src).name == "graph.json":
+            raise PermissionError("denied")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is None
+    assert "graph.json" in capsys.readouterr().err
+    # The stale snapshot must not have been silently kept.
+    assert stale.read_text() == '{"nodes":[{"id":"old"}],"links":[]}'
+
+
+def test_backup_same_day_retries_missing_sidecar(tmp_path, monkeypatch, capsys):
+    """A snapshot missing a sidecar is retried on the next call, not treated
+    as complete because graph.json already matches (#3769)."""
+    import shutil
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    (tmp_path / "cost.json").write_text('{"input_tokens": 5}')
+
+    real_copy2 = shutil.copy2
+
+    def failing_copy2(src, dst):
+        if Path(src).name == "cost.json":
+            raise PermissionError("denied")
+        return real_copy2(src, dst)
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy2)
+    assert backup_if_protected(tmp_path) is None
+    assert "cost.json" in capsys.readouterr().err
+
+    monkeypatch.setattr(shutil, "copy2", real_copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is not None
+    assert (result / "graph.json").exists()
+    assert (result / "cost.json").read_text() == '{"input_tokens": 5}'
+
+
 def _mkG(n):
     import networkx as nx
     G = nx.Graph()
@@ -1158,6 +1249,65 @@ def test_to_html_handles_null_source_file_and_label(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_to_obsidian_handles_null_label(tmp_path):
+    """A node with label=None must not crash to_obsidian during stem cleaning,
+    neighbor sorting, or member listing."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label=None, source_file="a.py")
+    G.add_node("n2", label="auth", source_file="b.py")
+    G.add_edge("n1", "n2", relation="imports")
+    out_dir = tmp_path / "vault"
+    count = to_obsidian(G, {0: ["n1", "n2"]}, str(out_dir))
+    assert count == 3
+    assert (out_dir / "n1.md").exists()
+    assert (out_dir / "auth.md").exists()
+    n1_content = (out_dir / "n1.md").read_text(encoding="utf-8")
+    assert "# n1" in n1_content
+    assert "[[auth]]" in n1_content
+
+
+def test_to_canvas_handles_null_label(tmp_path):
+    """A node with label=None must not crash to_canvas card placement or member sorting."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label=None, source_file="a.py")
+    G.add_node("n2", label="auth", source_file="b.py")
+    G.add_edge("n1", "n2", relation="calls")
+    canvas_file = tmp_path / "graph.canvas"
+    to_canvas(G, {0: ["n1", "n2"]}, str(canvas_file))
+    assert canvas_file.exists()
+    data = json.loads(canvas_file.read_text(encoding="utf-8"))
+    files = {node.get("file") for node in data.get("nodes", []) if node.get("type") == "file"}
+    assert "n1.md" in files
+    assert "auth.md" in files
+
+
+def test_obsidian_safe_stem_handles_none_and_non_string():
+    from graphify.export import _obsidian_safe_stem
+    assert _obsidian_safe_stem(None) == "unnamed"
+    assert _obsidian_safe_stem(123) == "123"
+    assert _obsidian_safe_stem("") == "unnamed"
+
+
+def test_to_cypher_and_svg_handle_null_label(tmp_path):
+    import networkx as nx
+    from graphify.export import to_svg
+    G = nx.Graph()
+    G.add_node("n1", label=None)
+    G.add_node("n2", label="auth")
+    G.add_edge("n1", "n2")
+
+    cypher_file = tmp_path / "graph.cypher"
+    to_cypher(G, str(cypher_file))
+    cypher_text = cypher_file.read_text(encoding="utf-8")
+    assert "SET n.label = 'n1';" in cypher_text
+
+    svg_file = tmp_path / "graph.svg"
+    to_svg(G, {0: ["n1", "n2"]}, str(svg_file))
+    assert svg_file.exists() and svg_file.stat().st_size > 0
+
+
 def test_existing_graph_node_count(tmp_path):
     from graphify.export import existing_graph_node_count, MALFORMED_GRAPH
     p = tmp_path / "graph.json"
@@ -1250,6 +1400,53 @@ console.log(bad);
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
+
+
+def test_hyperedge_regions_skip_hidden_members():
+    """Legend toggles set `hidden` on nodes, but getPositions() still returns
+    them. The hull must skip hidden members so a region disappears once fewer
+    than two members remain visible (#5121)."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+    from graphify.exporters.html import _hyperedge_script
+    hyperedges = json.dumps([{"nodes": ["a", "b", "c"], "label": "h"}])
+    script = _hyperedge_script(hyperedges)
+    body = script.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    harness = r"""
+let handler = null;
+const pos = {a: {x: 0, y: 0}, b: {x: 10, y: 0}, c: {x: 0, y: 10}};
+const network = {
+  on: (ev, fn) => { if (ev === 'afterDrawing') handler = fn; },
+  getPositions: ids => ({[ids[0]]: pos[ids[0]]}),
+};
+const store = {a: {id: 'a'}, b: {id: 'b'}, c: {id: 'c'}};
+const nodesDS = {get: id => store[id]};
+let fills = 0;
+const ctx = new Proxy({}, {
+  get: (t, k) => k === 'fill' ? (() => { fills++; })
+    : k === 'measureText' ? (() => ({width: 1})) : (() => {}),
+  set: () => true,
+});
+""" + body + r"""
+const out = [];
+handler(ctx); out.push(fills);
+fills = 0; store.a.hidden = true; handler(ctx); out.push(fills);
+fills = 0; store.b.hidden = true; handler(ctx); out.push(fills);
+console.log(JSON.stringify(out));
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        js = Path(tmp) / "hyperedge_hidden.js"
+        js.write_text(harness, encoding="utf-8")
+        proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    visible, one_hidden, two_hidden = json.loads(proc.stdout.strip())
+    assert visible >= 1
+    assert one_hidden >= 1
+    assert two_hidden == 0, "hull still drawn with only one visible member"
 
 
 def test_to_html_pins_vis_network_version_for_tooltip_xss_boundary():
@@ -1356,6 +1553,7 @@ const mockElem = () => ({{
 }});
 
 const doc = {{
+  body: mockElem(),
   elements: {{
     'info-content': mockElem(),
     'graph': mockElem(),
@@ -1463,3 +1661,275 @@ def test_to_html_aggregated_community_nodes_runtime(tmp_path):
     assert '<div class="field">Degree: 1</div>' in info_html
     assert "Type: unknown" not in info_html
     assert "Source: -" not in info_html
+
+
+def _run_sidebar_harness(html_content: str, epilogue: str):
+    """Run graph.html's client script in Node.js with DOM mocks that record
+    children and listeners, then run `epilogue` and return what it prints as JSON."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+    m = re.search(r"<script>(.*?)</script>\s*<script>", html_content, re.DOTALL)
+    assert m, "vis script block not found in html"
+    harness = """
+const mockElem = () => ({ innerHTML: '', style: {}, classList: { add() {}, remove() {} }, children: [], listeners: {},
+  offsetWidth: 200, offsetHeight: 30,
+  appendChild(c) { this.children.push(c); }, addEventListener(t, f) { this.listeners[t] = f; }, prepend() {} });
+const els = {};
+const document = { body: mockElem(), listeners: {}, getElementById: id => els[id] || (els[id] = mockElem()),
+  createElement: mockElem, addEventListener(t, f) { this.listeners[t] = f; }, querySelectorAll: () => [] };
+const window = { innerWidth: 1280, innerHeight: 800 };
+class MockDataSet { constructor(items) { this.map = new Map(items.map(it => [it.id, it])); }
+  get(id) { return this.map.get(id); } update() {} }
+const vis = { DataSet: MockDataSet, Network: class { once() {} on() {} focus() {} selectNodes() {}
+  getConnectedNodes(id) { return RAW_NODES.map(n => n.id).filter(x => x !== id); } } };
+""" + m.group(1) + "\n" + epilogue
+    proc = subprocess.run([node, "-e", harness], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert proc.returncode == 0, f"Node script failed ({proc.returncode}): {proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def _parse_html_fragment(fragment: str) -> list:
+    """Return (tag, attrs dict, text) for each start tag; HTMLParser decodes entities."""
+    from html.parser import HTMLParser
+    tags: list = []
+    open_: list = []
+
+    class _P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            tags.append([tag, dict(attrs), ""])
+            open_.append(tags[-1])
+
+        def handle_endtag(self, tag):
+            if open_:
+                open_.pop()
+
+        def handle_data(self, data):
+            if open_:
+                open_[-1][2] += data
+
+    _P(convert_charrefs=True).feed(fragment)
+    return tags
+
+
+def test_to_html_legend_label_escaped_once_without_title(tmp_path):
+    """The legend label is HTML-escaped once for the innerHTML sink, so its DOM
+    text (what the sidebar tooltip shows) is the raw label; no title attributes."""
+    import networkx as nx
+    G = nx.Graph()
+    for nid in ("n1", "n2", "n3", "n4"):
+        G.add_node(nid, label=nid, file_type="code", source_file=f"{nid}.py")
+    label = "Team \"A\" & <B> 'c'"
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1", "n2", "n3"], 1: ["n4"]}, str(out), community_labels={0: label, 1: "Solo"})
+    items = _run_sidebar_harness(out.read_text(encoding="utf-8"),
+                                 "console.log(JSON.stringify(legendEl.children.map(c => c.innerHTML)));")
+    assert "&amp;amp;" not in items[0]
+    tags = [t for frag in items for t in _parse_html_fragment(frag)]
+    assert {t[0] for t in tags} == {"div", "span"}
+    assert not any("title" in t[1] for t in tags)
+    assert [t[2] for t in tags if t[1].get("class") == "legend-label"] == [label, "Solo"]
+    assert [t[2] for t in tags if t[1].get("class") == "legend-count"] == ["3", "1"]
+
+
+def test_to_html_sidebar_tooltip_shows_truncated_text_and_node_counts(tmp_path):
+    """One shared .vis-tooltip: names only when truncated, counts always as
+    'N node(s)'; text set via textContent so & " ' < > show literally."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("a", label="a", file_type="code", source_file="a.py")
+    label = "Team \"A\" & <b>B</b> 'c' <img src=x onerror=alert(1)>"
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["a"]}, str(out), community_labels={0: "Core"})
+    content = out.read_text(encoding="utf-8")
+    assert "sidebarTip.innerHTML" not in content
+    assert "max-width: 360px; overflow-wrap: break-word" in content
+    result = _run_sidebar_harness(content, _SIDEBAR_DOM_JS + """
+const hover = (cls, text, truncated) => {
+  const el = cls.startsWith('legend-') ? legendRow(cls === 'legend-label' ? text : 'x', truncated, text)[cls]
+    : domNode(cls, text, null, truncated);
+  document.listeners.mouseover({ target: el, clientX: 100, clientY: 100 });
+  const shown = tip.style.visibility === 'visible' ? tip.textContent : null;
+  const pos = [tip.style.left, tip.style.top];
+  document.listeners.mouseout({ target: el, relatedTarget: null });
+  return [shown, tip.style.visibility, tip.innerHTML, tip.textContent, shown === null ? null : pos];
+};
+const L = %s;
+console.log(JSON.stringify({ count: tips.length, hovers: [
+  hover('legend-label', L, true), hover('search-item', L, true), hover('neighbor-link', L, true),
+  hover('legend-label', 'short', false), hover('search-item', 'short', false), hover('neighbor-link', 'short', false),
+  hover('legend-count', '3', false), hover('legend-count', '1', false)], styles: tip.styleLog }));""" % json.dumps(label))
+    assert result["count"] == 1
+    # Shown 12px right of and 16px below the cursor at (100, 100); hidden and
+    # emptied again on mouseout.
+    at = ["112px", "116px"]
+    assert result["hovers"] == [[label, "hidden", "", "", at]] * 3 + [[None, "hidden", "", "", None]] * 3 + [
+        ["3 nodes", "hidden", "", "", at], ["1 node", "hidden", "", "", at]]
+    assert result["styles"] and not any("NaN" in v for v in result["styles"])
+
+
+# Parent-linked DOM nodes for the sidebar tooltip tests: enough of closest(),
+# contains() and querySelector() to hover any part of a real legend row, which
+# the client builds as checkbox + dot + label + count inside a .legend-item.
+# `tip` is the shared tooltip; tip.styleLog records every left/top it is given.
+_SIDEBAR_DOM_JS = """
+globalThis.setTimeout = f => f();
+const tips = document.body.children.filter(c => c.className === 'vis-tooltip');
+const tip = tips[0];
+tip.styleLog = [];
+tip.style = new Proxy(tip.style, { set(s, k, v) { if (k === 'left' || k === 'top') tip.styleLog.push(String(v));
+  s[k] = v; return true; } });
+const domNode = (cls, text, parent, truncated) => {
+  const el = { textContent: text, parent, kids: [], scrollWidth: truncated ? 300 : 100, clientWidth: 100,
+    classList: { contains: c => c === cls },
+    contains(o) { for (let x = o; x; x = x.parent) if (x === el) return true; return false; },
+    closest(sel) { const want = sel.split(', ').map(s => s.slice(1));
+      for (let x = el; x; x = x.parent) if (want.some(w => x.classList.contains(w))) return x; return null; },
+    querySelector(sel) { const q = [...el.kids];
+      while (q.length) { const k = q.shift(); if (k.classList.contains(sel.slice(1))) return k; q.push(...k.kids); }
+      return null; } };
+  if (parent) parent.kids.push(el);
+  return el;
+};
+const legendRow = (label, truncated, count = '3') => {
+  const row = domNode('legend-item', '', null, false);
+  return { 'legend-item': row, 'legend-cb': domNode('legend-cb', '', row, false),
+    'legend-dot': domNode('legend-dot', '', row, false), 'legend-label': domNode('legend-label', label, row, truncated),
+    'legend-count': domNode('legend-count', count, row, false) };
+};
+const move = (from, to, x = 100, y = 100) => {
+  if (from) document.listeners.mouseout({ target: from, relatedTarget: to });
+  const afterOut = tip.style.visibility;
+  if (to) document.listeners.mouseover({ target: to, clientX: x, clientY: y });
+  return [afterOut, tip.style.visibility, tip.textContent];
+};
+"""
+
+
+def _sidebar_tip_graph_html(tmp_path, label: str = "Core") -> str:
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("a", label="a", file_type="code", source_file="a.py")
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["a"]}, str(out), community_labels={0: label})
+    return out.read_text(encoding="utf-8")
+
+
+def test_to_html_sidebar_tooltip_stays_inside_viewport_near_edges(tmp_path):
+    """Near the right/bottom edge of the 1280x800 window the 200x30 tooltip is
+    clamped left and flipped above the cursor instead of overflowing."""
+    result = _run_sidebar_harness(_sidebar_tip_graph_html(tmp_path), _SIDEBAR_DOM_JS + """
+const at = (x, y) => { const c = legendRow('x', false)['legend-count']; move(null, c, x, y);
+  const r = [tip.style.left, tip.style.top]; move(c, null); return r; };
+console.log(JSON.stringify({ size: [tip.offsetWidth, tip.offsetHeight],
+  edges: [at(1270, 790), at(1270, 100), at(100, 790), at(0, 0)], styles: tip.styleLog }));""")
+    w, h = result["size"]
+    assert result["edges"] == [["1076px", "752px"], ["1076px", "116px"], ["112px", "752px"], ["12px", "16px"]]
+    for left, top in result["edges"]:
+        assert 0 <= int(left[:-2]) and int(left[:-2]) + w <= 1280
+        assert 0 <= int(top[:-2]) and int(top[:-2]) + h <= 800
+    assert not any("NaN" in v for v in result["styles"])
+
+
+def test_to_html_legend_row_hover_shows_label_anywhere_but_count(tmp_path):
+    """The whole legend row (checkbox, dot, gaps/padding) shows the truncated
+    name; the count still says 'N nodes'; moving inside the row never hides it."""
+    result = _run_sidebar_harness(_sidebar_tip_graph_html(tmp_path), _SIDEBAR_DOM_JS + """
+const long = legendRow('A very long community name', true);
+const short = legendRow('Short', false, '1');
+console.log(JSON.stringify({
+  padding: move(null, long['legend-item']),
+  toDot: move(long['legend-item'], long['legend-dot']),
+  toCheckbox: move(long['legend-dot'], long['legend-cb']),
+  toLabel: move(long['legend-cb'], long['legend-label']),
+  toCount: move(long['legend-label'], long['legend-count']),
+  backToDot: move(long['legend-count'], long['legend-dot']),
+  leave: move(long['legend-dot'], null),
+  shortPadding: move(null, short['legend-item']),
+  shortDot: move(short['legend-item'], short['legend-dot']),
+  shortCount: move(short['legend-dot'], short['legend-count']),
+  shortLeave: move(short['legend-count'], null) }));""")
+    name = "A very long community name"
+    assert result == {
+        "padding": [None, "visible", name],  # never shown before: no visibility set yet
+        # Same row, same text: the tooltip is not hidden between children.
+        "toDot": ["visible", "visible", name],
+        "toCheckbox": ["visible", "visible", name],
+        "toLabel": ["visible", "visible", name],
+        "toCount": ["visible", "visible", "3 nodes"],
+        "backToDot": ["hidden", "visible", name],
+        "leave": ["hidden", "hidden", ""],
+        # A name that fits gets no tooltip from anywhere on its row.
+        "shortPadding": ["hidden", "hidden", ""],
+        "shortDot": ["hidden", "hidden", ""],
+        "shortCount": ["hidden", "visible", "1 node"],
+        "shortLeave": ["hidden", "hidden", ""],
+    }
+
+
+def test_exporters_create_missing_parent_directories(tmp_path):
+    """to_cypher, to_graphml, and to_svg automatically create missing parent directories."""
+    G = make_graph()
+    communities = cluster(G)
+
+    cypher_path = tmp_path / "nested" / "sub_cypher" / "out.cypher"
+    assert not cypher_path.parent.exists()
+    to_cypher(G, str(cypher_path))
+    assert cypher_path.exists()
+    assert "MERGE (n:Code" in cypher_path.read_text(encoding="utf-8")
+
+    graphml_path = tmp_path / "nested" / "sub_graphml" / "out.graphml"
+    assert not graphml_path.parent.exists()
+    to_graphml(G, communities, str(graphml_path))
+    assert graphml_path.exists()
+    assert "<graphml" in graphml_path.read_text(encoding="utf-8")
+
+    svg_path = tmp_path / "nested" / "sub_svg" / "out.svg"
+    assert not svg_path.parent.exists()
+    to_svg(G, communities, str(svg_path), community_labels={0: "Core"})
+    assert svg_path.exists()
+    assert "<svg" in svg_path.read_text(encoding="utf-8")
+
+
+def test_strip_xml_illegal_fast_path_and_to_graphml_single_pass(tmp_path):
+    """_strip_xml_illegal preserves printable ASCII and valid XML whitespace, strips C0
+    controls, and to_graphml strips _-prefixed attributes and relabels illegal node IDs."""
+    import xml.etree.ElementTree as ET
+    import networkx as nx
+    from graphify.export import _strip_xml_illegal
+
+    # Fast-path printable ASCII and empty string
+    assert _strip_xml_illegal("") == ""
+    assert _strip_xml_illegal("hello_world_123") == "hello_world_123"
+    # Valid XML whitespace (\t, \n, \r) and non-ASCII preserved; C0 controls stripped
+    assert _strip_xml_illegal("a\tb\nc\rd\x00e\x0bf\x1fg") == "a\tb\nc\rdefg"
+    assert _strip_xml_illegal("café\x00") == "café"
+
+    G = nx.Graph()
+    G.add_node("bad\x00id", label="node\x07one", _internal="drop_me", _origin="file.py")
+    G.add_node("clean_id", label="café\tline\n", _internal="also_drop")
+    G.add_edge("bad\x00id", "clean_id", relation="calls\x0c", _edge_meta="secret")
+
+    out = tmp_path / "single_pass.graphml"
+    to_graphml(G, {0: ["bad\x00id", "clean_id"]}, str(out))
+
+    xml_text = out.read_text(encoding="utf-8")
+    assert "_internal" not in xml_text
+    assert "_origin" not in xml_text
+    assert "_edge_meta" not in xml_text
+    assert "drop_me" not in xml_text
+    assert "secret" not in xml_text
+
+    # Must parse cleanly as XML and have relabeled node ID without \x00
+    root = ET.fromstring(xml_text)
+    ns = {"g": "http://graphml.graphdrawing.org/xmlns"}
+    node_ids = {el.attrib["id"] for el in root.findall(".//g:node", ns)}
+    assert node_ids == {"badid", "clean_id"}
+    edge = root.find(".//g:edge", ns)
+    assert edge is not None
+    assert {edge.attrib["source"], edge.attrib["target"]} == {"badid", "clean_id"}
+
+

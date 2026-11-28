@@ -92,6 +92,18 @@ ALWAYS_ON_BLOCKS = {
     "kiro-steering": "_KIRO_STEERING",
 }
 
+# Query-first rule: name the exact moment to query (before the first raw grep,
+# search or read) instead of "for codebase questions", which agents read as
+# optional once they have a specific file in mind.
+_QUERY_FIRST_EDIT = (
+    'For codebase questions, first run `graphify query "<question>"` when '
+    "graphify-out/graph.json exists.",
+    'When graphify-out/graph.json exists, run `graphify query "<question>"` before '
+    "your first grep, search or source-file read for a codebase question, and put "
+    "this rule in every subagent prompt that explores code. Read raw files only for "
+    "lines the graph or an earlier read already located.",
+)
+
 # Sanctioned divergences from the frozen always-on baseline above. The roundtrip
 # guard deliberately does NOT track HEAD, so any *intentional* change to an
 # always-on instruction block must be recorded here as an explicit, reviewable
@@ -109,6 +121,22 @@ _GRAPH_DIFF_EDIT = (
     " to it in a pull request is expected. Do not flag it as churn or suggest skipping the"
     " graph rebuild or its hooks.",
 )
+# Markdown headings carry their section's line range, and `graphify section` /
+# `get_section` return its text, so agents are told they need not open the .md.
+_SECTION_SENTENCE = (
+    " When the answer is under a Markdown heading, `graphify section \"<heading>\"`"
+    " prints that section's text, so the .md need not be opened."
+)
+_SECTION_EDIT = (
+    '`graphify explain "<concept>"` for focused concepts.',
+    '`graphify explain "<concept>"` for focused concepts.' + _SECTION_SENTENCE,
+)
+_ANTIGRAVITY_SECTION_EDIT = (
+    "/ `get_node` for focused concepts.",
+    "/ `get_node` for focused concepts. When the answer is under a Markdown heading,"
+    " `graphify section \"<heading>\"` / `get_section` returns that section's text,"
+    " so the .md need not be opened.",
+)
 ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
     # #1530: install guidance must stay host-generic — do not tell agents to
     # invoke a literal `skill` tool with `skill: "graphify"`, which is
@@ -120,10 +148,13 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             "When the user types `/graphify`, use the installed graphify skill or instructions "
             "before doing anything else.",
         ),
+        _QUERY_FIRST_EDIT,
         _GRAPH_DIFF_EDIT,
+        _SECTION_EDIT,
     ),
-    "_CLAUDE_MD_SECTION": (_GRAPH_DIFF_EDIT,),
-    "_GEMINI_MD_SECTION": (_GRAPH_DIFF_EDIT,),
+    "_CLAUDE_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT, _SECTION_EDIT),
+    "_GEMINI_MD_SECTION": (_QUERY_FIRST_EDIT, _GRAPH_DIFF_EDIT, _SECTION_EDIT),
+    "_ANTIGRAVITY_RULES": (_ANTIGRAVITY_SECTION_EDIT,),
 }
 
 # The full six-value file_type enum (Decision A). Every rendered platform — split
@@ -145,6 +176,10 @@ _SHARED_REFERENCES = {
 _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
     "compact": "references/shared/extraction-spec-compact.md",
+    # Compact prompt for hosts whose subagents write their own chunk file
+    # (the dispatch passes CHUNK_PATH). Codex keeps "compact": its workers
+    # return JSON inline and the orchestrator writes the files.
+    "compact-disk": "references/shared/extraction-spec-compact-disk.md",
 }
 # Single unified query reference + stub: superior vocab-expansion (Step 0) plus
 # CLI traversal plus inline NetworkX fallback, shipped to every platform. The
@@ -524,6 +559,12 @@ def _core_to_powershell(body: str) -> str:
     return translated
 
 
+# Step B3's re-run hints name the agent that can write chunk files. A dispatch
+# variant whose host has no `general-purpose` agent names its own (#4494).
+_DEFAULT_WRITER_AGENT = ("general-purpose agent", '`subagent_type="general-purpose"`')
+_WRITER_AGENT = {"pi-subagents": ("the `delegate` agent", "the `delegate` agent")}
+
+
 def _render_core(platform: Platform) -> str:
     """Fill the shared core template's per-platform slots for this platform.
 
@@ -540,6 +581,7 @@ def _render_core(platform: Platform) -> str:
     interp_guard = _read_fragment(f"shell/interpreter-guard-{platform.shell}.md").rstrip("\n")
     dispatch = _read_fragment(f"dispatch/{platform.dispatch}.md").rstrip("\n")
     query_stub = _read_fragment(_QUERY_STUB).rstrip("\n")
+    writer_agent, writer_agent_arg = _WRITER_AGENT.get(platform.dispatch, _DEFAULT_WRITER_AGENT)
 
     if platform.extra_sections:
         extra = "".join(
@@ -554,6 +596,8 @@ def _render_core(platform: Platform) -> str:
         .replace("@@INSTALL@@", install)
         .replace("@@INTERP_GUARD@@", interp_guard)
         .replace("@@DISPATCH@@", dispatch)
+        .replace("@@WRITER_AGENT@@", writer_agent)
+        .replace("@@WRITER_AGENT_ARG@@", writer_agent_arg)
         .replace("@@QUERY_STUB@@", query_stub)
         .replace("@@HOOKS_TARGET@@", platform.hooks_target)
         .replace("@@EXTRA@@", extra)
@@ -1222,6 +1266,34 @@ def _is_persisted_scan_options_fix_line(line: str) -> bool:
     )
 
 
+def _is_input_path_sidecar_fix_line(line: str) -> bool:
+    """Whether a line is part of the INPUT_PATH scan-path injection fix (#4762).
+
+    The monolith runbooks substituted the agent-supplied scan path straight into
+    Python string literals (``detect(Path('INPUT_PATH'))``, ``generate(..,
+    'INPUT_PATH', ..)``, ``detect_incremental(Path('INPUT_PATH'))``,
+    ``_stamped_manifest_files(.., Path('INPUT_PATH'))``), so a scan root whose
+    NAME carried a quote or ``$()`` broke out of the literal and ran as code.
+    Each code block now reads the resolved root from the trusted
+    ``graphify-out/.graphify_root`` that Step 1 writes through a quoted heredoc,
+    and the prose no longer tells the agent to substitute a path. Both the removed
+    v8 lines and the added trusted-root lines (code and prose) match here. The
+    detect/detect_incremental and manifest lines are covered by their own existing
+    predicates; this adds the read line, the generate calls, and the prose.
+    """
+    stripped = line.strip()
+    return (
+        "INPUT_PATH = Path('graphify-out/.graphify_root').read_text(encoding=" in stripped
+        or "result = detect(Path(INPUT_PATH), extra_excludes=" in stripped
+        or "result = detect_incremental(Path(INPUT_PATH), extra_excludes=" in stripped
+        or ", tokens, INPUT_PATH, suggested_questions=questions)" in stripped
+        or ", tokens, 'INPUT_PATH', suggested_questions=questions)" in stripped
+        or stripped.startswith("Replace INPUT_PATH with the actual path")
+        or stripped.startswith("INPUT_PATH is read from `graphify-out/.graphify_root`")
+        or "there is no path to substitute and a scan root containing quotes" in stripped
+    )
+
+
 def _is_worktree_visibility_note_line(line: str) -> bool:
     """Whether a line is the Step 9 working-tree note (#3941).
 
@@ -1256,10 +1328,147 @@ def _is_semantic_origin_stamp_fix_line(line: str) -> bool:
         or "_origin when present and otherwise guesses from the SHAPE of" in line
         or "source_location ('L<line>' means AST). A subagent that writes 'L12' for a" in line
         or "doc section therefore made that node read as AST, and the next" in line
-        or "`graphify update` deleted it along with the re-extracted code file it" in line
+        or "graphify update deleted it along with the re-extracted code file it" in line
         or "seemed to belong to (#2843). extract() stamps its own items 'ast'; the" in line
         or "semantic side must say so explicitly." in line
     )
+
+
+def _is_code_only_fast_path_fix_line(line: str) -> bool:
+    """Whether a line is part of the aider/devin code-only runbook fix (#4447).
+
+    In the two monoliths the Part B fast path was prose only, so Part C's
+    unconditional read of ``.graphify_semantic.json`` raised FileNotFoundError on
+    a code-only build or ``--update``, and the code-only paragraph never named
+    Part C. The fast path now writes an empty semantic file first, the paragraph
+    names Step 3A, the fast path, Part C and then the merge, and aider's
+    only-deletions guard writes the ``.graphify_extract.json`` its merge reads.
+    The first group below is the shell of the added fast-path block (it matches
+    any single copy of those lines); the rest are the old and new lines.
+    """
+    s = line.strip()
+    return (
+        s in (
+            "```",
+            "```bash",
+            'import json',
+            'from pathlib import Path',
+            '"',
+            '$(cat graphify-out/.graphify_python) -c "',
+            "if [ ! -f .graphify_extract.json ]; then",
+            "if [ ! -f graphify-out/.graphify_extract.json ]; then",
+        )
+        or (s.startswith("**Fast path:** If detection found zero docs") and (
+            "**First write an empty semantic file**" in s
+            or s.endswith("there is nothing for semantic subagents to do.")))
+        or (s.startswith("If `code_only` is True: print `[graphify update] Code-only changes detected") and (
+            "run Step 3A (AST) on the changed files, then run the Part B fast path" in s
+            or "run only Step 3A (AST) on the changed files, skip Step 3B entirely" in s))
+        or (s.startswith("Path(") and ".graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[]" in s)
+        or (s.startswith("Path(") and ".graphify_extract.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[]" in s)
+    )
+
+
+def _is_update_detect_populate_fix_line(line: str) -> bool:
+    """Whether a line is part of the aider/devin ``--update`` detect block (found while fixing #4447).
+
+    Part A reads ``.graphify_detect.json``, Step 9 deletes it, and the monoliths'
+    ``--update`` section never wrote it again, so Part A raised FileNotFoundError.
+    The section now writes it from ``.graphify_incremental.json``, as the generated
+    ``references/update.md`` does. These are the lead-in sentence and the block's lines.
+    """
+    s = line.strip()
+    return (
+        s.startswith("Then populate `.graphify_detect.json` so Steps 3A")
+        or (s.startswith("r = json.loads(Path(") and s.endswith(".graphify_incremental.json').read_text())"))
+        or (s.startswith("Path(") and s.endswith(".graphify_detect.json').write_text(json.dumps({"))
+        or s in (
+            "'files': r.get('new_files', {}),",
+            "'all_files': r.get('files', {}),",
+            "'total_files': r.get('new_total', 0),",
+            "'total_words': r.get('total_words', 0),",
+            "'skipped_sensitive': r.get('skipped_sensitive', []),",
+            "'needs_graph': True,",
+            "}))",
+        )
+    )
+
+
+def _is_skip_steps_clarification_line(line: str) -> bool:
+    """Whether a line is part of the #4061 fast-path clarification.
+
+    The fast path skips Steps 1-5 for an existing graph, but the following
+    paragraph said "Follow these steps in order. Do not skip steps." Both the
+    removed old sentence and the added reword are sanctioned here.
+    """
+    stripped = line.strip()
+    return stripped in {
+        "Follow these steps in order. Do not skip steps.",
+        "Follow these steps in order unless the fast path above applies.",
+    }
+
+
+def _is_when_to_build_guidance_line(line: str) -> bool:
+    """Whether a line is part of the #4829 passage on when a graph is worth building.
+
+    The passage is added whole; none of the monoliths' existing lines change.
+    """
+    return line.strip() in {
+        '**When a graph is worth building:** this applies when you are choosing a tool yourself; if the user invoked `/graphify`, follow that request as asked. AST extraction of code is fast and free, but semantic extraction of docs, papers and images runs the model over every file, which can cost minutes and tens of thousands of tokens.',
+        'If a graph already exists, query it. With no graph, one targeted lookup ("where is X defined", "what calls Y" in an ordinary-sized codebase) is faster and free with a plain text search such as `grep` and `Read`: search directly instead of running the steps below, and mention that a graph can be built if the user wants one. Build one when you expect many questions against this corpus, the corpus is large or unfamiliar, the question needs links text search cannot see (doc to code, across documents), or it is structural (communities, bridges, import cycles).',
+    }
+
+
+def _is_hub_bypass_check_fix_line(line: str) -> bool:
+    """Whether a line is the aider/devin hub bypass check paragraph (#4426).
+
+    A hub/bridge question's neighbour listing only shows code with an edge to
+    the hub, so it cannot show code that reimplements the hub's job instead of
+    calling it. This single paragraph, inserted right before the save-result
+    step, tells the agent to grep for the hub's own literal constants/strings
+    in edge-less files and report hits as "Bypasses", and to flag when the
+    hub's community label actually names its heaviest consumer instead.
+    """
+    return line.strip().startswith("**Bypass check (hub/bridge questions only, #4426).**")
+
+
+def _is_cloud_cta_section_line(line: str) -> bool:
+    """Whether a line is part of the added Graphify Cloud (hosted) section (A1).
+
+    A short, once-per-session hosted-product pointer added to every host body so
+    the agent can suggest Graphify Cloud for cross-repo search, PR review, an
+    always-current graph, or sharing with teammates, with a free-plan signup link
+    carrying skill-source UTMs. The monoliths gain the same section; its lone extra
+    `---` separator is sanctioned here (the byte-exact --check still guards the
+    committed files).
+    """
+    stripped = line.strip()
+    return (
+        stripped == "## Graphify Cloud (hosted)"
+        or stripped.startswith("If the user needs any of the following, suggest Graphify Cloud")
+        or stripped == "- search across more than one repo"
+        or stripped == "- PR review with blast-radius analysis"
+        or stripped == "- a graph that stays current without re-running `/graphify`"
+        or stripped == "- sharing the graph with teammates"
+        or stripped.startswith("Graphify Cloud has a free plan, no card required: https://app.graphify.com/signup")
+        or stripped == "It connects over MCP, so the user keeps working in this same agent."
+        or stripped == "---"
+    )
+
+
+_MCP_TOOLS_LINE = (
+    "This starts a stdio MCP server that exposes tools: {tools}. Add to Claude Desktop"
+    " or any MCP-compatible agent orchestrator so other agents can query the graph live."
+)
+
+
+def _is_get_section_tool_line(line: str) -> bool:
+    """Whether a line is the MCP tool list before or after `get_section` joined it."""
+    rest = "`get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`"
+    return line.strip() in {
+        _MCP_TOOLS_LINE.format(tools=f"`query_graph`, `get_node`, {rest}"),
+        _MCP_TOOLS_LINE.format(tools=f"`query_graph`, `get_node`, `get_section`, {rest}"),
+    }
 
 
 # Every line that may differ between a rendered monolith and its pristine v8
@@ -1271,6 +1480,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_frontmatter_description_line,
     _is_chunk_cleanup_line,
     _is_directed_fix_line,
+    _is_cloud_cta_section_line,
     _is_content_scope_fix_line,
     _is_cache_unlink_fix_line,
     _is_zero_node_guard_fix_line,
@@ -1287,8 +1497,15 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_watch_injection_fix_line,
     _is_graph_diff_direction_fix_line,
     _is_persisted_scan_options_fix_line,
+    _is_input_path_sidecar_fix_line,
     _is_worktree_visibility_note_line,
     _is_semantic_origin_stamp_fix_line,
+    _is_code_only_fast_path_fix_line,
+    _is_update_detect_populate_fix_line,
+    _is_skip_steps_clarification_line,
+    _is_when_to_build_guidance_line,
+    _is_hub_bypass_check_fix_line,
+    _is_get_section_tool_line,
 )
 
 
@@ -1307,7 +1524,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and the hub bypass check (#4426).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``

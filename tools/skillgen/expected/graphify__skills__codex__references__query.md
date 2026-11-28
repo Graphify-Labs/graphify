@@ -80,7 +80,6 @@ If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal 
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
 from networkx.readwrite import json_graph
-import networkx as nx
 from pathlib import Path
 
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
@@ -105,7 +104,6 @@ if not start_nodes:
     sys.exit(0)
 
 subgraph_nodes = set()
-subgraph_edges = []
 
 if mode == 'dfs':
     # DFS: follow one path as deep as possible before backtracking.
@@ -121,7 +119,6 @@ if mode == 'dfs':
         for neighbor in G.neighbors(node):
             if neighbor not in visited:
                 stack.append((neighbor, depth + 1))
-                subgraph_edges.append((node, neighbor))
 else:
     # BFS: explore all neighbors layer by layer up to depth 3.
     frontier = set(start_nodes)
@@ -132,9 +129,19 @@ else:
             for neighbor in G.neighbors(n):
                 if neighbor not in subgraph_nodes:
                     next_frontier.add(neighbor)
-                    subgraph_edges.append((n, neighbor))
         subgraph_nodes.update(next_frontier)
         frontier = next_frontier
+
+# Traversal chooses the nodes; collect relationships separately so seed edges,
+# cycles, and cross-links are not lost just because both endpoints were visited.
+# Taking the induced subgraph also keeps edges to nodes beyond the depth limit
+# out of the result. data=True retains each edge's own attributes, including
+# distinct parallel relationships in a MultiGraph.
+subgraph_edges = [
+    (u, v, edge_data)
+    for u, v, edge_data in G.subgraph(subgraph_nodes).edges(data=True)
+    if u != v
+]
 
 # Token-budget aware output: rank by relevance, cut at budget (~4 chars/token)
 token_budget = BUDGET  # default 2000
@@ -151,10 +158,9 @@ lines = [f'Traversal: {mode.upper()} | Start: {[G.nodes[n].get(\"label\",n) for 
 for nid in ranked_nodes:
     d = G.nodes[nid]
     lines.append(f'  NODE {d.get(\"label\", nid)} [src={d.get(\"source_file\",\"\")} loc={d.get(\"source_location\",\"\")}]')
-for u, v in subgraph_edges:
+for u, v, edge_data in subgraph_edges:
     if u in subgraph_nodes and v in subgraph_nodes:
-        _raw = G[u][v]; d = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
-        lines.append(f'  EDGE {G.nodes[u].get(\"label\",u)} --{d.get(\"relation\",\"\")} [{d.get(\"confidence\",\"\")}]--> {G.nodes[v].get(\"label\",v)}')
+        lines.append(f'  EDGE {G.nodes[u].get(\"label\",u)} --{edge_data.get(\"relation\",\"\")} [{edge_data.get(\"confidence\",\"\")}]--> {G.nodes[v].get(\"label\",v)}')
 
 output = '\n'.join(lines)
 if len(output) > char_budget:
@@ -164,6 +170,8 @@ print(output)
 ```
 
 Replace `QUESTION` with the **expanded** query string, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above, using only what the graph contains.
+
+**Bypass check (hub/bridge questions only, #4426).** If the question is about why a node bridges communities or has unusually many edges (a hub/god node), the neighbour listing above only shows code that already has an edge to it — it cannot show code that does the hub's job without ever calling it. Before finalizing the answer: pick one or two literal, distinctive things the hub does (a hard-coded constant it wraps, a specific string it returns, the exact computation in its body), then grep the corpus for that literal text in files that have **no edge** to the hub node in the subgraph above. Report any hits separately, labeled "Bypasses", distinct from the normal neighbour list — each is a file that reimplements the hub instead of using it. Also check whether the hub's own community label names a different node: a shared utility is often clustered into its heaviest consumer's community, so the label can read as if that consumer were the bridge. If so, say so plainly in the answer rather than letting the label stand unquestioned.
 
 After writing the answer, save it back into the graph so it improves future queries. Include the expanded tokens inside the `--answer` text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node:
 

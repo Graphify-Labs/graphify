@@ -67,13 +67,14 @@ def _has_explicit_input_root(call: str) -> bool:
     if not isinstance(value, ast.Call):
         return False
     root = next((keyword.value for keyword in value.keywords if keyword.arg == "root"), None)
+    # Since #4762 the scan root is the INPUT_PATH variable read from .graphify_root.
     return (
         isinstance(root, ast.Call)
         and isinstance(root.func, ast.Name)
         and root.func.id == "Path"
         and len(root.args) == 1
-        and isinstance(root.args[0], ast.Constant)
-        and root.args[0].value == "INPUT_PATH"
+        and isinstance(root.args[0], ast.Name)
+        and root.args[0].id == "INPUT_PATH"
         and not root.keywords
     )
 
@@ -108,10 +109,12 @@ def test_relocating_only_the_cache_does_not_rename_part_a_nodes(tmp_path: Path):
 
     (call,) = _part_a_calls(gen.load_platforms()["claude"])
     expression = call.removeprefix("result = ")
-    in_place = expression.replace("Path('INPUT_PATH')", f"Path({str(scan_root)!r})")
+    # The shipped call now reads the root from the sidecar (Path(INPUT_PATH)); for
+    # this unit test substitute the variable with concrete paths to exercise #3727.
+    in_place = expression.replace("Path(INPUT_PATH)", f"Path({str(scan_root)!r})")
     relocated = expression.replace(
-        "cache_root=Path('INPUT_PATH')", f"cache_root=Path({str(elsewhere)!r})"
-    ).replace("Path('INPUT_PATH')", f"Path({str(scan_root)!r})")
+        "cache_root=Path(INPUT_PATH)", f"cache_root=Path({str(elsewhere)!r})"
+    ).replace("Path(INPUT_PATH)", f"Path({str(scan_root)!r})")
     assert in_place != relocated
 
     scope = {"extract": extract, "Path": Path, "code_files": [module]}

@@ -57,3 +57,74 @@ def test_cached_answers_match_a_fresh_computation(tmp_path):
             assert paths.in_watch_root(f) is expected
     assert paths.in_watch_root("src/a.py") is True
     assert paths.in_watch_root(outside) is False
+
+
+def test_rebase_and_absolute_identity_are_computed_once_per_source_file(tmp_path, monkeypatch):
+    # rebase_preserved runs for every preserved node, edge and hyperedge, and
+    # absolute_identity for every stored node and edge of an incremental update.
+    import graphify.watch as watch
+
+    calls: list[str | None] = []
+
+    def counting_normalize(p, root=None):
+        calls.append(p)
+        return _norm_source_file(p, root)
+
+    containment_checks: list[Path] = []
+    real_is_relative_to = watch._is_relative_to
+
+    def counting_is_relative_to(path, root):
+        containment_checks.append(path)
+        return real_is_relative_to(path, root)
+
+    monkeypatch.setattr(watch, "_is_relative_to", counting_is_relative_to)
+    paths = _paths(tmp_path, counting_normalize)
+    outside = (tmp_path.parent / "elsewhere" / "x.py").as_posix()
+    files = ["src/a.py", "lib\\c.py", outside]
+
+    def one_pass():
+        for f in files:
+            paths.rebase_preserved({"source_file": f})
+            paths.absolute_identity(f, tmp_path)
+
+    one_pass()
+    first_pass = (len(calls), len(containment_checks))
+    assert first_pass[0] > 0 and first_pass[1] > 0
+    for _ in range(50):
+        one_pass()
+    assert (len(calls), len(containment_checks)) == first_pass
+
+
+def test_rebase_preserved_rewrites_each_case_as_before(tmp_path):
+    project = tmp_path / "proj"
+    other = tmp_path / "other"
+    out = project / "graphify-out"
+    out.mkdir(parents=True)
+    other.mkdir()
+    outside = (tmp_path / "elsewhere" / "x.py").as_posix()
+    in_other = (other / "y.py").as_posix()
+    for watch_root, cases in (
+        (project, [
+            ("src/a.py", "src/a.py"),
+            ("./src/../src/a.py", "src/a.py"),
+            ("lib\\c.py", "lib/c.py"),
+            (outside, outside),
+            ("", ""),
+            (None, None),
+        ]),
+        # A watched root outside the project root keeps its absolute path.
+        (other, [(in_other, in_other), ("src/a.py", "src/a.py")]),
+    ):
+        paths = _StoredSourcePaths(
+            {"nodes": [], "links": []},
+            out=out,
+            project_root=project,
+            watch_root=watch_root,
+            normalize_source=_norm_source_file,
+        )
+        for _ in range(2):  # first call fills the cache, second reads it
+            for stored, expected in cases:
+                item = {"source_file": stored}
+                paths.rebase_preserved(item)
+                assert item["source_file"] == expected, (watch_root, stored)
+                assert paths.absolute_identity(stored, project) == paths._absolute_identity_uncached(stored, project)

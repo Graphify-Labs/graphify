@@ -19,6 +19,124 @@ def _make_corpus(tmp_path):
     return tmp_path
 
 
+@pytest.fixture
+def ignored_nested_repo(monkeypatch, tmp_path):
+    import subprocess
+
+    corpus = tmp_path / "corpus"
+    nested = corpus / "nested"
+    nested.mkdir(parents=True)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    for repo in (corpus, nested):
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (nested / "tracked.py").write_text("def tracked():\n    return 1\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(nested), "add", "tracked.py"], check=True
+    )
+    (corpus / ".gitignore").write_text("nested/\n", encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    return corpus
+
+
+@pytest.mark.parametrize("has_visible_code", [False, True])
+def test_extract_reports_ignored_nested_tracked_repo(
+    monkeypatch, tmp_path, capsys, ignored_nested_repo, has_visible_code
+):
+    corpus = ignored_nested_repo
+    if has_visible_code:
+        (corpus / "keep.py").write_text("def keep():\n    return 1\n", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def _guarded_scandir(path):
+        from pathlib import Path
+
+        assert not Path(path).is_relative_to(corpus / "nested")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", _guarded_scandir)
+    out = tmp_path / "output"
+    _run_extract(monkeypatch, [
+        "graphify", "extract", str(corpus), "--code-only", "--no-cluster",
+        "--out", str(out),
+    ])
+    text = capsys.readouterr().out
+    assert "1 path(s) ignored by ignore rules" in text
+    assert "pruned directories count once" in text
+    assert "'nested/'" in text
+    assert "--no-gitignore bypasses VCS ignore rules only" in text
+    assert ".graphifyignore and --exclude still apply" in text
+    assert "tracked.py" not in text
+    graph = out / "graphify-out" / "graph.json"
+    if graph.exists():
+        assert "nested/tracked.py" not in _node_sources(graph)
+
+
+@pytest.mark.parametrize("explicit_ignore", [None, "graphifyignore", "exclude"])
+def test_extract_no_gitignore_summary_respects_explicit_rules(
+    monkeypatch, tmp_path, capsys, ignored_nested_repo, explicit_ignore
+):
+    corpus = ignored_nested_repo
+    args = ["--no-gitignore"]
+    if explicit_ignore == "graphifyignore":
+        (corpus / ".graphifyignore").write_text("nested/\n", encoding="utf-8")
+    elif explicit_ignore == "exclude":
+        args += ["--exclude", "nested/"]
+    out = tmp_path / "output"
+    _run_extract(monkeypatch, [
+        "graphify", "extract", str(corpus), "--code-only", "--no-cluster",
+        "--out", str(out), *args,
+    ])
+    text = capsys.readouterr().out
+    if explicit_ignore is None:
+        assert "path(s) ignored" not in text
+        assert "VCS ignore rules" not in text
+        assert "nested/tracked.py" in _node_sources(out / "graphify-out" / "graph.json")
+    else:
+        assert "1 path(s) ignored by ignore rules" in text
+        assert "'nested/'" in text
+        assert "VCS ignore rules disabled" in text
+        assert ".graphifyignore and --exclude still apply" in text
+        assert "--no-gitignore bypasses" not in text
+
+
+def test_extract_ignored_samples_are_bounded_sorted_and_noise_free(monkeypatch, tmp_path, capsys):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    names = ["z-dir", "e-dir", "d-dir", "b-dir"]
+    for name in [*names, "node_modules"]:
+        directory = corpus / name
+        directory.mkdir()
+        (directory / "hidden.py").write_text("value = 1\n", encoding="utf-8")
+    (corpus / "a.py").write_text("value = 1\n", encoding="utf-8")
+    (corpus / ".graphifyignore").write_text("*-dir/\na.py\n", encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    _run_extract(monkeypatch, [
+        "graphify", "extract", str(corpus), "--code-only", "--no-cluster",
+        "--out", str(tmp_path / "output"),
+    ])
+    text = capsys.readouterr().out
+    assert "5 path(s) ignored by ignore rules" in text
+    assert "'a.py', 'b-dir/', 'd-dir/' (+2 more)" in text
+    assert "e-dir" not in text
+    assert "z-dir" not in text
+    assert "node_modules" not in text
+    assert "hidden.py" not in text
+
+
+def test_extract_default_noise_alone_has_no_ignore_summary(monkeypatch, tmp_path, capsys):
+    corpus = tmp_path / "corpus"
+    (corpus / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    _run_extract(monkeypatch, [
+        "graphify", "extract", str(corpus), "--code-only", "--no-cluster",
+        "--out", str(tmp_path / "output"),
+    ])
+    text = capsys.readouterr().out
+    assert "path(s) ignored" not in text
+    assert "VCS ignore rules" not in text
+
+
 def test_extract_exits_nonzero_when_ast_extraction_raises(
     monkeypatch, tmp_path, capsys
 ):
@@ -1349,6 +1467,59 @@ def test_poisoned_manifest_is_healed(monkeypatch, tmp_path, capsys):
     assert any("schema.sql" in s for s in _node_sources(graph_path)), (
         "healed schema.sql must be back in graph.json"
     )
+
+
+def test_declined_by_design_file_is_not_requeued_every_run(monkeypatch, tmp_path, capsys):
+    """#2879: a file the extractor declines by design (data JSON, etc.) is
+    stamped yet has zero nodes — the same shape the #2543 heal re-queues. Its
+    manifest row carries ``ast_empty: true`` so the heal leaves it alone; a
+    pre-#2879 manifest (no marker) re-queues it once, then settles."""
+    import json
+    import graphify.extract as extractmod
+
+    def _skipped_sql(path):
+        return {"nodes": [], "edges": [], "skipped": True}
+
+    project = _sql_failure_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setitem(extractmod._DISPATCH, ".sql", _skipped_sql)
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)  # seed: schema.sql declined, keep.py in graph
+    capsys.readouterr()
+    row = _manifest_row(manifest_path, "schema.sql")
+    assert row and row.get("ast_empty") is True and row.get("ast_hash"), (
+        f"declined file must be stamped and marked intentional-empty, got {row}"
+    )
+
+    for run in (2, 3):
+        _run_extract(monkeypatch, argv)
+        out_text = capsys.readouterr().out
+        assert "re-queuing" not in out_text, (
+            f"run {run}: a declined-by-design file must not be re-queued: {out_text}"
+        )
+        assert "0 re-extracted" in out_text, f"run {run} must be a no-op: {out_text}"
+
+    # Pre-#2879 manifest: strip the marker. The heal re-queues once, the re-run
+    # restamps the marker, and the run after that settles — a one-cycle migration.
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest.values():
+        if isinstance(entry, dict):
+            entry.pop("ast_empty", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "re-queuing 1" in out_text, (
+        f"an unmarked declined file is re-queued once (pre-#2879 state): {out_text}"
+    )
+    assert _manifest_row(manifest_path, "schema.sql").get("ast_empty") is True
+
+    _run_extract(monkeypatch, argv)
+    assert "re-queuing" not in capsys.readouterr().out
 
 
 def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_path, capsys):

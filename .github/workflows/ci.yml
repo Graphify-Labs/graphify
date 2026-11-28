@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v6
@@ -71,12 +71,44 @@ jobs:
         run: uv sync --all-extras --frozen
 
       - name: Run tests
-        run: uv run --frozen pytest tests/ -q --tb=short
+        # The suite is disk-IO-bound (per-test tmp_path churn + atomic cache
+        # writes), not CPU-bound, so two levers compound: run tmp on tmpfs
+        # (/dev/shm) to remove the disk bottleneck (~2.8x locally), then xdist
+        # `-n auto` to parallelize the now-CPU-bound work (~6x combined). The
+        # handful of timing/concurrency `serial` tests run in a quick second
+        # serial pass on regular /tmp, where their wall-clock assertions hold
+        # (tmpfs + xdist CPU contention makes a watchdog rebuild lose its race).
+        run: |
+          TMPDIR=/dev/shm uv run --frozen pytest tests/ -q --tb=short -n auto -m "not serial"
+          uv run --frozen pytest tests/ -q --tb=short -m serial
 
       - name: Verify install works end-to-end
         run: |
           uv run --frozen graphify --help
           uv run --frozen graphify install
+
+  pi-guard:
+    # tests/pi.test.ts loads the real extension (Node built-ins only, no
+    # node_modules, as when installed) against the real installed Python CLI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run Pi guard tests
+        run: GRAPHIFY_TEST_CLI=$PWD/.venv/bin/graphify bun test tests/pi.test.ts
 
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new

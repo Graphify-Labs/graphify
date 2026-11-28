@@ -8,9 +8,10 @@ walk stops at the interface and every chain through an injected dependency is
 cut at that point. On a Scrutor-scanned .NET service where every dependency is
 an interface, that is most chains.
 
-The mechanism — single-implementer, single-owner, per-method `dispatches_to`
-edges at INFERRED — lives in `graphify.interface_dispatch` so that another
-language can add a gate rather than a copy; this module fixes the C# gate.
+The mechanism — single-owner, per-method `dispatches_to` edges at INFERRED,
+fanning out to every implementer — lives in `graphify.interface_dispatch` so
+that another language can add a gate rather than a copy; this module fixes
+the C# gate.
 Both ends of a pair must be declared in a `.cs` file: `implements` is
 resolved by name, so in a mixed corpus a Java class declaring
 `implements IReport` binds to a C# `IReport` when that is the only node with
@@ -34,5 +35,5 @@ def resolve_csharp_interface_dispatch(
     all_nodes: list[dict],
     all_edges: list[dict],
 ) -> None:
-    """Link each single-implementer C# interface method to its implementation."""
+    """Link each C# interface method to every implementation that owns it unambiguously."""
     resolve_interface_dispatch(per_file, all_nodes, all_edges, suffixes=_CSHARP_SUFFIXES)
