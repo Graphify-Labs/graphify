@@ -3019,7 +3019,7 @@ def _rebuild_code(
                         "_cpp_type_bindings", "_cpp_include_positions", "_cpp_include_paths",
                         "_rust_impl_key", "_rust_declaration_count",
                         "_ts_public_twin", "_py_property", "_java_ret", "_java_type",
-                        "_ts_fields", "_ts_static_fields",
+                        "_ts_fields", "_ts_static_fields", "_ts_property_shape",
                         "_py_fixture", "_py_return_type", "_go_fields",
                         "_go_package_path",
                     ):

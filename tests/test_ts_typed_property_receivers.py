@@ -1,38 +1,45 @@
-"""Calls on local aliases of explicitly typed TypeScript object properties."""
+"""Calls on explicitly typed TypeScript object properties."""
 
 import pytest
 
 from graphify.extract import extract
 
 
-def _calls(tmp_path, source, *, incremental=False):
-    paths = [tmp_path / name for name in ("ports.ts", "other.ts", "caller.ts")]
-    paths[0].write_text(
-        "export type Port = Readonly<{ inspect(): number; redeem(): number }>;\n"
-        "export interface OtherPort { inspect(): number }\n",
-        encoding="utf-8",
-    )
-    paths[1].write_text("export interface Port { inspect(): number }\n", encoding="utf-8")
-    paths[2].write_text(source, encoding="utf-8")
+def _calls(tmp_path, source, *, incremental=False, extra_sources=None, confidence=None):
+    sources = {
+        "ports.ts": (
+            "export type Port = Readonly<{ inspect(): number; redeem(): number }>;\n"
+            "export interface OtherPort { inspect(): number }\n"
+        ),
+        "other.ts": "export interface Port { inspect(): number }\n",
+        **(extra_sources or {}),
+        "caller.ts": source,
+    }
+    paths = [tmp_path / name for name in sources]
+    for path in paths:
+        path.write_text(sources[path.name], encoding="utf-8")
     cache = tmp_path / "cache"
     if incremental:
-        baseline = extract(paths[:2], root=tmp_path, cache_root=cache, parallel=False)
+        baseline = extract(paths[:-1], root=tmp_path, cache_root=cache, parallel=False)
         result = extract(
-            paths[2:], root=tmp_path, cache_root=cache, parallel=False,
+            paths[-1:], root=tmp_path, cache_root=cache, parallel=False,
             resolution_context_nodes=baseline["nodes"], resolution_context_edges=baseline["edges"],
         )
         nodes = {node["id"]: node for node in baseline["nodes"] + result["nodes"]}
-        ownership_edges = baseline["edges"]
+        ownership_edges = baseline["edges"] + result["edges"]
     else:
         result = extract(paths, root=tmp_path, cache_root=cache, parallel=False)
         nodes = {node["id"]: node for node in result["nodes"]}
         ownership_edges = result["edges"]
     owners = {edge["target"]: nodes[edge["source"]]["label"]
               for edge in ownership_edges if edge["relation"] == "method"}
+    calls = [edge for edge in result["edges"] if edge["relation"] == "calls"]
+    if confidence is not None:
+        assert all(edge["confidence"] == confidence for edge in calls)
     return {
         (nodes[edge["source"]]["label"], nodes[edge["target"]]["source_file"],
          owners.get(edge["target"]), nodes[edge["target"]]["label"], edge["source_location"])
-        for edge in result["edges"] if edge["relation"] == "calls"
+        for edge in calls
     }
 
 
@@ -133,6 +140,70 @@ function missingMember(ports: { authority: OtherPort }) {
 function beforeDeclaration(ports: { authority: OtherPort }) {
   authority.inspect();
   const authority = ports.authority;
+}
+""")
+    assert calls == set()
+
+
+@pytest.mark.parametrize("annotation", [
+    "{ authority: Port; fallback?: OtherPort }",
+    "Readonly<{ authority: Port; fallback?: OtherPort }>",
+    "Ports",
+    "PortInterface",
+])
+def test_direct_property_call_resolves_exact_member_in_callback(tmp_path, annotation):
+    calls = _calls(tmp_path, f"""\
+import type {{ Port, OtherPort }} from './ports';
+type Ports = Readonly<{{ authority: Port; fallback?: OtherPort }}>;
+interface PortInterface {{ authority: Port; fallback?: OtherPort }}
+export const resolve = (ports: {annotation}) => [
+  () => ports.authority.inspect(),
+  () => ports.fallback!.inspect(),
+];
+function nested(ports: {{ root: Ports }}) {{ ports.root.authority.inspect(); }}
+""", confidence="INFERRED")
+    assert calls == {
+        ("resolve()", "ports.ts", "Port", ".inspect()", "L5"),
+        ("resolve()", "ports.ts", "OtherPort", ".inspect()", "L6"),
+        ("nested()", "ports.ts", "Port", ".inspect()", "L8"),
+    }
+
+
+@pytest.mark.parametrize("incremental", [False, True])
+def test_direct_property_call_resolves_imported_pick_and_barrel(tmp_path, incremental):
+    calls = _calls(tmp_path, """\
+import type { Dependencies } from './dependencies.js';
+import type { Port } from './other.js';
+export function routes(deps: Pick<Dependencies, 'arrival' | 'ready'>, decoy: Port) {
+  return () => deps.arrival!.inspect();
+}
+""", incremental=incremental, confidence="INFERRED", extra_sources={
+        "api.ts": "export * from './ports.js';\n",
+        "dependencies.ts": (
+            "import type { Port } from './api.js';\n"
+            "export type Dependencies = Readonly<{ ready: boolean; arrival?: Port }>;\n"
+        ),
+    })
+    assert calls == {("routes()", "ports.ts", "Port", ".inspect()", "L4")}
+
+
+def test_direct_property_call_does_not_guess_from_unknown_receiver(tmp_path):
+    calls = _calls(tmp_path, """\
+import type { OtherPort } from './ports';
+type Ports = { authority: OtherPort; optional?: OtherPort };
+type Identity<T> = T;
+function inspect() {}
+function untyped(ports) { ports.authority.inspect(); }
+function missingType(ports: { authority: Port }) { ports.authority.inspect(); }
+function missingMember(ports: Ports) { ports.authority._inspect(); }
+function optional(ports: Ports) { ports.optional.inspect(); }
+function computed(ports: Ports) { ports['authority'].inspect(); }
+function missingHop(ports: { nested: Ports }) { ports.nested.unknown.inspect(); }
+function missingKey(ports: Pick<Ports, 'optional'>) { ports.authority.inspect(); }
+function shadowedPick<Pick>(ports: Pick<Ports, 'authority'>) { ports.authority.inspect(); }
+function generic(ports: Identity<Ports>) { ports.authority.inspect(); }
+function shadowedParameter(ports: Ports) {
+  return (ports) => ports.authority.inspect();
 }
 """)
     assert calls == set()

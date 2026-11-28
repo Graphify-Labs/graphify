@@ -6884,7 +6884,7 @@ def _resolve_typescript_member_calls(
                 ts_fields_by_id.setdefault((str(n.get("id")), static), {}).setdefault(fname, ftype)
     has_legacy_receiver_evidence = bool(type_table_by_file or ts_fields_by_id)
     if not has_legacy_receiver_evidence and not any(
-        call.get("_ts_property_receiver")
+        call.get("_ts_property_receiver") or call.get("_ts_property_path")
         for result in per_file for call in result.get("raw_calls", ())
     ):
         return
@@ -6951,6 +6951,44 @@ def _resolve_typescript_member_calls(
             if isinstance(source, str) and isinstance(target, str):
                 symbol_imports_by_filenode.setdefault(source, set()).add(target)
 
+    def outer_file(nid: str) -> str | None:
+        file = file_of_node.get(nid)
+        enclosing: set[str] = set()
+        while file is not None and file in file_of_node and file not in enclosing:
+            enclosing.add(file)
+            file = file_of_node[file]
+        return file if file not in enclosing else None
+
+    def exact_property_type(reference, file: str | None) -> str | None:
+        if not isinstance(reference, (list, tuple)) or len(reference) != 2 or file is None:
+            return None
+        name, imported = reference
+        if not isinstance(name, str) or not isinstance(imported, bool):
+            return None
+        candidates = {nid for nid in type_def_nids.get(_key(name), ()) if node_by_id[nid].get("label") == name and (
+            nid in symbol_imports_by_filenode.get(file, ()) if imported else file_of_node.get(nid) == file
+        )}
+        return next(iter(candidates)) if len(candidates) == 1 else None
+
+    def property_path_receiver(property_path, caller: str):
+        shape, path = property_path
+        file = outer_file(caller)
+        for property_name, asserted in path:
+            if not isinstance(shape, dict):
+                owner = exact_property_type(shape, file)
+                if owner is None:
+                    return None
+                # Imports in a property annotation belong to its declaration's file.
+                file = outer_file(owner)
+                shape = node_by_id[owner].get("_ts_property_shape")
+            binding = shape.get(property_name) if isinstance(shape, dict) else None
+            if not isinstance(binding, list) or len(binding) != 2:
+                return None
+            optional, shape = binding
+            if not isinstance(optional, bool) or (optional and not asserted):
+                return None
+        return (shape, file) if exact_property_type(shape, file) else None
+
     # `class B extends A`: a field A declares is B's too. Bases are matched by
     # their node, else by a unique class of that label carrying fields.
     bases: dict[str, list[str]] = {}
@@ -6991,15 +7029,24 @@ def _resolve_typescript_member_calls(
         receiver = rc.get("receiver")
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
-        if not receiver or not callee or not caller:
+        property_path = rc.get("_ts_property_path")
+        if not (receiver or property_path) or not callee or not caller:
             continue
         property_receiver = rc.get("_ts_property_receiver")
+        property_file = None
+        if property_path is not None:
+            hit = property_path_receiver(property_path, caller)
+            if hit is None:
+                continue
+            property_receiver, property_file = hit
         if property_receiver is None and not has_legacy_receiver_evidence:
             continue
         declaring_nid: str | None = None
         if property_receiver is not None:
-            type_name, property_type_imported = property_receiver
+            type_name, _ = property_receiver
             type_qualified = False
+        elif not receiver:
+            continue
         elif receiver[:1].isupper():
             type_name = receiver
             type_qualified = True  # the receiver names the type in source
@@ -7060,16 +7107,8 @@ def _resolve_typescript_member_calls(
         if property_receiver is not None:
             # Nested functions have a `contains` edge from their lexical
             # owner. Imports belong to the outermost file node.
-            enclosing: set[str] = set()
-            while caller_file in file_of_node and caller_file not in enclosing:
-                enclosing.add(caller_file)
-                caller_file = file_of_node[caller_file]
-            if caller_file is None:
-                continue
-            visible = [nid for nid in type_defs if node_by_id[nid].get("label") == type_name and (
-                nid in symbol_imports_by_filenode.get(caller_file, ()) if property_type_imported
-                else file_of_node.get(nid) == caller_file
-            )]
+            target = exact_property_type(property_receiver, property_file or outer_file(caller))
+            visible = [target] if target is not None else []
         else:
             visible = [nid for nid in type_defs if _visible(nid)]
         if len(visible) != 1:
