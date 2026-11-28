@@ -4845,6 +4845,46 @@ def test_extract_bash_var_source_script_dir_idiom_still_resolves(tmp_path):
     assert (tmp_path / "lib" / "x.sh").resolve() in targets, targets
 
 
+def test_extract_bash_var_source_script_dir_idiom_keeps_literal_suffix(tmp_path):
+    """#5560: `LIB="$(cd "$(dirname "$0")/.." && pwd)/lib/x"` is lib/x, not the
+    repo root, so `. "$LIB/greet.sh"` resolves to lib/x/greet.sh."""
+    (tmp_path / "lib" / "x").mkdir(parents=True)
+    (tmp_path / "lib" / "x" / "greet.sh").write_text(
+        "greet() { echo hello; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bin" / "tool"
+    script.parent.mkdir()
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'LIB="$(cd "$(dirname "$0")/.." && pwd)/lib/x"\n'
+        '. "$LIB/greet.sh"\n'
+        'main() { greet; }\n'
+        'main\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "x" / "greet.sh").resolve() in targets, targets
+
+
+def test_extract_bash_var_source_script_dir_idiom_dotdot_suffix_ignored(tmp_path):
+    """#5560: a suffix after `pwd)` with `..` in it is not followed; the base
+    stays the idiom's own folder, as before."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "y.sh").write_text("y() { :; }\n", encoding="utf-8")
+    (tmp_path / "bin").mkdir()
+    script = tmp_path / "bin" / "tool"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'LIB="$(cd "$(dirname "$0")/.." && pwd)/../outside"\n'
+        '. "$LIB/lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "y.sh").resolve() in targets, targets
+
+
 def test_extract_bash_var_source_untracked_var_keeps_script_dir_guess(tmp_path):
     """An untracked variable (assigned from the environment, or not assigned in
     this file at all) keeps the #2079 script-dir guess rather than binding
