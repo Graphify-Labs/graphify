@@ -837,9 +837,8 @@ def find_import_cycles(
 ) -> list[dict]:
     """Detect circular import dependencies at the file level.
 
-    Collapses symbol-level nodes to their parent file (using source_file attr
-    or 'contains' edges), builds a directed file-level graph from imports_from
-    edges, then finds simple cycles.
+    Collapses symbol-level nodes to their source files, builds a directed
+    graph from import and re-export edges, then finds simple cycles.
 
     Args:
         G: The full knowledge graph (may be undirected or directed).
@@ -854,6 +853,9 @@ def find_import_cycles(
           "why": "circular dependency"
         }
     """
+    if max_cycle_length < 1 or top_n < 1:
+        return []
+
     def _endpoint_source_file(node_id: str) -> str:
         attrs = G.nodes.get(node_id, {})
         src_file = attrs.get("source_file", "")
@@ -907,55 +909,37 @@ def find_import_cycles(
         if reverse:
             file_graph.add_edge(tgt_file, src_file_attr)
 
-    if not file_graph.edges():
-        return []
+    from itertools import islice
 
-    # Step 2: Find simple cycles, bounded by length.
-    # Pass length_bound so networkx prunes during enumeration rather than
-    # enumerating all elementary cycles and post-filtering — avoids exponential
-    # blowup on dense graphs with many long cycles (#1196).
-    cycles: list[list[str]] = []
-    # Two-file cycles first, read straight off reciprocal edges in O(E). The
-    # capped enumeration below stops in networkx's yield order, not by length,
-    # so on a graph with many longer cycles it could fill the cap before ever
-    # reaching a two-file mutual import - the tightest coupling, which this
-    # function promises to list first.
-    if max_cycle_length >= 2:
-        for u, v in file_graph.edges():
-            if len(cycles) >= top_n * 10:
-                break
-            if u < v and file_graph.has_edge(v, u):
-                cycles.append([u, v])
-    for cycle in nx.simple_cycles(file_graph, length_bound=max_cycle_length):
-        if len(cycle) <= max_cycle_length:
-            cycles.append(cycle)
-        if len(cycles) >= top_n * 10:
-            # Stop early to avoid combinatorial explosion
-            break
+    def cycles_by_length():
+        for node in nx.nodes_with_selfloops(file_graph):
+            yield [node]
+        if max_cycle_length >= 2:
+            for u, v in file_graph.edges():
+                if u < v and file_graph.has_edge(v, u):
+                    yield [u, v]
+        if max_cycle_length < 3:
+            return
 
-    # Step 3: Sort by length (shortest = tightest coupling), then deduplicate.
-    cycles.sort(key=len)
-
-    # Deduplicate rotations: normalize each cycle by starting from the
-    # lexicographically smallest element.
-    seen: set[tuple[str, ...]] = set()
-    unique_cycles: list[list[str]] = []
-    for cycle in cycles:
-        core = list(cycle)
-        if not core:
-            continue
-        min_idx = core.index(min(core))
-        normalized = tuple(core[min_idx:] + core[:min_idx])
-        if normalized not in seen:
-            seen.add(normalized)
-            unique_cycles.append(list(normalized))
-            if len(unique_cycles) >= top_n:
-                break
+        # NetworkX emits cycles in traversal order. Bound each pass by the
+        # requested length so no longer cycle consumes the output limit.
+        components = [file_graph.subgraph(nodes) for nodes in
+                      nx.strongly_connected_components(file_graph) if len(nodes) >= 3]
+        longest = min(max_cycle_length, max(map(len, components), default=0))
+        for length in range(3, longest + 1):
+            for component in components:
+                if len(component) >= length:
+                    for cycle in nx.simple_cycles(component, length_bound=length):
+                        if len(cycle) == length:
+                            yield cycle
 
     result: list[dict] = []
-    for cycle in unique_cycles:
+    for cycle in islice(cycles_by_length(), top_n):
+        # NetworkX emits each cycle once up to rotation. Start with its
+        # smallest filename for a stable display of the same cycle.
+        start = cycle.index(min(cycle))
         result.append({
-            "cycle": cycle,
+            "cycle": cycle[start:] + cycle[:start],
             "length": len(cycle),
             "why": "circular dependency",
         })
