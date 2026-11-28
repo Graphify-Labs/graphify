@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -984,10 +984,48 @@ def test_js_liquid_symbols_keep_source_lines_and_file(tmp_path):
     assert not any("ghost" in label for label in nodes)
 
 
+def _target_matches_relative(target_file: str, rel: str) -> bool:
+    """True when *target_file* ends with the relative POSIX path *rel*, regardless of separator."""
+    rel_parts = PurePosixPath(rel).parts
+    # Parse with PureWindowsPath so backslash separators are split on POSIX hosts too.
+    return bool(rel_parts) and PureWindowsPath(target_file).parts[-len(rel_parts):] == rel_parts
+
+
 def test_js_liquid_keeps_liquid_references(tmp_path):
     root = _theme(tmp_path, {"assets/app.js.liquid": _APP_JS, "assets/x.js": "// x\n"})
     result = extract_liquid(root / "assets/app.js.liquid")
-    assert any(e["relation"] == "references" and e["target_file"].endswith("assets/x.js") for e in result["edges"])
+    assert any(
+        e["relation"] == "references"
+        and _target_matches_relative(e.get("target_file", ""), "assets/x.js")
+        for e in result["edges"]
+    )
+
+
+def test_js_liquid_keeps_liquid_references_handles_windows_separators(tmp_path, monkeypatch):
+    """Windows native backslash separators in ``target_file`` must satisfy the reference check (#5579)."""
+    orig_extract = extract_liquid
+
+    def _as_windows_path(raw: str) -> str:
+        parts = Path(raw).parts
+        if parts[:1] == ("/",):
+            return str(PureWindowsPath("C:\\", *parts[1:]))
+        return str(PureWindowsPath(*parts))
+
+    saw_backslash = False
+
+    def _with_windows_separators(path: Path) -> dict:
+        nonlocal saw_backslash
+        result = orig_extract(path)
+        for edge in result["edges"]:
+            if edge.get("target_file"):
+                edge["target_file"] = _as_windows_path(edge["target_file"])
+                saw_backslash = saw_backslash or ("\\" in edge["target_file"])
+        return result
+
+    monkeypatch.setattr(sys.modules[__name__], "extract_liquid", _with_windows_separators)
+    test_js_liquid_keeps_liquid_references(tmp_path)
+    assert saw_backslash
+    assert not _target_matches_relative(r"C:\tmp\theme\not_assets\x.js", "assets/x.js")
 
 
 def test_js_liquid_uses_no_temporary_file(tmp_path, monkeypatch):
