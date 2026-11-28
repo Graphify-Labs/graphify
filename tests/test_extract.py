@@ -4888,6 +4888,46 @@ def test_extract_bash_source_dirname_cmdsubst_in_argument(tmp_path):
     assert (tmp_path / "lib" / "y.sh").resolve() in targets, targets
 
 
+def test_extract_bash_source_inline_script_dir_idiom(tmp_path):
+    """#5562: `. "$(cd "$(dirname "$0")/.." && pwd)/lib/greet.sh"` (the
+    script-dir idiom inline, no variable) loads lib/greet.sh."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "greet.sh").write_text(
+        'greet() { echo "hello $1"; }\n', encoding="utf-8"
+    )
+    (tmp_path / "bin").mkdir()
+    script = tmp_path / "bin" / "tool"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        '. "$(cd "$(dirname "$0")/.." && pwd)/lib/greet.sh"\n'
+        'main() { greet world; }\n'
+        'main\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "greet.sh").resolve() in targets, targets
+    imports = [e for e in result["edges"] if e["relation"] == "imports_from"]
+    assert any(
+        Path(e["target_file"]).resolve() == (tmp_path / "lib" / "greet.sh").resolve()
+        for e in imports
+    ), imports
+
+
+def test_extract_bash_source_inline_script_dir_idiom_rejects_traversal(tmp_path):
+    """#5562: a `..` in the path after the inline idiom is not followed."""
+    (tmp_path / "secret.sh").write_text("s() { :; }\n", encoding="utf-8")
+    (tmp_path / "a" / "bin").mkdir(parents=True)
+    script = tmp_path / "a" / "bin" / "tool"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        '. "$(cd "$(dirname "$0")/.." && pwd)/../secret.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    assert result["bash_sources"] == [], result["bash_sources"]
+
+
 def test_extract_bash_source_dirname_cmdsubst_untracked_var(tmp_path):
     """Form 3 with an untracked variable: `source "$(dirname "$SCRIPT_DIR")/lib/y.sh"`
     where SCRIPT_DIR is NOT assigned via the recognised idiom.  The fallback

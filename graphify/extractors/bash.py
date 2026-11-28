@@ -129,6 +129,32 @@ _BASH_LEADING_VAR = re.compile(
 # trailing `/..` hops applied to the dirname result.
 _BASH_DIRNAME_IDIOM = re.compile(r"dirname[^)]*\)((?:/\.\.)*)")
 
+# The literal path after the idiom's closing `&& pwd)` when the idiom is written
+# inline in a `source` argument (#5562):
+# `$(cd "$(dirname "$0")/.." && pwd)/lib/x.sh` -> `lib/x.sh`.
+_BASH_INLINE_PWD_PATH = re.compile(
+    r"&&\s*pwd\s*\)/((?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+)$"
+)
+
+
+def _bash_inline_script_dir_path(raw: str, script_dir: Path) -> Path | None:
+    """The file a ``source`` argument names with the script-dir idiom inline, as in
+    ``. "$(cd "$(dirname "$0")/.." && pwd)/lib/x.sh"``, or None for any other form
+    (#5562). The idiom is the script's folder, up one per ``/..``; a ``..`` in the
+    literal path after it is not followed."""
+    if not raw.startswith("$(cd ") or "dirname" not in raw:
+        return None
+    if "BASH_SOURCE" not in raw and "$0" not in raw:
+        return None
+    tail = _BASH_INLINE_PWD_PATH.search(raw)
+    if not tail or ".." in tail.group(1).split("/"):
+        return None
+    hops = _BASH_DIRNAME_IDIOM.search(raw)
+    base = script_dir
+    for _ in range((hops.group(1).count("..") if hops else 0)):
+        base = base.parent
+    return base / tail.group(1)
+
 
 def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
     """Resolve a top-level assignment's value to a directory, or None if untracked.
@@ -428,7 +454,22 @@ def extract_bash(path: Path) -> dict:
                             # `script_dir.parent` when VAR is untracked), then
                             # resolve the literal suffix against it.
                             dirname_match = _BASH_SOURCE_DIRNAME.match(raw)
-                            if dirname_match:
+                            # The script-dir idiom inline, with no variable (#5562):
+                            # `. "$(cd "$(dirname "$0")/.." && pwd)/lib/x.sh"`.
+                            inline = _bash_inline_script_dir_path(raw, path.parent)
+                            if inline is not None:
+                                resolved = _resolve_safe(inline, scan_root)
+                                if resolved is not None and resolved.is_file():
+                                    add_edge(file_nid, _make_id(str(resolved)),
+                                             "imports_from", line,
+                                             confidence="INFERRED", context="import",
+                                             target_file=str(resolved))
+                                    bash_sources.append({
+                                        "target_path": str(resolved),
+                                        "source_file": str_path,
+                                        "source_location": f"L{line}",
+                                    })
+                            elif dirname_match:
                                 var_name = dirname_match.group(1)
                                 if var_name in var_bases:
                                     base = var_bases[var_name].parent
