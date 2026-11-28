@@ -15,14 +15,17 @@ key:value data bundle) is skipped so it does not mint up to 500 orphan nodes
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, active_scan_root
 from graphify.ids import normalize_id
 
 _YAML_MAX_BYTES = 1_048_576  # 1 MiB
 _MAX_PAIRS = 500
+_GHA_BASH_SHELLS = frozenset({"bash", "sh", "zsh", "ksh", "dash"})
+_UNSET = object()
 
 # Built lazily by _permissive_loader() once PyYAML is known to be importable
 # (the module stays import-optional, so this cannot be a module-level class).
@@ -92,6 +95,28 @@ _CONFIG_YAML_KEYS = frozenset({
 })
 
 
+def _github_workflow_repo_root(path: Path) -> Path | None:
+    """Return the repository root when *path* lies under ``.github/workflows/``."""
+    parts = [p.casefold() for p in path.parts]
+    for idx in range(len(parts) - 3, -1, -1):
+        if parts[idx] == ".github" and parts[idx + 1] == "workflows":
+            steps_up = len(parts) - idx
+            return path.parents[steps_up - 1]
+    return None
+
+
+def _composite_action_repo_root(path: Path) -> Path | None:
+    """Return the anchor root when *path* is an ``action.yml`` / ``action.yaml``."""
+    if path.name.casefold() not in ("action.yml", "action.yaml"):
+        return None
+    parts = [p.casefold() for p in path.parts]
+    for idx in range(len(parts) - 2, -1, -1):
+        if parts[idx] == ".github":
+            steps_up = len(parts) - idx
+            return path.parents[steps_up - 1]
+    return active_scan_root() or path.parent
+
+
 def _is_config_yaml(path: Path, data: Any, key_texts: set[str] | None = None) -> bool:
     """True if a YAML document is a recognized config/manifest worth extracting.
 
@@ -109,7 +134,7 @@ def _is_config_yaml(path: Path, data: Any, key_texts: set[str] | None = None) ->
     name = path.name.casefold()
     if name in _CONFIG_YAML_NAMES:
         return True
-    if "/.github/workflows/" in path.as_posix().casefold():
+    if _github_workflow_repo_root(path) is not None:
         return True
     if isinstance(data, list):
         # A top-level sequence is config only when it is an ansible-style list of
@@ -179,6 +204,208 @@ def _mapping_pairs(node: Any) -> list[tuple[str, Any, Any]]:
         # override of a merged key) is the one whose line holds the value.
         pairs[text] = (text, key_node, value_node)
     return list(pairs.values())
+
+
+def _scalar_str(node: Any) -> str | None:
+    """Return the string value of a string ScalarNode, else None."""
+    import yaml  # type: ignore
+
+    if isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:str":
+        return node.value
+    return None
+
+
+def _run_defaults(mapping_node: Any) -> tuple[object, object]:
+    """Return ``(shell, working_directory)`` from ``defaults.run``, using ``_UNSET`` when absent."""
+    import yaml  # type: ignore
+
+    if not isinstance(mapping_node, yaml.MappingNode):
+        return _UNSET, _UNSET
+    top = {k: v for k, _kn, v in _mapping_pairs(mapping_node)}
+    defaults_node = top.get("defaults")
+    if not isinstance(defaults_node, yaml.MappingNode):
+        return _UNSET, _UNSET
+    defaults_map = {k: v for k, _kn, v in _mapping_pairs(defaults_node)}
+    run_node = defaults_map.get("run")
+    if not isinstance(run_node, yaml.MappingNode):
+        return _UNSET, _UNSET
+    run_map = {k: v for k, _kn, v in _mapping_pairs(run_node)}
+    shell_val = _scalar_str(run_map["shell"]) if "shell" in run_map else _UNSET
+    wd_val = _scalar_str(run_map["working-directory"]) if "working-directory" in run_map else _UNSET
+    return shell_val, wd_val
+
+
+def _runs_on_is_windows(node: Any) -> bool:
+    """True when ``runs-on`` explicitly selects a Windows runner."""
+    import yaml  # type: ignore
+
+    if isinstance(node, yaml.ScalarNode):
+        val = _scalar_str(node)
+        return bool(val and val.strip().casefold().startswith("windows"))
+    if isinstance(node, yaml.SequenceNode):
+        for item in node.value:
+            val = _scalar_str(item)
+            if val and val.strip().casefold().startswith("windows"):
+                return True
+    return False
+
+
+def _is_bash_shell(shell_val: object, *, default_is_bash: bool) -> bool:
+    """True when *shell_val* selects a bash-compatible shell (or is unset when default is bash)."""
+    if shell_val is _UNSET:
+        return default_is_bash
+    if not isinstance(shell_val, str):
+        return False
+    cleaned = shell_val.strip()
+    if not cleaned or "$" in cleaned or "\0" in cleaned:
+        return False
+    tokens = cleaned.split()
+    if not tokens:
+        return False
+    exe = Path(tokens[0]).name.casefold()
+    if exe == "env" and len(tokens) > 1:
+        exe = Path(tokens[1]).name.casefold()
+    return exe in _GHA_BASH_SHELLS
+
+
+def _resolve_run_dir(repo_root: Path, wd_val: object, ceiling: Path) -> Path | None:
+    """Safely resolve a workflow step's working directory within *ceiling*."""
+    from graphify.extractors.bash import _resolve_safe
+
+    if wd_val is _UNSET:
+        resolved = _resolve_safe(repo_root, ceiling)
+        return resolved if resolved is not None and resolved.is_dir() else None
+    if not isinstance(wd_val, str):
+        return None
+    wd = wd_val.strip()
+    if not wd or wd.startswith(("/", "\\")) or "$" in wd or "\0" in wd:
+        return None
+    resolved = _resolve_safe(repo_root / wd, ceiling)
+    return resolved if resolved is not None and resolved.is_dir() else None
+
+
+def _extract_workflow_run_edges(
+    path: Path,
+    tree: Any,
+    file_nid: str,
+    repo_root: Path,
+    *,
+    is_composite_action: bool,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Parse qualifying GitHub Actions ``run:`` steps as bash and collect edges."""
+    import yaml  # type: ignore
+    from graphify.extractors.bash import _safe_to_probe, extract_bash_source
+
+    if not isinstance(tree, yaml.MappingNode):
+        return [], [], []
+
+    abs_repo = Path(os.path.abspath(str(repo_root)))
+    if not _safe_to_probe(abs_repo, None):
+        return [], [], []
+    scan_root = active_scan_root()
+    if scan_root is not None:
+        ceiling = scan_root
+    else:
+        try:
+            ceiling = abs_repo.resolve()
+        except OSError:
+            return [], [], []
+    if not _safe_to_probe(abs_repo, ceiling):
+        return [], [], []
+
+    top_map = {k: v for k, _kn, v in _mapping_pairs(tree)}
+    wf_shell, wf_wd = _run_defaults(tree)
+
+    step_groups: list[tuple[Any, bool, object, object]] = []
+    if is_composite_action:
+        runs_node = top_map.get("runs")
+        if isinstance(runs_node, yaml.MappingNode):
+            runs_map = {k: v for k, _kn, v in _mapping_pairs(runs_node)}
+            using_val = _scalar_str(runs_map.get("using"))
+            if using_val and using_val.strip().casefold() == "composite":
+                steps_node = runs_map.get("steps")
+                if isinstance(steps_node, yaml.SequenceNode):
+                    step_groups.append((steps_node, False, _UNSET, _UNSET))
+    else:
+        jobs_node = top_map.get("jobs")
+        if isinstance(jobs_node, yaml.MappingNode):
+            for _job_name, _job_kn, job_node in _mapping_pairs(jobs_node):
+                if not isinstance(job_node, yaml.MappingNode):
+                    continue
+                job_map = {k: v for k, _kn, v in _mapping_pairs(job_node)}
+                steps_node = job_map.get("steps")
+                if not isinstance(steps_node, yaml.SequenceNode):
+                    continue
+                job_shell, job_wd = _run_defaults(job_node)
+                eff_default_shell = wf_shell if job_shell is _UNSET else job_shell
+                eff_default_wd = wf_wd if job_wd is _UNSET else job_wd
+                default_is_bash = not _runs_on_is_windows(job_map.get("runs-on"))
+                step_groups.append((steps_node, default_is_bash, eff_default_shell, eff_default_wd))
+
+    collected_edges: list[dict] = []
+    collected_raw_calls: list[dict] = []
+    collected_sources: list[dict] = []
+    seen_edges: set[tuple[str, str, str, str]] = set()
+    seen_raw: set[tuple[str, str, str]] = set()
+
+    for steps_node, default_is_bash, group_shell, group_wd in step_groups:
+        for step_node in steps_node.value:
+            if not isinstance(step_node, yaml.MappingNode):
+                continue
+            step_map = {k: v for k, _kn, v in _mapping_pairs(step_node)}
+            run_node = step_map.get("run")
+            run_text = _scalar_str(run_node)
+            if not isinstance(run_node, yaml.ScalarNode) or not run_text or not run_text.strip():
+                continue
+            step_shell = (_scalar_str(step_map["shell"]) if "shell" in step_map else group_shell)
+            if not _is_bash_shell(step_shell, default_is_bash=default_is_bash):
+                continue
+            step_wd = (
+                _scalar_str(step_map["working-directory"])
+                if "working-directory" in step_map
+                else group_wd
+            )
+            run_dir = _resolve_run_dir(abs_repo, step_wd, ceiling)
+            if run_dir is None:
+                continue
+            line_offset = run_node.start_mark.line + (1 if run_node.style in ("|", ">") else 0)
+            bash_res = extract_bash_source(
+                run_text.encode("utf-8"),
+                source_path=path,
+                base_dir=run_dir,
+                file_nid=file_nid,
+                entry_nid=file_nid,
+                scan_root=ceiling,
+                line_offset=line_offset,
+                include_declarations=False,
+                initial_var_bases={"GITHUB_WORKSPACE": abs_repo},
+                gha_mode=True,
+            )
+            if "error" in bash_res:
+                continue
+            for edge in bash_res.get("edges", []):
+                ekey = (
+                    str(edge.get("source", "")),
+                    str(edge.get("target", "")),
+                    str(edge.get("relation", "")),
+                    str(edge.get("source_location", "")),
+                )
+                if ekey not in seen_edges:
+                    seen_edges.add(ekey)
+                    collected_edges.append(edge)
+            for bs in bash_res.get("bash_sources", []):
+                collected_sources.append(bs)
+            for rc in bash_res.get("raw_calls", []):
+                rkey = (
+                    str(rc.get("caller_nid", "")),
+                    str(rc.get("callee", "")),
+                    str(rc.get("source_location", "")),
+                )
+                if rkey not in seen_raw:
+                    seen_raw.add(rkey)
+                    collected_raw_calls.append(rc)
+
+    return collected_edges, collected_raw_calls, collected_sources
 
 
 def extract_yaml(path: Path) -> dict:
@@ -280,6 +507,11 @@ def extract_yaml(path: Path) -> dict:
                 if isinstance(item, (yaml.MappingNode, yaml.SequenceNode)):
                     walk(item, parent_nid, parent_key, depth + 1)
 
+    workflow_root = _github_workflow_repo_root(path)
+    action_root = _composite_action_repo_root(path) if workflow_root is None else None
+    bash_sources_all: list[dict] = []
+    raw_calls_all: list[dict] = []
+
     multi = len(config_docs) > 1
     for index, (doc, tree) in enumerate(config_docs):
         if multi:
@@ -295,5 +527,21 @@ def extract_yaml(path: Path) -> dict:
             walk(tree, doc_nid, label, 1)
         else:
             walk(tree, file_nid, None, 0)
+            gha_root = workflow_root or action_root
+            if gha_root is not None:
+                step_edges, step_raw_calls, step_sources = _extract_workflow_run_edges(
+                    path,
+                    tree,
+                    file_nid,
+                    gha_root,
+                    is_composite_action=(workflow_root is None),
+                )
+                edges.extend(step_edges)
+                bash_sources_all.extend(step_sources)
+                raw_calls_all.extend(step_raw_calls)
 
-    return {"nodes": nodes, "edges": edges}
+    payload: dict[str, Any] = {"nodes": nodes, "edges": edges}
+    if bash_sources_all:
+        payload["bash_sources"] = bash_sources_all
+        payload["raw_calls"] = raw_calls_all
+    return payload

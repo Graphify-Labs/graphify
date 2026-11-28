@@ -13740,6 +13740,8 @@ def extract(
     def _looks_like_bash(result: object) -> bool:
         if not isinstance(result, dict):
             return False
+        if result.get("bash_sources"):
+            return True
         nodes = result.get("nodes")
         if not isinstance(nodes, list):
             return False
