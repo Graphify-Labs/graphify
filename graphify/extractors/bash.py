@@ -266,20 +266,20 @@ def extract_bash(path: Path) -> dict:
     def _bash_call_in_command_allowed(cmd_node) -> bool:
         """Whether a command node should emit call edges.
 
-        Bare ``$(fn)`` at script level and process substitutions stay suppressed
-        (#2141). Value capture via ``x=$(fn)`` is a real invocation (#2978).
+        A ``$(fn)`` used as a statement's command name (``$(build)``, #2141)
+        and process substitutions stay suppressed. Anywhere else a ``$(fn)``
+        runs fn: in an assignment (``x=$(fn)``, #2978), in an argument
+        (``echo "at $(fn)"``) or in a test (``[ "$(fn)" = x ]``) (#5561).
         """
         parent = cmd_node.parent
-        saw_command_substitution = False
         while parent is not None:
             if parent.type == "process_substitution":
                 return False
-            if parent.type == "command_substitution":
-                saw_command_substitution = True
-            if parent.type == "variable_assignment" and saw_command_substitution:
-                return True
+            if (parent.type == "command_substitution" and parent.parent is not None
+                    and parent.parent.type == "command_name"):
+                return False
             parent = parent.parent
-        return not saw_command_substitution
+        return True
 
     def literal(node) -> str | None:
         # Token-level filter: rejects names containing shell metacharacters.

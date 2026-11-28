@@ -4409,6 +4409,30 @@ def test_extract_bash_command_substitution_in_assignment_emits_call(tmp_path):
     assert ("neg()", "helper()") in call_pairs
 
 
+def test_extract_bash_command_substitution_in_argument_or_test_emits_call(tmp_path):
+    """#5561: `$(helper)` in a command's argument or in a test runs helper, so
+    it gets a calls edge, as `x=$(helper)` does (#2978)."""
+    script = tmp_path / "a.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "helper() { echo ok; }\n"
+        "arg()     { echo \"at $(helper)\"; }\n"
+        "flag()    { jq -n --arg t \"$(helper)\" '$t'; }\n"
+        "test1()   { [ \"$(helper)\" != \"\" ] && echo ok; }\n"
+        "test2()   { [[ $(helper) == ok ]]; }\n",
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    call_pairs = [
+        (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "calls"
+    ]
+    for caller in ("arg()", "flag()", "test1()", "test2()"):
+        assert (caller, "helper()") in call_pairs, (caller, call_pairs)
+
+
 def test_extract_bash_process_substitution_not_recorded(tmp_path):
     """`<(helper)` (process substitution) must not be recorded as a call edge."""
     script = tmp_path / "process_substitution.sh"
