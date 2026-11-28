@@ -591,6 +591,9 @@ def prune_dangling_edges(graph_data: dict) -> tuple[dict, int]:
     return graph_data, before - len(graph_data[links_key])
 
 
+_CYPHER_CTRL_RE = re.compile(r"[\x00-\x08\x0a-\x1f]")
+
+
 def _cypher_escape(s: str) -> str:
     """Escape a string for safe embedding in a Cypher single-quoted literal.
 
@@ -608,14 +611,11 @@ def _cypher_escape(s: str) -> str:
     missed `\\n` / `\\r` which DO let a payload break out of the statement
     line and inject a fresh MATCH/DELETE on the following line. See F-008.
     """
-    # First normalise: drop NUL and other C0 control chars except tab.
-    s = "".join(ch for ch in s if ch >= " " or ch == "\t")
-    return (
-        s.replace("\\", "\\\\")
-         .replace("'", "\\'")
-         .replace("\n", "\\n")
-         .replace("\r", "\\r")
-    )
+    if not s or (s.isascii() and s.isprintable() and "\\" not in s and "'" not in s):
+        return s
+    # Drop NUL and C0 control chars except tab, then escape backslashes/quotes.
+    s = _CYPHER_CTRL_RE.sub("", s)
+    return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
 # Restrict identifier-position values (labels and relationship types are NOT
