@@ -156,8 +156,16 @@ type alias in the same file, with the same unshadowed `Readonly` support.
 The property needs a direct, required signature with a simple type name that
 resolves to a same-file declaration or an unaliased named import. Receiver and
 parameter bindings follow lexical scope. The call links to the type's exact
-method as `INFERRED`. Destructuring, property chains and other type expressions
-are outside this rule. AST cache schema 58 refreshes the receiver facts.
+method as `INFERRED`.
+
+Direct calls such as `deps.port.inspect()` also follow property declarations
+from an explicitly typed parameter. The path can cross inline object types,
+named object aliases and interfaces. Each annotation resolves in the file
+that declares it, including named imports resolved through re-exports.
+Optional properties require an explicit non-null assertion at the hop.
+An unshadowed `Pick` with literal keys permits only selected properties.
+Computed properties, unresolved types, and ambiguous declarations leave
+the call unlinked. AST cache schema 59 refreshes these receiver facts.
 
 Java preserves package/import context for qualified receivers, typed
 locals/parameters/fields, casts, and declared factory returns. Nested member

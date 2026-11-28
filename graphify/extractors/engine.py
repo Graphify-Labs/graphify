@@ -4103,10 +4103,10 @@ def _ts_namespace_scope(
     return scope, parts
 
 
-def _ts_readonly_binding_scopes(
-    root: Node, source: bytes, config: LanguageConfig, declaration_file: bool,
+def _ts_type_binding_scopes(
+    root: Node, source: bytes, config: LanguageConfig, declaration_file: bool, type_name: str,
 ) -> tuple[set[Node], set[_TsNamespaceScope]]:
-    """Index local type bindings named Readonly and namespace exports of that name."""
+    """Index lexical and exported namespace bindings of a utility type name."""
     scopes: set[Node] = set()
     exports: set[_TsNamespaceScope] = set()
     for node in _walk_js_tree(root):
@@ -4121,7 +4121,7 @@ def _ts_readonly_binding_scopes(
         else:
             continue
         parent = node.parent
-        if name is None or _read_text(name, source) != "Readonly" or parent is None:
+        if name is None or _read_text(name, source) != type_name or parent is None:
             continue
         if node.type == "type_parameter":
             scope = parent.parent
@@ -4137,7 +4137,7 @@ def _ts_readonly_binding_scopes(
     return scopes, exports
 
 
-def _ts_has_readonly_binding(
+def _ts_has_type_binding(
     alias: Node, source: bytes, declaration_file: bool,
     scopes: set[Node], exports: set[_TsNamespaceScope],
 ) -> bool:
@@ -4193,6 +4193,116 @@ def _ts_receiver_type_binding(node, name: str, source: bytes, config: LanguageCo
     return None
 
 
+def _ts_parameter_annotation(ident, source: bytes, bindings_by_scope: dict):
+    """Read the annotation of the nearest explicitly typed, named parameter."""
+    name = _read_text(ident, source)
+    scope = _js_receiver_binding_scope(ident, name, source, bindings_by_scope, for_property_alias=True)
+    if scope is None or scope.type not in _TS_FUNCTION_NODES:
+        return None
+    params = scope.child_by_field_name("parameters")
+    if params is None:
+        return None
+    for param in params.named_children:
+        pattern = param.child_by_field_name("pattern")
+        if (param.type == "required_parameter" and pattern is not None
+                and pattern.type == "identifier" and _read_text(pattern, source) == name):
+            annotation = param.child_by_field_name("type")
+            if annotation is not None:
+                return next((child for child in annotation.named_children if not child.is_extra), None)
+    return None
+
+
+def _ts_named_receiver_type(node, source: bytes, config: LanguageConfig) -> list | None:
+    if node is None or node.type != "type_identifier":
+        return None
+    name = _read_text(node, source)
+    binding = _ts_receiver_type_binding(node, name, source, config)
+    if binding is None:
+        return None
+    if binding.type == "import_specifier":
+        return [name, True]
+    if binding.type in config.class_types:
+        scope = _ts_enclosing_scope(binding)
+        if scope is not None and scope.type == "program":
+            return [name, False]
+    return None
+
+
+def _ts_property_shape(node, source: bytes, object_literal_type, config: LanguageConfig,
+                       depth: int = 0) -> dict | list | None:
+    """Represent only explicitly declared properties and their lexical type origins."""
+    if depth >= 8 or node is None:
+        return None
+    if node.type == "type_identifier":
+        return _ts_named_receiver_type(node, source, config)
+    body = node if node.type == "interface_body" else object_literal_type(node)
+    if body is None or body.has_error:
+        return None
+    properties: dict[str, list] = {}
+    seen: set[str] = set()
+    for member in body.named_children:
+        ident = member.child_by_field_name("name")
+        if ident is None or ident.type != "property_identifier":
+            continue
+        name = _read_text(ident, source)
+        if name in seen:
+            properties.pop(name, None)
+            continue
+        seen.add(name)
+        annotation = member.child_by_field_name("type") if member.type == "property_signature" else None
+        if annotation is None:
+            continue
+        value = next((child for child in annotation.named_children if not child.is_extra), None)
+        shape = _ts_property_shape(value, source, object_literal_type, config, depth + 1)
+        if shape is not None:
+            properties[name] = [any(child.type == "?" for child in member.children), shape]
+    return properties or None
+
+
+def _ts_receiver_property_path(receiver, source: bytes) -> tuple[Node, list[list]] | None:
+    """Read a dotted path and its explicit non-null assertions from the AST."""
+    properties = []
+    while receiver is not None and len(properties) < 8:
+        asserted = receiver.type == "non_null_expression"
+        if asserted:
+            receiver = next((child for child in receiver.named_children if not child.is_extra), None)
+        if receiver is None:
+            break
+        if receiver.type == "identifier" and not asserted and properties:
+            return receiver, list(reversed(properties))
+        if receiver.type != "member_expression" or receiver.child_by_field_name("optional_chain"):
+            break
+        name = receiver.child_by_field_name("property")
+        if name is None or name.type != "property_identifier":
+            break
+        properties.append([_read_text(name, source), asserted])
+        receiver = receiver.child_by_field_name("object")
+    return None
+
+
+def _ts_pick_property(node, member: str, source: bytes):
+    """Unwrap a Pick of literal keys only if it explicitly includes the first hop."""
+    arguments = node.child_by_field_name("type_arguments")
+    types = [child for child in arguments.named_children if not child.is_extra] if arguments else []
+    if len(types) != 2:
+        return None
+    keys = [types[1]]
+    selected = False
+    while keys:
+        key = keys.pop()
+        if key.type == "union_type":
+            keys.extend(child for child in key.named_children if not child.is_extra)
+            continue
+        literal = next((child for child in key.named_children if not child.is_extra), None)
+        if key.type != "literal_type" or literal is None or literal.type != "string":
+            return None
+        # Escaped keys need evaluation; keep this syntactic lookup exact.
+        if any(child.type == "escape_sequence" for child in literal.named_children):
+            return None
+        selected |= _read_text(literal, source)[1:-1] == member
+    return types[0] if selected else None
+
+
 def _ts_property_receiver_type(block, name: str, source: bytes, bindings_by_scope: dict,
                                object_literal_type, config: LanguageConfig) -> tuple[int, str, bool] | None:
     """Read `const alias = parameter.property` from the two lexical bindings."""
@@ -4217,20 +4327,7 @@ def _ts_property_receiver_type(block, name: str, source: bytes, bindings_by_scop
     if base is None or base.type != "identifier" or prop is None or prop.type != "property_identifier":
         return None
 
-    base_name = _read_text(base, source)
-    function = _js_receiver_binding_scope(base, base_name, source, bindings_by_scope, for_property_alias=True)
-    if function is None or function.type not in _TS_FUNCTION_NODES:
-        return None
-    params = function.child_by_field_name("parameters")
-    if params is None:
-        return None
-    param = next((item for item in params.named_children if item.type == "required_parameter"
-                  and (pattern := item.child_by_field_name("pattern")) is not None
-                  and pattern.type == "identifier" and _read_text(pattern, source) == base_name), None)
-    annotation = param.child_by_field_name("type") if param is not None else None
-    if annotation is None:
-        return None
-    shape = next((child for child in annotation.named_children if not child.is_extra), None)
+    shape = _ts_parameter_annotation(base, source, bindings_by_scope)
     if shape is not None and shape.type == "type_identifier":
         binding = _ts_receiver_type_binding(shape, _read_text(shape, source), source, config)
         if (binding is None or binding.type != "type_alias_declaration"
@@ -4252,18 +4349,10 @@ def _ts_property_receiver_type(block, name: str, source: bytes, bindings_by_scop
     if annotation is None or any(child.type == "?" for child in member.children):
         return None
     declared = [child for child in annotation.named_children if not child.is_extra]
-    if len(declared) != 1 or declared[0].type != "type_identifier":
+    if len(declared) != 1:
         return None
-    type_name = _read_text(declared[0], source)
-    binding = _ts_receiver_type_binding(declared[0], type_name, source, config)
-    if binding is not None:
-        if binding.type == "import_specifier":
-            return alias.end_byte, type_name, True
-        if binding.type in config.class_types:
-            scope = _ts_enclosing_scope(binding)
-            if scope is not None and scope.type == "program":
-                return alias.end_byte, type_name, False
-    return None
+    binding = _ts_named_receiver_type(declared[0], source, config)
+    return (alias.end_byte, binding[0], binding[1]) if binding else None
 
 
 def _js_import_is_type_only(node) -> bool:
@@ -8739,18 +8828,35 @@ def _extract_generic(
             csharp_method_scopes[id(body)] = (decl, class_nid)
             function_bodies.append((member_nid, body))
 
-    ts_readonly_bindings: tuple[set[Node], set[_TsNamespaceScope]] | None = None
+    ts_utility_bindings: dict[str, tuple[set[Node], set[_TsNamespaceScope]]] = {}
     ts_declaration_file = str_path.endswith((".d.ts", ".d.mts", ".d.cts"))
 
+    def ts_utility_is_shadowed(node, name: str) -> bool:
+        if name not in ts_utility_bindings:
+            ts_utility_bindings[name] = _ts_type_binding_scopes(root, source, config, ts_declaration_file, name)
+        return _ts_has_type_binding(node, source, ts_declaration_file, *ts_utility_bindings[name])
+
     def ts_object_literal_type(value):
-        nonlocal ts_readonly_bindings
         body = _ts_object_literal_type(value, source)
-        if body is not None and body.parent is not None and body.parent.type == "type_arguments":
-            if ts_readonly_bindings is None:
-                ts_readonly_bindings = _ts_readonly_binding_scopes(root, source, config, ts_declaration_file)
-            if _ts_has_readonly_binding(body, source, ts_declaration_file, *ts_readonly_bindings):
-                return None
+        if (body is not None and body.parent is not None and body.parent.type == "type_arguments"
+                and ts_utility_is_shadowed(body, "Readonly")):
+            return None
         return body
+
+    def ts_direct_property_receiver(receiver) -> list | None:
+        resolved = _ts_receiver_property_path(receiver, source)
+        if resolved is None:
+            return None
+        ident, path = resolved
+        annotation = _ts_parameter_annotation(ident, source, ts_property_receiver_bindings)
+        if annotation is not None and annotation.type == "generic_type":
+            name = annotation.child_by_field_name("name")
+            if name is not None and name.type == "type_identifier" and _read_text(name, source) == "Pick":
+                if ts_utility_is_shadowed(annotation, "Pick"):
+                    return None
+                annotation = _ts_pick_property(annotation, path[0][0], source)
+        shape = _ts_property_shape(annotation, source, ts_object_literal_type, config)
+        return [shape, path] if shape else None
 
     def ts_property_receiver_at(ident, name: str) -> tuple[str, bool] | None:
         block = _js_receiver_binding_scope(ident, name, source, js_receiver_bindings)
@@ -8951,6 +9057,16 @@ def _extract_generic(
             class_node["metadata"] = sanitize_metadata({
                 **class_node.get("metadata", {}), "type_path": type_path,
             })
+            if (config.ts_module == "tree_sitter_typescript"
+                    and t in ("type_alias_declaration", "interface_declaration")
+                    and node.child_by_field_name("type_parameters") is None):
+                name = node.child_by_field_name("name")
+                if name is not None and _ts_named_receiver_type(name, source, config) == [class_name, False]:
+                    value = node.child_by_field_name("value" if t == "type_alias_declaration" else "body")
+                    if value is not None and value.type != "type_identifier":
+                        shape = _ts_property_shape(value, source, ts_object_literal_type, config)
+                        if shape:
+                            class_node["_ts_property_shape"] = shape
             if config.ts_module == "tree_sitter_java":
                 class_node["_java_type"] = {
                     "path": type_path, "package": java_package, "imports": java_imports,
@@ -12128,6 +12244,7 @@ def _extract_generic(
             swift_receiver: str | None = None
             member_receiver: str | None = None
             ts_property_receiver: tuple[str, bool] | None = None
+            ts_property_path: list | None = None
             kotlin_qualified_prefix: str | None = None
             kotlin_object_receiver: str | None = None
             # Kotlin `x.m()` / `this.x.m()`: the receiver variable and its declared type.
@@ -12693,8 +12810,8 @@ def _extract_generic(
                             # Capture a simple-identifier receiver (e.g. `ClassName`
                             # in `ClassName.method()`) so cross-file member-call
                             # resolution can resolve qualified class-method calls
-                            # (#1446). Chained receivers (`a.b.method()`) are skipped
-                            # UNLESS the chain is `this.field.method()` (#1316).
+                            # (#1446). Preserve a TypeScript property path only
+                            # when its initial receiver has an explicit type.
                             obj = func_node.child_by_field_name(config.call_accessor_object_field)
                             if obj is not None and obj.type == "identifier":
                                 member_receiver = _read_text(obj, source)
@@ -12738,6 +12855,11 @@ def _extract_generic(
                                     if inner_prop is not None:
                                         member_receiver = _read_text(inner_prop, source)
                                         is_this_field_call = True
+                            if (config.ts_module == "tree_sitter_typescript" and node.type == "call_expression"
+                                    and obj is not None and member_receiver is None
+                                    and func_node.child_by_field_name("optional_chain") is None
+                                    and obj.type in ("member_expression", "non_null_expression")):
+                                ts_property_path = ts_direct_property_receiver(obj)
                     else:
                         # Try reading the node directly (e.g. Java name field is the callee)
                         callee_name = _read_text(func_node, source)
@@ -13093,6 +13215,8 @@ def _extract_generic(
                             rc_entry["_js_construct"] = node.type == "new_expression"
                             if ts_property_receiver is not None:
                                 rc_entry["_ts_property_receiver"] = list(ts_property_receiver)
+                            if ts_property_path is not None:
+                                rc_entry["_ts_property_path"] = ts_property_path
                         if python_receiver_shadowed is not None and is_member_call:
                             rc_entry["_python_receiver_shadowed"] = python_receiver_shadowed(
                                 node, member_receiver or ""
