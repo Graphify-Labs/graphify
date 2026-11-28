@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import unicodedata
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from collections.abc import Sequence
 from typing import Any
 
 from graphify.extractors.base import _read_source_text
+from graphify.extractors.bash import _resolve_safe, _safe_to_probe, _within_tree
 from graphify.ids import make_id as _shared_make_id
 from graphify.paths import disambiguate_ambiguous_candidates
 from graphify.security import sanitize_metadata
@@ -557,6 +560,94 @@ def _file_node_id_for_path(path: Path, root: Path) -> str:
     return _bash_make_id(_bash_file_stem(rel))
 
 
+def _safe_bash_base_identity(
+    base_str: str,
+    safe_roots: tuple[Path, ...],
+    resolved_root: Path,
+) -> Path | None:
+    """Return canonical path identity for *base_str* if safe to probe, else None."""
+    base = Path(base_str)
+    if not _safe_to_probe(base, None):
+        return None
+    norm_base = Path(os.path.normpath(str(base)))
+    if not _safe_to_probe(norm_base, None):
+        return None
+    if any(_safe_to_probe(norm_base, sr) for sr in safe_roots):
+        try:
+            resolved = norm_base.resolve()
+        except (OSError, RuntimeError):
+            return norm_base
+        if _safe_to_probe(resolved, resolved_root):
+            return resolved
+    return norm_base
+
+
+def _resolve_bash_var_source_target(
+    vs: dict[str, Any],
+    base_str: str,
+    safe_roots: tuple[Path, ...],
+    resolved_root: Path,
+    file_nid_by_path: dict[Path, str],
+) -> str | None:
+    """Resolve one variable-based `source` entry against a caller-supplied base."""
+    suffix = vs.get("suffix")
+    if not isinstance(suffix, str) or not suffix or "$" in suffix:
+        return None
+    is_dirname = bool(vs.get("dirname"))
+    if is_dirname and ".." in suffix.split("/"):
+        return None
+    base = Path(base_str)
+    if not _safe_to_probe(base, None):
+        return None
+    if is_dirname:
+        effective_base = base.parent
+        candidate = Path(os.path.normpath(str(effective_base / suffix)))
+        ceiling = effective_base
+    else:
+        candidate = Path(os.path.normpath(str(base / suffix)))
+        ceiling = base.parent
+    if not _within_tree(ceiling, candidate):
+        return None
+    if not any(_safe_to_probe(candidate, sr) for sr in safe_roots):
+        return None
+    try:
+        resolved = candidate.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not _safe_to_probe(resolved, resolved_root):
+        return None
+    return file_nid_by_path.get(resolved)
+
+
+def _extract_site_var_state(
+    entry: dict[str, Any],
+    fallback_vars: dict[str, str],
+    fallback_blocked: set[str],
+) -> tuple[dict[str, str], set[str]]:
+    """Return ``(var_bases, blocked_vars)`` active at a single source site."""
+    if "var_bases" in entry:
+        raw_bases = entry.get("var_bases")
+        site_vars: dict[str, str] = {}
+        if isinstance(raw_bases, dict):
+            for vn, vb in raw_bases.items():
+                if isinstance(vn, str) and vn and isinstance(vb, str) and vb:
+                    site_vars[vn] = vb
+    else:
+        site_vars = dict(fallback_vars)
+
+    if "assigned_unknown_vars" in entry:
+        raw_blocked = entry.get("assigned_unknown_vars")
+        site_blocked: set[str] = set()
+        if isinstance(raw_blocked, (list, tuple, set)):
+            for vn in raw_blocked:
+                if isinstance(vn, str) and vn:
+                    site_blocked.add(vn)
+    else:
+        site_blocked = set(fallback_blocked)
+
+    return site_vars, site_blocked
+
+
 def resolve_bash_source_edges(
     per_file: Sequence[dict | None],
     paths: Sequence[Path],
@@ -583,34 +674,93 @@ def resolve_bash_source_edges(
         - Inputs of type ``str`` and ``pathlib.Path`` are processed.
           Anything else is silently skipped.
     """
+    resolved_root = Path(root).resolve()
+    abs_root = Path(os.path.abspath(str(root)))
+    safe_roots: tuple[Path, ...] = (
+        (resolved_root,) if abs_root == resolved_root else (abs_root, resolved_root)
+    )
+
     path_by_index = [Path(p).resolve() for p in paths]
     file_nid_by_path = {p: _file_node_id_for_path(p, root) for p in path_by_index}  # resolved paths only
+    str_path_by_nid: dict[str, str] = {
+        file_nid_by_path[p]: str(p) for p in path_by_index
+    }
 
     functions_by_file: dict[str, dict[str, str]] = {}
+    local_vars: dict[str, dict[str, str]] = {}
+    blocked_vars: dict[str, set[str]] = {}
+    var_sources_by_file: dict[str, list[dict[str, Any]]] = {}
+    fallback_for_entry: dict[tuple[str, int], str] = {}
+    fallback_counts: Counter[tuple[str, str, str]] = Counter()
+
     for result, path in zip(per_file, path_by_index):
         if not isinstance(result, dict):
             continue
         file_nid = file_nid_by_path[path]
         nodes = result.get("nodes", [])
-        if not isinstance(nodes, list):
-            continue
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            metadata = node.get("metadata", {})
-            if not isinstance(metadata, dict):
-                continue
-            if metadata.get("kind") != "bash_function":
-                continue
-            name = str(node.get("label", "")).removesuffix("()").strip()
-            node_id = node.get("id")
-            if not name or not node_id:
-                continue
-            functions_by_file.setdefault(file_nid, {})[name] = str(node_id)
+        if isinstance(nodes, list):
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                metadata = node.get("metadata", {})
+                if not isinstance(metadata, dict):
+                    continue
+                if metadata.get("kind") != "bash_function":
+                    continue
+                name = str(node.get("label", "")).removesuffix("()").strip()
+                node_id = node.get("id")
+                if not name or not node_id:
+                    continue
+                functions_by_file.setdefault(file_nid, {})[name] = str(node_id)
+
+        raw_var_bases = result.get("bash_var_bases", {})
+        if isinstance(raw_var_bases, dict):
+            for vn, vb in raw_var_bases.items():
+                if isinstance(vn, str) and vn and isinstance(vb, str) and vb:
+                    local_vars.setdefault(file_nid, {})[vn] = vb
+
+        raw_blocked = result.get("bash_assigned_unknown_vars", [])
+        if isinstance(raw_blocked, list):
+            for vn in raw_blocked:
+                if isinstance(vn, str) and vn:
+                    blocked_vars.setdefault(file_nid, set()).add(vn)
+
+        raw_var_sources = result.get("bash_var_sources", [])
+        if isinstance(raw_var_sources, list):
+            for vs in raw_var_sources:
+                if not isinstance(vs, dict):
+                    continue
+                vn = vs.get("var_name")
+                sfx = vs.get("suffix")
+                if not isinstance(vn, str) or not vn or not isinstance(sfx, str) or not sfx:
+                    continue
+                entry_idx = len(var_sources_by_file.get(file_nid, ()))
+                var_sources_by_file.setdefault(file_nid, []).append(vs)
+                fb_raw = vs.get("fallback_target_path")
+                if isinstance(fb_raw, (str, Path)) and str(fb_raw).strip():
+                    fb_cand = Path(fb_raw)
+                    if not fb_cand.is_absolute():
+                        fb_cand = path.parent / fb_cand
+                    fb_resolved = _resolve_safe(fb_cand, resolved_root)
+                    if fb_resolved is None and safe_roots != (resolved_root,):
+                        if _safe_to_probe(fb_cand, abs_root):
+                            try:
+                                cand_res = fb_cand.resolve()
+                            except (OSError, RuntimeError):
+                                cand_res = None
+                            if cand_res is not None and _safe_to_probe(cand_res, resolved_root):
+                                fb_resolved = cand_res
+                    if fb_resolved is not None:
+                        fb_nid = file_nid_by_path.get(fb_resolved)
+                        if fb_nid is not None:
+                            fallback_for_entry[(file_nid, entry_idx)] = fb_nid
+                            loc = vs.get("source_location")
+                            loc_str = loc if isinstance(loc, str) else ""
+                            fallback_counts[(file_nid, fb_nid, loc_str)] += 1
 
     sourced_files: dict[str, set[str]] = {}
-    resolved_edges: list[dict] = []
-    existing = existing_edge_pairs(existing_edges or [])
+    concrete_source_items: list[tuple[str, str, dict[str, Any], str]] = []
+    fallback_source_items: list[tuple[str, str, dict[str, Any], str]] = []
 
     for result, path in zip(per_file, path_by_index):
         if not isinstance(result, dict):
@@ -640,24 +790,230 @@ def resolve_bash_source_edges(
             target_file_nid = file_nid_by_path.get(target_path)
             if target_file_nid is None:
                 continue
-            sourced_files.setdefault(src_file_nid, set()).add(target_file_nid)
-            key = (src_file_nid, target_file_nid, "imports_from")
-            if key in existing:
-                continue
-            existing.add(key)
-            resolved_edges.append(
-                {
-                    "source": src_file_nid,
-                    "target": target_file_nid,
-                    "relation": "imports_from",
-                    "context": "import",
-                    "confidence": "EXTRACTED",
-                    "confidence_score": 1.0,
-                    "source_file": source.get("source_file", str(path)),
-                    "source_location": source.get("source_location", ""),
-                    "weight": 1.0,
-                }
+            loc = source.get("source_location")
+            loc_str = loc if isinstance(loc, str) else ""
+            fb_key = (src_file_nid, target_file_nid, loc_str)
+            if fallback_counts.get(fb_key, 0) > 0:
+                fallback_counts[fb_key] -= 1
+                fallback_source_items.append((src_file_nid, target_file_nid, source, str(path)))
+            else:
+                concrete_source_items.append((src_file_nid, target_file_nid, source, str(path)))
+
+    # Propagate per-source-site variable base snapshots from loaders to sourced
+    # scripts via bounded fixed-point iteration (#5563): if a file uses `$VAR/x`
+    # without setting VAR before that site, resolve against VAR active at the
+    # loader's `source` site (directly or transitively). Fail closed when active
+    # loader sites disagree on VAR's value.
+    concrete_site_states = [
+        _extract_site_var_state(
+            src_obj,
+            local_vars.get(src_nid, {}),
+            blocked_vars.get(src_nid, set()),
+        )
+        for src_nid, _tgt_nid, src_obj, _ in concrete_source_items
+    ]
+    var_source_site_states: dict[tuple[str, int], tuple[dict[str, str], set[str]]] = {
+        (src_nid, idx): _extract_site_var_state(
+            vs,
+            local_vars.get(src_nid, {}),
+            blocked_vars.get(src_nid, set()),
+        )
+        for src_nid, items in var_sources_by_file.items()
+        for idx, vs in enumerate(items)
+    }
+    has_any_var_bases = (
+        bool(local_vars)
+        or any(sv for sv, _ in concrete_site_states)
+        or any(sv for sv, _ in var_source_site_states.values())
+    )
+
+    resolved_var_targets: dict[tuple[str, int], str] = {}
+    if var_sources_by_file and has_any_var_bases:
+        all_var_names: set[str] = set()
+        for vars_map in local_vars.values():
+            all_var_names.update(vars_map.keys())
+        for sv, _ in concrete_site_states:
+            all_var_names.update(sv.keys())
+        for sv, _ in var_source_site_states.values():
+            all_var_names.update(sv.keys())
+        for items in var_sources_by_file.values():
+            for vs in items:
+                vn = vs.get("var_name")
+                if isinstance(vn, str) and vn:
+                    all_var_names.add(vn)
+
+        max_iters = max(len(file_nid_by_path), 1) + 2
+        for _ in range(max_iters):
+            active_sites_to_target: dict[str, list[tuple[str, dict[str, str], set[str]]]] = {}
+            for (src_nid, tgt_nid, _src_obj, _), (site_vars, site_blocked) in zip(
+                concrete_source_items, concrete_site_states
+            ):
+                if src_nid != tgt_nid:
+                    active_sites_to_target.setdefault(tgt_nid, []).append(
+                        (src_nid, site_vars, site_blocked)
+                    )
+            for (src_nid, idx), tgt_nid in resolved_var_targets.items():
+                if src_nid != tgt_nid:
+                    site_vars, site_blocked = var_source_site_states[(src_nid, idx)]
+                    active_sites_to_target.setdefault(tgt_nid, []).append(
+                        (src_nid, site_vars, site_blocked)
+                    )
+            for (src_nid, idx), fb_nid in fallback_for_entry.items():
+                if (src_nid, idx) not in resolved_var_targets and src_nid != fb_nid:
+                    site_vars, site_blocked = var_source_site_states[(src_nid, idx)]
+                    active_sites_to_target.setdefault(fb_nid, []).append(
+                        (src_nid, site_vars, site_blocked)
+                    )
+
+            incoming_vars: dict[str, dict[str, set[str]]] = {}
+            for var_name in sorted(all_var_names):
+                changed = True
+                while changed:
+                    changed = False
+                    for tgt_nid in sorted(active_sites_to_target):
+                        cur = incoming_vars.setdefault(tgt_nid, {}).setdefault(var_name, set())
+                        before = len(cur)
+                        for loader_nid, site_vars, site_blocked in active_sites_to_target[tgt_nid]:
+                            if var_name in site_vars:
+                                cur.add(site_vars[var_name])
+                            elif var_name not in site_blocked:
+                                cur.update(incoming_vars.get(loader_nid, {}).get(var_name, ()))
+                        if len(cur) != before:
+                            changed = True
+
+            next_resolved: dict[tuple[str, int], str] = {}
+            for src_nid in sorted(var_sources_by_file):
+                for idx, vs in enumerate(var_sources_by_file[src_nid]):
+                    var_name = vs.get("var_name")
+                    if not isinstance(var_name, str) or not var_name:
+                        continue
+                    site_vars, site_blocked = var_source_site_states[(src_nid, idx)]
+                    if var_name in site_vars or var_name in site_blocked:
+                        continue
+                    candidates = incoming_vars.get(src_nid, {}).get(var_name, set())
+                    if not candidates:
+                        continue
+                    norm_map: dict[Path, str] = {}
+                    bad_candidate = False
+                    for cand_str in candidates:
+                        ident = _safe_bash_base_identity(cand_str, safe_roots, resolved_root)
+                        if ident is None:
+                            bad_candidate = True
+                            break
+                        norm_map[ident] = cand_str
+                    if bad_candidate or len(norm_map) != 1:
+                        continue
+                    chosen_base = next(iter(norm_map.values()))
+                    target_nid = _resolve_bash_var_source_target(
+                        vs, chosen_base, safe_roots, resolved_root, file_nid_by_path
+                    )
+                    if target_nid is not None:
+                        next_resolved[(src_nid, idx)] = target_nid
+
+            if next_resolved == resolved_var_targets:
+                break
+            resolved_var_targets = next_resolved
+
+    # Identify any script-dir fallback guesses superseded by a concrete loader VAR.
+    superseded_fallbacks: set[tuple[str, str, str]] = set()
+    surviving_fallback_keys: set[tuple[str, str, str]] = set()
+    always_triples: set[tuple[str, str, str]] = set()
+    for src_nid, tgt_nid, src_obj, _ in concrete_source_items:
+        loc = src_obj.get("source_location")
+        always_triples.add((src_nid, tgt_nid, loc if isinstance(loc, str) else ""))
+
+    for (src_nid, idx), fb_nid in fallback_for_entry.items():
+        vs = var_sources_by_file[src_nid][idx]
+        loc = vs.get("source_location")
+        loc_str = loc if isinstance(loc, str) else ""
+        if (src_nid, idx) in resolved_var_targets and resolved_var_targets[(src_nid, idx)] != fb_nid:
+            superseded_fallbacks.add((src_nid, fb_nid, loc_str))
+        else:
+            surviving_fallback_keys.add((src_nid, fb_nid, loc_str))
+
+    superseded_to_drop = superseded_fallbacks - always_triples - surviving_fallback_keys
+    if superseded_to_drop and isinstance(existing_edges, list):
+        existing_edges[:] = [
+            e
+            for e in existing_edges
+            if not (
+                e.get("relation") == "imports_from"
+                and (
+                    str(e.get("source", "")),
+                    str(e.get("target", "")),
+                    str(e.get("source_location", "")),
+                )
+                in superseded_to_drop
             )
+        ]
+
+    resolved_edges: list[dict] = []
+    existing = existing_edge_pairs(existing_edges or [])
+
+    for src_file_nid, target_file_nid, source, fallback_path in concrete_source_items:
+        sourced_files.setdefault(src_file_nid, set()).add(target_file_nid)
+        key = (src_file_nid, target_file_nid, "imports_from")
+        if key in existing:
+            continue
+        existing.add(key)
+        resolved_edges.append(
+            {
+                "source": src_file_nid,
+                "target": target_file_nid,
+                "relation": "imports_from",
+                "context": "import",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": source.get("source_file", fallback_path),
+                "source_location": source.get("source_location", ""),
+                "weight": 1.0,
+            }
+        )
+
+    for src_file_nid, target_file_nid, source, fallback_path in fallback_source_items:
+        loc = source.get("source_location")
+        loc_str = loc if isinstance(loc, str) else ""
+        if (src_file_nid, target_file_nid, loc_str) in superseded_to_drop:
+            continue
+        sourced_files.setdefault(src_file_nid, set()).add(target_file_nid)
+        key = (src_file_nid, target_file_nid, "imports_from")
+        if key in existing:
+            continue
+        existing.add(key)
+        resolved_edges.append(
+            {
+                "source": src_file_nid,
+                "target": target_file_nid,
+                "relation": "imports_from",
+                "context": "import",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": source.get("source_file", fallback_path),
+                "source_location": source.get("source_location", ""),
+                "weight": 1.0,
+            }
+        )
+
+    for (src_file_nid, idx), target_file_nid in sorted(resolved_var_targets.items()):
+        sourced_files.setdefault(src_file_nid, set()).add(target_file_nid)
+        key = (src_file_nid, target_file_nid, "imports_from")
+        if key in existing:
+            continue
+        existing.add(key)
+        vs = var_sources_by_file[src_file_nid][idx]
+        resolved_edges.append(
+            {
+                "source": src_file_nid,
+                "target": target_file_nid,
+                "relation": "imports_from",
+                "context": "import",
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
+                "source_file": vs.get("source_file", str_path_by_nid.get(src_file_nid, "")),
+                "source_location": vs.get("source_location", ""),
+                "weight": 1.0,
+            }
+        )
 
     for result, path in zip(per_file, path_by_index):
         if not isinstance(result, dict):

@@ -1103,3 +1103,167 @@ def test_resolve_python_import_guided_calls_metadata_sanitizes_hostile_alias(
     assert metadata["resolver"] == "python_import_guided"
     assert metadata["imported_name"] == "transform"
     assert metadata["module_stem"] == "helper"
+
+
+def test_bash_caller_var_handles_cycles_and_malformed_fields(tmp_path: Path) -> None:
+    """Cyclic sources and malformed bash_var_bases/bash_var_sources resolve
+    cleanly without infinite loops or KeyError/TypeError."""
+    a_sh = tmp_path / "a.sh"
+    b_sh = tmp_path / "lib" / "b.sh"
+    c_sh = tmp_path / "lib" / "c.sh"
+    b_sh.parent.mkdir(parents=True)
+    a_sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    b_sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    c_sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    per_file = [
+        {
+            "nodes": [{"id": "a", "label": "a.sh", "file_type": "code", "source_file": str(a_sh)}],
+            "edges": [],
+            "raw_calls": [],
+            "bash_sources": [{"target_path": str(b_sh), "source_file": str(a_sh), "source_location": "L1"}],
+            "bash_var_bases": {"ROOT": str(tmp_path), "": str(tmp_path), 99: "bad"},  # type: ignore[dict-item]
+            "bash_var_sources": [None, "bad", {"var_name": "", "suffix": "x"}],
+            "bash_assigned_unknown_vars": [None, 123],
+        },
+        {
+            "nodes": [{"id": "lib_b", "label": "b.sh", "file_type": "code", "source_file": str(b_sh)}],
+            "edges": [],
+            "raw_calls": [{"language": "bash", "caller_nid": "lib_b__entry", "callee": "c_fn", "source_file": str(b_sh), "source_location": "L3"}],
+            "bash_sources": [{"target_path": str(a_sh), "source_file": str(b_sh), "source_location": "L1"}],
+            "bash_var_bases": "malformed",  # type: ignore[dict-item]
+            "bash_var_sources": [
+                {"var_name": "ROOT", "suffix": "lib/c.sh", "dirname": False, "source_file": str(b_sh), "source_location": "L2"}
+            ],
+            "bash_assigned_unknown_vars": "malformed",  # type: ignore[dict-item]
+        },
+        {
+            "nodes": [
+                {"id": "lib_c", "label": "c.sh", "file_type": "code", "source_file": str(c_sh)},
+                {"id": "lib_c_c_fn", "label": "c_fn()", "file_type": "code", "source_file": str(c_sh), "metadata": {"kind": "bash_function"}},
+            ],
+            "edges": [],
+            "raw_calls": [],
+            "bash_sources": [],
+        },
+    ]
+
+    edges = resolve_bash_source_edges(per_file, [a_sh, b_sh, c_sh], tmp_path)
+    pairs = {(e["source"], e["target"], e["relation"], e.get("confidence")) for e in edges}
+    assert ("lib_b", "lib_c", "imports_from", "INFERRED") in pairs
+    assert ("lib_b__entry", "lib_c_c_fn", "calls", "EXTRACTED") in pairs
+
+
+def test_bash_caller_var_per_site_snapshot_and_conflict(tmp_path: Path) -> None:
+    """Per-source-site var_bases snapshots isolate earlier sourced files from
+    later reassignments in the same loader, while still failing closed when
+    two sites source the same file with conflicting values."""
+    dir_a = tmp_path / "dir_a"
+    dir_b = tmp_path / "dir_b"
+    lib_dir = tmp_path / "lib"
+    for d in (dir_a, dir_b, lib_dir):
+        d.mkdir(parents=True)
+
+    loader = tmp_path / "loader.sh"
+    first = lib_dir / "first.sh"
+    second = lib_dir / "second.sh"
+    shared = lib_dir / "shared.sh"
+    t_a = dir_a / "t.sh"
+    t_b = dir_b / "t.sh"
+    for f in (loader, first, second, shared, t_a, t_b):
+        f.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    per_file = [
+        {
+            "nodes": [{"id": "loader", "label": "loader.sh", "file_type": "code", "source_file": str(loader)}],
+            "edges": [],
+            "raw_calls": [],
+            "bash_sources": [
+                {
+                    "target_path": str(first),
+                    "source_file": str(loader),
+                    "source_location": "L2",
+                    "var_bases": {"VAR": str(dir_a)},
+                    "assigned_unknown_vars": [],
+                },
+                {
+                    "target_path": str(second),
+                    "source_file": str(loader),
+                    "source_location": "L4",
+                    "var_bases": {"VAR": str(dir_b)},
+                    "assigned_unknown_vars": [],
+                },
+                {
+                    "target_path": str(shared),
+                    "source_file": str(loader),
+                    "source_location": "L5",
+                    "var_bases": {"VAR": str(dir_a)},
+                    "assigned_unknown_vars": "malformed",  # type: ignore[dict-item]
+                },
+                {
+                    "target_path": str(shared),
+                    "source_file": str(loader),
+                    "source_location": "L6",
+                    "var_bases": {"VAR": str(dir_b)},
+                    "assigned_unknown_vars": [],
+                },
+            ],
+            "bash_var_bases": {"VAR": str(dir_b)},
+            "bash_var_sources": [],
+            "bash_assigned_unknown_vars": [],
+        },
+        {
+            "nodes": [{"id": "lib_first", "label": "first.sh", "file_type": "code", "source_file": str(first)}],
+            "edges": [],
+            "raw_calls": [{"language": "bash", "caller_nid": "lib_first__entry", "callee": "ta_fn", "source_file": str(first), "source_location": "L2"}],
+            "bash_sources": [],
+            "bash_var_bases": {},
+            "bash_var_sources": [{"var_name": "VAR", "suffix": "t.sh", "dirname": False, "source_file": str(first), "source_location": "L1", "var_bases": {}, "assigned_unknown_vars": []}],
+            "bash_assigned_unknown_vars": [],
+        },
+        {
+            "nodes": [{"id": "lib_second", "label": "second.sh", "file_type": "code", "source_file": str(second)}],
+            "edges": [],
+            "raw_calls": [{"language": "bash", "caller_nid": "lib_second__entry", "callee": "tb_fn", "source_file": str(second), "source_location": "L2"}],
+            "bash_sources": [],
+            "bash_var_bases": {},
+            "bash_var_sources": [{"var_name": "VAR", "suffix": "t.sh", "dirname": False, "source_file": str(second), "source_location": "L1", "var_bases": {}, "assigned_unknown_vars": []}],
+            "bash_assigned_unknown_vars": [],
+        },
+        {
+            "nodes": [{"id": "lib_shared", "label": "shared.sh", "file_type": "code", "source_file": str(shared)}],
+            "edges": [],
+            "raw_calls": [],
+            "bash_sources": [],
+            "bash_var_bases": {},
+            "bash_var_sources": [{"var_name": "VAR", "suffix": "t.sh", "dirname": False, "source_file": str(shared), "source_location": "L1", "var_bases": "malformed", "assigned_unknown_vars": []}],  # type: ignore[dict-item]
+            "bash_assigned_unknown_vars": [],
+        },
+        {
+            "nodes": [
+                {"id": "dir_a_t", "label": "t.sh", "file_type": "code", "source_file": str(t_a)},
+                {"id": "dir_a_t_ta_fn", "label": "ta_fn()", "file_type": "code", "source_file": str(t_a), "metadata": {"kind": "bash_function"}},
+            ],
+            "edges": [],
+            "raw_calls": [],
+            "bash_sources": [],
+        },
+        {
+            "nodes": [
+                {"id": "dir_b_t", "label": "t.sh", "file_type": "code", "source_file": str(t_b)},
+                {"id": "dir_b_t_tb_fn", "label": "tb_fn()", "file_type": "code", "source_file": str(t_b), "metadata": {"kind": "bash_function"}},
+            ],
+            "edges": [],
+            "raw_calls": [],
+            "bash_sources": [],
+        },
+    ]
+
+    edges = resolve_bash_source_edges(per_file, [loader, first, second, shared, t_a, t_b], tmp_path)
+    pairs = {(e["source"], e["target"], e["relation"]) for e in edges}
+    assert ("lib_first", "dir_a_t", "imports_from") in pairs
+    assert ("lib_first", "dir_b_t", "imports_from") not in pairs
+    assert ("lib_first__entry", "dir_a_t_ta_fn", "calls") in pairs
+    assert ("lib_second", "dir_b_t", "imports_from") in pairs
+    assert ("lib_shared", "dir_a_t", "imports_from") not in pairs
+    assert ("lib_shared", "dir_b_t", "imports_from") not in pairs

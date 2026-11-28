@@ -130,19 +130,25 @@ _BASH_LEADING_VAR = re.compile(
 _BASH_DIRNAME_IDIOM = re.compile(r"dirname[^)]*\)((?:/\.\.)*)")
 
 
-def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
+def _bash_assignment_base(
+    value: str,
+    script_dir: Path,
+    var_bases: dict[str, Path] | None = None,
+) -> Path | None:
     """Resolve a top-level assignment's value to a directory, or None if untracked.
 
-    Covers the two forms that make a ``source "${VAR}/lib/x.sh"`` target knowable
+    Covers the forms that make a ``source "${VAR}/lib/x.sh"`` target knowable
     statically (#2172):
 
     * the script-dir idiom ``"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"``,
       including any number of trailing ``/..`` hops (and the ``$0`` spelling)
+    * a leading tracked variable plus literal subpath (``"$ROOT/lib"``) when
+      *var_bases* already holds ``ROOT`` and no command substitution is present
     * a literal path, absolute or relative to the script's own directory
 
-    Anything else -- a value built from other variables, or command substitution
-    we do not model -- is left untracked so the caller keeps its previous
-    script-dir guess rather than binding somewhere invented.
+    Anything else -- a value built from untracked variables, or command
+    substitution we do not model -- is left untracked so the caller keeps its
+    previous script-dir guess rather than binding somewhere invented.
     """
     val = value.strip().strip("'\"")
     if not val:
@@ -153,7 +159,19 @@ def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
         for _ in range((m.group(1).count("..") if m else 0)):
             base = base.parent
         return base
-    if "$" in val or "`" in val:
+    if "`" in val or "$(" in val:
+        return None
+    if "$" in val:
+        if var_bases:
+            m = _BASH_LEADING_VAR.match(val)
+            if m:
+                vn = m.group(1) or m.group(2)
+                if vn in var_bases:
+                    sub = val[m.end():].lstrip("/")
+                    if "$" not in sub:
+                        if not sub:
+                            return var_bases[vn]
+                        return Path(os.path.normpath(var_bases[vn] / sub))
         return None
     candidate = Path(val)
     return candidate if candidate.is_absolute() else script_dir / candidate
@@ -192,10 +210,37 @@ def extract_bash(path: Path) -> dict:
     # can't resolve these itself (#2141).
     raw_calls: list[dict] = []
     bash_sources: list[dict] = []
+    bash_var_sources: list[dict] = []
     raw_seen: set[tuple[str, str]] = set()
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, Any]] = []
     defined_functions: set[str] = set()
+    scan_roots: tuple[Path, ...] = ()
+    if scan_root is not None:
+        resolved_scan_root = scan_root.resolve()
+        roots_list = [scan_root]
+        if resolved_scan_root != scan_root:
+            roots_list.append(resolved_scan_root)
+        try:
+            abs_self = Path(os.path.abspath(str(path)))
+            rel_self = path.resolve().relative_to(resolved_scan_root)
+            if rel_self.parts and len(abs_self.parts) > len(rel_self.parts):
+                walked_cand = abs_self.parents[len(rel_self.parts) - 1]
+                if walked_cand not in roots_list and walked_cand.resolve() == resolved_scan_root:
+                    roots_list.append(walked_cand)
+        except (OSError, RuntimeError, ValueError):
+            pass
+        scan_roots = tuple(roots_list)
+    # Bases for `source "${VAR}/lib/x.sh"` resolution (#2172). #2079 always resolved
+    # the literal suffix against the script's own directory, which is right for the
+    # `DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` idiom but wrong whenever
+    # the variable points elsewhere -- e.g. ROOT=".../scripts/.." with a same-named
+    # decoy under the script dir bound to the decoy. Track top-level assignments in
+    # source order so each top-level `source` captures and uses the variable state
+    # active at that exact statement; untracked variables keep the script-dir guess.
+    var_bases: dict[str, Path] = {}
+    assigned_unknown_vars: set[str] = set()
+    deferred_fn_sources: list[tuple[str, int]] = []
 
     from graphify.security import sanitize_metadata  # module-level cached import
 
@@ -347,6 +392,264 @@ def extract_bash(path: Path) -> dict:
                             })
             walk_calls(child, func_nid, seen_calls)
 
+    def _snapshot_var_state() -> tuple[dict[str, str], list[str]]:
+        """Serialize tracked variable bases inside the active scan root.
+
+        Rejected local assignments (UNC or out-of-root) are added to the
+        blocked set so outer loaders' stale values cannot bleed through.
+        """
+        serialized: dict[str, str] = {}
+        effective_blocked = set(assigned_unknown_vars)
+        for vn, vb in var_bases.items():
+            if not _safe_to_probe(vb, None):
+                effective_blocked.add(vn)
+                continue
+            abs_vb = Path(os.path.abspath(str(vb)))
+            if scan_root is None:
+                if _safe_to_probe(abs_vb, None):
+                    serialized[vn] = str(abs_vb)
+                else:
+                    effective_blocked.add(vn)
+            elif any(_safe_to_probe(abs_vb, sr) for sr in scan_roots):
+                serialized[vn] = str(abs_vb)
+            else:
+                effective_blocked.add(vn)
+        return serialized, sorted(effective_blocked)
+
+    def _record_top_level_assignment(assign_node) -> None:
+        name_node = assign_node.child_by_field_name("name")
+        value_node = assign_node.child_by_field_name("value")
+        if name_node is None or value_node is None:
+            return
+        name = _read_text(name_node, source).strip()
+        if not name:
+            return
+        rhs = _read_text(value_node, source)
+        base = _bash_assignment_base(rhs, path.parent, var_bases=var_bases)
+        if base is not None:
+            var_bases[name] = base
+            assigned_unknown_vars.discard(name)
+        elif not re.search(rf"\$\{{?{re.escape(name)}(?:[^A-Za-z0-9_]|$)", rhs):
+            # Variable was explicitly overwritten with an unmodeled dynamic
+            # value that does not fall back to itself — do not inherit a
+            # loader's stale value.
+            var_bases.pop(name, None)
+            assigned_unknown_vars.add(name)
+
+    def _process_source_command(raw: str, line: int) -> None:
+        site_bases, site_blocked = _snapshot_var_state()
+
+        def _record_source(target_path: str) -> None:
+            bash_sources.append({
+                "target_path": target_path,
+                "source_file": str_path,
+                "source_location": f"L{line}",
+                "var_bases": dict(site_bases),
+                "assigned_unknown_vars": list(site_blocked),
+            })
+
+        def _record_var_source(
+            var_name: str,
+            suffix: str,
+            *,
+            is_dirname: bool,
+            fallback: Path | None,
+        ) -> None:
+            var_entry: dict[str, Any] = {
+                "var_name": var_name,
+                "suffix": suffix,
+                "dirname": is_dirname,
+                "source_file": str_path,
+                "source_location": f"L{line}",
+                "var_bases": dict(site_bases),
+                "assigned_unknown_vars": list(site_blocked),
+            }
+            if fallback is not None:
+                var_entry["fallback_target_path"] = str(fallback)
+            bash_var_sources.append(var_entry)
+
+        if raw.startswith((".", "/")):
+            # Only emit the edge if the target actually exists on
+            # disk — prevents graph pollution from crafted paths
+            # like `source ../../etc/passwd` that traverse outside
+            # the project tree (B-1). _resolve_safe refuses (and
+            # never resolves) a corpus-chosen UNC/out-of-tree path
+            # before it is stat-ed (GHSA-g6c9-j4vm-mwq4).
+            resolved = _resolve_safe(path.parent / raw, scan_root)
+            if resolved is not None and resolved.exists():
+                tgt_nid = _make_id(str(resolved))
+                add_edge(file_nid, tgt_nid, "imports_from", line,
+                         context="import",
+                         target_file=str(resolved))
+                # Record the sourced file so resolve_bash_source_edges
+                # can bind calls into its functions (#2141). Gated on
+                # existence like the edge above, so crafted traversal
+                # paths never enter the resolver's data.
+                _record_source(raw)
+        elif "$" in raw:
+            # Variable-built path, e.g. the ubiquitous
+            # `source "${BENCH_DIR}/lib/x.sh"` idiom. The raw text
+            # bakes the unexpanded `${VAR}` into the id, which
+            # matches no node and is dropped as a dangling edge
+            # (#2079). Strip the leading expansion(s) and resolve
+            # the literal suffix against the script's own dir;
+            # emit INFERRED (the expansion can't be proven
+            # statically) only when it resolves to a real file,
+            # never a dead id.
+
+            # Form 3 (#2596): `source "$(dirname "$VAR")/lib/x.sh"`
+            # — command substitution in the source argument.
+            # Recognise the dirname idiom on the source line the
+            # same way _bash_assignment_base does on assignment
+            # lines: treat `$(dirname "$VAR")` as
+            # `var_bases[VAR].parent` (falling back to
+            # `script_dir.parent` when VAR is untracked), then
+            # resolve the literal suffix against it.
+            dirname_match = _BASH_SOURCE_DIRNAME.match(raw)
+            if dirname_match:
+                var_name = dirname_match.group(1)
+                if var_name in var_bases:
+                    base = var_bases[var_name].parent
+                else:
+                    # Untracked var: fall back to the script's
+                    # own directory, so dirname resolves to its
+                    # parent — matching the existing untracked-var
+                    # fallback semantics.
+                    base = path.parent.parent
+                # Strip the $(dirname ...) prefix and any leading
+                # slash to get the literal suffix.
+                suffix = raw[dirname_match.end():].lstrip("/")
+                # The base is a guessed script dir, so reject a
+                # `..` suffix outright — same policy as
+                # _bash_source_suffix(allow_dotdot=False); without
+                # it, `$(dirname "$VAR")/../../../etc/passwd`
+                # resolves and gets probed/recorded (#2596).
+                resolved_dirname: Path | None = None
+                if (suffix and "$" not in suffix
+                        and ".." not in suffix.split("/")):
+                    resolved = _resolve_safe(base / suffix, scan_root)
+                    if resolved is not None and resolved.is_file():
+                        resolved_dirname = resolved
+                        add_edge(file_nid, _make_id(str(resolved)),
+                                 "imports_from", line,
+                                 confidence="INFERRED", context="import",
+                                 target_file=str(resolved))
+                        _record_source(str(resolved))
+                    if (var_name not in var_bases
+                            and var_name not in assigned_unknown_vars):
+                        _record_var_source(
+                            var_name,
+                            suffix,
+                            is_dirname=True,
+                            fallback=resolved_dirname,
+                        )
+            else:
+                # Check if the leading variable is tracked
+                # before deciding whether to allow `..` in
+                # the suffix (Form 4, #2596).  When the base
+                # is a known var_bases entry, `..` is safe.
+                var_match = _BASH_LEADING_VAR.match(raw)
+                allow_dotdot = False
+                var_name = ""
+                if var_match:
+                    var_name = var_match.group(1) or var_match.group(2)
+                    if var_name in var_bases:
+                        allow_dotdot = True
+                suffix = _bash_source_suffix(raw, allow_dotdot=allow_dotdot)
+                fallback_resolved: Path | None = None
+                if suffix:
+                    # Resolve against the variable's tracked base
+                    # when we know it, else fall back to the
+                    # script's own directory as before (#2172).
+                    base = path.parent
+                    is_tracked = bool(var_match and var_name in var_bases)
+                    if is_tracked:
+                        base = var_bases[var_name]
+                        candidate = base / suffix
+                        if _safe_to_probe(base, None) and _safe_to_probe(candidate, None):
+                            resolved = Path(os.path.normpath(candidate))
+                        else:
+                            resolved = None
+                        # A tracked base may reach a sibling via
+                        # `$VAR/../lib`, so the ceiling is one
+                        # level up — but `..` must not walk past
+                        # it to an arbitrary host path (#2596).
+                        ceiling = base.parent
+                    else:
+                        candidate = base / suffix
+                        resolved = candidate.resolve() if _safe_to_probe(candidate, None) else None
+                        # Untracked base: `..` was already rejected
+                        # by _bash_source_suffix, so the target is
+                        # under base; the gate is belt-and-braces.
+                        ceiling = base
+                    if (
+                        resolved is not None
+                        and _within_tree(ceiling, resolved)
+                        and (scan_root is None or any(_safe_to_probe(resolved, sr) for sr in scan_roots))
+                        and resolved.is_file()
+                    ):
+                        if not is_tracked:
+                            fallback_resolved = resolved
+                        add_edge(file_nid, _make_id(str(resolved)),
+                                 "imports_from", line,
+                                 confidence="INFERRED", context="import",
+                                 target_file=str(resolved))
+                        # Integration (#2141 + #2079): record
+                        # the resolved sourced file so calls
+                        # into its functions resolve too, not
+                        # just the source edge. target_path is
+                        # absolute here; resolve_bash_source_edges
+                        # takes it as-is.
+                        _record_source(str(resolved))
+                if (var_match and var_name not in var_bases
+                        and var_name not in assigned_unknown_vars):
+                    # Defer variable-built source to cross-file
+                    # bash resolution so a loader's VAR wins (#5563).
+                    var_suffix = _bash_source_suffix(raw, allow_dotdot=True)
+                    if var_suffix:
+                        _record_var_source(
+                            var_name,
+                            var_suffix,
+                            is_dirname=False,
+                            fallback=fallback_resolved,
+                        )
+        else:
+            # Bare `source lib.sh` (no leading ./ or /). Bash
+            # itself resolves such a name via $PATH at runtime,
+            # but in practice the file sits next to the script,
+            # so bind it when a sibling of that name exists
+            # (#2171). Same existence gate as the ./-prefixed
+            # branch above: a name that resolves to nothing keeps
+            # the old opaque `imports` edge and records no
+            # bash_sources entry, so nothing is fabricated.
+            sibling: Path | None = None
+            if raw:
+                try:
+                    # _resolve_safe first: a bare `source
+                    # \\host\share\x` makes `path.parent / raw`
+                    # the absolute UNC path; refusing it before any
+                    # stat avoids coercing SMB auth on Windows
+                    # (GHSA-g6c9-j4vm-mwq4).
+                    cand = _resolve_safe(path.parent / raw, scan_root)
+                    if cand is not None and cand.is_file():
+                        sibling = cand
+                except OSError:
+                    sibling = None
+            if sibling is not None:
+                # A bare `source lib.sh` resolves via $PATH at
+                # runtime; binding it to the sibling of that name
+                # is a heuristic, so mark it INFERRED (#2171).
+                add_edge(file_nid, _make_id(str(sibling)),
+                         "imports_from", line,
+                         confidence="INFERRED", context="import",
+                         target_file=str(sibling))
+                _record_source(raw)
+            else:
+                tgt_nid = _make_id(raw)
+                if tgt_nid:
+                    add_edge(file_nid, tgt_nid, "imports", line,
+                             context="import")
+
     def walk(node, parent_nid: str) -> None:
         t = node.type
         if t == "function_definition":
@@ -370,6 +673,22 @@ def extract_bash(path: Path) -> dict:
                     walk(body, fn_nid)
             return
 
+        if t == "variable_assignment":
+            if node.parent and node.parent.type == "program":
+                _record_top_level_assignment(node)
+            for child in node.children:
+                walk(child, parent_nid)
+            return
+
+        if t == "variable_assignments":
+            if node.parent and node.parent.type == "program":
+                for child in node.children:
+                    if child.type == "variable_assignment":
+                        _record_top_level_assignment(child)
+            for child in node.children:
+                walk(child, parent_nid)
+            return
+
         if t == "command":
             if is_inside_expansion(node):
                 return
@@ -386,169 +705,22 @@ def extract_bash(path: Path) -> dict:
                     if args:
                         raw = _read_text(args[0], source).strip().strip("'\"")
                         line = node.start_point[0] + 1
-                        if raw.startswith((".", "/")):
-                            # Only emit the edge if the target actually exists on
-                            # disk — prevents graph pollution from crafted paths
-                            # like `source ../../etc/passwd` that traverse outside
-                            # the project tree (B-1). _resolve_safe refuses (and
-                            # never resolves) a corpus-chosen UNC/out-of-tree path
-                            # before it is stat-ed (GHSA-g6c9-j4vm-mwq4).
-                            resolved = _resolve_safe(path.parent / raw, scan_root)
-                            if resolved is not None and resolved.exists():
-                                tgt_nid = _make_id(str(resolved))
-                                add_edge(file_nid, tgt_nid, "imports_from", line,
-                                         context="import",
-                                         target_file=str(resolved))
-                                # Record the sourced file so resolve_bash_source_edges
-                                # can bind calls into its functions (#2141). Gated on
-                                # existence like the edge above, so crafted traversal
-                                # paths never enter the resolver's data.
-                                bash_sources.append({
-                                    "target_path": raw,
-                                    "source_file": str_path,
-                                    "source_location": f"L{line}",
-                                })
-                        elif "$" in raw:
-                            # Variable-built path, e.g. the ubiquitous
-                            # `source "${BENCH_DIR}/lib/x.sh"` idiom. The raw text
-                            # bakes the unexpanded `${VAR}` into the id, which
-                            # matches no node and is dropped as a dangling edge
-                            # (#2079). Strip the leading expansion(s) and resolve
-                            # the literal suffix against the script's own dir;
-                            # emit INFERRED (the expansion can't be proven
-                            # statically) only when it resolves to a real file,
-                            # never a dead id.
-
-                            # Form 3 (#2596): `source "$(dirname "$VAR")/lib/x.sh"`
-                            # — command substitution in the source argument.
-                            # Recognise the dirname idiom on the source line the
-                            # same way _bash_assignment_base does on assignment
-                            # lines: treat `$(dirname "$VAR")` as
-                            # `var_bases[VAR].parent` (falling back to
-                            # `script_dir.parent` when VAR is untracked), then
-                            # resolve the literal suffix against it.
-                            dirname_match = _BASH_SOURCE_DIRNAME.match(raw)
-                            if dirname_match:
-                                var_name = dirname_match.group(1)
-                                if var_name in var_bases:
-                                    base = var_bases[var_name].parent
-                                else:
-                                    # Untracked var: fall back to the script's
-                                    # own directory, so dirname resolves to its
-                                    # parent — matching the existing untracked-var
-                                    # fallback semantics.
-                                    base = path.parent.parent
-                                # Strip the $(dirname ...) prefix and any leading
-                                # slash to get the literal suffix.
-                                suffix = raw[dirname_match.end():].lstrip("/")
-                                # The base is a guessed script dir, so reject a
-                                # `..` suffix outright — same policy as
-                                # _bash_source_suffix(allow_dotdot=False); without
-                                # it, `$(dirname "$VAR")/../../../etc/passwd`
-                                # resolves and gets probed/recorded (#2596).
-                                if (suffix and "$" not in suffix
-                                        and ".." not in suffix.split("/")):
-                                    resolved = _resolve_safe(base / suffix, scan_root)
-                                    if resolved is not None and resolved.is_file():
-                                        add_edge(file_nid, _make_id(str(resolved)),
-                                                 "imports_from", line,
-                                                 confidence="INFERRED", context="import",
-                                                 target_file=str(resolved))
-                                        bash_sources.append({
-                                            "target_path": str(resolved),
-                                            "source_file": str_path,
-                                            "source_location": f"L{line}",
-                                        })
-                            else:
-                                # Check if the leading variable is tracked
-                                # before deciding whether to allow `..` in
-                                # the suffix (Form 4, #2596).  When the base
-                                # is a known var_bases entry, `..` is safe.
-                                var_match = _BASH_LEADING_VAR.match(raw)
-                                allow_dotdot = False
-                                if var_match:
-                                    _vn = var_match.group(1) or var_match.group(2)
-                                    if _vn in var_bases:
-                                        allow_dotdot = True
-                                suffix = _bash_source_suffix(raw, allow_dotdot=allow_dotdot)
-                                if suffix:
-                                    # Resolve against the variable's tracked base
-                                    # when we know it, else fall back to the
-                                    # script's own directory as before (#2172).
-                                    base = path.parent
-                                    if var_match:
-                                        var_name = var_match.group(1) or var_match.group(2)
-                                        if var_name in var_bases:
-                                            base = var_bases[var_name]
-                                    if var_match and var_name in var_bases:
-                                        resolved = Path(os.path.normpath(base / suffix))
-                                        # A tracked base may reach a sibling via
-                                        # `$VAR/../lib`, so the ceiling is one
-                                        # level up — but `..` must not walk past
-                                        # it to an arbitrary host path (#2596).
-                                        ceiling = base.parent
-                                    else:
-                                        resolved = (base / suffix).resolve()
-                                        # Untracked base: `..` was already rejected
-                                        # by _bash_source_suffix, so the target is
-                                        # under base; the gate is belt-and-braces.
-                                        ceiling = base
-                                    if _within_tree(ceiling, resolved) and resolved.is_file():
-                                        add_edge(file_nid, _make_id(str(resolved)),
-                                                 "imports_from", line,
-                                                 confidence="INFERRED", context="import",
-                                                 target_file=str(resolved))
-                                        # Integration (#2141 + #2079): record
-                                        # the resolved sourced file so calls
-                                        # into its functions resolve too, not
-                                        # just the source edge. target_path is
-                                        # absolute here; resolve_bash_source_edges
-                                        # takes it as-is.
-                                        bash_sources.append({
-                                            "target_path": str(resolved),
-                                            "source_file": str_path,
-                                            "source_location": f"L{line}",
-                                        })
+                        if parent_nid == file_nid:
+                            _process_source_command(raw, line)
                         else:
-                            # Bare `source lib.sh` (no leading ./ or /). Bash
-                            # itself resolves such a name via $PATH at runtime,
-                            # but in practice the file sits next to the script,
-                            # so bind it when a sibling of that name exists
-                            # (#2171). Same existence gate as the ./-prefixed
-                            # branch above: a name that resolves to nothing keeps
-                            # the old opaque `imports` edge and records no
-                            # bash_sources entry, so nothing is fabricated.
-                            sibling: Path | None = None
-                            if raw:
-                                try:
-                                    # _resolve_safe first: a bare `source
-                                    # \\host\share\x` makes `path.parent / raw`
-                                    # the absolute UNC path; refusing it before any
-                                    # stat avoids coercing SMB auth on Windows
-                                    # (GHSA-g6c9-j4vm-mwq4).
-                                    cand = _resolve_safe(path.parent / raw, scan_root)
-                                    if cand is not None and cand.is_file():
-                                        sibling = cand
-                                except OSError:
-                                    sibling = None
-                            if sibling is not None:
-                                # A bare `source lib.sh` resolves via $PATH at
-                                # runtime; binding it to the sibling of that name
-                                # is a heuristic, so mark it INFERRED (#2171).
-                                add_edge(file_nid, _make_id(str(sibling)),
-                                         "imports_from", line,
-                                         confidence="INFERRED", context="import",
-                                         target_file=str(sibling))
-                                bash_sources.append({
-                                    "target_path": raw,
-                                    "source_file": str_path,
-                                    "source_location": f"L{line}",
-                                })
-                            else:
-                                tgt_nid = _make_id(raw)
-                                if tgt_nid:
-                                    add_edge(file_nid, tgt_nid, "imports", line,
-                                             context="import")
+                            deferred_fn_sources.append((raw, line))
+                elif (
+                    cmd == "unset"
+                    and cmd not in defined_functions
+                    and node.parent
+                    and node.parent.type == "program"
+                ):
+                    arg_texts = [literal(a) for a in args]
+                    if "-f" not in arg_texts:
+                        for vn in arg_texts:
+                            if vn and not vn.startswith("-") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", vn):
+                                var_bases.pop(vn, None)
+                                assigned_unknown_vars.add(vn)
                 elif cmd not in defined_functions:
                     raw = cmd if (cmd and cmd.endswith(".sh")) else None
                     if cmd and cmd in _BASH_SCRIPT_RUNNERS and args:
@@ -643,6 +815,7 @@ def extract_bash(path: Path) -> dict:
                                 line = child.start_point[0] + 1
                                 add_node(var_nid, var, line)
                                 add_edge(file_nid, var_nid, "defines", line)
+                        _record_top_level_assignment(child)
             return
 
         for child in node.children:
@@ -663,28 +836,13 @@ def extract_bash(path: Path) -> dict:
                 _prescan_functions(child)
 
     _prescan_functions(root)
-    # Bases for `source "${VAR}/lib/x.sh"` resolution (#2172). #2079 always resolved
-    # the literal suffix against the script's own directory, which is right for the
-    # `DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` idiom but wrong whenever
-    # the variable points elsewhere -- e.g. ROOT=".../scripts/.." with a same-named
-    # decoy under the script dir bound to the decoy. Track top-level assignments so
-    # the real base is used; untracked variables keep the script-dir guess.
-    var_bases: dict[str, Path] = {}
-    for _assign in root.children:
-        if _assign.type != "variable_assignment":
-            continue
-        _name_node = _assign.child_by_field_name("name")
-        _value_node = _assign.child_by_field_name("value")
-        if _name_node is None or _value_node is None:
-            continue
-        _name = _read_text(_name_node, source).strip()
-        if not _name:
-            continue
-        _base = _bash_assignment_base(_read_text(_value_node, source), path.parent)
-        if _base is not None:
-            var_bases[_name] = _base
-
     walk(root, file_nid)
+
+    # Process function-body `source`/`.` statements after all top-level
+    # assignments have been walked so helper functions defined above top-level
+    # setup (e.g. `ROOT=...`) still resolve cleanly.
+    for fn_raw, fn_line in deferred_fn_sources:
+        _process_source_command(fn_raw, fn_line)
 
     # Second pass: cross-function calls
     top_seen: set = set()
@@ -692,5 +850,18 @@ def extract_bash(path: Path) -> dict:
     for fn_nid, body in function_bodies:
         walk_calls(body, fn_nid, set())
 
-    return {"nodes": nodes, "edges": edges,
-            "raw_calls": raw_calls, "bash_sources": bash_sources}
+    # Serialize tracked variable bases as absolute strings so cached AST entries
+    # stay portable across roots via _relativize_ids_cow. Only keep bases inside
+    # the active scan root (when known) so parent directory names never leak
+    # into portable cache entries or enable out-of-tree probing (#2257, #5563).
+    serialized_var_bases, serialized_blocked_vars = _snapshot_var_state()
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "raw_calls": raw_calls,
+        "bash_sources": bash_sources,
+        "bash_var_bases": serialized_var_bases,
+        "bash_var_sources": bash_var_sources,
+        "bash_assigned_unknown_vars": serialized_blocked_vars,
+    }
