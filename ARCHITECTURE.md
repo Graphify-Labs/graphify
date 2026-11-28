@@ -122,6 +122,13 @@ sources at that point could stamp an edit made after detection even though the
 graph still describes the old bytes. A timestamp-only touch keeps the previous
 stamp, so later scans still compare content while the file has the touched mtime.
 
+JS/TS incremental symbol resolution reads export facts from live, unchanged
+modules reached by the fresh batch's imports and re-exports. It follows
+re-export chains and imports used by re-exported local bindings. Unchanged
+files supply resolver facts only, with their existing graph nodes and edges
+retaining source ownership. This lets a changed caller resolve through a
+barrel exactly as in a full build.
+
 Semantic response recovery requires one authoritative graph fragment. Multiple
 independent nonempty candidates or a top-level array of two or more fragments
 enter hollow-response retry; exhausted retries leave the files partial and
