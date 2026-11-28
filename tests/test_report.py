@@ -301,3 +301,31 @@ def test_watch_rebuild_passes_cost_json_totals_to_the_report():
     source = _P("graphify/watch.py").read_text(encoding="utf-8")
     assert '{"input": 0, "output": 0}' not in source
     assert "load_report_token_cost" in source
+
+
+def test_report_handles_null_and_non_numeric_confidence_scores():
+    G, communities, cohesion, labels, _, _, detection, tokens = make_inputs()
+    # Set explicit null and non-finite/bool confidence_score values on INFERRED edges
+    for u, v, d in G.edges(data=True):
+        if d.get("confidence") == "INFERRED":
+            d["confidence_score"] = None
+            break
+    G.graph["hyperedges"] = [
+        {"id": "h1", "label": "Group", "nodes": ["a"], "confidence": "INFERRED", "confidence_score": None},
+    ]
+    surprises = [
+        {
+            "source": "a",
+            "target": "b",
+            "relation": "calls",
+            "confidence": "INFERRED",
+            "confidence_score": "bad",
+            "source_files": ["a.py", "b.py"],
+            "note": "",
+        }
+    ]
+    out = generate(G, communities, cohesion, labels, [], surprises, detection, tokens, "./project")
+    assert "## Summary" in out
+    assert "avg confidence:" in out
+    assert "**Group**" in out
+    assert "[INFERRED]" in out

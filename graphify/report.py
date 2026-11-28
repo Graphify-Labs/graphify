@@ -2,8 +2,15 @@
 from __future__ import annotations
 from datetime import date
 import json
+import math
 from pathlib import Path
 import networkx as nx
+
+
+def _valid_score(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    return None
 
 
 def _portable_root_label(root: str) -> str:
@@ -166,7 +173,8 @@ def generate(
             ext_count += 1
         elif conf == "INFERRED":
             inf_count += 1
-            inf_score_sum += d.get("confidence_score", 0.5)
+            score = _valid_score(d.get("confidence_score"))
+            inf_score_sum += score if score is not None else 0.5
         elif conf == "AMBIGUOUS":
             amb_count += 1
             ambiguous.append((u, v, d))
@@ -311,7 +319,7 @@ def generate(
             note = s.get("note", "")
             files = s.get("source_files", ["", ""])
             conf = s.get("confidence", "EXTRACTED")
-            cscore = s.get("confidence_score")
+            cscore = _valid_score(s.get("confidence_score"))
             if conf == "INFERRED" and cscore is not None:
                 conf_tag = f"INFERRED {cscore:.2f}"
             else:
@@ -367,7 +375,7 @@ def generate(
         for h in hyperedges:
             node_labels = ", ".join(h.get("nodes", []))
             conf = h.get("confidence", "INFERRED")
-            cscore = h.get("confidence_score")
+            cscore = _valid_score(h.get("confidence_score"))
             conf_tag = f"{conf} {cscore:.2f}" if cscore is not None else conf
             lines.append(f"- **{h.get('label', h.get('id', ''))}** — {node_labels} [{conf_tag}]")
 
