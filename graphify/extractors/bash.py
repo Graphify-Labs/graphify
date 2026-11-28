@@ -355,7 +355,11 @@ def extract_bash(path: Path) -> dict:
                 fn_nid = _make_id(stem, name)
                 line = node.start_point[0] + 1
                 add_node(fn_nid, f"{name}()", line, kind="bash_function")
-                add_edge(parent_nid, fn_nid, "defines", line)
+                # Its file defines it, inside another function's body too, as
+                # bash does (#5573): an outer function's `defines` would share
+                # the pair with the outer's `calls` to it, and the graph keeps
+                # one edge per pair.
+                add_edge(file_nid, fn_nid, "defines", line)
                 defined_functions.add(name)
                 # find the compound_statement body
                 body = None

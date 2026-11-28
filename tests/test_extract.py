@@ -4541,6 +4541,24 @@ def test_extract_bash_nested_function_calls_recorded(tmp_path):
     )
 
 
+def test_extract_bash_nested_function_defined_by_its_file(tmp_path):
+    """#5573: a function defined in another's body is its file's, so the outer
+    function's call to it is the only edge between the two and survives."""
+    script = tmp_path / "outer.sh"
+    script.write_text(
+        "outer() {\n"
+        "  inner() { echo hello; }\n"
+        "  inner\n"
+        "}\n"
+    )
+    result = extract_bash(script)
+    ids = {n["label"]: n["id"] for n in result["nodes"]}
+    pairs = {(e["source"], e["target"], e["relation"]) for e in result["edges"]}
+    assert (ids["outer.sh"], ids["inner()"], "defines") in pairs, pairs
+    assert (ids["outer()"], ids["inner()"], "calls") in pairs, pairs
+    assert (ids["outer()"], ids["inner()"], "defines") not in pairs, pairs
+
+
 def test_extract_bash_source_user_defined_emits_calls_not_imports_from(tmp_path):
     """When 'source' is a user-defined function, 'source ./file.sh' must emit a
     calls edge, not an imports_from edge.  The user-defined function shadows the
