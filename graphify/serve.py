@@ -1353,6 +1353,15 @@ _HERITAGE_RELATIONS = frozenset({"inherits", "implements", "extends"})
 _CONTEXT_RELATIONS: dict[str, frozenset[str]] = {"call": frozenset({"calls"})}
 
 
+# Context names that have a 1:1 edge-relation counterpart. Used when a graph
+# has `relation` but no `context` (the usual LLM-extracted shape, #2529).
+_CONTEXT_TO_RELATION: dict[str, str] = {
+    "call": "calls",
+    "import": "imports",
+    "export": "exports",
+}
+
+
 def _normalize_context_filters(filters: list[str] | None) -> list[str]:
     if not filters:
         return []
@@ -1391,28 +1400,84 @@ def _resolve_context_filters(question: str, explicit_filters: list[str] | None =
     return [], None
 
 
+def _edge_matches_context(data: dict, filters: set[str]) -> bool:
+    """True when an edge belongs in a context-filtered traversal (#2529).
+
+    Match the explicit ``context`` attribute first. A ``call`` filter also
+    keeps every ``calls`` edge whatever context it carries (``cross_repo``
+    from ``merge-graphs`` per #5257, ``bloc_event``, or any other) via
+    ``_CONTEXT_RELATIONS``. A heritage filter likewise keeps
+    ``inherits``/``implements``/``extends`` even when the edge carries another
+    context (#5178). When ``context`` is absent (LLM-built graphs almost
+    never set it), also match ``relation`` against the filter name and the
+    1:1 ``call``/``calls`` mapping. An explicit other context still blocks
+    that generic fallback, so an ``imports`` edge tagged ``bloc_event`` stays
+    out of an ``import`` traversal.
+    """
+    ctx = data.get("context")
+    if ctx in filters:
+        return True
+    rel = data.get("relation")
+    if isinstance(rel, str) and rel and (
+        rel in (filters & _HERITAGE_RELATIONS)
+        or any(rel in _CONTEXT_RELATIONS.get(f, frozenset()) for f in filters)
+    ):
+        return True
+    if ctx:
+        # An explicit context that names another filter still blocks the
+        # generic relation fallback. It does not apply to the relations matched
+        # above: a ``calls`` edge tagged ``bloc_event`` is kept by a ``call``
+        # filter (#5257).
+        return False
+    if not isinstance(rel, str) or not rel:
+        return False
+    if rel in filters:
+        return True
+    return any(_CONTEXT_TO_RELATION.get(f) == rel for f in filters)
+
+
+def _filters_with_matching_edges(G: nx.Graph, filters: list[str]) -> list[str]:
+    """Subset of ``filters`` that at least one edge in ``G`` actually matches."""
+    if not filters:
+        return []
+    remaining = set(filters)
+    present: set[str] = set()
+    edge_iter = (
+        (d for *_, d in G.edges(keys=True, data=True))
+        if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+        else (d for *_, d in G.edges(data=True))
+    )
+    for data in edge_iter:
+        if not remaining:
+            break
+        for f in list(remaining):
+            if _edge_matches_context(data, {f}):
+                present.add(f)
+                remaining.discard(f)
+    return [f for f in filters if f in present]
+
+
+def _seeds_have_incident_edges(G: nx.Graph, start_nodes: list[str]) -> bool:
+    """True when at least one seed has a remaining incident edge."""
+    for nid in start_nodes:
+        if nid in G and G.degree(nid) > 0:
+            return True
+    return False
+
+
 def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> nx.Graph:
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
-    relations = set(filters & _HERITAGE_RELATIONS)
-    for context in filters:
-        relations |= _CONTEXT_RELATIONS.get(context, frozenset())
-
-    def keep(data: dict) -> bool:
-        if data.get("context") in filters:
-            return True
-        return data.get("relation") in relations
-
     H = G.__class__()
     H.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for u, v, key, data in G.edges(keys=True, data=True):
-            if keep(data):
+            if _edge_matches_context(data, filters):
                 H.add_edge(u, v, key=key, **data)
     else:
         for u, v, data in G.edges(data=True):
-            if keep(data):
+            if _edge_matches_context(data, filters):
                 H.add_edge(u, v, **data)
     return H
 
@@ -2078,7 +2143,36 @@ def _render_query(
     scores: dict[str, float] | None = None,
 ) -> str:
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
-    traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
+    view = _traversal_view(G)
+    discard_note: str | None = None
+    if resolved_filters and filter_source == "heuristic":
+        # Ordinary English words ("modules", "template", "return") match
+        # _CONTEXT_HINTS. Applying a filter the graph cannot satisfy — or that
+        # leaves every seed edgeless — collapses BFS to the seeds and reads as
+        # a confident empty answer (#2529). Explicit --context stays as asked.
+        usable = _filters_with_matching_edges(view, resolved_filters)
+        if not usable:
+            discard_note = (
+                f"Context: {', '.join(resolved_filters)} "
+                f"(heuristic, discarded: no matching edges)"
+            )
+            resolved_filters = []
+            filter_source = None
+        else:
+            resolved_filters = usable
+    traversal_graph = _filter_graph_by_context(view, resolved_filters)
+    if (
+        filter_source == "heuristic"
+        and resolved_filters
+        and not _seeds_have_incident_edges(traversal_graph, start_nodes)
+    ):
+        discard_note = (
+            f"Context: {', '.join(resolved_filters)} "
+            f"(heuristic, discarded: no matching edges from seeds)"
+        )
+        resolved_filters = []
+        filter_source = None
+        traversal_graph = view
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
@@ -2097,7 +2191,9 @@ def _render_query(
     if graph_path:
         header_parts.insert(0, f"Graph: {_display_graph_path(graph_path)} "
                                f"({G.number_of_nodes()} nodes)")
-    if resolved_filters:
+    if discard_note:
+        header_parts.append(discard_note)
+    elif resolved_filters:
         # A filter that selects nothing used to answer with the seed alone and
         # no hint, which reads as "these symbols are unrelated" (#5178).
         label = f"Context: {', '.join(resolved_filters)} ({filter_source}"
