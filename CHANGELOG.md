@@ -2,6 +2,35 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.122 (2026-11-28)
+
+A new Shopify/Liquid theme extractor, TypeScript and C++ extractor accuracy, incremental-extraction correctness (two silent-corruption/data-loss fixes), and a batch of robustness and performance work across sixteen community pull requests. The TypeScript, C++, Markdown and Shopify-theme changes alter extraction output, so the AST cache schema bumps (57 to 58) and those inputs re-extract on the first build after upgrading; everything else needs no rebuild.
+
+### Features
+- **shopify** a Shopify theme is turned into a graph: the Liquid extractor reads `.liquid` templates and their `render`/`include`/section references, `templates/*.json` wires sections to blocks, and CSS classes, settings, custom elements and metafields are linked. Pure-stdlib scanners (no new dependencies), gated to a theme root (`layout/theme.liquid`) so non-theme `.css`/`.json` files are unaffected (#5553, #5554, #5555, #5557, thanks @dalexhd).
+
+### Extractor fixes
+- **typescript** a named object type alias extracts its direct function-typed properties (`type Port = { cb: () => void }`) as members alongside method signatures, kept out of bare-call/module lookup (#5525, thanks @rvitaliy).
+- **typescript** a call through a local `const` bound to an explicitly-typed parameter property (`const a = ports.authority; a.m()`) resolves to the property type's exact method, including through closures, fail-closed on unknown/ambiguous/reassigned receivers (#5529, thanks @rvitaliy).
+- **cpp** an export/visibility macro leading a function or variable declaration (`MYLIB_API void f();`) is blanked (byte-length preserving) before parsing, so the declaration and the members after it are no longer dropped (#5550, thanks @Deepjyoti-Sarmah).
+- **cpp** a `/* */` block comment inside a `#define` directive is blanked before parsing so it no longer derails the parse (#5551, thanks @leninworld).
+- **markdown** a file's YAML frontmatter is folded into its AST cache key, so a frontmatter-only edit re-extracts instead of serving the stale body (#5480, thanks @sdivyanshu90).
+
+### Incremental extraction
+- **extract** `graphify extract` now re-extracts JS/TS code when a resolver input changes (a tsconfig alias can retarget an import even when importer bytes are identical), matching a full rebuild instead of leaving stale edges (#5533, thanks @rvitaliy).
+- **extract** a no-op incremental extraction preserves existing manifest stamps, so an edit saved during the scan is still picked up on the next run instead of being silently dropped (#5531, thanks @rvitaliy).
+- **extract** the saved graph is reused during incremental extraction (read once instead of three times) with byte-identical output (#5527, thanks @rvitaliy).
+
+### Correctness & robustness
+- **analyze** `god_nodes` and `surprising_connections` return empty for `top_n <= 0` instead of everything, and non-string node fields no longer crash (#5544, thanks @Gaurav-meena95).
+- **serve** `_path_search_graph` handles mixed int/str node IDs instead of crashing (the serve-side companion to 0.9.121's `graph_diff` fix) (#5543, thanks @Gaurav-meena95).
+- **build** malformed extraction field types are repaired or skipped with a warning instead of crashing assembly (#5539, thanks @sdivyanshu90).
+- **export** the Cypher exporter preserves parallel call sites between the same pair instead of collapsing them to one Neo4j relationship (#5540, thanks @sdivyanshu90).
+- **watch** a removed or moved directory subtree now triggers a rebuild so its stale nodes are pruned (#5479, thanks @sdivyanshu90).
+
+### Performance (output byte-identical)
+- **cluster** `_native_leiden` avoids a `G.copy()` deepcopy and a SubGraphView fallback, and `cohesion_score` avoids a per-call SubGraphView allocation (#5548, #5549, thanks @Gaurav-meena95).
+
 ## 0.9.121 (2026-11-26)
 
 A large batch across community pull requests: extractor accuracy (C#, TypeScript, Rust, COBOL, Python), node-id and edge correctness on incremental rebuilds, a self-contained Canvas renderer for large graphs, and a wave of byte-identical performance work. The C#, TypeScript, Rust, COBOL and Python changes alter node/edge output, so the AST cache schema bumps (56 to 57) and those languages re-extract on the first build after upgrading; everything else needs no rebuild.
