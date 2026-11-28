@@ -394,6 +394,8 @@ Once connected, your agent gets these tools:
 
 The server also exposes PR tooling (`list_prs`, `get_pr_impact`, `triage_prs`) so your agent can review pull requests with graph context.
 
+For an optional, feature-flagged Model D starting-location input to `query_graph`, see [Model D pointers over MCP](docs/model-d-pointers.md).
+
 ---
 
 ## What's in the report

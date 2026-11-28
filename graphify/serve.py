@@ -13,7 +13,7 @@ import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.paths import consumed, read_graph_json
+from graphify.paths import consumed, read_graph_json, graph_root_for
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import _CONFIDENCE_RANK, edge_datas, edge_evidence, has_parallel_links
 from graphify.paths import default_graph_json as _default_graph_json, _is_test_path
@@ -40,6 +40,104 @@ class ToolError(Exception):
     client that only checks ``isError`` can tell a genuine failure — e.g. the
     ``gh`` CLI missing or a PR that cannot be resolved — from success.
     """
+
+
+_MODEL_D_POINTERS_ENV = "GRAPHIFY_MODEL_D_POINTERS"
+_MAX_MODEL_D_POINTERS = 32
+_MAX_MODEL_D_POINTER_PATH_LENGTH = 1024
+
+
+def _model_d_pointers_enabled() -> bool:
+    """Whether the optional Model D pointer input is exposed by the MCP server."""
+    return os.environ.get(_MODEL_D_POINTERS_ENV, "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _model_d_pointer_input_property() -> dict:
+    """Return the optional MCP input property only when the feature is enabled."""
+    if not _model_d_pointers_enabled():
+        return {}
+    return {
+        "model_d_pointers": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": _MAX_MODEL_D_POINTERS,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": _MAX_MODEL_D_POINTER_PATH_LENGTH,
+                        "description": "Repository-relative or absolute source-file path.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "One-based source line identified by Model D.",
+                    },
+                },
+                "required": ["path", "line"],
+                "additionalProperties": False,
+            },
+            "description": (
+                "Optional Model D locations. Graphify uses each path as an explicit "
+                "starting seed and preserves the line as a location hint; it then "
+                "traverses the existing structural graph. Pointers are not answers."
+            ),
+        },
+    }
+
+
+def _validate_model_d_pointers(value: object) -> list[dict[str, object]]:
+    """Validate untrusted Model D locations before using them as graph seeds."""
+    if not _model_d_pointers_enabled():
+        raise ToolError(
+            f"Model D pointers are disabled. Set {_MODEL_D_POINTERS_ENV}=1 to enable them."
+        )
+    if not isinstance(value, list) or not 1 <= len(value) <= _MAX_MODEL_D_POINTERS:
+        raise ToolError(
+            f"model_d_pointers must contain between 1 and {_MAX_MODEL_D_POINTERS} locations."
+        )
+
+    validated: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != {"path", "line"}:
+            raise ToolError(
+                f"Model D pointer {index + 1} must contain exactly 'path' and 'line'."
+            )
+        path = item.get("path")
+        line = item.get("line")
+        if not isinstance(path, str) or not path.strip():
+            raise ToolError(f"Model D pointer {index + 1} has an empty or invalid path.")
+        path = path.strip()
+        if (
+            len(path) > _MAX_MODEL_D_POINTER_PATH_LENGTH
+            or any(ord(char) < 32 or ord(char) == 127 for char in path)
+        ):
+            raise ToolError(f"Model D pointer {index + 1} has an invalid path.")
+        if isinstance(line, bool) or not isinstance(line, int) or not 1 <= line <= 2_147_483_647:
+            raise ToolError(f"Model D pointer {index + 1} has an invalid one-based line number.")
+
+        key = (path, line)
+        if key not in seen:
+            seen.add(key)
+            validated.append({"path": path, "line": line})
+    return validated
+
+
+def _format_model_d_pointer_hints(pointers: list[dict[str, object]]) -> str:
+    """Render validated external locations as quoted hints, not cached answers."""
+    lines = [
+        "Model D pointers (external locations; Graphify seeds by file path and preserves line hints):"
+    ]
+    for pointer in pointers:
+        lines.append(
+            f"- {json.dumps(pointer['path'], ensure_ascii=False)}:{pointer['line']}"
+        )
+    return "\n".join(lines)
 
 
 def _read_graph(graph_path: str) -> nx.Graph:
@@ -3355,6 +3453,7 @@ def _build_server(graph_path: str):
                             "default": True,
                             "description": "Rank source code above docs/config (default). Set false for a docs-first corpus so documents are not soft-demoted.",
                         },
+                        **_model_d_pointer_input_property(),
                         "seeds": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -3553,6 +3652,9 @@ def _build_server(graph_path: str):
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
         demote_docs = arguments.get("demote_docs", True)
+        model_d_pointers = None
+        if "model_d_pointers" in arguments:
+            model_d_pointers = _validate_model_d_pointers(arguments["model_d_pointers"])
         if isinstance(demote_docs, str):
             demote_docs = demote_docs.lower() not in ("false", "0", "no")
         seeds = arguments.get("seeds")
@@ -3574,7 +3676,11 @@ def _build_server(graph_path: str):
             seeds=seeds or None,
             seed_root=_graph_root(),
             demote_docs=demote_docs,
+            seeds=[str(pointer["path"]) for pointer in model_d_pointers] if model_d_pointers else None,
+            seed_root=graph_root_for(Path(active_graph_path)) if model_d_pointers else None,
         )
+        if model_d_pointers:
+            result = _format_model_d_pointer_hints(model_d_pointers) + "\n\n" + result
         querylog.log_query(
             kind="mcp_query",
             question=question,
