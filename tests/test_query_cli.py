@@ -26,6 +26,40 @@ def _write_graph(tmp_path):
     return graph_path
 
 
+@pytest.mark.parametrize("mode", [[], ["--dfs"]])
+def test_query_path_exclusions_apply_before_traversal(monkeypatch, tmp_path, capsys, mode):
+    graph = nx.Graph()
+    files = {"entry": "src/entry.py", "fixture": r"pkg\tests\fixture.py",
+             "behind": "src/behind.py", "tool": "tools/tool.py", "doc": "docs/doc.md"}
+    for label, path in files.items():
+        graph.add_node(label, label=label, source_file=path)
+    graph.add_edges_from([("entry", "fixture"), ("fixture", "behind"),
+                          ("entry", "tool"), ("entry", "doc")], relation="calls")
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = ["graphify", "query", "entry", "--graph", str(path), "--no-tests",
+            "--exclude", "^tools/", "--exclude=^docs/", *mode]
+    monkeypatch.setattr(mainmod.sys, "argv", argv)
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "NODE entry" in out
+    for excluded in ("fixture", "behind", "tool", "doc"):
+        assert f"NODE {excluded}" not in out
+    argv.extend(["--seed", "fixture"])
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    assert "No unique node match" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("option", [["--exclude"], ["--exclude="], ["--exclude", "["]])
+def test_query_rejects_missing_or_invalid_path_regex(monkeypatch, option):
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "query", "entry", *option])
+    with pytest.raises(SystemExit, match="--exclude"):
+        mainmod.main()
+
+
 def test_query_cli_explicit_context_filter(monkeypatch, tmp_path, capsys):
     graph_path = _write_graph(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)

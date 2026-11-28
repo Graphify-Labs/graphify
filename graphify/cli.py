@@ -2127,7 +2127,7 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
-        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--no-doc-demotion] [--context C] [--seed X] [--budget N] [--depth N] [--graph path]"
+        _query_usage = "Usage: graphify query \"<question>\" [--dfs] [--no-doc-demotion] [--context C] [--seed X] [--no-tests] [--exclude REGEX] [--budget N] [--depth N] [--graph path]"
         if len(sys.argv) < 3:
             print(_query_usage, file=sys.stderr)
             sys.exit(1)
@@ -2156,6 +2156,8 @@ def dispatch_command(cmd: str) -> None:
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         seeds: list[str] = []
+        exclusions: list[re.Pattern[str]] = []
+        no_tests = False
         args = sys.argv[3:]
         i = 0
         while i < len(args):
@@ -2196,6 +2198,21 @@ def dispatch_command(cmd: str) -> None:
                 except ValueError:
                     print("error: --depth must be an integer from 1 to 6", file=sys.stderr)
                     sys.exit(1)
+            elif args[i] == "--no-tests":
+                no_tests = True
+                i += 1
+            elif args[i] == "--exclude" or args[i].startswith("--exclude="):
+                _, separator, pattern = args[i].partition("=")
+                i += 1
+                if not separator and i < len(args) and not args[i].startswith("--"):
+                    pattern = args[i]
+                    i += 1
+                if not pattern:
+                    sys.exit("error: --exclude needs a source path regex")
+                try:
+                    exclusions.append(re.compile(pattern))
+                except re.error as exc:
+                    sys.exit(f"error: invalid --exclude regex: {exc}")
             elif args[i] == "--context" and i + 1 < len(args):
                 context_filters.append(args[i + 1])
                 i += 2
@@ -2255,6 +2272,17 @@ def dispatch_command(cmd: str) -> None:
             _rows = consumed_graph_rows(dict(_raw, links=_raw.get("links", [])))
             del _raw
             G = json_graph.node_link_graph(_rows, edges="links")
+            if no_tests or exclusions:
+                from graphify.paths import _is_test_path
+
+                excluded = []
+                for nid, node in G.nodes(data=True):
+                    source = str(node.get("source_file") or "").replace("\\", "/")
+                    if (no_tests and _is_test_path(source)) or any(rx.search(source) for rx in exclusions):
+                        excluded.append(nid)
+                if excluded:
+                    G.remove_nodes_from(excluded)
+                    G.graph.pop("_trigram_index", None)  # Saved postings describe the full graph.
             try:
                 if _legacy_ids:
                     print(
