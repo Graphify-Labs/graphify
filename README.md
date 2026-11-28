@@ -491,6 +491,12 @@ For `graphify query`, explicit `--budget N` / `--budget=N` and `--depth N` / `--
 
 Set `demote_docs=false` (alias `query_demote_docs`; accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) to turn off document demotion in `graphify query` by default. `--demote-docs` / `--no-doc-demotion` on the command line override it.
 
+To exclude test files and generated sources from a traversal, run
+`graphify query "transport" --no-tests --exclude '^src/generated/'`.
+`--no-tests` uses Graphify's test-path conventions. Each `--exclude` is a
+regular expression matched against the source path with forward slashes.
+Excluded nodes cannot serve as seeds or connect other results.
+
 Settings come from the project owning the selected `--graph`, even when the command runs from another directory. An existing absolute directory in the graph's sibling `.graphify_root` marker identifies that project. Otherwise a matching relative `GRAPHIFY_OUT` suffix identifies it; absolute, empty, traversal-containing or nonmatching output paths fall back to the graph file's directory. Relative markers are ignored.
 
 The query command always reads that project's `.graphifyrc`. An invalid recognized setting or an unreadable file produces one stderr warning and discards all project settings for that query; explicit options still apply. The settings parser stays strict for its other callers. Existing explicit budget values retain their behavior; persisted `query_budget` values must be positive.
