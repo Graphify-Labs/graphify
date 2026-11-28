@@ -2059,8 +2059,12 @@ def _is_single_line(path: Path) -> bool:
         return not f.readline()
 
 
-def _json_text(data: dict) -> str:
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
+def _is_indented_json(path: Path) -> bool:
+    """True for the legacy ``indent=2`` layout, whose second line is indented."""
+    with path.open(encoding="utf-8") as f:
+        f.readline()
+        second = f.readline()
+    return second.startswith("  ")
 
 
 def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
@@ -2224,6 +2228,8 @@ def _current_build_state(
         )
     except OSError:
         rc_digest = ""
+    from graphify.paths import graph_json_lines_enabled
+
     return {
         "epoch": _extractor_epoch(),
         "scan_root": str(watch_root),
@@ -2233,6 +2239,7 @@ def _current_build_state(
         "gitignore": bool(gitignore),
         "excludes": sorted(excludes or []),
         "code_only": bool(code_only),
+        "graph_json_lines": graph_json_lines_enabled(),
         "rcfile": rc_digest,
         # Env knobs that change the written output rather than just the timing:
         # the viz cap removes graph.html outright, and the ambiguous-edge scale
@@ -2324,6 +2331,8 @@ def _build_state_matches(out: Path, state: dict) -> bool:
         return False
     if not isinstance(prev, dict):
         return False
+    # Stamps written before the opt-in used the compact layout.
+    prev.setdefault("graph_json_lines", False)
     for key, value in state.items():
         if prev.get(key) != value:
             return False
@@ -2921,11 +2930,34 @@ def _rebuild_code(
             # Cached extraction still avoids reparsing unchanged ASTs.
             if ignore_rules_changed:
                 wanted = [p for p in code_files if p not in semantic_doc_files]
-            # With an existing graph, an empty batch can still have stale sources
-            # (for example a destination-only rename to an unsupported suffix).
-            if not wanted and not deleted_paths and not existing_graph.exists():
-                return True
-            extract_targets = wanted
+
+            if not wanted and not deleted_paths:
+                # With no graph there is nothing to update. With an existing graph,
+                # keep the corpus sweep so it can prune stale sources even when the
+                # changed batch is empty (for example, an unsupported-suffix rename).
+                if not existing_graph.exists():
+                    return True
+
+                from graphify.paths import graph_json_lines_enabled
+                try:
+                    previous_build_state = json.loads(
+                        (out / _BUILD_STATE_NAME).read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError):
+                    previous_build_state = {}
+
+                if not isinstance(previous_build_state, dict):
+                    previous_build_state = {}
+                if previous_build_state.get("graph_json_lines", False) != graph_json_lines_enabled():
+                    # Only the graph layout changed: extract all code so graph.json
+                    # is rewritten in the requested layout (#4942).
+                    extract_targets = [
+                        p for p in code_files if p not in semantic_doc_files
+                    ]
+                else:
+                    extract_targets = wanted
+            else:
+                extract_targets = wanted
         else:
             # Full rebuild: skip the AST quick-scan for semantic-backed docs
             # (#1915). They remain in code_files for corpus membership and
@@ -3227,8 +3259,14 @@ def _rebuild_code(
             return False
 
         # The equality skips below compare parsed data, not layout; an existing
-        # multi-line graph.json must still be rewritten compact (#3413).
-        legacy_layout = existing_graph.exists() and not _is_single_line(existing_graph)
+        # graph in a different layout must still be rewritten (#3413, #4942).
+        from graphify.paths import graph_json_lines_enabled
+        if graph_json_lines_enabled():
+            legacy_layout = existing_graph.exists() and (
+                _is_single_line(existing_graph) or _is_indented_json(existing_graph)
+            )
+        else:
+            legacy_layout = existing_graph.exists() and not _is_single_line(existing_graph)
 
         _relativize_source_files(result, project_root, scope=watch_root)
         # Source files re-extracted this run — their symbol sets may legitimately
@@ -3292,7 +3330,8 @@ def _rebuild_code(
             # attribute-less phantom (#2873). Any other edge without two declared
             # endpoints is dropped, as build_from_json drops it.
             _finalize_raw_graph_endpoints(candidate_graph_data)
-            candidate_graph_text = _json_text(candidate_graph_data)
+            from graphify.paths import graph_json_text
+            candidate_graph_text = graph_json_text(candidate_graph_data)
             same_graph = False
             if existing_graph.exists():
                 try:
