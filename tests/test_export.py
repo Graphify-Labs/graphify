@@ -1933,3 +1933,19 @@ def test_strip_xml_illegal_fast_path_and_to_graphml_single_pass(tmp_path):
     assert {edge.attrib["source"], edge.attrib["target"]} == {"badid", "clean_id"}
 
 
+def test_to_cypher_handles_non_string_ids_labels_and_null_fields(tmp_path):
+    import networkx as nx
+
+    G = nx.Graph()
+    G.add_node(1, source_file="a.py")
+    G.add_node("n2", label=0, file_type=None, source_file=None)
+    G.add_edge(1, "n2", relation=None, confidence=None)
+
+    out = tmp_path / "non_str.cypher"
+    to_cypher(G, str(out))
+    text = out.read_text(encoding="utf-8")
+    assert "MERGE (n:Unknown {id: '1'}) SET n.label = '1'" in text
+    assert "MERGE (n:Unknown {id: 'n2'}) SET n.label = '0';" in text
+    assert "MERGE (a)-[:RELATES_TO {confidence: 'EXTRACTED'}]->(b);" in text
+
+
